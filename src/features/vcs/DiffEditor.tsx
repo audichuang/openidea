@@ -86,6 +86,7 @@ import {
 import { UnalignedPanes } from "./diffScroll";
 import { groupOf } from "./changes";
 import { inclusionGutter } from "./hunkInclusion";
+import { useStagingArea } from "./staging";
 import { hunksOverlapping } from "./hunks";
 import { effectiveKind, stripSlash } from "./model";
 import { errorMessage, logConsole, readWorkingText, runOp, saveAll } from "./ops";
@@ -364,16 +365,15 @@ export function DiffEditor({
     );
   }, []);
 
-  // A HEAD ↔ working file diff of a tracked change: blocks can be left out of the commit.
+  // A HEAD ↔ working file diff of a tracked change: blocks can be left out of the commit
+  // (not with the staging area, which commits the index as it is).
+  const staging = useStagingArea();
+  const trackedChange = useVcs((s) => {
+    const fs = s.status.find((f) => stripSlash(f.path) === path);
+    return !!fs && groupOf(fs) === "changes" && effectiveKind(fs) === "modified";
+  });
   const includable =
-    useVcs((s) => {
-      const fs = s.status.find((f) => stripSlash(f.path) === path);
-      return !!fs && groupOf(fs) === "changes" && effectiveKind(fs) === "modified";
-    }) &&
-    left.type === "rev" &&
-    left.rev === "HEAD" &&
-    !left.path &&
-    isWorktree(right);
+    !staging && trackedChange && left.type === "rev" && left.rev === "HEAD" && !left.path && isWorktree(right);
   const editableA = !binary && !!attached?.a && !attached.a.readOnly;
   const editableB = !binary && !!attached?.b && !attached.b.readOnly;
   const ready = !!attached && !!statics && lang !== null && binary !== null;

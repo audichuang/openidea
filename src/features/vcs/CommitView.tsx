@@ -51,6 +51,7 @@ import {
   buildChangeTree,
   checkOf,
   filesOf,
+  groupFileNodes,
   groupOf,
   ignoreTargets,
   isPartiallyStaged,
@@ -81,12 +82,12 @@ import { stashTabOf, stashTabs, type ContentTab } from "./gitTabs";
 import {
   DIFF_KIND,
   changeNodeDiff,
-  changeNodeDiffData,
   diffInput,
   openDiff,
   openVcsDiff,
   opensDiffOnActivate,
   vcsDiffInFront,
+  withChain,
   workingDiffData,
 } from "./diffInput";
 import { DiffEditor } from "./DiffEditor";
@@ -96,6 +97,15 @@ import type { FileStatus } from "@/bindings";
 import { OperationBanner } from "./operations";
 import { runOp } from "./ops";
 import { ShelfPanel, loadShelves, useShelf } from "./shelf";
+import {
+  buildStagingTree,
+  isStagingArea,
+  stagePaths,
+  stagedFiles,
+  stagingDiffData,
+  unstagePaths,
+  useStagingArea,
+} from "./staging";
 import { refreshNow, repoName, selectRepo, useVcs } from "./store";
 import { saveVcsSetting } from "./settingsUi";
 import styles from "./CommitView.module.css";
@@ -210,14 +220,18 @@ const bottomLeft = (el: HTMLElement) => {
  * interface puts it (openVcsDiff: a preview editor tab, or under the modal interface the
  * front diff window, behind the modal Commit dialog, #1863). `forceDiff` is Show Diff and
  * the Commit dialog's own activation, which always show the diff in front.
+ * With the staging area a file can be in both Staged and Unstaged: its group is the
+ * node's, and the diff is that side of the index.
  */
-function openNode(n: ChangeNode, roots: readonly ChangeNode[], forceDiff = false) {
+function openNode(n: ChangeNode, roots: readonly ChangeNode[], staging: boolean, forceDiff = false) {
   if (n.type !== "file" || !n.path) return;
   if (!forceDiff && !opensDiffOnActivate()) {
     void editorService().openFile(n.path, { focus: true });
     return;
   }
-  void openVcsDiff(changeNodeDiffData(roots, n), { preview: true });
+  const nodes = groupFileNodes(roots, n);
+  const items = nodes.map((f) => (staging && f.files[0] && stagingDiffData(f.files[0], f.group)) || changeNodeDiff(f));
+  void openVcsDiff(withChain(items, Math.max(0, nodes.indexOf(n))), { preview: true });
 }
 
 /** The setting behind Show on Double-Click (`None` follows the commit interface). */
@@ -345,7 +359,7 @@ export function nodeMenu(
           icon: "diff",
           shortcut: shortcutLabel("vcs.showDiff"),
           // An explicit Show Diff always opens the diff, whatever Show on Double-Click says.
-          run: () => openNode(first, opts.roots!, true),
+          run: () => openNode(first, opts.roots!, isStagingArea(), true),
         }
       : { kind: "action", action: "vcs.showDiff", arg: first?.path },
     {
@@ -456,6 +470,33 @@ function CheckMark({
   );
 }
 
+/** Hover button of a staging area row: stages (Unstaged, Unversioned Files) or unstages (Staged) its files. */
+function StageAction({ node }: { node: ChangeNode }) {
+  const unstage = node.group === "staged";
+  if (node.group === "conflicts") return null;
+  const paths = unstage ? unstagePaths(node.files) : stagePaths(node.files);
+  if (!paths.length) return null;
+  const all = node.type !== "file";
+  const label = unstage ? (all ? "Unstage All" : "Unstage") : all ? "Stage All" : "Stage";
+  return (
+    <span
+      role="button"
+      aria-label={tx(label)}
+      title={tx(label)}
+      className={styles.stageAction}
+      onMouseDown={(e) => {
+        if (e.button !== 0) return;
+        e.stopPropagation();
+        e.preventDefault();
+        void runOp(label, () => call(unstage ? commands.vcsUnstage(paths) : commands.vcsStage(paths)));
+      }}
+      onDoubleClick={(e) => e.stopPropagation()}
+    >
+      <Icon name={unstage ? "minus" : "plus"} size={12} />
+    </span>
+  );
+}
+
 /** Inclusion state of every change (user overrides over the change list defaults). */
 function useCommitChecks() {
   const status = useVcs((s) => s.status);
@@ -469,7 +510,11 @@ function useCommitChecks() {
 export function useIncludedCount(): number {
   const status = useVcs((s) => s.status);
   const checks = useCommitChecks();
-  return useMemo(() => planCommit(status, checks).included.length, [status, checks]);
+  const staging = useStagingArea();
+  return useMemo(
+    () => (staging ? stagedFiles(status) : planCommit(status, checks).included).length,
+    [status, checks, staging],
+  );
 }
 
 /**
@@ -559,7 +604,8 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const doubleClickOpensDiff = useWorkflowSettings((s) => s.vcs.commit.doubleClickOpensDiff);
   const lists = useChangelists((s) => s.state);
   const checks = useCommitChecks();
-  const checkboxes = mode !== "local";
+  const staging = useStagingArea();
+  const checkboxes = mode !== "local" && !staging;
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   // IDEA starts with Unversioned Files collapsed.
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(["group:unversioned"]));
@@ -570,8 +616,11 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const repos = useVcs((s) => s.roots);
   const projectRoots = useEffectiveRoots();
   const roots = useMemo(
-    () => buildChangeTree(status, root, groupByDir, lists, repos, groupByStaging),
-    [status, root, groupByDir, lists, repos, groupByStaging],
+    () =>
+      staging
+        ? buildStagingTree(status, root, groupByDir, repos)
+        : buildChangeTree(status, root, groupByDir, lists, repos, groupByStaging),
+    [staging, status, root, groupByDir, lists, repos, groupByStaging],
   );
   const [byKey, parents] = useMemo(() => {
     const m = new Map<string, ChangeNode>();
@@ -689,7 +738,9 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
             showContextMenu(bottomLeft(viewRef.current), [
               { kind: "header", label: "Group By" },
               { label: "Directory", checked: groupByDir, run: () => setGroupByDir(!groupByDir) },
-              { label: "Staging State", checked: groupByStaging, run: () => setGroupByStaging(!groupByStaging) },
+              ...(staging
+                ? []
+                : [{ label: "Staging State", checked: groupByStaging, run: () => setGroupByStaging(!groupByStaging) }]),
               ...(mode === "local"
                 ? [
                     { kind: "separator" } as const,
@@ -787,7 +838,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
             });
             followSelection(nodes);
           }}
-          onActivate={(n) => openNode(n, roots, mode === "dialog")}
+          onActivate={(n) => openNode(n, roots, staging, mode === "dialog")}
           onJumpToSource={(n) => {
             const file = n.type === "file" ? n : selectedNodes().find((x) => x.type === "file");
             if (file?.path && file.kind !== "deleted") void editorService().openFile(file.path, { focus: true });
@@ -877,12 +928,13 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                 )}
                 {label}
                 {n.type === "group" && <span className={styles.detail}>{fileCount(n.files.length)}</span>}
-                {n.type === "file" && n.files[0] && isPartiallyStaged(n.files[0]) && (
+                {!staging && n.type === "file" && n.files[0] && isPartiallyStaged(n.files[0]) && (
                   <span className={styles.partial} title={tx("Partially staged: only staged hunks are committed")}>
                     <T>partial</T>
                   </span>
                 )}
                 {n.detail && <span className={styles.detail}>{n.detail}</span>}
+                {staging && <StageAction node={n} />}
               </span>
             );
           }}
