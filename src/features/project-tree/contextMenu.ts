@@ -242,6 +242,13 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
       disabled: !canPaste(),
       run: () => void paste(folder),
     },
+    // ClipCode (IntelliJ's ClipCode plugin puts these in the same group).
+    nodes.length > 0 &&
+      act(
+        "clip.copyFiles",
+        nodes.map((n) => n.path),
+      ),
+    !!folder && act("clip.paste", folder),
     files.length > 0 && {
       id: "jumpToSource",
       label: "Jump to Source",

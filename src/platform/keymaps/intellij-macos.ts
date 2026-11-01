@@ -330,6 +330,7 @@ export const intellijMacos: Record<string, string[]> = {
   "vcs.unshelveSilently": ["Meta+Alt+U"],
   "vcs.changelist.edit": ["F2", "Shift+F6"],
   "vcs.log.copyRevision": ["Meta+Alt+Shift+C"],
+  "clip.paste": ["Ctrl+Alt+Shift+V"],
   "vcs.log.goToRef": ["Meta+F"],
   "vcs.log.editMessage": ["F2", "Shift+F6"],
   "vcs.log.newBranch": ["Meta+Alt+N"],

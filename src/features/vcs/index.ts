@@ -21,6 +21,7 @@ import { lazyComponent } from "@/ui";
 import { commitWindowFocused, registerVcsActions } from "./actions";
 import { installChangelists } from "./changelists";
 import { registerHistoryActions, trackOperationContext } from "./historyActions";
+import { registerClipActions } from "./clip";
 import { registerLogPaneActions } from "./logPaneActions";
 import {
   BRANCH_COMPARISON_KIND,
@@ -261,6 +262,7 @@ export function activate(): () => void {
     registerActions(copyRepositoryPathActions),
     registerCopyRepositoryPath(),
     registerHistoryActions(),
+    registerClipActions(),
     registerLogPaneActions(),
     activateSettingsPages(),
     registerLocalHistoryActions(),
