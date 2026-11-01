@@ -7,6 +7,7 @@ pub mod analysis;
 pub mod bdd;
 pub mod build;
 pub mod bytes;
+pub mod clip;
 pub mod coverage;
 pub mod db;
 pub mod debug;

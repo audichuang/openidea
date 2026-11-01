@@ -93,6 +93,8 @@ export function commitMenu(c: Commit, selection: Commit[] = [c], fileHistoryTarg
 
   return [
     { kind: "action", action: "vcs.log.copyRevision", arg: many ? selection : c },
+    { kind: "action", action: "clip.copyCommitFiles", arg: many ? selection : c },
+    { kind: "action", action: "clip.copyCommits", arg: many ? selection : c },
     { kind: "action", action: "vcs.log.createPatch", arg: many ? selection : c, icon: "patch" },
     {
       kind: "action",
