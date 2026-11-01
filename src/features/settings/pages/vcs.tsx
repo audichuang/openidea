@@ -11,6 +11,7 @@ import { WORKFLOW_LIMITS, type IssueLinkValid } from "@/platform/workflowSetting
 import { Button, Icon, Input, type SelectOption, T } from "@/ui";
 import { Row, SettingSelect } from "../components/Form";
 import { useSetting } from "../components/context";
+import { CLIPCODE_PAGE } from "./clipcode";
 import type { PageSpec } from "./spec";
 import { BoundToggle, Grid, Indented, RadioRow, TableEditor, ToggleNumber } from "./workflowControls";
 import styles from "./Workflow.module.css";
@@ -636,4 +637,5 @@ export const VCS_PAGES: PageSpec[] = [
       },
     ],
   },
+  CLIPCODE_PAGE,
 ];
