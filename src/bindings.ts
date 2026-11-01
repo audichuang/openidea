@@ -206,8 +206,11 @@ export const commands = {
 	fsReadText: (path: string) => typedError<string, IdeError>(__TAURI_INVOKE("fs_read_text", { path })),
 	/**  The clipboard text for `source` (file or commit payload); the UI writes it. */
 	clipCopy: (source: ClipCopySource) => typedError<ClipCopyResult, IdeError>(__TAURI_INVOKE("clip_copy", { source })),
-	/**  Plans pasting `text` into `dest` (default: the project root). Nothing is written. */
-	clipPastePreview: (text: string, dest: string | null, adjustPaths: boolean) => typedError<ClipPastePreview, IdeError>(__TAURI_INVOKE("clip_paste_preview", { text, dest, adjustPaths })),
+	/**
+	 *  Plans pasting `text` into `dest` (default: the project root). Nothing is written;
+	 *  `repos` take the `<repo>/` prefixes of a payload copied from several repositories.
+	 */
+	clipPastePreview: (text: string, dest: string | null, adjustPaths: boolean, repos: string[]) => typedError<ClipPastePreview, IdeError>(__TAURI_INVOKE("clip_paste_preview", { text, dest, adjustPaths, repos })),
 	/**  Writes the preview `apply.id` as confirmed. */
 	clipPasteApply: (apply: ClipPasteApply) => typedError<ClipPasteResult, IdeError>(__TAURI_INVOKE("clip_paste_apply", { apply })),
 	/**  Absolute paths on the clipboard, empty when it holds no file list. */
