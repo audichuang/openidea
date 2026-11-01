@@ -1,0 +1,93 @@
+name: Fork Release
+
+# Fork-only (audichuang/openidea): a `v*-fork.*` tag builds a Developer ID signed and
+# notarized macOS arm64 app and publishes it as a GitHub Release; the Homebrew cask
+# `audichuang/tap/openidea-fork` installs it. The updater is switched off in this
+# build, so the app never replaces itself with an upstream release.
+on:
+  push:
+    tags: ["v*-fork.*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-release-${{ github.ref_name }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  TAG: ${{ github.ref_name }}
+  TARGET: aarch64-apple-darwin
+
+jobs:
+  release:
+    if: github.repository == 'audichuang/openidea'
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 11 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: "${{ env.TARGET }}" }
+      - uses: Swatinem/rust-cache@v2
+        with: { key: "fork-${{ env.TARGET }}" }
+      - run: pnpm install --frozen-lockfile
+
+      # tauri reads the notarization key from a file path.
+      - name: Stage the notarization API key
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+        run: |
+          [ -n "$APPLE_CERTIFICATE" ] || { echo "::error::APPLE_CERTIFICATE secret is not set"; exit 1; }
+          [ -n "$APPLE_API_KEY_P8" ] || { echo "::error::APPLE_API_KEY_P8 secret is not set"; exit 1; }
+          key="$RUNNER_TEMP/AuthKey.p8"
+          printf '%s\n' "$APPLE_API_KEY_P8" > "$key"
+          chmod 600 "$key"
+          echo "APPLE_API_KEY_PATH=$key" >> "$GITHUB_ENV"
+
+      # No updater endpoint: "Check for Updates…" is hidden and no updater artifacts
+      # (which would need the upstream signing key) are built.
+      - name: Build, sign and notarize
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          pnpm tauri build --target "$TARGET" --bundles app,dmg \
+            --config '{"bundle":{"createUpdaterArtifacts":false},"plugins":{"updater":{"endpoints":[]}}}'
+
+      - name: Verify the signature and notarization
+        run: |
+          app="target/$TARGET/release/bundle/macos/OpenIDEA.app"
+          info=$(codesign --display --verbose=2 "$app" 2>&1)
+          printf '%s\n' "$info"
+          printf '%s\n' "$info" | grep -q '^Authority=Developer ID Application: ' || { echo "::error::not Developer ID signed"; exit 1; }
+          codesign --verify --deep --strict "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=2 "$app"
+
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          dmg="$RUNNER_TEMP/openidea-fork-macos-arm64.dmg"
+          cp target/$TARGET/release/bundle/dmg/*.dmg "$dmg"
+          sha=$(shasum -a 256 "$dmg" | cut -d' ' -f1)
+          printf 'OpenIDEA fork %s\n\nSHA-256: `%s`\n' "${TAG#v}" "$sha" > "$RUNNER_TEMP/notes.md"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" "$dmg" --clobber
+          else
+            gh release create "$TAG" --verify-tag --latest --title "OpenIDEA fork ${TAG#v}" \
+              --notes-file "$RUNNER_TEMP/notes.md" "$dmg"
+          fi
+          echo "::notice::sha256 $sha"
+
+      - name: Remove the API key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/AuthKey.p8"
