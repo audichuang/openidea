@@ -316,6 +316,7 @@ export const intellijMacos: Record<string, string[]> = {
   "vcs.changelist.move": ["Meta+Shift+M"],
   "vcs.changelist.edit": ["F2", "Shift+F6"],
   "vcs.log.copyRevision": ["Meta+Alt+Shift+C"],
+  "clip.paste": ["Ctrl+Alt+Shift+V"],
   "vcs.log.goToRef": ["Meta+F"],
   // View › Appearance › Zoom IDE
   "view.zoomIn": ["Ctrl+Alt+="],

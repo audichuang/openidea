@@ -1161,6 +1161,8 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
     const anyPushed = selection.some(pushed);
     return [
       { kind: "action", action: "vcs.log.copyRevision", arg: selection, label: "Copy Revision Numbers" },
+      { kind: "action", action: "clip.copyCommitFiles", arg: selection },
+      { kind: "action", action: "clip.copyCommits", arg: selection },
       { kind: "action", action: "vcs.log.createPatch", arg: selection },
       { kind: "action", action: "vcs.log.cherryPick", arg: selection },
       ...(selection.length === 2
@@ -1203,6 +1205,8 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
       run: () => toggleCommitBookmark(c),
     },
     { label: "Copy Commit Message", run: () => copyCommitMessage(c) },
+    { kind: "action", action: "clip.copyCommitFiles", arg: c },
+    { kind: "action", action: "clip.copyCommits", arg: c },
     { kind: "action", action: "vcs.log.createPatch", arg: c },
     { kind: "action", action: "vcs.log.cherryPick", arg: c },
     { kind: "separator" },
@@ -2960,6 +2964,13 @@ export function changesMenu(changes: LogChange[]): MenuItem[] {
       action: "vcs.log.changes.jumpToSource",
       arg: changes,
       disabled: !changes.some((c) => c.after && !c.readOnly),
+    },
+    { kind: "separator" },
+    {
+      kind: "action",
+      action: "clip.copyLogChanges",
+      arg: { commits: selectedCommits(), changes },
+      label: "ClipCode: Copy Full Source",
     },
     { kind: "separator" },
     {
