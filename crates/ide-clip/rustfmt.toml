@@ -1,0 +1,4 @@
+max_width = 120
+use_small_heuristics = "Max"
+# The crate keeps edition 2021 (ported from snip-sync); format it like the rest of the workspace.
+style_edition = "2024"
