@@ -3872,6 +3872,11 @@ export type GitSettings = {
 	pushDialogOnlyProtected?: boolean,
 	/**  Stashes and shelves share one tab. */
 	combineStashAndShelf?: boolean,
+	/**
+	 *  IDEA's "Enable staging area": the Commit tool window shows the index (Staged /
+	 *  Unstaged) instead of change lists, and Commit commits exactly what is staged.
+	 */
+	stagingArea?: boolean,
 };
 
 export type GoBuildTags = {

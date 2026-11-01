@@ -181,7 +181,7 @@ function childNodes(files: readonly FileStatus[], root: string, group: GroupId, 
 }
 
 /** With several repositories, a node per repository (IDEA's "Group by Repository") above the files. */
-function repoNodes(
+export function repoNodes(
   files: readonly FileStatus[],
   root: string,
   group: GroupId,

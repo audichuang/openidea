@@ -14,6 +14,7 @@ import { confirmDialog, openDialog } from "./dialogs";
 import { hunkKeys } from "./hunks";
 import { KIND_COLOR, baseName, dirName, effectiveKind, relTo, rootOf, stripSlash } from "./model";
 import { logConsole, runOp, saveAll } from "./ops";
+import { isStagingArea, stagingPlan } from "./staging";
 import { currentRepo, loadStashes, refreshNow, useVcs } from "./store";
 import styles from "./common.module.css";
 import { tx } from "@/platform/i18n";
@@ -37,17 +38,27 @@ export async function commitChanges(): Promise<string | undefined> {
   await saveAll();
   await refreshNow();
   const status = useVcs.getState().status;
-  const checks = withListDefaults(
-    status,
-    useVcs.getState().root ?? "",
-    useChangelists.getState().state,
-    useCommit.getState().checks,
-  );
-  const plan = planCommit(status, checks);
+  // With the staging area the index is committed as it is; otherwise the checkboxes decide.
+  const staging = isStagingArea();
+  const plan = staging
+    ? stagingPlan(status)
+    : planCommit(
+        status,
+        withListDefaults(
+          status,
+          useVcs.getState().root ?? "",
+          useChangelists.getState().state,
+          useCommit.getState().checks,
+        ),
+      );
   // Concluding a merge needs no further changes (e.g. every conflict resolved as "yours").
   const merging = useVcs.getState().branch?.operation === "merge";
   if (!plan.included.length && !amend && !merging) {
-    notifications().notify({ group: "vcs", level: "warning", title: "No changes selected for commit" });
+    notifications().notify({
+      group: "vcs",
+      level: "warning",
+      title: staging ? "No staged changes to commit" : "No changes selected for commit",
+    });
     return undefined;
   }
   const unresolved = plan.included.filter((f) => effectiveKind(f) === "conflicted");
@@ -60,7 +71,10 @@ export async function commitChanges(): Promise<string | undefined> {
     });
     return undefined;
   }
-  const candidates = plan.included.map((f) => ({ path: stripSlash(f.path), exists: effectiveKind(f) !== "deleted" }));
+  const candidates = plan.included.map((f) => ({
+    path: stripSlash(f.path),
+    exists: staging ? f.staged !== "deleted" : effectiveKind(f) !== "deleted",
+  }));
   // IDEA: failed checks show in the commit panel; the next Commit ("Commit Anyway") skips them.
   if (!useCommit.getState().checkProblems.length) {
     const problems = await runCommitChecks(candidates, amend);
