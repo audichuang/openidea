@@ -22,7 +22,7 @@ import {
 } from "@/workbench/contributions";
 import { activateReviewDiff, toggleReviewDiffViewed } from "./diff";
 import { reloadList } from "./data/list";
-import { checkoutPullRequest, clearDiffCache, copyUrl, openInBrowser, openInWorktree } from "./data/local";
+import { checkoutPullRequest, clearDiffCache, copyUrl, openInBrowser, openInWorktree, prepareDiff } from "./data/local";
 import { deleteMergedBranch } from "./data/operations";
 import { cachedDetails, loadPullRequestData, reloadPullRequest } from "./data/pullRequest";
 import { refreshConnection, resetConnection, useGhRepository } from "./data/repository";
@@ -66,6 +66,20 @@ function targetPullRequest(arg: unknown): number | null {
 async function withPullRequest(arg: unknown, run: (number: number) => unknown) {
   const n = targetPullRequest(arg);
   if (n !== null) await run(n);
+}
+
+/**
+ * ClipCode copy of a pull request: its changed files (merge base ↔ head, as "Files
+ * changed" shows them) or its commits for replay, fetched locally first.
+ */
+async function copyPullRequest(number: number, mode: "files" | "commits") {
+  const revs = await prepareDiff(await loadPullRequestData(number, "details"));
+  if (!revs) return;
+  const { copyClip } = await import("@/features/vcs/clip");
+  const { root: repo, base, head: tip } = revs;
+  await copyClip(
+    mode === "files" ? { kind: "range", repo, base, tip, paths: [] } : { kind: "commitRange", repo, base, tip },
+  );
 }
 
 async function prUrl(number: number): Promise<string> {
@@ -215,6 +229,24 @@ function actions(): Action[] {
       icon: "copy",
       when: CONNECTED,
       run: ({ arg }) => withPullRequest(arg, async (n) => copyUrl(await prUrl(n))),
+    },
+    {
+      id: "github.pullRequest.clipCopyFiles",
+      title: "ClipCode: Copy Changed Files",
+      category: "GitHub",
+      icon: "copy",
+      description: "Copy the pull request's changed files in the ClipCode format",
+      when: CONNECTED,
+      run: ({ arg }) => withPullRequest(arg, (n) => copyPullRequest(n, "files")),
+    },
+    {
+      id: "github.pullRequest.clipCopyCommits",
+      title: "Copy Pull Request Commits",
+      category: "GitHub",
+      icon: "copy",
+      description: "Copy the pull request's commits so snip-sync or OpenIDEA can replay them",
+      when: CONNECTED,
+      run: ({ arg }) => withPullRequest(arg, (n) => copyPullRequest(n, "commits")),
     },
     {
       // Github.PullRequest.CheckoutBranch
