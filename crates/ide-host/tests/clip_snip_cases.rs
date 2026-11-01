@@ -491,3 +491,115 @@ fn c_blocked_a_layout_conflict_refuses_the_whole_commit() {
     assert!(!dst.join("fresh.txt").exists());
     assert_eq!(git(&dst, &["rev-parse", "HEAD"]), head);
 }
+
+/// With `SNIP_CLI` pointing at a snip-sync `snip` binary: both produce the same bytes
+/// for the same selection, and each restores the other's payload.
+mod against_snip_cli {
+    use super::*;
+
+    fn snip() -> Option<PathBuf> {
+        std::env::var_os("SNIP_CLI").map(PathBuf::from)
+    }
+
+    fn run(snip: &Path, cwd: &Path, args: &[&str], stdin: Option<&str>) -> String {
+        use std::io::Write;
+        let mut child = Command::new(snip)
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        if let Some(text) = stdin {
+            child.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
+        }
+        drop(child.stdin.take());
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "snip {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8(out.stdout).unwrap()
+    }
+
+    #[test]
+    fn copies_are_byte_identical() {
+        let Some(snip) = snip() else { return };
+        let f = Fix::new();
+        let files = f.p("files-src");
+        let repo = f.p("commits-src");
+        let base = sha(&repo, "commit base");
+        let c1 = sha(&repo, "多行中文");
+        let c2 = sha(&repo, "C2 rename delete emoji");
+        let c3 = sha(&repo, "C3 merge");
+        let cases: Vec<(&str, String, ClipCopySource)> = vec![
+            (
+                "staged",
+                run(&snip, &files, &["copy", "--staged", "--stdout"], None),
+                ClipCopySource::Changes { paths: vec![files.clone()], side: ClipChangeSide::Staged },
+            ),
+            (
+                "working",
+                run(&snip, &files, &["copy", "--working", "--stdout"], None),
+                ClipCopySource::Changes { paths: vec![files.clone()], side: ClipChangeSide::Working },
+            ),
+            (
+                "folder",
+                run(&snip, &files, &["copy", "folder", "--stdout"], None),
+                ClipCopySource::Files { paths: vec![files.join("folder")] },
+            ),
+            (
+                "unicode and crlf",
+                run(&snip, &files, &["copy", "路徑 有空白/檔案.txt", "crlf.txt", "--stdout"], None),
+                ClipCopySource::Files {
+                    paths: vec![files.join("路徑 有空白/檔案.txt"), files.join("crlf.txt")]
+                },
+            ),
+            (
+                "commit",
+                run(&snip, &repo, &["copy", "--commit", &c2, "--stdout"], None),
+                ClipCopySource::CommitFiles { repo: repo.clone(), rev: c2.clone(), paths: vec![] },
+            ),
+            (
+                "range",
+                run(&snip, &repo, &["copy", "--range", &format!("{base}..{c3}"), "--stdout"], None),
+                ClipCopySource::Range { repo: repo.clone(), base: base.clone(), tip: c3.clone(), paths: vec![] },
+            ),
+            (
+                "commits",
+                run(&snip, &repo, &["copy", "--commits", &format!("{base}..{c3}"), "--stdout"], None),
+                commits(&repo, &c3, &[&c3, &c2, &c1]),
+            ),
+        ];
+        for (name, theirs, source) in cases {
+            let ours = copy(&files, source).unwrap().text;
+            assert_eq!(ours, theirs, "{name}: OpenIDEA and snip differ");
+        }
+    }
+
+    #[test]
+    fn each_restores_the_others_payload() {
+        let Some(snip) = snip() else { return };
+        let f = Fix::new();
+        let repo = f.p("commits-src");
+        let c1 = sha(&repo, "多行中文");
+        let c2 = sha(&repo, "C2 rename delete emoji");
+        let c3 = sha(&repo, "C3 merge");
+
+        // OpenIDEA's commit payload replayed by snip.
+        let ours = copy(&repo, commits(&repo, &c3, &[&c3, &c2, &c1])).unwrap().text;
+        let dst = f.p("commits-dst-clean");
+        run(&snip, &dst, &["paste", "--apply", "--stdin"], Some(&ours));
+        assert_eq!(git(&dst, &["log", "-3", "--format=%s"]), "C3 merge\nC2 rename delete emoji\n多行中文");
+
+        // snip's file payload restored by OpenIDEA.
+        let files = f.p("files-src");
+        let theirs = run(&snip, &files, &["copy", "--staged", "--stdout"], None);
+        let target = f.p("files-dst");
+        let p = paste_preview(&target, &theirs, false, &[]).unwrap();
+        let (_, both) = row(&p, "both.txt");
+        let r = apply(&p, ClipPasteApply { overwrite: vec![both], ..Default::default() });
+        assert_eq!((r.created, r.overwritten, r.deleted), (2, 1, 1), "{r:?}");
+        assert_eq!(read(target.join("both.txt")), "index-body");
+    }
+}
