@@ -67,6 +67,8 @@ describe("Git Log commit actions", () => {
     const items = commitMenu(c);
     expect(menuOrder(items)).toEqual([
       "vcs.log.copyRevision",
+      "clip.copyCommitFiles",
+      "clip.copyCommits",
       "vcs.log.createPatch",
       "vcs.log.cherryPick",
       "-",
@@ -211,6 +213,8 @@ describe("Git Log commit actions", () => {
       .map((i) => (i.kind === "action" ? i.action : ""));
     expect(enabled).toEqual([
       "vcs.log.copyRevision",
+      "clip.copyCommitFiles",
+      "clip.copyCommits",
       "vcs.log.createPatch",
       "vcs.log.cherryPick",
       "vcs.log.compareVersions",
