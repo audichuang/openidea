@@ -1,3 +1,11 @@
+/* The Row control is a flex row; the table and its Add buttons stack in it. */
+.editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
 .rules {
   display: flex;
   flex-direction: column;
@@ -24,5 +32,4 @@
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-top: 6px;
 }
