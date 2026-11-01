@@ -17,7 +17,8 @@ pub async fn clip_copy(
     ide_host::ops::clip::clip_copy(&state.host, window.label(), source).await
 }
 
-/// Plans pasting `text` into `dest` (default: the project root). Nothing is written.
+/// Plans pasting `text` into `dest` (default: the project root). Nothing is written;
+/// `repos` take the `<repo>/` prefixes of a payload copied from several repositories.
 #[tauri::command]
 #[specta::specta]
 pub async fn clip_paste_preview(
@@ -26,8 +27,9 @@ pub async fn clip_paste_preview(
     text: String,
     dest: Option<PathBuf>,
     adjust_paths: bool,
+    repos: Vec<PathBuf>,
 ) -> IdeResult<ClipPastePreview> {
-    ide_host::ops::clip::clip_paste_preview(&state.host, window.label(), text, dest, adjust_paths).await
+    ide_host::ops::clip::clip_paste_preview(&state.host, window.label(), text, dest, adjust_paths, repos).await
 }
 
 /// Writes the preview `apply.id` as confirmed.
