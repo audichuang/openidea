@@ -292,6 +292,7 @@ export const vscodeMacos: Record<string, string[]> = {
   // VCS
   "vcs.operations": [],
   "vcs.commit": [],
+  "clip.paste": [],
   "vcs.push": [],
   "vcs.commitAndPush": [],
   "vcs.toggleAmend": [],
