@@ -20,6 +20,7 @@ import { lazyComponent } from "@/ui";
 import { commitWindowFocused, registerVcsActions } from "./actions";
 import { installChangelists } from "./changelists";
 import { registerHistoryActions, trackOperationContext } from "./historyActions";
+import { registerClipActions } from "./clip";
 import { registerLogPaneActions } from "./logPaneActions";
 import { controlLabel, controlOperation, inProgress, installOperationNoticeExpiry } from "./operations";
 import { annotationsShown, blameSlot } from "./blame";
@@ -234,6 +235,7 @@ export function activate(): () => void {
     registerActions(copyRepositoryPathActions),
     registerCopyRepositoryPath(),
     registerHistoryActions(),
+    registerClipActions(),
     registerLogPaneActions(),
     activateSettingsPages(),
     registerLocalHistoryActions(),
