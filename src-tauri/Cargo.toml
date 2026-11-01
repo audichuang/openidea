@@ -78,7 +78,7 @@ block2 = "0.6"
 # Plugin secrets in the login keychain.
 security-framework = "3.7"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-core-foundation", "NSApplication", "NSEvent", "NSResponder", "NSToolbar", "NSView", "NSWindow"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-core-foundation", "NSApplication", "NSEvent", "NSGraphics", "NSResponder", "NSToolbar", "NSView", "NSWindow", "NSWindowTab", "NSWindowTabGroup"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "NSArray", "NSLocale", "NSNotification", "NSOperation", "NSString"] }
 # Browser history and the debug font-restriction override.
 objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "WKWebView", "WKWebViewConfiguration", "WKPreferences"] }
