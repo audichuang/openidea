@@ -45,6 +45,17 @@ impl WindowGroups {
         &self.groups
     }
 
+    /// Takes the groups a platform reports (macOS window tabs); `false` when nothing changed.
+    pub fn replace(&mut self, groups: Vec<WindowGroup>) -> bool {
+        let groups: Vec<_> =
+            groups.into_iter().filter(|g| g.members.len() > 1 && g.members.contains(&g.selected)).collect();
+        if groups == self.groups {
+            return false;
+        }
+        self.groups = groups;
+        true
+    }
+
     pub fn merge(&mut self, members: Vec<String>, selected: &str) -> IdeResult<()> {
         let mut unique = Vec::new();
         for member in members {
@@ -161,6 +172,22 @@ mod tests {
         assert_eq!(groups.group("c").unwrap().selected, "c");
         assert_eq!(groups.group("other-a").unwrap().members, members(&["other-a", "other-b"]));
         assert_eq!(groups.group("other-a").unwrap().selected, "other-b");
+    }
+
+    #[test]
+    fn replacing_with_platform_groups_reports_changes_and_drops_invalid_groups() {
+        let mut groups = WindowGroups::default();
+        let reported = vec![
+            WindowGroup { members: members(&["a", "b"]), selected: "b".into() },
+            WindowGroup { members: members(&["lone"]), selected: "lone".into() },
+            WindowGroup { members: members(&["c", "d"]), selected: "gone".into() },
+        ];
+        assert!(groups.replace(reported.clone()));
+        assert_eq!(groups.groups(), &reported[..1]);
+        assert!(!groups.replace(reported));
+        assert_eq!(groups.group("b").unwrap().selected, "b");
+        assert!(groups.replace(Vec::new()));
+        assert!(groups.group("a").is_none());
     }
 
     #[test]

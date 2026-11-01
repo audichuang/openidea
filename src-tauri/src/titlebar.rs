@@ -72,6 +72,16 @@ pub fn forget(window: &tauri::Window) {
     });
 }
 
+/// The system tab bar's height (0 without one): AppKit's top content inset less its title bar.
+unsafe fn tab_bar_height(window: &NSWindow) -> f64 {
+    if !window.tabGroup().is_some_and(|g| g.isTabBarVisible()) {
+        return 0.0;
+    }
+    let Some(mtm) = objc2::MainThreadMarker::new() else { return 0.0 };
+    let top = window.frame().size.height - window.contentLayoutRect().size.height;
+    (top - unsafe { crate::macos::titlebar_height(window, mtm) }).max(0.0)
+}
+
 unsafe fn center_buttons(window: &NSWindow, height: f64, spacing: f64) {
     // Fullscreen uses AppKit's own revealable title bar.
     if window.styleMask().contains(NSWindowStyleMask::FullScreen) {
@@ -82,9 +92,11 @@ unsafe fn center_buttons(window: &NSWindow, height: f64, spacing: f64) {
     let Some(content) = window.contentView() else { return };
     let mut frame = container.frame();
     let top = frame.origin.y + frame.size.height;
-    if (frame.size.height - height).abs() > 0.01 {
-        frame.size.height = height;
-        frame.origin.y = top - height;
+    // A window tab bar sits in the same container, below the title bar.
+    let container_height = height + unsafe { tab_bar_height(window) };
+    if (frame.size.height - container_height).abs() > 0.01 {
+        frame.size.height = container_height;
+        frame.origin.y = top - container_height;
         container.setFrame(frame);
     }
     let bounds = content.bounds();

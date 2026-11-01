@@ -52,5 +52,34 @@ pub async fn window_group_reorder(window: WebviewWindow, labels: Vec<String>) ->
 #[tauri::command]
 #[specta::specta]
 pub async fn window_group_restore(window: WebviewWindow) -> IdeResult<()> {
-    groups::restore(window.app_handle(), window.label()).await
+    groups::restore(window.app_handle(), window.label()).await?;
+    // The window's project is open now: name its system tab after it.
+    #[cfg(target_os = "macos")]
+    groups::sync(window.app_handle());
+    Ok(())
+}
+
+/// The system tab bar over this window's page (macOS window tabs).
+#[derive(serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemTabBar {
+    /// In points; 0 without a tab bar.
+    pub height: f64,
+    /// At the top of the window (fullscreen) instead of below the title bar.
+    pub top: bool,
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn window_group_tab_bar(window: WebviewWindow) -> IdeResult<SystemTabBar> {
+    #[cfg(target_os = "macos")]
+    {
+        let (height, top) = crate::macos::tab_bar(window.app_handle(), &window)?;
+        Ok(SystemTabBar { height, top })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        Ok(SystemTabBar { height: 0.0, top: false })
+    }
 }
