@@ -34,56 +34,58 @@ function FilterRules() {
       stacked
       hint="Path rules match the path or a folder above it; pattern rules match the file name (* and ? wildcards, otherwise a regular expression)."
     >
-      <div className={styles.rules} role="table" aria-label={tx("Filter rules")}>
-        {rules.length === 0 && (
-          <div className={styles.empty}>
-            <T>No filter rules</T>
-          </div>
-        )}
-        {rules.map((r, i) => (
-          <div key={i} className={styles.rule} role="row">
-            <Checkbox checked={r.enabled} onChange={(v) => update(i, { enabled: v })} aria-label={tx("Enabled")} />
-            <Select
-              aria-label="Type"
-              value={r.type}
-              onChange={(type) => update(i, { type })}
-              options={TYPES.map((t) => ({ value: t.value, label: tx(t.label) }))}
-            />
-            <Select
-              aria-label="Action"
-              value={r.action}
-              onChange={(action) => update(i, { action })}
-              options={ACTIONS.map((a) => ({ value: a.value, label: tx(a.label) }))}
-            />
-            <Input
-              className={styles.value}
-              value={r.value}
-              placeholder={r.type === "PATH" ? "src/generated" : "*.min.js"}
-              onChange={(e) => update(i, { value: e.target.value })}
-              aria-label={tx("Filter")}
-            />
-            <IconButton
-              icon="close"
-              size="small"
-              title="Remove"
-              onClick={() => setRules(rules.filter((_, j) => j !== i))}
-            />
-          </div>
-        ))}
-      </div>
-      <div className={styles.buttons}>
-        <Button size="small" onClick={() => add("PATH", "INCLUDE")}>
-          <T>Include Path/File</T>
-        </Button>
-        <Button size="small" onClick={() => add("PATH", "EXCLUDE")}>
-          <T>Exclude Path/File</T>
-        </Button>
-        <Button size="small" onClick={() => add("PATTERN", "INCLUDE")}>
-          <T>Include Pattern</T>
-        </Button>
-        <Button size="small" onClick={() => add("PATTERN", "EXCLUDE")}>
-          <T>Exclude Pattern</T>
-        </Button>
+      <div className={styles.editor}>
+        <div className={styles.rules} role="table" aria-label={tx("Filter rules")}>
+          {rules.length === 0 && (
+            <div className={styles.empty}>
+              <T>No filter rules</T>
+            </div>
+          )}
+          {rules.map((r, i) => (
+            <div key={i} className={styles.rule} role="row">
+              <Checkbox checked={r.enabled} onChange={(v) => update(i, { enabled: v })} aria-label={tx("Enabled")} />
+              <Select
+                aria-label="Type"
+                value={r.type}
+                onChange={(type) => update(i, { type })}
+                options={TYPES.map((t) => ({ value: t.value, label: tx(t.label) }))}
+              />
+              <Select
+                aria-label="Action"
+                value={r.action}
+                onChange={(action) => update(i, { action })}
+                options={ACTIONS.map((a) => ({ value: a.value, label: tx(a.label) }))}
+              />
+              <Input
+                className={styles.value}
+                value={r.value}
+                placeholder={r.type === "PATH" ? "src/generated" : "*.min.js"}
+                onChange={(e) => update(i, { value: e.target.value })}
+                aria-label={tx("Filter")}
+              />
+              <IconButton
+                icon="close"
+                size="small"
+                title="Remove"
+                onClick={() => setRules(rules.filter((_, j) => j !== i))}
+              />
+            </div>
+          ))}
+        </div>
+        <div className={styles.buttons}>
+          <Button size="small" onClick={() => add("PATH", "INCLUDE")}>
+            <T>Include Path/File</T>
+          </Button>
+          <Button size="small" onClick={() => add("PATH", "EXCLUDE")}>
+            <T>Exclude Path/File</T>
+          </Button>
+          <Button size="small" onClick={() => add("PATTERN", "INCLUDE")}>
+            <T>Include Pattern</T>
+          </Button>
+          <Button size="small" onClick={() => add("PATTERN", "EXCLUDE")}>
+            <T>Exclude Pattern</T>
+          </Button>
+        </div>
       </div>
     </Row>
   );
