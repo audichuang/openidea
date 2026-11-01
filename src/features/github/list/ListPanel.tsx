@@ -36,6 +36,9 @@ function contextMenu(number: number): MenuItem[] {
     { kind: "action", action: "github.pullRequest.openInBrowser", arg: number },
     { kind: "action", action: "github.pullRequest.copyUrl", arg: number },
     { kind: "separator" },
+    { kind: "action", action: "github.pullRequest.clipCopyFiles", arg: number },
+    { kind: "action", action: "github.pullRequest.clipCopyCommits", arg: number },
+    { kind: "separator" },
     { kind: "action", action: "github.refresh", label: "Refresh List" },
   ];
 }
