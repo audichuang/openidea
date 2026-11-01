@@ -56,6 +56,8 @@ describe("Git Log commit actions", () => {
     const ids = items.flatMap((i) => ("action" in i && i.kind === "action" ? [i.action] : []));
     expect(ids).toEqual([
       "vcs.log.copyRevision",
+      "clip.copyCommitFiles",
+      "clip.copyCommits",
       "vcs.log.createPatch",
       "vcs.log.cherryPick",
       "vcs.log.checkoutRevision",
@@ -105,6 +107,8 @@ describe("Git Log commit actions", () => {
     const ids = (sel: Commit[]) => commitMenu(a, sel).flatMap((i) => (i.kind === "action" ? [i.action] : []));
     expect(ids([a, b])).toEqual([
       "vcs.log.copyRevision",
+      "clip.copyCommitFiles",
+      "clip.copyCommits",
       "vcs.log.createPatch",
       "vcs.log.cherryPick",
       "vcs.log.compareVersions",
