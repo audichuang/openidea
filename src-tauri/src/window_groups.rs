@@ -1,4 +1,8 @@
-//! Desktop adapter for application-drawn project tabs. Each member retains its WebView and services.
+//! Desktop adapter for project tabs. Each member retains its WebView and services.
+//!
+//! Windows and Linux draw the tabs in the page and show one member window at a time. macOS uses
+//! AppKit window tabs (see `macos.rs`): the system tab bar, one shared frame and fullscreen Space,
+//! and AppKit's own tab state, which [`sync`] mirrors into [`WindowsState::groups`].
 use crate::{
     state::AppState,
     windows::{self, WindowsState},
@@ -8,15 +12,23 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
+#[cfg(not(target_os = "macos"))]
+use std::sync::atomic::AtomicU64;
+#[cfg(not(target_os = "macos"))]
 use std::time::Duration;
-use tauri::{AppHandle, Manager, WebviewWindow};
+#[cfg(not(target_os = "macos"))]
+use tauri::WebviewWindow;
+use tauri::{AppHandle, Manager};
 
 /// Wait for the selection's asynchronous `hide` calls to take effect before moving the peers.
+#[cfg(not(target_os = "macos"))]
 const FRAME_SETTLE_AFTER_SELECT: Duration = Duration::from_millis(50);
 /// Wait for a drag/resize to stop before copying its frame to the hidden peers.
+#[cfg(not(target_os = "macos"))]
 const FRAME_SETTLE_AFTER_MOVE: Duration = Duration::from_millis(100);
 /// Coalesces the move/resize events a drag emits.
+#[cfg(not(target_os = "macos"))]
 static FRAME_SYNC_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Serialize, Deserialize, Type)]
@@ -56,70 +68,107 @@ fn changed(app: &AppHandle) {
     app.state::<AppState>().sink.emit(IdeEvent::WindowGroupsChanged);
 }
 
-/// Outer frame in physical pixels. A maximized window is represented by the rectangle it
-/// occupies, not by the maximized flag: that flag can match while the rectangles do not.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct OuterFrame {
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-}
-
-/// Where a group member can be placed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FrameHost {
-    /// The client can move and resize the window.
-    Desktop,
-    /// Wayland does not let clients place top-level windows.
-    #[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
-    Wayland,
-    /// Native fullscreen owns a Space. A different frame is transferred, not assigned.
-    NativeFullscreen,
-}
-
-/// What to write before the target window is shown.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FrameWrite {
-    /// Already the same rectangle, or this host must not be placed.
-    Leave,
-    TransferFullscreen,
-    Assign(OuterFrame),
-}
-
-/// Two windows are aligned only when their outer rectangles match. Maximized or fullscreen
-/// flags are not a substitute: `show` presents the current rectangle, and a later move is visible.
-fn frame_write(host: FrameHost, from: OuterFrame, to: OuterFrame) -> FrameWrite {
-    match host {
-        FrameHost::Wayland => FrameWrite::Leave,
-        FrameHost::NativeFullscreen if from == to => FrameWrite::Leave,
-        FrameHost::NativeFullscreen => FrameWrite::TransferFullscreen,
-        FrameHost::Desktop if from == to => FrameWrite::Leave,
-        FrameHost::Desktop => FrameWrite::Assign(from),
+/// macOS: mirrors AppKit's tab groups (membership, order, selected tab) into the model, after
+/// the app or the system tab bar changed them, and names each tab after its project.
+#[cfg(target_os = "macos")]
+pub fn sync(app: &AppHandle) {
+    let (Some(state), Some(host)) = (app.try_state::<WindowsState>(), app.try_state::<AppState>()) else { return };
+    let windows: Vec<_> =
+        windows::project_window_labels(app).into_iter().filter_map(|label| app.get_webview_window(&label)).collect();
+    let labels = windows
+        .iter()
+        .filter_map(|w| {
+            let project = host.project(w.label()).ok().filter(|p| !p.light)?;
+            let tab = crate::macos::TabLabel {
+                title: ide_host::ops::project::info(&project).name,
+                tooltip: Some(project.root.to_string_lossy().into_owned()),
+            };
+            Some((w.label().to_owned(), tab))
+        })
+        .collect();
+    let groups = match crate::macos::native_groups(app, windows, labels) {
+        Ok(groups) => groups,
+        Err(e) => return tracing::warn!("cannot read window tabs: {}", e.message),
+    };
+    if state.groups.lock().replace(groups) {
+        changed(app);
+        if !state.quitting() {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = persist(&app).await;
+            });
+        }
     }
 }
 
-fn outer_frame(window: &WebviewWindow) -> IdeResult<OuterFrame> {
-    let err = |error: tauri::Error| IdeError::internal(error.to_string());
-    let position = window.outer_position().map_err(err)?;
-    let size = window.outer_size().map_err(err)?;
-    Ok(OuterFrame { x: position.x, y: position.y, width: size.width, height: size.height })
+/// macOS window resize: a group entering or leaving fullscreen moves the system tab bar from below
+/// the title bar to the top of every tab, shown or not, so tell them all; and once the size has
+/// settled, give the hidden tabs the new frame (window events: main thread).
+#[cfg(target_os = "macos")]
+pub fn resized(app: &AppHandle, label: &str) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static FULLSCREEN: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashSet<String>>> =
+        std::sync::LazyLock::new(Default::default);
+    static RESIZES: AtomicU64 = AtomicU64::new(0);
+    let Some(state) = app.try_state::<WindowsState>() else { return };
+    let Some(members) = state.groups.lock().group(label).map(|g| g.members.clone()) else {
+        FULLSCREEN.lock().remove(label);
+        return;
+    };
+    let Some(window) = app.get_webview_window(label) else { return };
+    // Live resizing and fullscreen animations send many events: act after the last one.
+    let resize = RESIZES.fetch_add(1, Ordering::SeqCst) + 1;
+    let settled = window.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        if RESIZES.load(Ordering::SeqCst) == resize {
+            let window = settled.clone();
+            let _ = settled.run_on_main_thread(move || crate::macos::match_tab_frames(&window));
+        }
+    });
+    let fullscreen = crate::macos::in_fullscreen(&window);
+    {
+        let mut known = FULLSCREEN.lock();
+        if known.contains(label) == fullscreen {
+            return;
+        }
+        // Any tab can be the one shown when the group enters or leaves fullscreen.
+        for member in members {
+            if fullscreen {
+                known.insert(member);
+            } else {
+                known.remove(&member);
+            }
+        }
+    }
+    changed(app);
 }
 
-fn frame_host(from: &WebviewWindow) -> IdeResult<FrameHost> {
-    #[cfg(target_os = "linux")]
-    if crate::linux_window_state::is_wayland() {
-        return Ok(FrameHost::Wayland);
+/// Whether `to` already presents `from`'s frame, so moving it would only make it flicker.
+#[cfg(not(target_os = "macos"))]
+fn same_frame(from: &WebviewWindow, to: &WebviewWindow) -> bool {
+    let (Ok(from_max), Ok(to_max)) = (from.is_maximized(), to.is_maximized()) else { return false };
+    let (Ok(from_full), Ok(to_full)) = (from.is_fullscreen(), to.is_fullscreen()) else { return false };
+    if from_max != to_max || from_full != to_full {
+        return false;
     }
-    if from.is_fullscreen().map_err(|error| IdeError::internal(error.to_string()))? {
-        return Ok(FrameHost::NativeFullscreen);
+    let same_monitor = match (from.current_monitor(), to.current_monitor()) {
+        (Ok(Some(a)), Ok(Some(b))) => a.position() == b.position() && a.size() == b.size(),
+        // An unmapped window may not report a monitor; treat only equal states as matching.
+        (Ok(None), Ok(None)) | (Err(_), Err(_)) => true,
+        _ => false,
+    };
+    if !same_monitor {
+        return false;
     }
-    Ok(FrameHost::Desktop)
+    from_full
+        || from_max
+        || (from.outer_position().ok() == to.outer_position().ok() && from.inner_size().ok() == to.inner_size().ok())
 }
 
 /// Moves a hidden window onto `from`'s monitor. A restored window keeps its normal position on
 /// the monitor it last occupied; maximizing or going fullscreen there would make the window
-/// visibly jump across displays when its tab is selected. macOS copies the AppKit frame instead.
+/// visibly jump across displays when its tab is selected.
 #[cfg(not(target_os = "macos"))]
 fn place_on_monitor(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
     // Wayland does not let clients place top-level windows; maximizing stays on that output.
@@ -134,93 +183,46 @@ fn place_on_monitor(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
     Ok(())
 }
 
-/// Gives `to` the source window's outer frame before `to` is shown.
-///
-/// Tauri's position, size and maximize calls are queued. On macOS the AppKit calls return
-/// before the frame changes, while `show` orders the window front immediately, so the old
-/// rectangle appears and then jumps. The frame is written synchronously instead.
+#[cfg(not(target_os = "macos"))]
 fn copy_frame(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
-    let host = frame_host(from)?;
-    if matches!(host, FrameHost::Wayland) {
+    if same_frame(from, to) {
         return Ok(());
     }
-    // Tauri's physical rectangles round through the scale factor. On macOS the AppKit frame is
-    // the one `show` will present, so compare that instead of skipping a real difference.
-    #[cfg(target_os = "macos")]
-    if host == FrameHost::Desktop {
-        return crate::macos::copy_window_frame(from, to).map_err(|error| IdeError::internal(error.to_string()));
-    }
-    match frame_write(host, outer_frame(from)?, outer_frame(to)?) {
-        FrameWrite::Leave => Ok(()),
-        FrameWrite::TransferFullscreen => transfer_native_fullscreen(from, to),
-        FrameWrite::Assign(frame) => assign_outer_frame(from, to, frame),
-    }
-}
-
-fn transfer_native_fullscreen(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
-    let err = |error: tauri::Error| IdeError::internal(error.to_string());
-    #[cfg(target_os = "macos")]
-    crate::macos::transfer_fullscreen(from, to).map_err(err)?;
-    #[cfg(not(target_os = "macos"))]
-    {
+    let err = |e: tauri::Error| IdeError::internal(e.to_string());
+    let fullscreen = from.is_fullscreen().map_err(err)?;
+    if fullscreen {
         to.set_fullscreen(false).map_err(err)?;
         place_on_monitor(from, to)?;
         from.set_fullscreen(false).map_err(err)?;
         to.set_fullscreen(true).map_err(err)?;
+        return Ok(());
+    }
+    to.set_fullscreen(false).map_err(err)?;
+    let maximized = from.is_maximized().map_err(err)?;
+    if !maximized {
+        to.unmaximize().map_err(err)?;
+        to.set_position(from.outer_position().map_err(err)?).map_err(err)?;
+        // `set_size` excludes GTK's CSD shadow, which tao's inner size includes on Wayland.
+        #[cfg(target_os = "linux")]
+        let size = crate::linux_window_state::content_size(&from.as_ref().window()).map_err(err)?;
+        #[cfg(not(target_os = "linux"))]
+        let size = from.inner_size().map_err(err)?;
+        #[cfg(target_os = "linux")]
+        crate::linux_window_state::normal_size_requested(to.app_handle(), to.label(), size);
+        to.set_size(size).map_err(err)?;
+    } else {
+        // Maximize the target on the source's monitor, not on the monitor it happened to
+        // occupy while hidden.
+        to.unmaximize().map_err(err)?;
+        place_on_monitor(from, to)?;
+        to.maximize().map_err(err)?;
     }
     Ok(())
 }
 
-fn assign_outer_frame(from: &WebviewWindow, to: &WebviewWindow, _frame: OuterFrame) -> IdeResult<()> {
-    #[cfg(target_os = "macos")]
-    {
-        crate::macos::copy_window_frame(from, to).map_err(|error| IdeError::internal(error.to_string()))
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let err = |error: tauri::Error| IdeError::internal(error.to_string());
-        to.set_fullscreen(false).map_err(err)?;
-        if from.is_maximized().map_err(err)? {
-            // Maximize on the source's monitor. The rectangles differed, so the maximized flags
-            // alone are not enough; a hidden peer would otherwise appear at its old size.
-            to.unmaximize().map_err(err)?;
-            place_on_monitor(from, to)?;
-            to.maximize().map_err(err)?;
-        } else {
-            to.unmaximize().map_err(err)?;
-            to.set_position(from.outer_position().map_err(err)?).map_err(err)?;
-            // `set_size` excludes GTK's CSD shadow, which tao's inner size includes on Wayland.
-            #[cfg(target_os = "linux")]
-            let size = crate::linux_window_state::content_size(&from.as_ref().window()).map_err(err)?;
-            #[cfg(not(target_os = "linux"))]
-            let size = from.inner_size().map_err(err)?;
-            #[cfg(target_os = "linux")]
-            crate::linux_window_state::normal_size_requested(to.app_handle(), to.label(), size);
-            to.set_size(size).map_err(err)?;
-        }
-        Ok(())
-    }
-}
-
-/// Shows `to` in place of `from`, at `from`'s frame.
-fn show_at_frame(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
-    let err = |error: tauri::Error| IdeError::internal(error.to_string());
-    // Order the target front in the same AppKit turn as the frame write. A separate `show` runs
-    // after that turn and constrains the titled window, which is the jump. Native fullscreen is
-    // handed over by `copy_frame` instead.
-    #[cfg(target_os = "macos")]
-    if !from.is_fullscreen().map_err(err)? {
-        to.unminimize().map_err(err)?;
-        return crate::macos::present_window_frame(from, to).map_err(err);
-    }
-    copy_frame(from, to)?;
-    to.unminimize().map_err(err)?;
-    to.show().map_err(err)?;
-    to.set_focus().map_err(err)
-}
-
 /// Keeps hidden group members at the selected window's frame. Selecting a tab then only
 /// changes which window is visible instead of moving or resizing one on screen.
+#[cfg(not(target_os = "macos"))]
 fn sync_member_frames(app: &AppHandle, selected: &str) {
     let Some(group) = app.state::<WindowsState>().groups.lock().group(selected).cloned() else { return };
     if group.selected != selected {
@@ -244,6 +246,7 @@ fn sync_member_frames(app: &AppHandle, selected: &str) {
 
 /// A presented group window moved or resized. Align its hidden peers after the user stops, so
 /// the next tab selection is only a visibility change.
+#[cfg(not(target_os = "macos"))]
 pub fn frame_changed(app: &AppHandle, label: &str) {
     let Some(group) = app.state::<WindowsState>().groups.lock().group(label).cloned() else { return };
     if group.selected != label {
@@ -266,17 +269,38 @@ pub fn frame_changed(app: &AppHandle, label: &str) {
 pub fn select(app: &AppHandle, caller: &str, target: &str) -> IdeResult<()> {
     let to = app.get_webview_window(target).ok_or_else(|| IdeError::not_found("Window closed"))?;
     let state = app.state::<WindowsState>();
+    #[cfg(target_os = "macos")]
+    {
+        state.groups.lock().select(caller, target)?;
+        crate::macos::select_tab(app, &to)?;
+        // Menu commands go to the last focused window; across fullscreen Spaces AppKit's key
+        // window events can arrive out of order.
+        state.focused(target);
+        sync(app);
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    select_shown(app, &state, caller, target, &to)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn select_shown(
+    app: &AppHandle,
+    state: &WindowsState,
+    caller: &str,
+    target: &str,
+    to: &WebviewWindow,
+) -> IdeResult<()> {
     let previous = state.groups.lock().select(caller, target)?;
     let result = (|| {
         if previous.selected != target
             && let Some(from) = app.get_webview_window(&previous.selected)
         {
-            show_at_frame(&from, &to)?;
-        } else {
-            to.unminimize().map_err(|e| IdeError::internal(e.to_string()))?;
-            to.show().map_err(|e| IdeError::internal(e.to_string()))?;
-            to.set_focus().map_err(|e| IdeError::internal(e.to_string()))?;
+            copy_frame(&from, to)?;
         }
+        to.unminimize().map_err(|e| IdeError::internal(e.to_string()))?;
+        to.show().map_err(|e| IdeError::internal(e.to_string()))?;
+        to.set_focus().map_err(|e| IdeError::internal(e.to_string()))?;
         for member in &previous.members {
             if member != target
                 && let Some(window) = app.get_webview_window(member)
@@ -317,9 +341,11 @@ pub fn select(app: &AppHandle, caller: &str, target: &str) -> IdeResult<()> {
 
 #[cfg(target_os = "macos")]
 pub fn join(app: &AppHandle, anchor: &str, new_window: &str) -> IdeResult<()> {
-    let state = app.state::<WindowsState>();
-    state.groups.lock().join(anchor, new_window)?;
-    select(app, anchor, new_window)
+    let window = |label: &str| app.get_webview_window(label).ok_or_else(|| IdeError::not_found("Window closed"));
+    let (anchor, new_window) = (window(anchor)?, window(new_window)?);
+    crate::macos::add_tabs(app, &anchor, &[anchor.clone(), new_window.clone()], &new_window)?;
+    sync(app);
+    Ok(())
 }
 
 pub fn merge(app: &AppHandle, caller: &str) -> IdeResult<()> {
@@ -330,17 +356,49 @@ pub fn merge(app: &AppHandle, caller: &str) -> IdeResult<()> {
     if members.len() < 2 || !members.iter().any(|label| label == caller) {
         return Err(IdeError::invalid("Open at least two project windows to create a window group"));
     }
-    // Native fullscreen puts each window in a separate Space; leave it before grouping.
-    for label in &members {
-        if let Some(window) = app.get_webview_window(label) {
-            window.set_fullscreen(false).map_err(|e| IdeError::internal(e.to_string()))?;
-        }
+    group_windows(app, members, caller, caller)
+}
+
+/// Makes `members` one group, in that order, showing `selected`; `caller`'s frame and fullscreen
+/// state are kept.
+fn group_windows(app: &AppHandle, members: Vec<String>, caller: &str, selected: &str) -> IdeResult<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let window = |label: &str| app.get_webview_window(label).ok_or_else(|| IdeError::not_found("Window closed"));
+        let order: Vec<_> = members.iter().filter_map(|l| app.get_webview_window(l)).collect();
+        crate::macos::add_tabs(app, &window(caller)?, &order, &window(selected)?)?;
+        sync(app);
+        Ok(())
     }
-    app.state::<WindowsState>().groups.lock().merge(members, caller)?;
-    select(app, caller, caller)
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Fullscreen puts each window in a separate Space; leave it before grouping.
+        for label in &members {
+            if let Some(window) = app.get_webview_window(label) {
+                window.set_fullscreen(false).map_err(|e| IdeError::internal(e.to_string()))?;
+            }
+        }
+        app.state::<WindowsState>().groups.lock().merge(members, caller)?;
+        select(app, caller, selected)
+    }
 }
 
 pub fn detach(app: &AppHandle, caller: &str) -> IdeResult<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let window = app.get_webview_window(caller).ok_or_else(|| IdeError::not_found("Window closed"))?;
+        crate::macos::move_tab_to_new_window(app, &window)?;
+        // The group it left can take the key window back after the moved tab's Space opens.
+        app.state::<WindowsState>().focused(caller);
+        sync(app);
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    detach_shown(app, caller)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn detach_shown(app: &AppHandle, caller: &str) -> IdeResult<()> {
     let state = app.state::<WindowsState>();
     let next = state.groups.lock().detach(caller);
     if let Some(next) = next {
@@ -556,53 +614,8 @@ pub async fn restore(app: &AppHandle, caller: &str) -> IdeResult<()> {
         }
         if labels.len() > 1 {
             let selected = selected.unwrap_or_else(|| labels[0].clone());
-            state.groups.lock().merge(labels, &selected)?;
-            select(app, &selected, &selected)?;
+            group_windows(app, labels, &selected, &selected)?;
         }
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{FrameHost, FrameWrite, OuterFrame, frame_write};
-
-    fn frame(x: i32, y: i32, width: u32, height: u32) -> OuterFrame {
-        OuterFrame { x, y, width, height }
-    }
-
-    #[test]
-    fn matching_outer_rects_are_left_alone() {
-        let frame = frame(100, 80, 1200, 800);
-        assert_eq!(frame_write(FrameHost::Desktop, frame, frame), FrameWrite::Leave);
-    }
-
-    #[test]
-    fn a_different_outer_rect_is_assigned_before_the_window_is_shown() {
-        let from = frame(100, 80, 1200, 800);
-        let to = frame(40, 40, 900, 600);
-        assert_eq!(frame_write(FrameHost::Desktop, from, to), FrameWrite::Assign(from));
-    }
-
-    #[test]
-    fn maximized_windows_with_different_rects_still_assign() {
-        let from = frame(0, 25, 1728, 1055);
-        let to = frame(0, 25, 1512, 900);
-        assert_eq!(frame_write(FrameHost::Desktop, from, to), FrameWrite::Assign(from));
-    }
-
-    #[test]
-    fn wayland_does_not_place_a_window() {
-        let from = frame(0, 0, 1200, 800);
-        let to = frame(10, 10, 800, 600);
-        assert_eq!(frame_write(FrameHost::Wayland, from, to), FrameWrite::Leave);
-    }
-
-    #[test]
-    fn native_fullscreen_transfers_only_when_the_rects_differ() {
-        let from = frame(0, 0, 1728, 1117);
-        let other = frame(100, 80, 1200, 800);
-        assert_eq!(frame_write(FrameHost::NativeFullscreen, from, from), FrameWrite::Leave);
-        assert_eq!(frame_write(FrameHost::NativeFullscreen, from, other), FrameWrite::TransferFullscreen);
-    }
 }
