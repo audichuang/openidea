@@ -261,9 +261,16 @@ export function listMenu(id: string, active: boolean, files: readonly FileStatus
       ? [
           { kind: "action" as const, action: "vcs.shelve", arg: paths },
           { kind: "action" as const, action: "vcs.createPatch", arg: paths },
+          { kind: "action" as const, action: "clip.copyChanges", arg: { paths, side: "working" } },
         ]
       : []),
   ];
+}
+
+/** Which side of the index a ClipCode copy of `nodes` reads: the staging area's group, else both. */
+function clipSide(nodes: readonly ChangeNode[]): "working" | "staged" | "unstaged" {
+  const group = nodes[0]?.group;
+  return group === "staged" ? "staged" : group === "unstaged" ? "unstaged" : "working";
 }
 
 /** Paths Delete… applies to: only when every selected file is unversioned (versioned ones are rolled back). */
@@ -374,6 +381,11 @@ export function nodeMenu(
       icon: "minus",
       disabled: !files.some((f) => f.staged),
       run: () => void runOp(tx`Unstage ${paths.length} files`, () => call(commands.vcsUnstage(paths))),
+    },
+    {
+      kind: "action",
+      action: "clip.copyChanges",
+      arg: { paths, side: clipSide(nodes) },
     },
     { kind: "separator" },
     ...(nodes.some((n) => n.changelist)
