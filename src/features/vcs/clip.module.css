@@ -1,0 +1,75 @@
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 240px;
+  max-height: 60vh;
+}
+.destination {
+  color: var(--fg-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.list {
+  flex: 1;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  padding: 4px 8px;
+}
+.row,
+.file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
+}
+.file {
+  padding-left: 16px;
+}
+.commit + .commit {
+  margin-top: 8px;
+}
+.subject {
+  font-weight: 600;
+  color: var(--fg-strong);
+}
+.meta,
+.note {
+  color: var(--fg-subtle);
+}
+.path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.badge {
+  flex: none;
+  padding: 0 4px;
+  border-radius: var(--radius-small);
+  font-size: var(--fs-tiny);
+  line-height: 14px;
+  background: color-mix(in srgb, var(--vcs-modified) 14%, transparent);
+  color: var(--vcs-modified);
+}
+.badge[data-action="create"],
+.badge[data-change="ADDED"] {
+  background: color-mix(in srgb, var(--vcs-added) 14%, transparent);
+  color: var(--vcs-added);
+}
+.badge[data-action="delete"],
+.badge[data-change="DELETED"] {
+  background: color-mix(in srgb, var(--vcs-deleted) 14%, transparent);
+  color: var(--vcs-deleted);
+}
+.badge[data-action="skip"] {
+  background: none;
+  color: var(--fg-subtle);
+}
+.refused {
+  margin-left: 8px;
+  color: var(--error, #d64545);
+  font-weight: normal;
+}
