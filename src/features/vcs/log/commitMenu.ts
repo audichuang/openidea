@@ -46,6 +46,8 @@ export function commitMenu(c: Commit, selection: Commit[] = [c], fileHistoryTarg
       : selection;
     return [
       { kind: "action", action: "vcs.log.copyRevision", arg: selection, label: "Copy Revision Numbers" },
+      { kind: "action", action: "clip.copyCommitFiles", arg: selection },
+      { kind: "action", action: "clip.copyCommits", arg: selection },
       { kind: "action", action: "vcs.log.createPatch", arg: selection },
       { kind: "action", action: "vcs.log.cherryPick", arg: selection },
       ...(selection.length === 2
@@ -87,6 +89,8 @@ export function commitMenu(c: Commit, selection: Commit[] = [c], fileHistoryTarg
       run: () => toggleCommitBookmark(c),
     },
     { label: "Copy Commit Message", run: () => copyCommitMessage(c) },
+    { kind: "action", action: "clip.copyCommitFiles", arg: c },
+    { kind: "action", action: "clip.copyCommits", arg: c },
     { kind: "action", action: "vcs.log.createPatch", arg: c },
     { kind: "action", action: "vcs.log.cherryPick", arg: c },
     { kind: "separator" },
