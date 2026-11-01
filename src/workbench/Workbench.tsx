@@ -88,8 +88,9 @@ export function Workbench() {
       <div className={styles.content} inert={openingPath !== null} aria-hidden={openingPath ? true : undefined}>
         {project ? (
           <>
+            <WindowGroupTabs top />
             <TitleBar compact={distractionFree || !mainToolbar} />
-            {!distractionFree && <WindowGroupTabs />}
+            <WindowGroupTabs hidePageTabs={distractionFree} />
             {[...banners.values()].map(({ id, component: Banner }) => (
               <Banner key={id} />
             ))}
