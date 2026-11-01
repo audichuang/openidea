@@ -46,7 +46,7 @@ import {
 } from "../logChanges";
 import { LogIdContext } from "../logContext";
 import { logOptions, useLogOptions } from "../logOptions";
-import { openLogTab, updateLogOptions, useGitLog } from "../logStore";
+import { openLogTab, selectedCommits, updateLogOptions, useGitLog } from "../logStore";
 import { KIND_COLOR, dirName, fileCount, renameFrom, type EffectiveKind } from "../model";
 import { commitKey, commitRepo } from "../multiRoot";
 import { currentRepo, repoName } from "../store";
@@ -488,6 +488,13 @@ export function changesMenu(changes: LogChange[]): MenuItem[] {
       action: "vcs.log.changes.jumpToSource",
       arg: changes,
       disabled: !changes.some((c) => c.after && !c.readOnly),
+    },
+    { kind: "separator" },
+    {
+      kind: "action",
+      action: "clip.copyLogChanges",
+      arg: { commits: selectedCommits(), changes },
+      label: "ClipCode: Copy Full Source",
     },
     { kind: "separator" },
     {

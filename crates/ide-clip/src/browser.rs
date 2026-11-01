@@ -1,0 +1,1885 @@
+//! Read-only workspace navigation and history for the desktop workbench.
+use std::fs;
+use std::io::{self, Read};
+use std::path::{Component, Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use crate::fsutil::decode_utf8_or_skip;
+use crate::gitrun::{Overflow, RunOptions};
+use crate::gitsrc::{self, Git, GitError, GitSource};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommitSummary {
+    pub sha: String,
+    pub parents: Vec<String>,
+    pub author_name: String,
+    pub author_email: String,
+    pub author_date: String,
+    pub subject: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitReference {
+    pub name: String,
+    pub sha: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepositoryHistory {
+    pub root: String,
+    pub commits: Vec<CommitSummary>,
+    pub refs: Vec<GitReference>,
+    pub head: Option<String>,
+    pub has_more: bool,
+}
+
+/// Parses raw `git log` bytes. Each field is decoded on its own
+/// and lossily, so one commit with a non-UTF-8 author or subject shows
+/// replacement characters instead of failing the whole page.
+pub fn parse_log_bytes(out: &[u8]) -> Vec<CommitSummary> {
+    out.split(|&b| b == 0x1e)
+        .filter_map(|record| {
+            let start = record.iter().position(|&b| b != b'\n')?;
+            let mut f = record[start..].split(|&b| b == 0).map(|field| String::from_utf8_lossy(field).into_owned());
+            Some(CommitSummary {
+                sha: f.next().filter(|s| !s.is_empty())?,
+                parents: f.next()?.split_whitespace().map(str::to_string).collect(),
+                author_name: f.next()?,
+                author_email: f.next()?,
+                author_date: f.next()?,
+                subject: f.next()?,
+            })
+        })
+        .collect()
+}
+
+/// Hard upper bound on stdout captured during commit history listing (16 MiB).
+pub const MAX_GRAPH_BYTES: usize = 16 * 1024 * 1024;
+/// Hard upper bound on commit records requested in a single history query.
+pub const MAX_HISTORY_LIMIT: usize = 10_000;
+
+const LOG_FORMAT: &str = "--format=%H%x00%P%x00%an%x00%ae%x00%aI%x00%s%x1e";
+/// `log.showSignature` would print gpg output into the record stream, and a
+/// commit's own `encoding` header would reach the parser un-transcoded.
+const LOG_FLAGS: [&str; 5] = ["log", "--topo-order", "--ignore-missing", "--no-show-signature", "--encoding=UTF-8"];
+/// What the graph shows. `--all` would also walk stash, notes, `refs/prefetch`,
+/// `refs/original` and other internal refs as unlabeled history.
+const VISIBLE_TIPS: [&str; 4] = ["--branches", "--remotes", "--tags", "HEAD"];
+
+/// Refs, HEAD and shallow boundaries read once, so later pages of one
+/// history walk the same tips even if the repository changes meanwhile.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefSnapshot {
+    /// Branches, remote-tracking branches and tags, each peeled to the
+    /// commit it names.
+    pub refs: Vec<GitReference>,
+    pub head: Option<String>,
+    /// HEAD is not a symbolic ref (a detached checkout).
+    pub detached: bool,
+    /// Commits whose parents a shallow clone does not have.
+    pub shallow: Vec<String>,
+}
+
+impl RefSnapshot {
+    /// Every ref target plus HEAD, deduplicated: the tips of the full graph.
+    pub fn tips(&self) -> Vec<String> {
+        let mut tips: Vec<String> = self.refs.iter().map(|r| r.sha.clone()).chain(self.head.clone()).collect();
+        tips.sort_unstable();
+        tips.dedup();
+        tips
+    }
+}
+
+/// Most bytes of `$GIT_DIR/shallow` read; one line per boundary commit.
+const MAX_SHALLOW_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Branches, remote-tracking branches and tags, fully peeled. An annotated
+/// tag of an annotated tag is peeled through `cat-file --batch-check`, so
+/// only tag-of-tag refs cost more than the one `for-each-ref`.
+fn read_refs(git: &Git, opts: &RunOptions) -> Result<Vec<GitReference>, GitError> {
+    let mut run_opts = opts.clone();
+    run_opts.max_stdout = run_opts.max_stdout.min(MAX_GRAPH_BYTES);
+    let raw = git.run_with(
+        &[
+            "for-each-ref",
+            "--format=%(refname)%00%(objectname)%00%(*objectname)%00%(*objecttype)",
+            "refs/heads",
+            "refs/remotes",
+            "refs/tags",
+        ],
+        &run_opts,
+    )?;
+    if raw.truncated {
+        return Err(GitError::OutputLimit { args: "for-each-ref".into(), limit: opts.max_stdout });
+    }
+    let Ok(text) = std::str::from_utf8(&raw.stdout) else {
+        return Err(GitError::Malformed("for-each-ref output not utf-8".into()));
+    };
+    let mut refs = Vec::new();
+    // Indexes into `refs` whose one-level peel is itself a tag object.
+    let mut nested = Vec::new();
+    for line in text.lines() {
+        let mut fields = line.split('\0');
+        let (Some(name), Some(object), Some(peeled), Some(kind)) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        if kind == "tag" {
+            nested.push(refs.len());
+        }
+        refs.push(GitReference { name: name.to_string(), sha: if peeled.is_empty() { object } else { peeled }.into() });
+    }
+    if !nested.is_empty() {
+        let input: String = nested.iter().map(|&i| format!("{}^{{}}\n", refs[i].sha)).collect();
+        let mut cmd = git.command();
+        cmd.args(["cat-file", "--batch-check=%(objectname) %(objecttype)"]);
+        let out = git.exec(cmd, "cat-file --batch-check", Some(input.as_bytes()), &run_opts)?;
+        if out.truncated {
+            return Err(GitError::OutputLimit { args: "cat-file --batch-check".into(), limit: opts.max_stdout });
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        for (&i, line) in nested.iter().zip(text.lines()) {
+            // `<input> missing` keeps the one-level peel.
+            if let Some((oid, _kind)) = line.split_once(' ') {
+                if oid.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    refs[i].sha = oid.to_string();
+                }
+            }
+        }
+    }
+    Ok(refs)
+}
+
+/// Commits a shallow clone cut off, from `$GIT_DIR/shallow`; empty when the
+/// repository is complete.
+fn shallow_boundaries(git: &Git, opts: &RunOptions) -> Result<Vec<String>, GitError> {
+    let out = git.run_with(&["rev-parse", "--git-path", "shallow"], opts)?;
+    let rel = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let shallow_path = git.root().join(rel);
+    let Ok(meta) = fs::metadata(&shallow_path) else {
+        return Ok(Vec::new());
+    };
+    if !meta.is_file() {
+        return Ok(Vec::new());
+    }
+    let Ok(file) = fs::File::open(shallow_path) else {
+        return Ok(Vec::new());
+    };
+    let mut text = String::new();
+    file.take(MAX_SHALLOW_BYTES).read_to_string(&mut text)?;
+    Ok(text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && l.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(str::to_string)
+        .collect())
+}
+
+/// Refs, HEAD, detached state and shallow boundaries: no `git log`, so
+/// callers that only need refs do not pay for a topological walk.
+pub fn refs_with(git: &Git, opts: &RunOptions) -> Result<RefSnapshot, GitError> {
+    let refs = read_refs(git, opts)?;
+    let head = git.head_with(opts)?;
+    let detached = head.is_some() && git.head_ref_with(opts)?.is_none();
+    Ok(RefSnapshot { refs, head, detached, shallow: shallow_boundaries(git, opts)? })
+}
+
+fn run_log(
+    git: &Git,
+    args: &[String],
+    stdin: Option<&[u8]>,
+    limit: usize,
+    opts: &RunOptions,
+) -> Result<(Vec<CommitSummary>, bool), GitError> {
+    let mut run_opts = opts.clone();
+    run_opts.max_stdout = run_opts.max_stdout.min(MAX_GRAPH_BYTES);
+    let mut cmd = git.command();
+    cmd.args(args);
+    let output = git.exec(cmd, &args.join(" "), stdin, &run_opts)?;
+    if output.truncated {
+        return Err(GitError::OutputLimit { args: "log".into(), limit: opts.max_stdout });
+    }
+    let mut commits = parse_log_bytes(&output.stdout);
+    let has_more = commits.len() > limit;
+    commits.truncate(limit);
+    Ok((commits, has_more))
+}
+
+fn log_args(skip: usize, limit: usize) -> Vec<String> {
+    let mut args: Vec<String> = LOG_FLAGS.map(String::from).to_vec();
+    args.extend([format!("--skip={skip}"), format!("-n{}", limit.saturating_add(1)), LOG_FORMAT.into()]);
+    args
+}
+
+/// One topological page from explicit tip commits (e.g.
+/// [`RefSnapshot::tips`]), so paging never re-resolves moving refs. Tips go
+/// through stdin: thousands of refs would overflow a Windows command line.
+pub fn log_from_tips_with(
+    git: &Git,
+    tips: &[String],
+    skip: usize,
+    limit: usize,
+    opts: &RunOptions,
+) -> Result<(Vec<CommitSummary>, bool), GitError> {
+    let limit = limit.min(MAX_HISTORY_LIMIT);
+    if tips.is_empty() {
+        return Ok((Vec::new(), false));
+    }
+    let mut args = log_args(skip, limit);
+    args.extend(["--stdin".into(), "--".into()]);
+    let input: String = tips.iter().map(|t| format!("{t}\n")).collect();
+    run_log(git, &args, Some(input.as_bytes()), limit, opts)
+}
+
+/// Topological pages across every local ref, including remote-tracking branches
+/// and annotated tags. Browsing never checks out a branch or contacts a remote.
+pub fn history(
+    git: &Git,
+    reference: Option<&str>,
+    query: &str,
+    skip: usize,
+    limit: usize,
+) -> Result<RepositoryHistory, GitError> {
+    history_with(git, reference, query, skip, limit, &RunOptions::default())
+}
+
+/// Topological pages across every local ref under explicit runner options.
+pub fn history_with(
+    git: &Git,
+    reference: Option<&str>,
+    query: &str,
+    skip: usize,
+    limit: usize,
+    opts: &RunOptions,
+) -> Result<RepositoryHistory, GitError> {
+    let limit = limit.min(MAX_HISTORY_LIMIT);
+    let refs = read_refs(git, opts)?;
+    let mut args = log_args(skip, limit);
+    let query = query.trim();
+    let resolved_query = if query.len() >= 4 && query.bytes().all(|b| b.is_ascii_hexdigit()) {
+        // Not a commit: search messages for it instead. A failing git
+        // is still an error.
+        match git.resolve_commit_with(query, opts) {
+            Ok(sha) => Some(sha),
+            Err(GitError::InvalidRevision(_)) => None,
+            Err(e) => return Err(e),
+        }
+    } else {
+        None
+    };
+    if let Some(sha) = resolved_query {
+        args.push(sha);
+    } else {
+        if let Some(reference) = reference.filter(|s| !s.is_empty()) {
+            args.push(git.resolve_commit_with(reference, opts)?);
+        } else {
+            args.extend(VISIBLE_TIPS.map(String::from));
+        }
+        if !query.is_empty() {
+            args.extend(["--fixed-strings".into(), "--regexp-ignore-case".into(), format!("--grep={query}")]);
+        }
+    }
+    args.push("--".into());
+    let (commits, has_more) = run_log(git, &args, None, limit, opts)?;
+    Ok(RepositoryHistory {
+        root: git.root().to_string_lossy().into_owned(),
+        commits,
+        refs,
+        head: git.head_with(opts)?,
+        has_more,
+    })
+}
+
+/// History filtered by author, same format/parser as `history`.
+pub fn history_by_author(
+    git: &Git,
+    author: &str,
+    skip: usize,
+    limit: usize,
+) -> Result<(Vec<CommitSummary>, bool), GitError> {
+    history_by_author_with(git, author, skip, limit, &RunOptions::default())
+}
+
+/// History filtered by author under explicit runner options.
+pub fn history_by_author_with(
+    git: &Git,
+    author: &str,
+    skip: usize,
+    limit: usize,
+    opts: &RunOptions,
+) -> Result<(Vec<CommitSummary>, bool), GitError> {
+    let limit = limit.min(MAX_HISTORY_LIMIT);
+    let mut args = log_args(skip, limit);
+    args.extend(["--fixed-strings".into(), "--regexp-ignore-case".into(), format!("--author={author}")]);
+    args.extend(VISIBLE_TIPS.map(String::from));
+    args.push("--".into());
+    run_log(git, &args, None, limit, opts)
+}
+
+/// IntelliJ-style log filters, combined with AND. An empty query is the
+/// plain history.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogQuery {
+    /// Message text, or a commit hash (4+ hex digits that resolve).
+    pub text: String,
+    /// `text` is an extended regular expression instead of a literal.
+    pub regex: bool,
+    /// Case-sensitive matching (text and author).
+    pub match_case: bool,
+    /// Literal author name or email fragment.
+    pub author: Option<String>,
+    /// Lower date bound in any form `git log --since` accepts.
+    pub since: Option<String>,
+    /// Upper date bound in any form `git log --until` accepts.
+    pub until: Option<String>,
+    /// Only commits touching one of these repository-relative paths.
+    pub paths: Vec<String>,
+}
+
+impl LogQuery {
+    pub fn is_empty(&self) -> bool {
+        self.text.trim().is_empty()
+            && self.author.is_none()
+            && self.since.is_none()
+            && self.until.is_none()
+            && self.paths.is_empty()
+    }
+}
+
+/// Escapes POSIX ERE metacharacters so `s` matches literally under `-E`.
+fn ere_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if r"\.^$|?*+()[]{}".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// One page of history under `query` (see [`LogQuery`]), from `reference`
+/// or every visible tip. A text that resolves as a hash shows just that
+/// commit.
+pub fn history_query_with(
+    git: &Git,
+    reference: Option<&str>,
+    query: &LogQuery,
+    skip: usize,
+    limit: usize,
+    opts: &RunOptions,
+) -> Result<(Vec<CommitSummary>, bool), GitError> {
+    let limit = limit.min(MAX_HISTORY_LIMIT);
+    let mut args = log_args(skip, limit);
+    let text = query.text.trim();
+    let hash = if text.len() >= 4 && text.bytes().all(|b| b.is_ascii_hexdigit()) {
+        match git.resolve_commit_with(text, opts) {
+            Ok(sha) => Some(sha),
+            Err(GitError::InvalidRevision(_)) => None,
+            Err(e) => return Err(e),
+        }
+    } else {
+        None
+    };
+    args.push(if query.regex { "--extended-regexp".into() } else { "--fixed-strings".into() });
+    if !query.match_case {
+        args.push("--regexp-ignore-case".into());
+    }
+    if hash.is_none() && !text.is_empty() {
+        args.push(format!("--grep={text}"));
+    }
+    if let Some(author) = query.author.as_deref().filter(|a| !a.is_empty()) {
+        // The author chip is always a literal, whatever the text mode.
+        let author = if query.regex { ere_escape(author) } else { author.to_string() };
+        args.push(format!("--author={author}"));
+    }
+    if let Some(since) = query.since.as_deref().filter(|s| !s.is_empty()) {
+        args.push(format!("--since={since}"));
+    }
+    if let Some(until) = query.until.as_deref().filter(|s| !s.is_empty()) {
+        args.push(format!("--until={until}"));
+    }
+    // With paths, git rewrites parents to the nearest commit that touches
+    // them too, so the graph of the matches stays connected.
+    if query.paths.iter().any(|p| !p.is_empty()) {
+        args.push("--parents".into());
+    }
+    match (hash, reference.filter(|s| !s.is_empty())) {
+        (Some(sha), _) => args.extend(["--no-walk".into(), sha]),
+        (None, Some(r)) => args.push(git.resolve_commit_with(r, opts)?),
+        (None, None) => args.extend(VISIBLE_TIPS.map(String::from)),
+    }
+    args.push("--".into());
+    args.extend(query.paths.iter().filter(|p| !p.is_empty()).map(|p| format!(":(literal){p}")));
+    run_log(git, &args, None, limit, opts)
+}
+
+/// `relative` under `root`, resolved: a relative path made only of normal
+/// components whose real path (symlinks followed) stays inside the real
+/// `root`. An empty `relative` is `root` itself.
+pub fn inside(root: &Path, relative: &str) -> io::Result<PathBuf> {
+    let rel = Path::new(relative);
+    if rel.is_absolute() || rel.components().any(|c| !matches!(c, Component::Normal(_) | Component::CurDir)) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "Path must stay inside the workspace"));
+    }
+    let root = dunce::canonicalize(root)?;
+    let path = dunce::canonicalize(root.join(rel))?;
+    if !path.starts_with(&root) {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "Path leaves the workspace"));
+    }
+    Ok(path)
+}
+
+/// Entries kept per listed commit directory.
+pub const MAX_TREE_ENTRIES: usize = 2000;
+/// Hard upper bound on stdout captured during commit directory listing (8 MiB).
+pub const MAX_TREE_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TreeKind {
+    Blob,
+    Tree,
+    Submodule,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TreeEntry {
+    /// Repo-relative path.
+    pub path: String,
+    pub name: String,
+    pub kind: TreeKind,
+}
+
+/// One directory of a commit's tree, without checkout.
+pub fn commit_directory(git: &Git, rev: &str, dir: &str, limit: usize) -> Result<(Vec<TreeEntry>, bool), GitError> {
+    commit_directory_with(git, rev, dir, limit, &RunOptions::default())
+}
+
+/// One directory of a commit's tree under explicit runner options.
+pub fn commit_directory_with(
+    git: &Git,
+    rev: &str,
+    dir: &str,
+    limit: usize,
+    opts: &RunOptions,
+) -> Result<(Vec<TreeEntry>, bool), GitError> {
+    let sha = git.resolve_commit_with(rev, opts)?;
+    let spec;
+    let mut args = vec!["ls-tree", "-z", sha.as_str()];
+    let clean_dir = dir.trim_matches('/');
+    if !clean_dir.is_empty() {
+        spec = format!("{clean_dir}/");
+        args.extend(["--", spec.as_str()]);
+    }
+    let limit = limit.min(MAX_TREE_ENTRIES);
+    let mut run_opts = opts.clone();
+    run_opts.max_stdout = run_opts.max_stdout.min(MAX_TREE_BYTES);
+    let out = git.run_with(&args, &run_opts)?;
+    let mut entries = Vec::new();
+    let mut truncated = out.truncated;
+
+    // In `ls-tree -z`, every complete record ends with a NUL byte.
+    // Any trailing bytes after the last NUL belong to an incomplete (cut) record.
+    let (records_slice, has_unclosed_tail) = match out.stdout.iter().rposition(|&b| b == 0) {
+        Some(last_nul) => {
+            let unclosed = last_nul + 1 < out.stdout.len();
+            (&out.stdout[..=last_nul], unclosed)
+        }
+        None => {
+            let unclosed = !out.stdout.is_empty();
+            (&[][..], unclosed)
+        }
+    };
+
+    if has_unclosed_tail {
+        if out.truncated {
+            // Discard trailing bytes from a truncated tail; never construct identity from partial bytes.
+            truncated = true;
+        } else {
+            return Err(GitError::Malformed("ls-tree output missing terminating NUL".into()));
+        }
+    }
+
+    for rec in records_slice.split(|&b| b == 0).filter(|r| !r.is_empty()) {
+        let Some(tab) = rec.iter().position(|&b| b == b'\t') else {
+            return Err(GitError::Malformed("ls-tree record missing tab".into()));
+        };
+        let meta = match std::str::from_utf8(&rec[..tab]) {
+            Ok(m) => m,
+            Err(_) => return Err(GitError::Malformed("ls-tree metadata not utf-8".into())),
+        };
+        let kind = match meta.split(' ').nth(1) {
+            Some("tree") => TreeKind::Tree,
+            Some("commit") => TreeKind::Submodule,
+            _ => TreeKind::Blob,
+        };
+        let path_bytes = &rec[tab + 1..];
+        if path_bytes.is_empty() {
+            return Err(GitError::Malformed("ls-tree record has empty path".into()));
+        }
+        let Ok(path_str) = std::str::from_utf8(path_bytes) else {
+            return Err(GitError::Malformed("unsupported non-UTF-8 path in commit directory".into()));
+        };
+        let path = path_str.to_string();
+        let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+        entries.push(TreeEntry { path, name, kind });
+    }
+
+    // Sort before truncating: `ls-tree` sorts by full path, so a
+    // subdirectory `z/` sorts after every `a*` file — cutting first drops
+    // it from the listing entirely.
+    entries.sort_by(|a, b| (b.kind == TreeKind::Tree).cmp(&(a.kind == TreeKind::Tree)).then(a.name.cmp(&b.name)));
+    if entries.len() > limit {
+        truncated = true;
+        entries.truncate(limit);
+    }
+
+    if out.truncated && entries.is_empty() && limit > 0 {
+        return Err(GitError::OutputLimit { args: format!("ls-tree {sha}"), limit: opts.max_stdout });
+    }
+    Ok((entries, truncated))
+}
+
+/// Largest blob read for preview (same as core's preview limit).
+pub const MAX_BLOB_BYTES: u64 = 1024 * 1024;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BlobText {
+    Text(String),
+    Binary,
+    TooLarge(u64),
+    NotUtf8,
+}
+
+/// A file as it is in `rev`, size-checked before reading.
+pub fn commit_blob(git: &Git, rev: &str, path: &str, max_bytes: u64) -> Result<BlobText, GitError> {
+    commit_blob_with(git, rev, path, max_bytes, &RunOptions::default())
+}
+
+/// A file as it is in `rev`, size-checked before reading under explicit runner options.
+pub fn commit_blob_with(
+    git: &Git,
+    rev: &str,
+    path: &str,
+    max_bytes: u64,
+    opts: &RunOptions,
+) -> Result<BlobText, GitError> {
+    let clean_path = path.trim_start_matches('/');
+    let sha = git.resolve_commit_with(rev, opts)?;
+    let spec = format!("{sha}:{clean_path}");
+    let size_run = git.run_with(&["cat-file", "-s", &spec], opts)?;
+    if size_run.truncated {
+        return Err(GitError::OutputLimit { args: format!("cat-file -s {spec}"), limit: opts.max_stdout });
+    }
+    let size_out = size_run.stdout;
+    let size: u64 = match std::str::from_utf8(&size_out) {
+        Ok(s) => s.trim().parse().map_err(|_| GitError::Malformed("cat-file size".into()))?,
+        Err(_) => return Err(GitError::Malformed("cat-file size not utf-8".into())),
+    };
+    let effective_max = max_bytes.min(MAX_BLOB_BYTES);
+    if size > effective_max {
+        return Ok(BlobText::TooLarge(size));
+    }
+    if size > opts.max_stdout as u64 {
+        return Err(GitError::OutputLimit { args: format!("cat-file blob {spec}"), limit: opts.max_stdout });
+    }
+    let mut read_opts = opts.clone();
+    read_opts.max_stdout = read_opts.max_stdout.min(MAX_BLOB_BYTES as usize);
+    let out = git.run_with(&["cat-file", "blob", &spec], &read_opts)?;
+    if out.truncated {
+        return Err(GitError::OutputLimit { args: format!("cat-file blob {spec}"), limit: opts.max_stdout });
+    }
+    // 不改走 --batch 的原因：batch 是一行一個請求的協定，檔名含換行時會變成 Missing；而且預覽要吃 max_stdout 的 OutputLimit。
+    Ok(match crate::blob::classify(out.stdout) {
+        Ok(s) => BlobText::Text(s),
+        Err(crate::blob::NotText::Binary) => BlobText::Binary,
+        Err(crate::blob::NotText::NotUtf8) => BlobText::NotUtf8,
+    })
+}
+
+#[derive(Debug)]
+pub struct SourcePreview {
+    pub content: Option<String>,
+    pub patch: String,
+}
+
+/// A preview whose patch may be cut ([`git_preview_with`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitPreview {
+    pub content: Option<String>,
+    /// Whole hunks only: every hunk header counts exactly the lines kept.
+    pub patch: String,
+    pub patch_truncated: bool,
+}
+
+pub const PREVIEW_LIMIT: usize = 1024 * 1024;
+
+pub fn file_preview(root: &Path, path: &str) -> io::Result<SourcePreview> {
+    let target = inside(root, path)?;
+    if !target.metadata()?.is_file() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "Not a regular file"));
+    }
+    let mut bytes = Vec::new();
+    fs::File::open(target)?.take((PREVIEW_LIMIT + 1) as u64).read_to_end(&mut bytes)?;
+    if bytes.len() > PREVIEW_LIMIT {
+        return Err(io::Error::new(io::ErrorKind::FileTooLarge, "Preview exceeds 1 MiB"));
+    }
+    Ok(SourcePreview { content: decode_utf8_or_skip(bytes), patch: String::new() })
+}
+
+/// Preview under explicit limits (e.g. [`RunOptions::preview`]). The content
+/// is always strict at `opts.max_stdout`. The patch follows
+/// `opts.overflow`: `Error` refuses an oversized patch, `Truncate` keeps
+/// the whole hunks that fit and sets `patch_truncated`.
+pub fn git_preview_with(git: &Git, source: &GitSource, path: &str, opts: &RunOptions) -> Result<GitPreview, GitError> {
+    // Verify membership before accepting a path from the UI: the one
+    // pathspec-limited listing `read_changed_file_with` does answers both.
+    if matches!(source, GitSource::Working) && git.root().join(path).exists() {
+        inside(git.root(), path)?;
+    }
+    // Content is strict: a partial file would read as the whole file.
+    let file = gitsrc::read_changed_file_with(git, source, path, opts.max_stdout as u64, opts)?
+        .ok_or_else(|| GitError::Malformed("Path is not in this Git source".into()))?;
+    let revs = diff_revs(git, source, None, opts)?;
+    finish_preview(git, revs, path, file.content, file.change_type, opts)
+}
+
+/// [`git_preview_with`] for a change the caller listed itself (`path` and
+/// `change` from [`gitsrc::list_changed_paths_with`]): nothing is listed or,
+/// for a commit whose `parents` are known (a log row), resolved again; one
+/// `cat-file` and one `diff`. An empty new-file patch also checks whether
+/// the path exists in the diff base. Only for paths from such a listing,
+/// never an untrusted path.
+pub fn git_preview_for(
+    git: &Git,
+    source: &GitSource,
+    path: &str,
+    change: crate::format::ChangeType,
+    parents: Option<&[String]>,
+    opts: &RunOptions,
+) -> Result<GitPreview, GitError> {
+    let file = gitsrc::read_changed_file_for(git, source, path, change, parents, opts.max_stdout as u64, opts)?;
+    let revs = diff_revs(git, source, parents, opts)?;
+    finish_preview(git, revs, path, file.content, Some(change), opts)
+}
+
+/// What `git diff` compares for `source`. A commit's first parent comes from
+/// `parents` when the caller knows them.
+fn diff_revs(
+    git: &Git,
+    source: &GitSource,
+    parents: Option<&[String]>,
+    opts: &RunOptions,
+) -> Result<Vec<String>, GitError> {
+    Ok(match source {
+        GitSource::Working => {
+            let base = match git.head_with(opts)? {
+                Some(head) => head,
+                None => git.empty_tree_with(opts)?,
+            };
+            vec![base]
+        }
+        GitSource::Staged => vec!["--cached".into()],
+        GitSource::Commit(rev) => {
+            let (sha, first) = match parents {
+                Some(parents) => (rev.clone(), parents.first().cloned()),
+                None => {
+                    let sha = git.resolve_commit_with(rev, opts)?;
+                    let first = git.parents_with(&sha, opts)?.into_iter().next();
+                    (sha, first)
+                }
+            };
+            let base = match first {
+                Some(parent) => parent,
+                None => git.empty_tree_with(opts)?,
+            };
+            vec![base, sha]
+        }
+        GitSource::Range(base, tip) => vec![git.resolve_commit_with(base, opts)?, git.resolve_commit_with(tip, opts)?],
+    })
+}
+
+/// Runs the path's `diff` for `revs` and builds the preview around
+/// `content`; a file absent from the base with no diff text gets a
+/// synthesized addition patch.
+fn finish_preview(
+    git: &Git,
+    revs: Vec<String>,
+    path: &str,
+    content: Option<String>,
+    change: Option<crate::format::ChangeType>,
+    opts: &RunOptions,
+) -> Result<GitPreview, GitError> {
+    let max = opts.max_stdout;
+    let mut args = vec!["diff".to_string(), "--no-ext-diff".into(), "--no-textconv".into(), "--no-color".into()];
+    args.extend(revs.iter().cloned());
+    args.extend(["--".into(), format!(":(literal){path}")]);
+    let str_args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let diff = git.run_diff_with(&str_args, opts)?;
+    let (mut patch, mut patch_truncated) =
+        if diff.truncated { (whole_hunks(diff.stdout), true) } else { (diff.stdout, false) };
+    if patch.is_empty()
+        && change == Some(crate::format::ChangeType::New)
+        && !preview_base_contains(git, &revs, path, opts)?
+    {
+        if let Some(content) = &content {
+            let (synth, cut) = new_file_patch(path, content, max);
+            if cut && opts.overflow == Overflow::Error {
+                return Err(GitError::OutputLimit { args: format!("preview patch {path}"), limit: max });
+            }
+            (patch, patch_truncated) = (synth.into_bytes(), cut);
+        }
+    }
+    gitsrc::already_cancelled(opts, "Git preview")?;
+    Ok(GitPreview {
+        content,
+        // Cut at a line start, so only an invalid byte in the file itself
+        // can be replaced here.
+        patch: String::from_utf8_lossy(&patch).into_owned(),
+        patch_truncated,
+    })
+}
+
+/// A merge's all-parent union may label a path new even though it already
+/// exists unchanged in the first parent used for this preview. Git's empty
+/// diff is authoritative in that case. Only a truly absent base path (such
+/// as an untracked file) may fall back to a synthetic addition.
+fn preview_base_contains(git: &Git, revs: &[String], path: &str, opts: &RunOptions) -> Result<bool, GitError> {
+    let base = if revs[0] == "--cached" {
+        let Some(head) = git.head_with(opts)? else {
+            return Ok(false);
+        };
+        head
+    } else {
+        revs[0].clone()
+    };
+    // Metadata must be complete even when the patch may be truncated.
+    let strict = RunOptions { overflow: Overflow::Error, ..opts.clone() };
+    let out = git.run_with(&["--literal-pathspecs", "ls-tree", "-z", "--name-only", &base, "--", path], &strict)?;
+    Ok(!out.stdout.is_empty())
+}
+
+/// Drops the hunk the cut went through: the last one started.
+fn whole_hunks(mut patch: Vec<u8>) -> Vec<u8> {
+    match patch.windows(4).rposition(|w| w == b"\n@@ ") {
+        Some(i) => patch.truncate(i + 1),
+        None if patch.starts_with(b"@@ ") => patch.clear(),
+        None => {}
+    }
+    patch
+}
+
+/// A new file as a unified diff, cut to whole lines within `max` bytes;
+/// the hunk header counts exactly the lines kept. Returns whether it cut.
+fn new_file_patch(path: &str, content: &str, max: usize) -> (String, bool) {
+    let lines: Vec<&str> = content.split_inclusive('\n').collect();
+    if lines.is_empty() {
+        return (String::new(), false);
+    }
+    let head = format!("--- /dev/null\n+++ b/{path}\n");
+    let mut body = String::new();
+    let mut kept = 0;
+    for line in &lines {
+        let mut piece = format!("+{line}");
+        if !line.ends_with('\n') {
+            piece.push_str("\n\\ No newline at end of file\n");
+        }
+        let hunk = format!("@@ -0,0 +1,{} @@\n", kept + 1);
+        if head.len() + hunk.len() + body.len() + piece.len() > max {
+            break;
+        }
+        body.push_str(&piece);
+        kept += 1;
+    }
+    let cut = kept < lines.len();
+    if kept == 0 {
+        return (String::new(), cut);
+    }
+    (format!("{head}@@ -0,0 +1,{kept} @@\n{body}"), cut)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+    fn run(root: &Path, args: &[&str]) -> String {
+        let out = Command::new("git").current_dir(root).args(args).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8(out.stdout).unwrap().trim().into()
+    }
+    fn commit(root: &Path, message: &str) -> String {
+        run(root, &["add", "."]);
+        run(root, &["-c", "user.name=A", "-c", "user.email=a@x", "commit", "-qm", message]);
+        run(root, &["rev-parse", "HEAD"])
+    }
+    #[test]
+    fn browses_unmerged_refs_pages_and_source_snapshots_without_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        run(root, &["init", "-q", "-b", "main"]);
+        let git = Git::open(root).unwrap();
+        assert!(history(&git, None, "", 0, 2).unwrap().commits.is_empty());
+        fs::write(root.join("file.txt"), "base\n").unwrap();
+        let base = commit(root, "base");
+        run(root, &["checkout", "-qb", "feature"]);
+        fs::write(root.join("file.txt"), "side snapshot\n").unwrap();
+        let side = commit(root, "unmerged feature");
+        run(root, &["update-ref", "refs/remotes/origin/feature", &side]);
+        run(root, &["-c", "user.name=A", "-c", "user.email=a@x", "tag", "-am", "release", "v-test", &side]);
+        run(root, &["checkout", "-q", "main"]);
+        fs::write(root.join("main.txt"), "main\n").unwrap();
+        let head = commit(root, "main change");
+        let full = history(&git, None, "", 0, 30).unwrap();
+        assert_eq!(full.commits.len(), 3);
+        assert_eq!(full.head.as_deref(), Some(head.as_str()));
+        assert!(full.refs.iter().any(|r| r.name == "refs/tags/v-test" && r.sha == side));
+        assert!(full.refs.iter().any(|r| r.name == "refs/remotes/origin/feature"));
+        let first = history(&git, None, "", 0, 2).unwrap();
+        assert!(first.has_more);
+        let last = history(&git, None, "", 2, 2).unwrap();
+        assert!(!last.has_more);
+        assert_eq!(last.commits[0].sha, base);
+        let filtered = history(&git, Some("refs/heads/feature"), "", 0, 30).unwrap();
+        assert_eq!(filtered.commits.len(), 2);
+        assert_eq!(filtered.commits[0].sha, side);
+        assert_eq!(history(&git, None, "unmerged", 0, 30).unwrap().commits[0].sha, side);
+        assert_eq!(crate::commits::select_last_from(&git, &side, 2).unwrap(), [base.clone(), side.clone()]);
+        let preview = git_preview_with(&git, &GitSource::Commit(side), "file.txt", &RunOptions::default()).unwrap();
+        assert_eq!(preview.content.as_deref(), Some("side snapshot\n"));
+        assert!(preview.patch.contains("-base") && preview.patch.contains("+side snapshot"));
+        assert_eq!(run(root, &["rev-parse", "HEAD"]), head);
+        assert_eq!(fs::read_to_string(root.join("file.txt")).unwrap(), "base\n");
+        assert!(git_preview_with(&git, &GitSource::Working, "../secret", &RunOptions::default()).is_err());
+    }
+    #[test]
+    fn previews_reject_escape_binary_and_large_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("packages/api")).unwrap();
+        fs::write(root.join("packages/api/a.ts"), "source\n").unwrap();
+        assert_eq!(file_preview(root, "packages/api/a.ts").unwrap().content.as_deref(), Some("source\n"));
+        assert!(file_preview(root, "../").is_err());
+        assert!(file_preview(root, "/etc/passwd").is_err());
+        fs::write(root.join("binary"), [0, 255]).unwrap();
+        assert!(file_preview(root, "binary").unwrap().content.is_none());
+        fs::File::create(root.join("big")).unwrap().set_len((PREVIEW_LIMIT + 1) as u64).unwrap();
+        assert_eq!(file_preview(root, "big").unwrap_err().kind(), io::ErrorKind::FileTooLarge);
+    }
+
+    /// Every hunk header counts exactly the lines that follow it.
+    fn assert_hunks_consistent(patch: &str) {
+        let mut expect: Option<(usize, usize)> = None;
+        let mut seen = (0, 0);
+        let mut hunks = 0;
+        let check = |e: Option<(usize, usize)>, s: (usize, usize)| {
+            if let Some(e) = e {
+                assert_eq!(e, s, "hunk line counts");
+            }
+        };
+        for line in patch.split_inclusive('\n') {
+            // A cut line would still count; it must not exist.
+            let line = line.strip_suffix('\n').expect("partial last line");
+            if let Some(h) = line.strip_prefix("@@ ") {
+                check(expect, seen);
+                hunks += 1;
+                let count = |part: &str| part.split_once(',').map_or(1, |(_, n)| n.parse().unwrap());
+                let mut parts = h.split(' ');
+                let old = count(parts.next().unwrap());
+                let new = count(parts.next().unwrap());
+                expect = Some((old, new));
+                seen = (0, 0);
+            } else if expect.is_some() {
+                match line.as_bytes().first() {
+                    Some(b' ') => seen = (seen.0 + 1, seen.1 + 1),
+                    Some(b'-') => seen.0 += 1,
+                    Some(b'+') => seen.1 += 1,
+                    _ => {}
+                }
+            }
+        }
+        check(expect, seen);
+        assert!(hunks > 0, "no hunks");
+    }
+
+    /// The options the native app previews with (`history.rs`, `main.rs`):
+    /// it never reads `patch_truncated`, so a cut patch must be refused.
+    fn strict_preview() -> RunOptions {
+        RunOptions { max_stdout: PREVIEW_LIMIT, overflow: Overflow::Error, ..RunOptions::default() }
+    }
+
+    #[test]
+    fn preview_patch_cut_keeps_whole_hunks_and_the_desktop_view_refuses() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        run(root, &["init", "-q", "-b", "main"]);
+        let lines = |every: usize| {
+            (0..78_000)
+                .map(|i| {
+                    let tag = if every > 0 && i % every == 0 { "new" } else { "old" };
+                    format!("{tag}-{i:08}\n")
+                })
+                .collect::<String>()
+        };
+        // ~9750 separate hunks (a change every 8 lines, 3 lines of context);
+        // ~1 MB of content, a ~1.25 MB patch.
+        fs::write(root.join("f.txt"), lines(0)).unwrap();
+        commit(root, "old");
+        fs::write(root.join("f.txt"), lines(8)).unwrap();
+        let sha = commit(root, "new");
+        let git = Git::open(root).unwrap();
+        let source = GitSource::Commit(sha);
+        let cut = git_preview_with(&git, &source, "f.txt", &RunOptions::preview(None)).unwrap();
+        assert!(cut.patch_truncated);
+        assert!(cut.patch.len() <= PREVIEW_LIMIT);
+        assert!(cut.patch.len() > PREVIEW_LIMIT / 2);
+        assert_hunks_consistent(&cut.patch);
+        assert_eq!(cut.content.as_deref(), Some(lines(8).as_str()));
+        // Content fits, the patch does not: the strict view refuses.
+        assert!(git_preview_with(&git, &source, "f.txt", &strict_preview()).is_err());
+
+        fs::write(root.join("f.txt"), "x".repeat(PREVIEW_LIMIT + 1)).unwrap();
+        let sha = commit(root, "huge");
+        let huge = GitSource::Commit(sha);
+        assert!(git_preview_with(&git, &huge, "f.txt", &strict_preview()).is_err());
+        assert!(git_preview_with(&git, &huge, "f.txt", &RunOptions::preview(None)).is_err());
+    }
+
+    #[test]
+    fn synthesized_new_file_patch_obeys_the_limit_with_exact_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        run(root, &["init", "-q", "-b", "main"]);
+        fs::write(root.join("base"), "b\n").unwrap();
+        commit(root, "base");
+        let git = Git::open(root).unwrap();
+        // Untracked: `git diff` shows nothing, so the patch is synthesized.
+        // 1 MiB of content turns into ~1.5 MiB of patch.
+        fs::write(root.join("new.txt"), "a\n".repeat(PREVIEW_LIMIT / 2)).unwrap();
+        let cut = git_preview_with(&git, &GitSource::Working, "new.txt", &RunOptions::preview(None)).unwrap();
+        assert_eq!(
+            cut,
+            git_preview_for(
+                &git,
+                &GitSource::Working,
+                "new.txt",
+                crate::format::ChangeType::New,
+                None,
+                &RunOptions::preview(None),
+            )
+            .unwrap()
+        );
+        assert!(cut.patch_truncated);
+        assert!(cut.patch.len() <= PREVIEW_LIMIT);
+        assert_hunks_consistent(&cut.patch);
+        // The only check of a synthesized patch cut under Overflow::Error.
+        assert!(git_preview_with(&git, &GitSource::Working, "new.txt", &strict_preview()).is_err());
+        assert!(
+            git_preview_for(
+                &git,
+                &GitSource::Working,
+                "new.txt",
+                crate::format::ChangeType::New,
+                None,
+                &strict_preview(),
+            )
+            .is_err()
+        );
+
+        fs::write(root.join("small.txt"), "x\ny").unwrap();
+        let small = git_preview_with(&git, &GitSource::Working, "small.txt", &RunOptions::default()).unwrap();
+        assert_eq!(
+            small.patch,
+            "--- /dev/null\n+++ b/small.txt\n@@ -0,0 +1,2 @@\n+x\n+y\n\\ No newline at end of file\n"
+        );
+        assert_hunks_consistent(&small.patch);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolved_workspace_accepts_root_alias_but_refuses_external_symlinks() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("file"), "ok").unwrap();
+        let alias = dir.path().join("alias");
+        symlink(&root, &alias).unwrap();
+        assert_eq!(file_preview(&alias, "file").unwrap().content.as_deref(), Some("ok"));
+        fs::write(dir.path().join("outside"), "secret").unwrap();
+        symlink(dir.path().join("outside"), root.join("escape")).unwrap();
+        assert!(file_preview(&alias, "escape").is_err());
+    }
+
+    #[test]
+    fn commit_directory_sorts_before_it_truncates_so_subdirectories_survive() {
+        // 2500 `a*` files and one `z/` subdirectory: `ls-tree` sorts by
+        // full path, so `z/` arrives last. Cutting at the limit before
+        // sorting dropped it from the page entirely.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        run(root, &["init", "-q", "-b", "main"]);
+        run(root, &["config", "user.name", "Tester"]);
+        run(root, &["config", "user.email", "t@example.com"]);
+        for i in 0..2500 {
+            fs::write(root.join(format!("a{i:04}.txt")), "x\n").unwrap();
+        }
+        fs::create_dir_all(root.join("z")).unwrap();
+        fs::write(root.join("z/file.txt"), "z\n").unwrap();
+        let sha = commit(root, "big");
+        let git = Git::open(root).unwrap();
+        let (entries, truncated) = commit_directory(&git, &sha, "", 2000).unwrap();
+        assert!(truncated);
+        assert_eq!(entries.len(), 2000);
+        assert_eq!(entries[0].path, "z", "the subdirectory sorts first and must survive the cut");
+        assert_eq!(entries[0].kind, TreeKind::Tree);
+        assert!(
+            entries[1..].iter().all(|e| e.kind == TreeKind::Blob && e.name.starts_with('a')),
+            "the rest of the first page is a* files"
+        );
+    }
+
+    /// A SHA-256 repository's root commit is previewed against its own
+    /// format's empty tree: the SHA-1 constant is a bad object there.
+    #[test]
+    fn root_commit_previews_in_a_sha256_repository() {
+        use crate::format::ChangeType;
+        use crate::gitsrc::SHA256_EMPTY_TREE;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("r");
+        fs::create_dir_all(&root).unwrap();
+        let cfg = dir.path().join("cfg");
+        fs::write(&cfg, "").unwrap();
+        let out = Command::new("git")
+            .args(["init", "-q", "-b", "main", "--object-format=sha256"])
+            .current_dir(&root)
+            .env("GIT_CONFIG_GLOBAL", &cfg)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap();
+        if !out.status.success() {
+            assert!(
+                std::env::var_os("SNIP_REQUIRE_ALL_TESTS").is_none(),
+                "SNIP_REQUIRE_ALL_TESTS is set but git lacks \
+				 --object-format=sha256: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        run(&root, &["config", "user.name", "Tester"]);
+        run(&root, &["config", "user.email", "t@example.com"]);
+        fs::write(root.join("one.txt"), "one\n").unwrap();
+        let sha = commit(&root, "root");
+        let git = Git::open(&root).unwrap();
+        assert_eq!(git.empty_tree_with(&RunOptions::default()).unwrap(), SHA256_EMPTY_TREE);
+        let prev = git_preview_for(
+            &git,
+            &GitSource::Commit(sha),
+            "one.txt",
+            ChangeType::New,
+            Some(&[]),
+            &RunOptions::default(),
+        )
+        .unwrap();
+        assert!(prev.patch.contains("one.txt"), "{}", prev.patch);
+        assert!(prev.patch.contains("one"), "{}", prev.patch);
+    }
+
+    #[test]
+    fn commit_directory_and_blob_match_git_without_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        run(root, &["init", "-q", "-b", "main"]);
+        run(root, &["config", "user.name", "Tester"]);
+        run(root, &["config", "user.email", "t@example.com"]);
+
+        fs::create_dir(root.join("sub")).unwrap();
+        fs::write(root.join("sub/a.txt"), "hello from sub\n").unwrap();
+        fs::write(root.join("bin.dat"), [0u8, 1, 2, 3]).unwrap();
+        fs::write(root.join("root.txt"), "root file\n").unwrap();
+        run(root, &["add", "."]);
+        run(root, &["commit", "-qm", "commit one"]);
+        let first = run(root, &["rev-parse", "HEAD"]);
+
+        // Delete sub/a.txt in HEAD.
+        fs::remove_file(root.join("sub/a.txt")).unwrap();
+        run(root, &["add", "-A"]);
+        run(root, &["commit", "-qm", "commit two"]);
+
+        let g = Git::open(root).unwrap();
+
+        // Directory at first commit includes 'sub', 'bin.dat', 'root.txt'
+        let (entries, trunc) = commit_directory(&g, &first, "", 2000).unwrap();
+        assert!(!trunc);
+        // Directory should be sorted with trees first, then names
+        assert_eq!(entries[0].name, "sub");
+        assert_eq!(entries[0].kind, TreeKind::Tree);
+        assert!(entries.iter().any(|e| e.name == "bin.dat" && e.kind == TreeKind::Blob));
+        assert!(entries.iter().any(|e| e.name == "root.txt" && e.kind == TreeKind::Blob));
+
+        // Subdirectory
+        let (sub_entries, sub_trunc) = commit_directory(&g, &first, "sub", 2000).unwrap();
+        assert!(!sub_trunc);
+        assert_eq!(sub_entries.len(), 1);
+        assert_eq!(sub_entries[0].path, "sub/a.txt");
+        assert_eq!(sub_entries[0].kind, TreeKind::Blob);
+
+        // Truncation limit
+        let (limited, trunc) = commit_directory(&g, &first, "", 1).unwrap();
+        assert!(trunc);
+        assert_eq!(limited.len(), 1);
+
+        // Blob reading
+        match commit_blob(&g, &first, "sub/a.txt", 1024 * 1024).unwrap() {
+            BlobText::Text(s) => assert_eq!(s, "hello from sub\n"),
+            other => panic!("expected Text, got {other:?}"),
+        }
+
+        // Binary detection
+        assert!(matches!(commit_blob(&g, &first, "bin.dat", 1024 * 1024).unwrap(), BlobText::Binary));
+
+        // Size limit detection
+        assert!(matches!(commit_blob(&g, &first, "sub/a.txt", 5).unwrap(), BlobText::TooLarge(_)));
+
+        // Missing file in HEAD returns Err
+        assert!(commit_blob(&g, "HEAD", "sub/a.txt", 1024 * 1024).is_err());
+    }
+
+    #[test]
+    fn history_query_combines_text_author_since_and_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        run(root, &["init", "-q", "-b", "main"]);
+        fs::create_dir(root.join("docs")).unwrap();
+        for (who, file, msg) in
+            [("Alice", "a.txt", "Fix login"), ("Bob", "docs/b.md", "fix docs (v2)"), ("Alice", "docs/c.md", "Add docs")]
+        {
+            fs::write(root.join(file), msg).unwrap();
+            run(root, &["add", "."]);
+            run(root, &["-c", &format!("user.name={who}"), "-c", "user.email=dev@example.com", "commit", "-qm", msg]);
+        }
+        let g = Git::open(root).unwrap();
+        let subjects = |q: &LogQuery| -> Vec<String> {
+            history_query_with(&g, None, q, 0, 10, &RunOptions::default())
+                .unwrap()
+                .0
+                .into_iter()
+                .map(|c| c.subject)
+                .collect()
+        };
+        let q = |text: &str| LogQuery { text: text.into(), ..Default::default() };
+        assert_eq!(subjects(&q("fix")), ["fix docs (v2)", "Fix login"]);
+        let case = LogQuery { match_case: true, ..q("Fix") };
+        assert_eq!(subjects(&case), ["Fix login"]);
+        let re = LogQuery { regex: true, ..q(r"^fix .*\(v[0-9]\)$") };
+        assert_eq!(subjects(&re), ["fix docs (v2)"]);
+        // Without regex, "(v2)" is literal text, not a group.
+        assert_eq!(subjects(&q("(v2)")), ["fix docs (v2)"]);
+        let author = LogQuery { author: Some("alice".into()), ..q("docs") };
+        assert_eq!(subjects(&author), ["Add docs"]);
+        let author_regex = LogQuery { author: Some("Al.ce".into()), regex: true, ..Default::default() };
+        assert!(subjects(&author_regex).is_empty(), "author stays literal");
+        let paths = LogQuery { paths: vec!["docs".into()], ..Default::default() };
+        assert_eq!(subjects(&paths), ["Add docs", "fix docs (v2)"]);
+        let since = LogQuery { since: Some("1 day ago".into()), ..Default::default() };
+        assert_eq!(subjects(&since).len(), 3);
+        let future = LogQuery { since: Some("2099-01-01".into()), ..Default::default() };
+        assert!(subjects(&future).is_empty());
+        let until = |u: &str| LogQuery { until: Some(u.into()), ..Default::default() };
+        assert!(subjects(&until("2000-01-01")).is_empty());
+        assert_eq!(subjects(&until("2099-01-01")).len(), 3);
+        let range = LogQuery {
+            since: Some("2000-01-01".into()),
+            until: Some("2099-01-01 23:59:59".into()),
+            ..Default::default()
+        };
+        assert_eq!(subjects(&range).len(), 3);
+        // Several paths combine; parents skip the commits between matches.
+        let two = LogQuery { paths: vec!["a.txt".into(), "docs/c.md".into()], ..Default::default() };
+        let (commits, _) = history_query_with(&g, None, &two, 0, 10, &RunOptions::default()).unwrap();
+        let names: Vec<_> = commits.iter().map(|c| c.subject.as_str()).collect();
+        assert_eq!(names, ["Add docs", "Fix login"]);
+        assert_eq!(commits[0].parents, [commits[1].sha.clone()]);
+        // A hash shows just that commit, not its ancestors.
+        let top = run(root, &["rev-parse", "HEAD"]);
+        assert_eq!(subjects(&q(&top[..8])), ["Add docs"]);
+        assert!(LogQuery::default().is_empty());
+    }
+
+    #[test]
+    fn history_by_author_matches_filtered_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        run(root, &["init", "-q", "-b", "main"]);
+
+        for (who, msg) in [("Alice Smith", "feat: one"), ("Bob Jones", "fix: two"), ("alice smith", "refactor: three")]
+        {
+            fs::write(root.join("f"), msg).unwrap();
+            run(root, &["add", "."]);
+            run(root, &["-c", &format!("user.name={who}"), "-c", "user.email=dev@example.com", "commit", "-qm", msg]);
+        }
+
+        let g = Git::open(root).unwrap();
+
+        // Case-insensitive author search
+        let (commits, more) = history_by_author(&g, "ALICE", 0, 10).unwrap();
+        assert!(!more);
+        let subjects: Vec<_> = commits.iter().map(|c| c.subject.as_str()).collect();
+        assert_eq!(subjects, ["refactor: three", "feat: one"]);
+
+        // Paging limit
+        let (paged, more) = history_by_author(&g, "alice", 0, 1).unwrap();
+        assert!(more);
+        assert_eq!(paged.len(), 1);
+        assert_eq!(paged[0].subject, "refactor: three");
+
+        // Non-matching author
+        let (empty, more) = history_by_author(&g, "Nobody", 0, 10).unwrap();
+        assert!(!more);
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn commit_directory_invalid_raw_filename_explicit_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        run(root, &["init", "-q", "-b", "main"]);
+        run(root, &["config", "user.name", "Tester"]);
+        run(root, &["config", "user.email", "t@example.com"]);
+
+        let oid_raw = {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(root)
+                .args(["hash-object", "-w", "--stdin"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped());
+            let mut child = cmd.spawn().unwrap();
+            std::io::Write::write_all(child.stdin.as_mut().unwrap(), b"NON UTF8 ORIGINAL").unwrap();
+            drop(child.stdin.take());
+            let out = child.wait_with_output().unwrap();
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+
+        let mut tree_input = Vec::new();
+        tree_input.extend_from_slice(format!("100644 blob {oid_raw}\t").as_bytes());
+        tree_input.extend_from_slice(b"a\xff\0");
+
+        let tree_oid = {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(root)
+                .args(["mktree", "-z"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped());
+            let mut child = cmd.spawn().unwrap();
+            std::io::Write::write_all(child.stdin.as_mut().unwrap(), &tree_input).unwrap();
+            drop(child.stdin.take());
+            let out = child.wait_with_output().unwrap();
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+
+        let commit_sha = run(root, &["commit-tree", &tree_oid, "-m", "init"]);
+        run(root, &["update-ref", "refs/heads/main", &commit_sha]);
+
+        let g = Git::open(root).unwrap();
+        let err = commit_directory(&g, "HEAD", "", 2000).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                GitError::Malformed(ref msg)
+                    if msg.contains("unsupported non-UTF-8 path in commit directory")
+            ),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn commit_directory_valid_replacement_char_file_blob_works() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        run(root, &["init", "-q", "-b", "main"]);
+        run(root, &["config", "user.name", "Tester"]);
+        run(root, &["config", "user.email", "t@example.com"]);
+
+        let oid_utf8 = {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(root)
+                .args(["hash-object", "-w", "--stdin"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped());
+            let mut child = cmd.spawn().unwrap();
+            std::io::Write::write_all(child.stdin.as_mut().unwrap(), b"DIFFERENT UTF8 FILE").unwrap();
+            drop(child.stdin.take());
+            let out = child.wait_with_output().unwrap();
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+
+        let mut tree_input = Vec::new();
+        tree_input.extend_from_slice(format!("100644 blob {oid_utf8}\t").as_bytes());
+        tree_input.extend_from_slice(b"a\xef\xbf\xbd\0");
+
+        let tree_oid = {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(root)
+                .args(["mktree", "-z"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped());
+            let mut child = cmd.spawn().unwrap();
+            std::io::Write::write_all(child.stdin.as_mut().unwrap(), &tree_input).unwrap();
+            drop(child.stdin.take());
+            let out = child.wait_with_output().unwrap();
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+
+        let commit_sha = run(root, &["commit-tree", &tree_oid, "-m", "init"]);
+        run(root, &["update-ref", "refs/heads/main", &commit_sha]);
+
+        let g = Git::open(root).unwrap();
+        let (entries, trunc) = commit_directory(&g, "HEAD", "", 2000).unwrap();
+        assert!(!trunc);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "a\u{fffd}");
+        assert_eq!(entries[0].path, "a\u{fffd}");
+        assert_eq!(entries[0].kind, TreeKind::Blob);
+
+        match commit_blob(&g, "HEAD", &entries[0].path, 1024).unwrap() {
+            BlobText::Text(s) => assert_eq!(s, "DIFFERENT UTF8 FILE"),
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn commit_directory_valid_literal_unsupported_suffix_notes_works() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        run(root, &["init", "-q", "-b", "main"]);
+        run(root, &["config", "user.name", "Tester"]);
+        run(root, &["config", "user.email", "t@example.com"]);
+
+        fs::write(root.join("notes [unsupported non-UTF-8]"), "my normal notes\n").unwrap();
+        run(root, &["add", "."]);
+        run(root, &["commit", "-qm", "literal notes"]);
+
+        let g = Git::open(root).unwrap();
+        let (entries, trunc) = commit_directory(&g, "HEAD", "", 2000).unwrap();
+        assert!(!trunc);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "notes [unsupported non-UTF-8]");
+        assert_eq!(entries[0].path, "notes [unsupported non-UTF-8]");
+        assert_eq!(entries[0].kind, TreeKind::Blob);
+
+        match commit_blob(&g, "HEAD", &entries[0].path, 1024).unwrap() {
+            BlobText::Text(s) => assert_eq!(s, "my normal notes\n"),
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tiny_budget_and_cancellation_regressions() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        run(root, &["init", "-q", "-b", "main"]);
+        run(root, &["config", "user.name", "Tester"]);
+        run(root, &["config", "user.email", "t@example.com"]);
+        fs::write(root.join("plain.txt"), "This content exceeds eight bytes\n").unwrap();
+        run(root, &["add", "."]);
+        run(root, &["commit", "-qm", "initial commit"]);
+
+        let g = Git::open(root).unwrap();
+
+        // 1. Tiny budget (8 bytes) with Overflow::Truncate: all 3 APIs must error, not false complete
+        let truncate_opts = RunOptions { max_stdout: 8, overflow: Overflow::Truncate, ..RunOptions::default() };
+        let blob_err = commit_blob_with(&g, "HEAD", "plain.txt", 1024, &truncate_opts).unwrap_err();
+        assert!(matches!(blob_err, GitError::OutputLimit { limit: 8, .. }), "{blob_err:?}");
+
+        let hist_err = history_by_author_with(&g, "Tester", 0, 10, &truncate_opts).unwrap_err();
+        assert!(matches!(hist_err, GitError::OutputLimit { limit: 8, .. }), "{hist_err:?}");
+
+        let dir_err = commit_directory_with(&g, "HEAD", "", 10, &truncate_opts).unwrap_err();
+        assert!(matches!(dir_err, GitError::OutputLimit { limit: 8, .. }), "{dir_err:?}");
+
+        // 2. Tiny budget (8 bytes) with Overflow::Error
+        let error_opts = RunOptions { max_stdout: 8, overflow: Overflow::Error, ..RunOptions::default() };
+        assert!(commit_blob_with(&g, "HEAD", "plain.txt", 1024, &error_opts).is_err());
+        assert!(history_by_author_with(&g, "Tester", 0, 10, &error_opts).is_err());
+        assert!(commit_directory_with(&g, "HEAD", "", 10, &error_opts).is_err());
+
+        // 3. Cancellation during resolution: all 3 APIs must enforce cancellation at every step
+        let cancel = crate::gitrun::CancelToken::new();
+        cancel.cancel();
+        let cancel_opts = RunOptions { cancel: Some(cancel), ..RunOptions::default() };
+
+        let blob_cancel = commit_blob_with(&g, "HEAD", "plain.txt", 1024, &cancel_opts).unwrap_err();
+        assert!(matches!(blob_cancel, GitError::Cancelled { .. }), "{blob_cancel:?}");
+
+        let hist_cancel = history_by_author_with(&g, "Tester", 0, 10, &cancel_opts).unwrap_err();
+        assert!(matches!(hist_cancel, GitError::Cancelled { .. }), "{hist_cancel:?}");
+
+        let dir_cancel = commit_directory_with(&g, "HEAD", "", 10, &cancel_opts).unwrap_err();
+        assert!(matches!(dir_cancel, GitError::Cancelled { .. }), "{dir_cancel:?}");
+    }
+
+    #[test]
+    fn history_and_directory_limits_clamped_at_bounds() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        run(root, &["init", "-q", "-b", "main"]);
+        run(root, &["config", "user.name", "Tester"]);
+        run(root, &["config", "user.email", "t@example.com"]);
+        fs::write(root.join("plain.txt"), "content\n").unwrap();
+        run(root, &["add", "."]);
+        run(root, &["commit", "-qm", "commit msg"]);
+
+        let g = Git::open(root).unwrap();
+
+        // usize::MAX does not overflow command line or request unbounded log
+        let (commits, more) = history_by_author(&g, "Tester", 0, usize::MAX).unwrap();
+        assert!(!more);
+        assert_eq!(commits.len(), 1);
+
+        let (entries, trunc) = commit_directory(&g, "HEAD", "", usize::MAX).unwrap();
+        assert!(!trunc);
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn commit_directory_nul_terminated_cut_within_path_and_metadata_never_invents_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        run(root, &["init", "-q", "-b", "main"]);
+        run(root, &["config", "user.name", "Tester"]);
+        run(root, &["config", "user.email", "t@example.com"]);
+        fs::write(root.join("f1_alpha"), "alpha").unwrap();
+        fs::write(root.join("f2_long_beta_path"), "beta").unwrap();
+        fs::write(root.join("f3_gamma"), "gamma").unwrap();
+        run(root, &["add", "."]);
+        run(root, &["commit", "-qm", "three files"]);
+
+        let g = Git::open(root).unwrap();
+        let raw = Command::new("git").current_dir(root).args(["ls-tree", "-z", "HEAD"]).output().unwrap().stdout;
+
+        // Find the start and end of "f2_long_beta_path" record
+        let f1_nul = raw.iter().position(|&b| b == 0).unwrap();
+        let f2_tab = raw[f1_nul + 1..].iter().position(|&b| b == b'\t').unwrap() + f1_nul + 1;
+
+        // 1. Cut in the middle of filename "f2_long_beta_path":
+        // Must discard the cut record and return only f1_alpha with truncated = true
+        let cut_mid_name = RunOptions { max_stdout: f2_tab + 6, overflow: Overflow::Truncate, ..RunOptions::default() };
+        let (entries, trunc) = commit_directory_with(&g, "HEAD", "", 2000, &cut_mid_name).unwrap();
+        assert!(trunc);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "f1_alpha");
+
+        // 2. Cut in the middle of metadata of f2 (e.g. before the tab):
+        let cut_meta = RunOptions { max_stdout: f1_nul + 15, overflow: Overflow::Truncate, ..RunOptions::default() };
+        let (entries, trunc) = commit_directory_with(&g, "HEAD", "", 2000, &cut_meta).unwrap();
+        assert!(trunc);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "f1_alpha");
+
+        // 3. Cut before first entry finishes:
+        let cut_first = RunOptions { max_stdout: 15, overflow: Overflow::Truncate, ..RunOptions::default() };
+        let err = commit_directory_with(&g, "HEAD", "", 2000, &cut_first).unwrap_err();
+        assert!(matches!(err, GitError::OutputLimit { .. }), "{err:?}");
+
+        // 4. cat-file size metadata cut (e.g. 1 byte limit):
+        let cut_size = RunOptions { max_stdout: 1, overflow: Overflow::Truncate, ..RunOptions::default() };
+        let err = commit_blob_with(&g, "HEAD", "f1_alpha", 1024, &cut_size).unwrap_err();
+        assert!(matches!(err, GitError::OutputLimit { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn commit_directory_path_with_escaped_newlines_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        run(root, &["init", "-q", "-b", "main"]);
+        run(root, &["config", "user.name", "Tester"]);
+        run(root, &["config", "user.email", "t@example.com"]);
+
+        let blob_oid = {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(root)
+                .args(["hash-object", "-w", "--stdin"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped());
+            let mut child = cmd.spawn().unwrap();
+            std::io::Write::write_all(child.stdin.as_mut().unwrap(), b"newline content\n").unwrap();
+            drop(child.stdin.take());
+            let out = child.wait_with_output().unwrap();
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+
+        let mut tree_input = Vec::new();
+        tree_input.extend_from_slice(format!("100644 blob {blob_oid}\t").as_bytes());
+        tree_input.extend_from_slice(b"file_with\nnewline.txt\0");
+
+        let tree_oid = {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(root)
+                .args(["mktree", "-z"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped());
+            let mut child = cmd.spawn().unwrap();
+            std::io::Write::write_all(child.stdin.as_mut().unwrap(), &tree_input).unwrap();
+            drop(child.stdin.take());
+            let out = child.wait_with_output().unwrap();
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+
+        let commit_sha = run(root, &["commit-tree", &tree_oid, "-m", "newline file"]);
+        run(root, &["update-ref", "refs/heads/main", &commit_sha]);
+
+        let g = Git::open(root).unwrap();
+        let (entries, trunc) = commit_directory(&g, "HEAD", "", 2000).unwrap();
+        assert!(!trunc);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "file_with\nnewline.txt");
+        assert_eq!(entries[0].path, "file_with\nnewline.txt");
+
+        match commit_blob(&g, "HEAD", &entries[0].path, 1024).unwrap() {
+            BlobText::Text(s) => assert_eq!(s, "newline content\n"),
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn commit_directory_zero_and_count_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        run(root, &["init", "-q", "-b", "main"]);
+        run(root, &["config", "user.name", "Tester"]);
+        run(root, &["config", "user.email", "t@example.com"]);
+        fs::write(root.join("f1"), "1").unwrap();
+        fs::write(root.join("f2"), "2").unwrap();
+        fs::write(root.join("f3"), "3").unwrap();
+        run(root, &["add", "."]);
+        run(root, &["commit", "-qm", "three files"]);
+
+        let g = Git::open(root).unwrap();
+        let opts = RunOptions::default();
+
+        // limit = 0 on non-empty tree returns empty entries with truncated = true
+        let (entries, trunc) = commit_directory_with(&g, "HEAD", "", 0, &opts).unwrap();
+        assert!(trunc);
+        assert_eq!(entries.len(), 0);
+
+        // limit = 1 returns 1 entry with truncated = true
+        let (entries, trunc) = commit_directory_with(&g, "HEAD", "", 1, &opts).unwrap();
+        assert!(trunc);
+        assert_eq!(entries.len(), 1);
+
+        // limit = 2 returns 2 entries with truncated = true
+        let (entries, trunc) = commit_directory_with(&g, "HEAD", "", 2, &opts).unwrap();
+        assert!(trunc);
+        assert_eq!(entries.len(), 2);
+
+        // limit = 3 returns all 3 entries with truncated = false
+        let (entries, trunc) = commit_directory_with(&g, "HEAD", "", 3, &opts).unwrap();
+        assert!(!trunc);
+        assert_eq!(entries.len(), 3);
+
+        // Empty commit tree:
+        let empty_tree = {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(root)
+                .args(["mktree"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped());
+            let out = cmd.output().unwrap();
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        let empty_commit = run(root, &["commit-tree", &empty_tree, "-m", "empty"]);
+
+        // limit = 0 on empty tree returns empty entries with truncated = false
+        let (entries, trunc) = commit_directory_with(&g, &empty_commit, "", 0, &opts).unwrap();
+        assert!(!trunc);
+        assert_eq!(entries.len(), 0);
+
+        // limit = 10 on empty tree returns empty entries with truncated = false
+        let (entries, trunc) = commit_directory_with(&g, &empty_commit, "", 10, &opts).unwrap();
+        assert!(!trunc);
+        assert_eq!(entries.len(), 0);
+    }
+
+    fn fast_import(root: &Path, stream: &[u8]) {
+        use std::io::Write;
+        let mut child = Command::new("git")
+            .current_dir(root)
+            .args(["fast-import", "--quiet"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(stream).unwrap();
+        assert!(child.wait().unwrap().success());
+    }
+
+    #[test]
+    fn non_utf8_author_and_subject_do_not_fail_the_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        run(root, &["init", "-q", "-b", "main"]);
+        // Latin-1 bytes with no encoding header: invalid UTF-8 as stored.
+        let mut stream =
+            b"commit refs/heads/main\ncommitter Jos\xe9 <j@x> 1700000000 +0000\ndata 6\ncaf\xe9!\n\n".to_vec();
+        stream.extend_from_slice(b"commit refs/heads/main\ncommitter A <a@x> 1700000060 +0000\ndata 2\nok\n\n");
+        fast_import(root, &stream);
+        // A signature config must not leak gpg text into the records.
+        run(root, &["config", "log.showSignature", "true"]);
+        let git = Git::open(root).unwrap();
+        let h = history(&git, None, "", 0, 10).unwrap();
+        assert_eq!(h.commits.len(), 2);
+        assert_eq!(h.commits[0].subject, "ok");
+        assert_eq!(h.commits[1].author_name, "Jos\u{fffd}");
+        assert_eq!(h.commits[1].subject, "caf\u{fffd}!");
+    }
+
+    #[test]
+    fn refs_snapshot_peels_nested_tags_skips_internal_refs_and_reads_boundaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        run(root, &["init", "-q", "-b", "main"]);
+        fs::write(root.join("f"), "1").unwrap();
+        let base = commit(root, "base");
+        let tag = |args: &[&str]| {
+            let mut all = vec!["-c", "user.name=A", "-c", "user.email=a@x", "tag"];
+            all.extend_from_slice(args);
+            run(root, &all);
+        };
+        tag(&["-am", "inner", "inner", &base]);
+        tag(&["-am", "outer", "outer", "inner"]);
+        // Internal refs whose commit nothing visible reaches.
+        fs::write(root.join("f"), "2").unwrap();
+        run(root, &["add", "."]);
+        let tree = run(root, &["write-tree"]);
+        let hidden = run(root, &["commit-tree", &tree, "-p", &base, "-m", "internal"]);
+        run(root, &["update-ref", "refs/stash", &hidden]);
+        run(root, &["update-ref", "refs/notes/commits", &hidden]);
+        run(root, &["reset", "-q", "--hard"]);
+
+        let git = Git::open(root).unwrap();
+        let opts = RunOptions::default();
+        let snap = refs_with(&git, &opts).unwrap();
+        let outer = snap.refs.iter().find(|r| r.name == "refs/tags/outer");
+        assert_eq!(outer.map(|r| r.sha.as_str()), Some(base.as_str()));
+        assert!(!snap.detached);
+        assert!(snap.shallow.is_empty());
+        assert_eq!(snap.tips(), vec![base.clone()]);
+        let (commits, more) = log_from_tips_with(&git, &snap.tips(), 0, 10, &opts).unwrap();
+        assert!(!more);
+        assert_eq!(commits.len(), 1);
+        let h = history(&git, None, "", 0, 10).unwrap();
+        assert!(h.commits.iter().all(|c| c.sha != hidden), "stash walked");
+        let (by_author, _) = history_by_author(&git, "A", 0, 10).unwrap();
+        assert!(by_author.iter().all(|c| c.sha != hidden));
+
+        run(root, &["checkout", "-q", "--detach", &base]);
+        assert!(refs_with(&git, &opts).unwrap().detached);
+        run(root, &["checkout", "-q", "main"]);
+
+        // A shallow clone records its cut-off commits.
+        fs::write(root.join("f"), "3").unwrap();
+        commit(root, "tip");
+        let clone = tempfile::tempdir().unwrap();
+        let url = format!("file://{}", root.display());
+        run(clone.path(), &["clone", "-q", "--depth", "1", &url, "c"]);
+        let shallow = Git::open(&clone.path().join("c")).unwrap();
+        let snap = refs_with(&shallow, &opts).unwrap();
+        assert_eq!(snap.shallow, vec![snap.head.clone().unwrap()]);
+    }
+
+    #[test]
+    fn merge_preview_with_preserves_unchanged_first_parent_content() {
+        assert_merge_preview_first_parent(false);
+    }
+
+    #[test]
+    fn merge_preview_for_preserves_unchanged_first_parent_content() {
+        assert_merge_preview_first_parent(true);
+    }
+
+    fn assert_merge_preview_first_parent(known_change: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        run(root, &["init", "-q", "-b", "main"]);
+        fs::write(root.join("base.txt"), "base\n").unwrap();
+        commit(root, "base");
+        run(root, &["branch", "side"]);
+        fs::create_dir(root.join("alpha")).unwrap();
+        fs::write(root.join("alpha/feature.txt"), "feature branch content\n").unwrap();
+        let first = commit(root, "main feature");
+        run(root, &["checkout", "-q", "side"]);
+        fs::create_dir(root.join("beta")).unwrap();
+        fs::write(root.join("beta/fix.txt"), "fix branch content\n").unwrap();
+        let second = commit(root, "side fix");
+        run(root, &["checkout", "-q", "main"]);
+        run(root, &["-c", "user.name=A", "-c", "user.email=a@x", "merge", "-q", "--no-ff", "-m", "merge side", "side"]);
+        let merge = run(root, &["rev-parse", "HEAD"]);
+        let parents = [first.clone(), second];
+        let git = Git::open(root).unwrap();
+        let source = GitSource::Commit(merge.clone());
+        let opts = RunOptions::default();
+        let mut files = gitsrc::list_changed_paths_with(&git, &source, &opts).unwrap();
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            files,
+            [
+                ("alpha/feature.txt".into(), Some(crate::format::ChangeType::New)),
+                ("beta/fix.txt".into(), Some(crate::format::ChangeType::New)),
+            ],
+            "the all-parent union must retain both files"
+        );
+        let export = crate::transfer::plan_commit_export_exact_with(
+            &git,
+            &merge,
+            std::slice::from_ref(&merge),
+            &opts,
+            crate::transfer::CLIPBOARD_PAYLOAD_MAX,
+        )
+        .unwrap();
+        assert_eq!(export.payload.commits[0].files.len(), 1);
+        assert_eq!(export.payload.commits[0].files[0].path, "beta/fix.txt");
+        assert_eq!(export.payload.commits[0].files[0].change, crate::commits::FileChange::Added);
+        let preview = |path: &str| {
+            if known_change {
+                let change = files.iter().find(|f| f.0 == path).unwrap().1.unwrap();
+                git_preview_for(&git, &source, path, change, Some(&parents), &opts)
+            } else {
+                git_preview_with(&git, &source, path, &opts)
+            }
+            .unwrap()
+        };
+        let added = preview("beta/fix.txt");
+        assert_eq!(added.content.as_deref(), Some("fix branch content\n"));
+        assert!(added.patch.contains("+fix branch content\n"));
+        assert!(!added.patch_truncated);
+        assert_hunks_consistent(&added.patch);
+        assert!(run(root, &["diff", &first, &merge, "--", "alpha/feature.txt"]).is_empty());
+        let unchanged = preview("alpha/feature.txt");
+        assert_eq!(unchanged.content.as_deref(), Some("feature branch content\n"));
+        assert_eq!(unchanged.patch, "", "unchanged first-parent file has no hunks");
+        assert!(!unchanged.patch_truncated);
+        // Replaying the same merge on its first parent still writes only
+        // beta and reaches the merge's tree without touching alpha.
+        run(root, &["reset", "-q", "--hard", &first]);
+        run(root, &["config", "user.name", "Replay"]);
+        run(root, &["config", "user.email", "replay@example.com"]);
+        let result = crate::transfer::CommitReplayPreview::capture(root, &export.payload).unwrap().apply().unwrap();
+        assert!(result.failure.is_none(), "{:?}", result.failure);
+        assert_eq!(result.created.len(), 1);
+        assert_eq!(run(root, &["diff", "--name-only", &first, "HEAD"]), "beta/fix.txt");
+        assert_eq!(run(root, &["rev-parse", "HEAD^{tree}"]), run(root, &["rev-parse", &format!("{merge}^{{tree}}")]));
+    }
+
+    #[test]
+    fn new_file_previews_cover_untracked_staged_root_and_later_commits() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        run(root, &["init", "-q", "-b", "main"]);
+        let git = Git::open(root).unwrap();
+        let opts = RunOptions::default();
+        let check = |source: &GitSource, parents: Option<&[String]>, paths: [&str; 2]| {
+            let files = gitsrc::list_changed_paths_with(&git, source, &opts).unwrap();
+            for (path, content) in paths.into_iter().zip(["fresh\n", ""]) {
+                let change = files.iter().find(|f| f.0 == path).unwrap().1.unwrap();
+                assert_eq!(change, crate::format::ChangeType::New);
+                let listed = git_preview_with(&git, source, path, &opts).unwrap();
+                let known = git_preview_for(&git, source, path, change, parents, &opts).unwrap();
+                assert_eq!(listed, known, "{source:?}: {path}");
+                assert_eq!(listed.content.as_deref(), Some(content));
+                assert!(!listed.patch_truncated);
+                if content.is_empty() {
+                    assert!(!listed.patch.contains("@@"), "empty file has no hunks");
+                } else {
+                    assert!(listed.patch.contains("+fresh\n"), "{source:?}: {path}");
+                    assert_hunks_consistent(&listed.patch);
+                }
+            }
+        };
+        let paths = ["[new].txt", "empty.txt"];
+        fs::write(root.join(paths[0]), "fresh\n").unwrap();
+        fs::write(root.join(paths[1]), "").unwrap();
+        check(&GitSource::Working, None, paths);
+        run(root, &["add", "."]);
+        check(&GitSource::Staged, None, paths);
+        let first = commit(root, "root");
+        check(&GitSource::Commit(first.clone()), Some(&[]), paths);
+        let added = ["[added].txt", "empty-added.txt"];
+        fs::write(root.join(added[0]), "fresh\n").unwrap();
+        fs::write(root.join(added[1]), "").unwrap();
+        check(&GitSource::Working, None, added);
+        run(root, &["add", "."]);
+        check(&GitSource::Staged, None, added);
+        let second = commit(root, "add files");
+        check(&GitSource::Commit(second.clone()), Some(std::slice::from_ref(&first)), added);
+        check(&GitSource::Range(first, second), None, added);
+    }
+
+    #[test]
+    fn preview_for_a_listed_change_matches_the_listing_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        run(root, &["init", "-q", "-b", "main"]);
+        fs::write(root.join("keep.txt"), "a\n").unwrap();
+        fs::write(root.join("gone.txt"), "old\n").unwrap();
+        let base = commit(root, "base");
+        fs::write(root.join("keep.txt"), "a\nb\n").unwrap();
+        fs::remove_file(root.join("gone.txt")).unwrap();
+        fs::write(root.join("new.txt"), "fresh\n").unwrap();
+        run(root, &["add", "-A"]);
+        let tip = commit(root, "change");
+        let git = Git::open(root).unwrap();
+        let opts = RunOptions::default();
+        for source in [GitSource::Commit(tip.clone()), GitSource::Range(base.clone(), tip.clone())] {
+            let parents = [base.clone()];
+            let parents = matches!(source, GitSource::Commit(_)).then_some(&parents[..]);
+            let files = gitsrc::list_changed_paths_with(&git, &source, &opts).unwrap();
+            assert_eq!(files.len(), 3);
+            for (path, change) in files {
+                let listed = git_preview_with(&git, &source, &path, &opts).unwrap();
+                let known = git_preview_for(&git, &source, &path, change.unwrap(), parents, &opts).unwrap();
+                assert_eq!(listed, known, "{path}");
+            }
+        }
+    }
+
+    #[test]
+    fn log_from_tips_pages_a_frozen_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        run(root, &["init", "-q", "-b", "main"]);
+        let mut shas = Vec::new();
+        for i in 0..4 {
+            fs::write(root.join("f"), i.to_string()).unwrap();
+            shas.push(commit(root, &format!("c{i}")));
+        }
+        let git = Git::open(root).unwrap();
+        let opts = RunOptions::default();
+        let tips = refs_with(&git, &opts).unwrap().tips();
+        let (first, more) = log_from_tips_with(&git, &tips, 0, 2, &opts).unwrap();
+        assert!(more);
+        // New commits after page 0 do not shift later pages.
+        fs::write(root.join("f"), "new").unwrap();
+        commit(root, "moved on");
+        let (second, more) = log_from_tips_with(&git, &tips, 2, 2, &opts).unwrap();
+        assert!(!more);
+        let got: Vec<&str> = first.iter().chain(&second).map(|c| c.sha.as_str()).collect();
+        let want: Vec<&str> = shas.iter().rev().map(String::as_str).collect();
+        assert_eq!(got, want);
+        assert!(log_from_tips_with(&git, &[], 0, 2, &opts).unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn commit_blob_nul_after_8000_bytes_is_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        run(root, &["init", "-q", "-b", "main"]);
+        let mut bytes = vec![b'a'; 9000];
+        bytes.push(0);
+        fs::write(root.join("nul_past_8k.bin"), &bytes).unwrap();
+        let sha = commit(root, "large binary");
+        let git = Git::open(root).unwrap();
+        let res = commit_blob(&git, &sha, "nul_past_8k.bin", 65536).unwrap();
+        assert_eq!(res, BlobText::Binary);
+    }
+}
