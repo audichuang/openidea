@@ -91,3 +91,6 @@
   right: var(--stripe-outer-padding);
   top: 0;
 }
+.systemBar {
+  flex: none;
+}
