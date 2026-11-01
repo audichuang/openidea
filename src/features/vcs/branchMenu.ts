@@ -141,6 +141,14 @@ export function branchMenu(
   const trackedActions: MenuItem[] = upstream
     ? [{ label: tx`Tracked Branch '${upstream.name}'`, submenu: branchMenu(upstream, current, done, { branches }) }]
     : [];
+  // ClipCode for VS Code's Copy Branch Commits (a local branch's own commits as an mbox).
+  const clipItems: MenuItem[] = b.remote
+    ? []
+    : [
+        { kind: "separator" },
+        { kind: "action", action: "clip.copyBranchSeries", arg: { branch: b.name } },
+        { kind: "action", action: "clip.copyBranchSeriesFull", arg: { branch: b.name } },
+      ];
   if (b.current) {
     return [
       { label: tx`New Branch from '${b.name}'…`, icon: "branch", run: run(() => newBranch(b)) },
@@ -155,6 +163,7 @@ export function branchMenu(
       { label: "Rename…", run: run(() => renameBranch(b)) },
       favoriteItem,
       history,
+      ...clipItems,
     ];
   }
   const items: MenuItem[] = [
@@ -216,6 +225,7 @@ export function branchMenu(
         selected.length ? deleteBranches(selected) : b.remote ? deleteRemoteBranch(b.name) : deleteBranch(b.name),
       ),
     },
+    ...clipItems,
   );
   return items;
 }
