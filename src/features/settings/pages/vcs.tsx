@@ -14,6 +14,7 @@ import { Button, Icon, IconButton, Input, Select, type SelectOption, T } from "@
 import { choosePath } from "@/platform/choosePath";
 import { Row, SettingSelect } from "../components/Form";
 import { useSetting } from "../components/context";
+import { CLIPCODE_PAGE } from "./clipcode";
 import type { PageSpec } from "./spec";
 import { BoundToggle, Grid, Indented, RadioRow, TableEditor, ToggleNumber } from "./workflowControls";
 import styles from "./Workflow.module.css";
@@ -814,4 +815,5 @@ export const VCS_PAGES: PageSpec[] = [
       },
     ],
   },
+  CLIPCODE_PAGE,
 ];
