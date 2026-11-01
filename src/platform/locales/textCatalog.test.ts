@@ -99,6 +99,9 @@ const UNTRANSLATED = new Set<string>([
   // Docker run target placeholder values
   "compose.yaml",
   "python:3.12",
+  "ClipCode",
+  // ClipCode filter rule placeholder (a path)
+  "src/generated",
   // Go environment variables and placeholder values
   "CGO",
   "GOPROXY",
