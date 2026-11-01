@@ -1,9 +1,16 @@
 import { create } from "zustand";
-import { call, commands, isTauri, onIdeEvent, type WindowTab } from "./ipc";
+import { call, commands, isTauri, onIdeEvent, type SystemTabBar, type WindowTab } from "./ipc";
 import { startupLaunchHandled, useProject } from "./project";
 import { setContext } from "./context";
+import { usePlatform } from "./platformInfo";
 
-export const useWindowGroup = create<{ tabs: WindowTab[] }>(() => ({ tabs: [] }));
+const NO_TAB_BAR: SystemTabBar = { height: 0, top: false };
+
+/** `systemTabBar`: macOS shows the group in its own tab bar over the page. */
+export const useWindowGroup = create<{ tabs: WindowTab[]; systemTabBar: SystemTabBar }>(() => ({
+  tabs: [],
+  systemTabBar: NO_TAB_BAR,
+}));
 
 export function reorderedTabs(tabs: readonly WindowTab[], source: string, target: string): string[] {
   const labels = tabs.map((tab) => tab.label);
@@ -16,8 +23,13 @@ export function reorderedTabs(tabs: readonly WindowTab[], source: string, target
 
 export async function refreshWindowGroup() {
   if (!isTauri()) return;
-  useWindowGroup.setState({ tabs: await call(commands.windowGroupCurrent()) });
-  setContext("windowGrouped", useWindowGroup.getState().tabs.length > 1);
+  const tabs = await call(commands.windowGroupCurrent());
+  const systemTabBar =
+    usePlatform.getState().os === "macos" && tabs.length > 1
+      ? ((await call(commands.windowGroupTabBar())) ?? NO_TAB_BAR)
+      : NO_TAB_BAR;
+  useWindowGroup.setState({ tabs, systemTabBar });
+  setContext("windowGrouped", tabs.length > 1);
 }
 
 export async function selectWindowTab(label: string) {
@@ -42,6 +54,7 @@ export function installWindowGroups(): () => void {
     if (!disposed) await refreshWindowGroup();
   };
   const offEvent = onIdeEvent("windowGroupsChanged", refresh);
+
   const offProject = useProject.subscribe((state, prev) => {
     if (state.project?.root !== prev.project?.root) void restore().catch(console.warn);
   });
