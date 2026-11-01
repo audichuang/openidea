@@ -474,6 +474,8 @@ export function registerClipActions(): () => void {
       category: "Git",
       icon: "copy",
       when: VCS,
+      // Only its context menus pass the selection, so it is not offered for a shortcut.
+      hidden: true,
       run: ({ arg }) => {
         const a = (arg ?? {}) as { paths?: string[]; side?: "working" | "staged" | "unstaged" };
         const paths = a.paths ?? [];
@@ -486,6 +488,8 @@ export function registerClipActions(): () => void {
       category: "Git",
       icon: "copy",
       when: VCS,
+      // Only its context menus pass the selection, so it is not offered for a shortcut.
+      hidden: true,
       run: ({ arg }) => {
         const source = commitFilesSource(commitsArg(arg));
         if (source) void copyClip(source);
