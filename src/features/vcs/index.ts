@@ -20,6 +20,7 @@ import { lazyComponent } from "@/ui";
 import { registerVcsActions } from "./actions";
 import { installChangelists } from "./changelists";
 import { registerHistoryActions, trackOperationContext } from "./historyActions";
+import { registerClipActions } from "./clip";
 import { registerLogPaneActions } from "./logPaneActions";
 import { controlLabel, controlOperation, inProgress } from "./operations";
 import { annotationsShown, blameSlot } from "./blame";
@@ -217,6 +218,7 @@ export function activate(): () => void {
     ),
     registerVcsActions(),
     registerHistoryActions(),
+    registerClipActions(),
     registerLogPaneActions(),
     activateSettingsPages(),
     registerLocalHistoryActions(),
