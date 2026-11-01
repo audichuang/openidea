@@ -288,7 +288,13 @@ export function windowActions(): Action[] {
       category: t("app.category.window"),
       when: "projectOpen",
       run: async () => {
-        if (!desktopOnly()) await call(commands.windowGroupMerge());
+        if (desktopOnly()) return;
+        try {
+          await call(commands.windowGroupMerge());
+        } catch (e) {
+          // E.g. macOS refuses while another window is in its own fullscreen space.
+          notifications().notify({ level: "warning", title: "Merge All Project Windows", body: errorText(e) });
+        }
       },
     },
     {
