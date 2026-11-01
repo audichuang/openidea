@@ -175,6 +175,12 @@ export const commands = {
 	 *  definition). Prefers the unsaved buffer when the file is open.
 	 */
 	fsReadText: (path: string) => typedError<string, IdeError>(__TAURI_INVOKE("fs_read_text", { path })),
+	/**  The clipboard text for `source` (file or commit payload); the UI writes it. */
+	clipCopy: (source: ClipCopySource) => typedError<ClipCopyResult, IdeError>(__TAURI_INVOKE("clip_copy", { source })),
+	/**  Plans pasting `text` into `dest` (default: the project root). Nothing is written. */
+	clipPastePreview: (text: string, dest: string | null, adjustPaths: boolean) => typedError<ClipPastePreview, IdeError>(__TAURI_INVOKE("clip_paste_preview", { text, dest, adjustPaths })),
+	/**  Writes the preview `apply.id` as confirmed. */
+	clipPasteApply: (apply: ClipPasteApply) => typedError<ClipPasteResult, IdeError>(__TAURI_INVOKE("clip_paste_apply", { apply })),
 	/**  Absolute paths on the clipboard, empty when it holds no file list. */
 	clipboardFileList: () => typedError<string[], IdeError>(__TAURI_INVOKE("clipboard_file_list")),
 	/**  Whether the clipboard holds files: cheap, for the Paste item's enabled state. */
@@ -1778,6 +1784,121 @@ export type ClearCachesResult = {
 	syntaxTrees: number,
 	rssBeforeBytes: number | null,
 	rssAfterBytes: number | null,
+};
+
+/**  Which uncommitted side a Commit tool window copy reads. */
+export type ClipChangeSide = 
+/**  Working tree and index together, as the change list shows them. */
+"working" | "staged" | "unstaged";
+
+export type ClipCopyResult = {
+	/**  The clipboard text. */
+	text: string,
+	/**  `files` or `commits`. */
+	mode: string,
+	files: number,
+	commits: number,
+	/**  UTF-16 code units, as ClipCode counts them. */
+	chars: number,
+	lines: number,
+	tokens: number,
+	/**
+	 *  Files left out: unreadable, not UTF-8, over the size limit, or (commit
+	 *  mode) binary / symlink files whose change the replay cannot carry.
+	 */
+	skipped: number,
+	/**  The file limit cut the copy short. */
+	truncated: boolean,
+};
+
+/**
+ *  What a copy takes. Paths are absolute; `paths` of a git source narrow it to
+ *  those files (empty: all of them).
+ */
+export type ClipCopySource = 
+/**  Files and folders as they are on disk (Project tool window). */
+{ kind: "files"; paths: string[] } | 
+/**  Uncommitted changes, labelled `[NEW]` / `[MODIFIED]` / `[DELETED]` / `[MOVED]`. */
+{ kind: "changes"; paths: string[]; side: ClipChangeSide } | 
+/**  The files a commit changed, at that commit. */
+{ kind: "commitFiles"; repo: string; rev: string; paths: string[] } | 
+/**  The files changed between two revisions (`base`..`tip` endpoints), at `tip`. */
+{ kind: "range"; repo: string; base: string; tip: string; paths: string[] } | 
+/**  Commits for replay: `selected` must be one first-parent chain ending at `tip`. */
+{ kind: "commits"; repo: string; tip: string; selected: string[] } | 
+/**  The first-parent commits of `base`..`tip`, for replay (a pull request's commits). */
+{ kind: "commitRange"; repo: string; base: string; tip: string };
+
+export type ClipPasteApply = {
+	id: number,
+	/**  Creates (by index) whose target exists and may be overwritten. */
+	overwrite: number[],
+	/**  Creates / deletes (by index) left out. */
+	uncheckedCreates: number[],
+	uncheckedDeletes: number[],
+	/**  Commit mode: replace files that exist in the destination. */
+	overwriteExisting: boolean,
+};
+
+/**  One file a file-mode paste would touch. */
+export type ClipPasteFile = {
+	/**  Index within its kind (creates / deletes), used to leave it out. */
+	index: number,
+	/**  The path in the payload. */
+	path: string,
+	/**  Absolute target, when it resolves. */
+	target: string | null,
+	/**  `create`, `overwrite`, `delete` or `skip`. */
+	action: string,
+	/**  Why it is skipped (`skip` only). */
+	reason: string | null,
+};
+
+export type ClipPastePreview = {
+	/**  Hand back to `clip_paste_apply`. */
+	id: number,
+	/**  `files` or `commits`. */
+	mode: string,
+	/**  Where the paste lands (the repository for commits). */
+	destination: string,
+	files: ClipPasteFile[],
+	commits: ClipReplayCommit[],
+	/**  A restore base the files would better land under (`adjustPaths`). */
+	suggestion: string | null,
+	adjusted: boolean,
+};
+
+export type ClipPasteResult = {
+	created: number,
+	overwritten: number,
+	deleted: number,
+	skipped: number,
+	/**  Commit ids the replay created, oldest first. */
+	commits: string[],
+	errors: string[],
+};
+
+export type ClipReplayCommit = {
+	message: string,
+	authorName: string,
+	authorEmail: string,
+	authorDate: string,
+	files: ClipReplayFile[],
+	/**  Why the replay stops at this commit, if it would. */
+	refused: string | null,
+};
+
+/**  One file of a replayed commit. */
+export type ClipReplayFile = {
+	path: string,
+	oldPath: string | null,
+	/**  `ADDED`, `MODIFIED`, `DELETED` or `RENAMED`. */
+	change: string,
+	/**  `WRITE`, `DELETE` or `SKIP`. */
+	action: string,
+	/**  The write replaces a file that exists in the destination. */
+	overwrites: boolean,
+	reason: string | null,
 };
 
 export type CloseContext = {
