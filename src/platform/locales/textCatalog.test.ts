@@ -92,6 +92,9 @@ const UNTRANSLATED = new Set<string>([
   "Prettier",
   "oxfmt",
   "IntelliJ IDEA",
+  "ClipCode",
+  // ClipCode filter rule placeholder (a path)
+  "src/generated",
   // Go environment variables and placeholder values
   "CGO",
   "GOPROXY",
