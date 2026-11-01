@@ -191,7 +191,7 @@ function headHint(head: RepoHead | undefined): Pick<ChangeNode, "detail" | "deta
 }
 
 /** With several repositories, a node per repository (IDEA's "Group by Repository") above the files. */
-function repoNodes(
+export function repoNodes(
   files: readonly FileStatus[],
   root: string,
   group: GroupId,
