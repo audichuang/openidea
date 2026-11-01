@@ -89,7 +89,7 @@ export async function pasteClip(dest?: string | null) {
 
 async function loadPreview(text: string, dest: string | null, adjust: boolean): Promise<ClipPastePreview | null> {
   try {
-    return await call(commands.clipPastePreview(text, dest, adjust));
+    return await call(commands.clipPastePreview(text, dest, adjust, [...useVcs.getState().roots]));
   } catch (e) {
     notifications().notify({ group: "vcs", level: "warning", title: "Nothing to paste", body: String(e) });
     return null;
@@ -360,7 +360,8 @@ export function registerClipActions(): () => void {
       icon: "paste",
       description: "Restore files or replay commits copied by ClipCode or snip-sync",
       run: ({ arg }) => {
-        const dest = pathsArg(arg)[0] ?? useProject.getState().project?.root ?? null;
+        // The selected repository first (a workspace of several), as snip-sync pastes.
+        const dest = pathsArg(arg)[0] ?? useVcs.getState().repo ?? useProject.getState().project?.root ?? null;
         void pasteClip(dest);
       },
     },
