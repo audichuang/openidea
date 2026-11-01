@@ -1,0 +1,28 @@
+.rules {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  padding: 6px;
+  min-height: 32px;
+}
+.rule {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.value {
+  flex: 1;
+  min-width: 0;
+}
+.empty {
+  color: var(--fg-subtle);
+  padding: 2px 4px;
+}
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
