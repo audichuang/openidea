@@ -165,6 +165,10 @@ pub fn run() {
     })
     .setup(move |app| {
         builder.mount_events(app);
+        #[cfg(target_os = "macos")]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            macos::init_window_tabbing(mtm);
+        }
         let state = AppState::new(app.handle().clone())?;
         let windows = WindowsState::default();
         if let Ok(cwd) = std::env::current_dir() {
@@ -207,17 +211,20 @@ pub fn run() {
             if let Some(w) = window.try_state::<WindowsState>() {
                 w.focused(window.label());
             }
+            // The system tab bar (click, drag out, ⌃Tab) selects and moves tabs without the app.
+            #[cfg(target_os = "macos")]
+            window_groups::sync(window.app_handle());
         }
         tauri::WindowEvent::Focused(false) => application_focus::changed(window.app_handle(), false),
+        #[cfg(target_os = "macos")]
+        tauri::WindowEvent::Resized(_) => window_groups::resized(window.app_handle(), window.label()),
+        #[cfg(not(target_os = "macos"))]
         tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
             window_groups::frame_changed(window.app_handle(), window.label());
         }
         tauri::WindowEvent::Destroyed => {
             #[cfg(target_os = "macos")]
-            {
-                page_swipe::forget(window.label());
-                macos::forget_fullscreen(window.label());
-            }
+            page_swipe::forget(window.label());
             if windows::auxiliary_parent(window.label()).is_none() {
                 window_groups::destroyed(window.app_handle(), window.label());
                 windows::close_auxiliary_windows(window.app_handle(), window.label());
