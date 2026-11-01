@@ -138,3 +138,6 @@
 .item.dropAfter:last-child::after {
   right: 0;
 }
+.systemBar {
+  flex: none;
+}
