@@ -59,6 +59,8 @@ import { call, commands } from "@/platform/ipc";
 import type { FileStatus } from "@/bindings";
 import { OperationBanner } from "./operations";
 import { ShelfPanel, loadShelves, useShelf } from "./shelf";
+import { runOp } from "./ops";
+import { buildStagingTree, stagePaths, stagedFiles, stagingDiffData, unstagePaths, useStagingArea } from "./staging";
 import { refreshNow, repoName, selectRepo, useVcs } from "./store";
 import styles from "./CommitView.module.css";
 
@@ -165,16 +167,25 @@ const bottomLeft = (el: HTMLElement) => {
   return { x: r.left, y: r.bottom + 2 };
 };
 
-/** Opens a file's diff; F7 continues through the other files of its group, in tree order. */
-function openNode(n: ChangeNode, roots: readonly ChangeNode[]) {
+/**
+ * Opens a file's diff; F7 continues through the other files of its group, in tree order.
+ * With the staging area a file can be in both Staged and Unstaged: its group is the
+ * node's, and the diff is that side of the index.
+ */
+function openNode(n: ChangeNode, roots: readonly ChangeNode[], staging: boolean) {
   if (n.type !== "file" || !n.path) return;
-  const group = roots.find((g) => g.files.some((f) => f.path === n.files[0]?.path)) ?? null;
-  const paths: string[] = [];
+  const group =
+    (staging
+      ? roots.find((g) => g.group === n.group)
+      : roots.find((g) => g.files.some((f) => f.path === n.files[0]?.path))) ?? null;
+  const files: ChangeNode[] = [];
   const walk = (ns: readonly ChangeNode[]) =>
-    ns.forEach((x) => (x.type === "file" ? x.path && paths.push(x.path) : walk(x.children ?? [])));
+    ns.forEach((x) => (x.type === "file" ? x.path && files.push(x) : walk(x.children ?? [])));
   walk(group ? [group] : [n]);
-  const items = paths.map((p) => workingDiffData(p));
-  void openDiff(withChain(items, Math.max(0, paths.indexOf(n.path))), { preview: true });
+  const items = files.map(
+    (x) => (staging && x.files[0] && stagingDiffData(x.files[0], x.group)) || workingDiffData(x.path!),
+  );
+  void openDiff(withChain(items, Math.max(0, files.indexOf(n))), { preview: true });
 }
 
 /** Context menu of a change list's header: the list's own actions, then the bulk ones on its files. */
@@ -315,6 +326,33 @@ function CheckMark({
   );
 }
 
+/** Hover button of a staging area row: stages (Unstaged, Unversioned Files) or unstages (Staged) its files. */
+function StageAction({ node }: { node: ChangeNode }) {
+  const unstage = node.group === "staged";
+  if (node.group === "conflicts") return null;
+  const paths = unstage ? unstagePaths(node.files) : stagePaths(node.files);
+  if (!paths.length) return null;
+  const all = node.type !== "file";
+  const label = unstage ? (all ? "Unstage All" : "Unstage") : all ? "Stage All" : "Stage";
+  return (
+    <span
+      role="button"
+      aria-label={tx(label)}
+      title={tx(label)}
+      className={styles.stageAction}
+      onMouseDown={(e) => {
+        if (e.button !== 0) return;
+        e.stopPropagation();
+        e.preventDefault();
+        void runOp(label, () => call(unstage ? commands.vcsUnstage(paths) : commands.vcsStage(paths)));
+      }}
+      onDoubleClick={(e) => e.stopPropagation()}
+    >
+      <Icon name={unstage ? "minus" : "plus"} size={12} />
+    </span>
+  );
+}
+
 /** Inclusion state of every change (user overrides over the change list defaults). */
 function useCommitChecks() {
   const status = useVcs((s) => s.status);
@@ -328,7 +366,11 @@ function useCommitChecks() {
 export function useIncludedCount(): number {
   const status = useVcs((s) => s.status);
   const checks = useCommitChecks();
-  return useMemo(() => planCommit(status, checks).included.length, [status, checks]);
+  const staging = useStagingArea();
+  return useMemo(
+    () => (staging ? stagedFiles(status) : planCommit(status, checks).included).length,
+    [status, checks, staging],
+  );
 }
 
 /** The Commit tool window's Commit tab: changes with inclusion checkboxes above the message. */
@@ -390,7 +432,8 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const diffPreview = useCommit((s) => s.diffPreview);
   const lists = useChangelists((s) => s.state);
   const checks = useCommitChecks();
-  const checkboxes = mode !== "local";
+  const staging = useStagingArea();
+  const checkboxes = mode !== "local" && !staging;
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   // IDEA starts with Unversioned Files collapsed.
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(["group:unversioned"]));
@@ -401,8 +444,11 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const repos = useVcs((s) => s.roots);
   const projectRoots = useEffectiveRoots();
   const roots = useMemo(
-    () => buildChangeTree(status, root, groupByDir, lists, repos),
-    [status, root, groupByDir, lists, repos],
+    () =>
+      staging
+        ? buildStagingTree(status, root, groupByDir, repos)
+        : buildChangeTree(status, root, groupByDir, lists, repos),
+    [staging, status, root, groupByDir, lists, repos],
   );
   const [byKey, parents] = useMemo(() => {
     const m = new Map<string, ChangeNode>();
@@ -548,7 +594,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
               selectedList: nodes.find((n) => n.changelist)?.changelist ?? null,
             });
           }}
-          onActivate={(n) => openNode(n, roots)}
+          onActivate={(n) => openNode(n, roots, staging)}
           onContextMenu={(node, sel, e: MouseEvent) => {
             if (!node) return;
             if (node.type === "group" && node.changelist) {
@@ -633,12 +679,13 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                 )}
                 {label}
                 {n.type === "group" && <span className={styles.detail}>{fileCount(n.files.length)}</span>}
-                {n.type === "file" && n.files[0] && isPartiallyStaged(n.files[0]) && (
+                {!staging && n.type === "file" && n.files[0] && isPartiallyStaged(n.files[0]) && (
                   <span className={styles.partial} title={tx("Partially staged: only staged hunks are committed")}>
                     <T>partial</T>
                   </span>
                 )}
                 {n.detail && <span className={styles.detail}>{n.detail}</span>}
+                {staging && <StageAction node={n} />}
               </span>
             );
           }}

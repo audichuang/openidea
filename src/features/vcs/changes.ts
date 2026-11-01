@@ -3,12 +3,15 @@ import type { ChangelistState, FileStatus } from "@/bindings";
 import { baseName, dirName, effectiveKind, relTo, repoLabel, rootOf, stripSlash, type EffectiveKind } from "./model";
 import { tx } from "@/platform/i18n";
 
-export type GroupId = "conflicts" | "changes" | "unversioned";
+/** `staged` / `unstaged`: the Commit tool window with the staging area enabled (see `staging.ts`). */
+export type GroupId = "conflicts" | "changes" | "unversioned" | "staged" | "unstaged";
 
 export const GROUP_LABEL: Record<GroupId, string> = {
   conflicts: "Merge Conflicts",
   changes: "Changes",
   unversioned: "Unversioned Files",
+  staged: "Staged",
+  unstaged: "Unstaged",
 };
 
 /**
@@ -174,7 +177,7 @@ function childNodes(files: readonly FileStatus[], root: string, group: GroupId, 
 }
 
 /** With several repositories, a node per repository (IDEA's "Group by Repository") above the files. */
-function repoNodes(
+export function repoNodes(
   files: readonly FileStatus[],
   root: string,
   group: GroupId,
