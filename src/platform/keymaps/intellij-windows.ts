@@ -315,6 +315,7 @@ export const intellijWindows: Record<string, string[]> = {
   "vcs.changelist.move": ["Alt+Shift+M"],
   "vcs.changelist.edit": ["F2", "Shift+F6"],
   "vcs.log.copyRevision": ["Ctrl+Alt+Shift+C"],
+  "clip.paste": ["Ctrl+Alt+Shift+V"],
   "vcs.log.goToRef": ["Ctrl+F"],
   // View › Appearance › Zoom IDE
   "view.zoomIn": ["Alt+Shift+="],
