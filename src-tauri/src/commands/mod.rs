@@ -11,6 +11,7 @@ pub mod agent;
 pub mod android;
 pub mod app;
 pub mod caches;
+pub mod clip;
 pub mod clipboard;
 pub mod db;
 pub mod debug;
