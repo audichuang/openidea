@@ -44,6 +44,7 @@ export const commands = {
 	windowGroupCancelClose: () => __TAURI_INVOKE<void>("window_group_cancel_close"),
 	windowGroupReorder: (labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_reorder", { labels })),
 	windowGroupRestore: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_restore")),
+	windowGroupTabBar: () => typedError<SystemTabBar, IdeError>(__TAURI_INVOKE("window_group_tab_bar")),
 	/**
 	 *  Edits the loose file `path` in this window without a project (LightEdit);
 	 *  a window already in LightEdit keeps its files. Returns the effective (global) settings.
@@ -7582,6 +7583,14 @@ export type SyntaxNode = {
 	missing: boolean,
 	/**  The node or a descendant is an error / missing node. */
 	hasError: boolean,
+};
+
+/**  The system tab bar over this window's page (macOS window tabs). */
+export type SystemTabBar = {
+	/**  In points; 0 without a tab bar. */
+	height: number | null,
+	/**  At the top of the window (fullscreen) instead of below the title bar. */
+	top: boolean,
 };
 
 /**  A long-running background task shown in the status bar. */
