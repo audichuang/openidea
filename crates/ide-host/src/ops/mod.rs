@@ -7,6 +7,7 @@ pub mod analysis;
 pub mod bdd;
 pub mod build;
 pub mod bytes;
+pub mod clip;
 pub mod coverage;
 pub mod db;
 pub mod debug;
@@ -71,6 +72,7 @@ impl<T> Clone for Channel<T> {
 /// Registers the commands of every module with the remote server.
 pub fn register_all(d: &mut crate::rpc::Dispatcher) {
     agent::register(d);
+    clip::register(d);
     lsp::register(d);
     notebook::register(d);
     nav::register(d);
