@@ -60,6 +60,14 @@ export function branchMenu(b: Branch, current: string | null, done: () => void =
     icon: "history",
     run: run(() => executeAction("vcs.showLog", { branch: b.name })),
   };
+  // ClipCode for VS Code's Copy Branch Commits (a local branch's own commits as an mbox).
+  const clipItems: MenuItem[] = b.remote
+    ? []
+    : [
+        { kind: "separator" },
+        { kind: "action", action: "clip.copyBranchSeries", arg: { branch: b.name } },
+        { kind: "action", action: "clip.copyBranchSeriesFull", arg: { branch: b.name } },
+      ];
   if (b.current) {
     return [
       { label: tx`New Branch from '${b.name}'…`, icon: "branch", run: run(() => newBranch()) },
@@ -70,6 +78,7 @@ export function branchMenu(b: Branch, current: string | null, done: () => void =
       { label: "Rename…", run: run(() => renameBranch(b.name)) },
       favoriteItem,
       history,
+      ...clipItems,
     ];
   }
   const items: MenuItem[] = [
@@ -105,6 +114,7 @@ export function branchMenu(b: Branch, current: string | null, done: () => void =
       icon: "trash",
       run: run(() => (b.remote ? deleteRemoteBranch(b.name) : deleteBranch(b.name))),
     },
+    ...clipItems,
   );
   return items;
 }
