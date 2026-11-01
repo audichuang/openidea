@@ -98,9 +98,10 @@ export function Workbench() {
       <div className={styles.content} inert={openingPath !== null} aria-hidden={openingPath ? true : undefined}>
         {project ? (
           <>
+            <WindowGroupTabs top />
             <TitleBar compact={distractionFree || !mainToolbar} />
             {!distractionFree && navBarPosition === "top" && <Breadcrumbs className={styles.navigationBar} />}
-            {!distractionFree && <WindowGroupTabs />}
+            <WindowGroupTabs hidePageTabs={distractionFree} />
             {[...banners.values()].map(({ id, component: Banner }) => (
               <Banner key={id} />
             ))}

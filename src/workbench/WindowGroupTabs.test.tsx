@@ -1,6 +1,9 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { executeAction } from "@/platform/actions";
+import type { Settings } from "@/platform/ipc";
+import { usePlatform } from "@/platform/platformInfo";
+import { useProject } from "@/platform/project";
 import { useWindowGroup } from "@/platform/windowGroups";
 import { useContextMenuStore } from "@/ui/Menu";
 import { WindowGroupTabs } from "./WindowGroupTabs";
@@ -63,4 +66,37 @@ it("offers closing the other tabs and those on either side of the clicked tab", 
   void middle("Close Tabs to the Left").run?.();
   expect(executeAction).toHaveBeenLastCalledWith("window.closeTabsToLeft", "project-1");
   expect(menuFor("Docs")("Close Tabs to the Right").disabled).toBe(true);
+});
+
+describe("macOS system tab bar", () => {
+  const saved = usePlatform.getState();
+  afterEach(() => {
+    usePlatform.setState(saved);
+    useProject.setState({ settings: null });
+    useWindowGroup.setState({ systemTabBar: { height: 0, top: false } });
+  });
+
+  const space = (container: HTMLElement) => container.querySelector<HTMLElement>("[data-window-group='system']");
+
+  it("keeps room for it instead of drawing tabs, on the side the system draws it", () => {
+    usePlatform.setState({ os: "macos", overlayTitleBar: true, framelessTitleBar: false });
+    useProject.setState({ settings: { appearance: { zoom: 125 } } as Settings });
+    useWindowGroup.setState({ systemTabBar: { height: 40, top: false } });
+    const below = render(<WindowGroupTabs hidePageTabs />);
+    expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
+    // Native points over page zoom; Distraction Free keeps the room: the system bar stays.
+    expect(space(below.container)?.style.height).toBe("32px");
+    expect(space(render(<WindowGroupTabs top />).container)).toBeNull();
+    below.unmount();
+
+    useWindowGroup.setState({ systemTabBar: { height: 40, top: true } });
+    expect(space(render(<WindowGroupTabs />).container)).toBeNull();
+    expect(space(render(<WindowGroupTabs top />).container)?.style.height).toBe("32px");
+  });
+
+  it("leaves no room without a tab bar", () => {
+    usePlatform.setState({ os: "macos", overlayTitleBar: true, framelessTitleBar: false });
+    const { container } = render(<WindowGroupTabs />);
+    expect(space(container)).toBeNull();
+  });
 });
