@@ -24,11 +24,14 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use super::coverage::blocking;
 
-/// Files one copy may carry (snip-sync's desktop limit; bytes are capped at 32 MiB).
-const FILE_COUNT_LIMIT: usize = 10_000;
+/// Version Control › ClipCode as the payload engine reads it (the plugins' keys).
+pub fn clip_settings(s: &ide_core::settings::ClipCodeSettings) -> Settings {
+    ide_clip::settings::normalize(&serde_json::to_value(s).unwrap_or_default())
+}
 
-fn settings() -> Settings {
-    Settings { file_count_limit: FILE_COUNT_LIMIT as f64, ..Settings::default() }
+/// The batch a copy expands folders in: the file limit, or (no limit) a large one.
+fn file_limit(settings: &Settings) -> usize {
+    if settings.set_max_file_count { settings.file_count_limit as usize } else { 100_000 }
 }
 
 fn err(e: impl std::fmt::Display) -> IdeError {
@@ -76,12 +79,21 @@ pub struct ClipCopyResult {
     /// UTF-16 code units, as ClipCode counts them.
     pub chars: u32,
     pub lines: u32,
+    pub words: u32,
     pub tokens: u32,
     /// Files left out: unreadable, not UTF-8, over the size limit, or (commit
     /// mode) binary / symlink files whose change the replay cannot carry.
     pub skipped: u32,
+    /// Of `skipped`: over the size limit (copied as a placeholder).
+    pub skipped_size: u32,
+    /// Of `skipped`: binary, not UTF-8 or unreadable.
+    pub skipped_unreadable: u32,
     /// The file limit cut the copy short.
     pub truncated: bool,
+    /// The file limit in force (`truncated` names it).
+    pub file_limit: u32,
+    /// Settings › ClipCode › "Show notification after copying".
+    pub notify: bool,
 }
 
 fn n(v: usize) -> u32 {
@@ -140,13 +152,14 @@ fn by_repo(paths: &[PathBuf]) -> IdeResult<Vec<(PathBuf, Vec<PathBuf>)>> {
     Ok(out)
 }
 
-fn file_copy(sel: ExportSelection, primary_skipped: usize) -> IdeResult<ClipCopyResult> {
-    let report = copy_selection_detailed(sel, &settings(), FILE_COUNT_LIMIT, &RunOptions::default(), |_| {}).map_err(
-        |e| match e {
-            TransferError::EmptySelection => IdeError::invalid("Nothing to copy: every selected file was skipped"),
-            e => err(e),
-        },
-    )?;
+fn file_copy(sel: ExportSelection, primary_skipped: usize, settings: &Settings) -> IdeResult<ClipCopyResult> {
+    let report =
+        copy_selection_detailed(sel, settings, file_limit(settings), &RunOptions::default(), |_| {}).map_err(|e| {
+            match e {
+                TransferError::EmptySelection => IdeError::invalid("Nothing to copy: every selected file was skipped"),
+                e => err(e),
+            }
+        })?;
     let o = report.outcome;
     if o.copied == 0 {
         return Err(IdeError::invalid("Nothing to copy"));
@@ -157,9 +170,14 @@ fn file_copy(sel: ExportSelection, primary_skipped: usize) -> IdeResult<ClipCopy
         commits: 0,
         chars: n(o.chars),
         lines: n(o.lines),
+        words: n(o.words),
         tokens: n(o.tokens),
         skipped: n(o.skipped + primary_skipped),
+        skipped_size: n(report.skipped_file_size),
+        skipped_unreadable: n(report.skipped_unreadable + primary_skipped),
         truncated: o.truncated,
+        file_limit: n(file_limit(settings)),
+        notify: settings.show_copy_notification,
         text: o.payload,
     })
 }
@@ -179,24 +197,30 @@ fn selection(items: Vec<ExportItem>, primary: Option<PathBuf>) -> IdeResult<Expo
     ExportSelection::new(roots, Some(primary), items).map_err(err)
 }
 
-fn commit_result(export: commits::CommitExport) -> ClipCopyResult {
+fn commit_result(export: commits::CommitExport, settings: &Settings) -> ClipCopyResult {
     let summary = commits::copy_summary(&export.payload, &export.text);
+    let stats = ide_clip::stats::payload_stats(&export.text);
     ClipCopyResult {
         mode: "commits".into(),
         files: n(summary.file_count),
         commits: n(summary.commit_count),
         chars: n(summary.chars),
-        lines: n(export.text.lines().count()),
-        tokens: 0,
+        lines: n(stats.lines),
+        words: n(stats.words),
+        tokens: n(stats.tokens),
         skipped: n(summary.not_copied_count),
+        skipped_size: 0,
+        skipped_unreadable: n(summary.not_copied_count),
         truncated: false,
+        file_limit: 0,
+        notify: settings.show_copy_notification,
         text: export.text,
     }
 }
 
 /// Builds the clipboard text for `source`. `project` is the primary root (its
 /// name goes in the `clipcode-root` line when the copy has one root).
-pub fn copy(project: &Path, source: ClipCopySource) -> IdeResult<ClipCopyResult> {
+pub fn copy(project: &Path, source: ClipCopySource, settings: &Settings) -> IdeResult<ClipCopyResult> {
     let opts = RunOptions::default();
     match source {
         ClipCopySource::Files { paths } => {
@@ -228,7 +252,7 @@ pub fn copy(project: &Path, source: ClipCopySource) -> IdeResult<ClipCopyResult>
                     }
                 });
             }
-            file_copy(sel.ok_or_else(|| IdeError::invalid("Nothing to copy"))?, skipped)
+            file_copy(sel.ok_or_else(|| IdeError::invalid("Nothing to copy"))?, skipped, settings)
         }
         ClipCopySource::Changes { paths, side } => {
             let repos = by_repo(&paths)?;
@@ -241,30 +265,30 @@ pub fn copy(project: &Path, source: ClipCopySource) -> IdeResult<ClipCopyResult>
                     item.source = transfer::SourceKind::Unstaged;
                 }
             }
-            file_copy(selection(items, Some(project.to_path_buf()))?, skipped)
+            file_copy(selection(items, Some(project.to_path_buf()))?, skipped, settings)
         }
         ClipCopySource::CommitFiles { repo, rev, paths } => {
             let root = repo_root(&repo)?;
             let (items, skipped) = git_items(&[(root.clone(), paths)], || GitSource::Commit(rev.clone()))?;
-            file_copy(selection(items, Some(root))?, skipped)
+            file_copy(selection(items, Some(root))?, skipped, settings)
         }
         ClipCopySource::Range { repo, base, tip, paths } => {
             let root = repo_root(&repo)?;
             let (items, skipped) = git_items(&[(root.clone(), paths)], || GitSource::Range(base.clone(), tip.clone()))?;
-            file_copy(selection(items, Some(root))?, skipped)
+            file_copy(selection(items, Some(root))?, skipped, settings)
         }
         ClipCopySource::Commits { repo, tip, selected } => {
             let git = Git::open(&repo).map_err(err)?;
             let export = transfer::plan_commit_export_exact_with(&git, &tip, &selected, &opts, CLIPBOARD_PAYLOAD_MAX)
                 .map_err(err)?;
-            Ok(commit_result(export))
+            Ok(commit_result(export, settings))
         }
         ClipCopySource::CommitRange { repo, base, tip } => {
             let git = Git::open(&repo).map_err(err)?;
             let export =
                 transfer::plan_commit_export_with(&git, Some((&base, &tip)), None, &opts, CLIPBOARD_PAYLOAD_MAX)
                     .map_err(err)?;
-            Ok(commit_result(export))
+            Ok(commit_result(export, settings))
         }
     }
 }
@@ -408,7 +432,13 @@ fn replay_file(f: &FilePlan) -> ClipReplayFile {
 /// A payload copied from several repositories names the others' files `<repo>/…`
 /// (it has no `clipcode-root` line). Such a prefix lands in the repository of
 /// `repos` with that folder name, as snip-sync's prefix mapping would put it.
-pub fn paste_preview(dest: &Path, text: &str, adjust_paths: bool, repos: &[PathBuf]) -> IdeResult<ClipPastePreview> {
+pub fn paste_preview(
+    dest: &Path,
+    text: &str,
+    adjust_paths: bool,
+    repos: &[PathBuf],
+    settings: &Settings,
+) -> IdeResult<ClipPastePreview> {
     let opts = RunOptions::default();
     if text.len() > CLIPBOARD_PAYLOAD_MAX {
         return Err(IdeError::invalid("The clipboard holds more than 32 MiB"));
@@ -442,7 +472,9 @@ pub fn paste_preview(dest: &Path, text: &str, adjust_paths: bool, repos: &[PathB
             adjusted: false,
         });
     }
-    let header = "";
+    // The configured header format, as the plugins parse; else any `file:` header.
+    let configured = settings.header_format.as_str();
+    let header = if ide_clip::format::parse_clipboard(text, configured).is_empty() { "" } else { configured };
     let entries = ide_clip::format::parse_clipboard(text, header);
     if entries.is_empty() {
         return Err(IdeError::invalid("The clipboard holds no ClipCode / snip-sync files"));
@@ -571,11 +603,136 @@ pub fn paste_apply(req: ClipPasteApply) -> IdeResult<ClipPasteResult> {
 }
 
 // ---------------------------------------------------------------------------
+// Branch series (ClipCode for VS Code: "Copy Branch Commits" / "Paste Branch Commits")
+
+/// A branch's commits as a `git format-patch` mbox.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipBranchSeries {
+    pub text: String,
+    pub commits: u32,
+    /// The fork point the patches apply onto; `None`: the entire history (self-contained).
+    pub base: Option<String>,
+}
+
+fn git_out(repo: &Path, args: &[&str], stdin: Option<&str>) -> IdeResult<String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(err)?;
+    if let Some(text) = stdin {
+        child.stdin.take().expect("piped").write_all(text.as_bytes()).map_err(err)?;
+    }
+    let out = child.wait_with_output().map_err(err)?;
+    if !out.status.success() {
+        return Err(IdeError::invalid(String::from_utf8_lossy(&out.stderr).trim().to_string()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// The first local branch of main / master / develop / dev / trunk other than `branch`.
+fn default_base(repo: &Path, branch: &str) -> Option<String> {
+    ["main", "master", "develop", "dev", "trunk"].into_iter().find_map(|b| {
+        (b != branch && git_out(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{b}")], None).is_ok())
+            .then(|| b.to_string())
+    })
+}
+
+/// Copies `branch`'s commits since its fork point from `base` (default: main / master /
+/// develop / dev / trunk), or its entire history (`full`).
+pub fn copy_branch_series(repo: &Path, branch: &str, base: Option<&str>, full: bool) -> IdeResult<ClipBranchSeries> {
+    if full {
+        let text = git_out(repo, &["format-patch", "--stdout", "--root", branch], None)?;
+        let commits = git_out(repo, &["rev-list", "--count", branch], None)?.trim().parse().unwrap_or(0);
+        return Ok(ClipBranchSeries { text, commits, base: None });
+    }
+    let base = base
+        .map(str::to_string)
+        .or_else(|| default_base(repo, branch))
+        .ok_or_else(|| IdeError::invalid("No main, master, develop, dev or trunk branch to copy the commits since"))?;
+    let mb = git_out(repo, &["merge-base", &base, branch], None)?.trim().to_string();
+    let commits: u32 =
+        git_out(repo, &["rev-list", "--count", &format!("{mb}..{branch}")], None)?.trim().parse().unwrap_or(0);
+    if commits == 0 {
+        return Err(IdeError::invalid(format!("{branch} has no commits that {base} does not have (already merged)")));
+    }
+    let text = git_out(repo, &["format-patch", "--stdout", &format!("--base={mb}"), &format!("{mb}..{branch}")], None)?;
+    Ok(ClipBranchSeries { text, commits, base: Some(mb) })
+}
+
+/// Whether `text` is a `git format-patch` mbox (a branch series).
+pub fn is_branch_series(text: &str) -> bool {
+    text.strip_prefix("From ")
+        .and_then(|rest| rest.split_once(' '))
+        .is_some_and(|(sha, _)| (7..=64).contains(&sha.len()) && sha.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// The `base-commit:` trailer of a branch series.
+fn series_base(text: &str) -> Option<String> {
+    text.lines().find_map(|l| l.strip_prefix("base-commit: ").map(|s| s.trim().to_string()))
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipBranchRestore {
+    pub branch: String,
+    pub commits: u32,
+}
+
+/// Restores a branch series as the new branch `name`: at its base commit (or the current
+/// HEAD with `on_head`, or an orphan branch for an entire history), then `git am --3way`.
+/// A failed apply is aborted and the previous branch checked out again.
+pub fn paste_branch_series(repo: &Path, text: &str, name: &str, on_head: bool) -> IdeResult<ClipBranchRestore> {
+    if !is_branch_series(text) {
+        return Err(IdeError::invalid("The clipboard holds no branch commits (git format-patch)"));
+    }
+    if !git_out(repo, &["status", "--porcelain", "--untracked-files=no"], None)?.trim().is_empty() {
+        return Err(IdeError::invalid("Commit or stash your changes before restoring branch commits"));
+    }
+    git_out(repo, &["check-ref-format", "--branch", name], None)?;
+    let previous = git_out(repo, &["rev-parse", "--abbrev-ref", "HEAD"], None)?.trim().to_string();
+    match series_base(text) {
+        _ if on_head => git_out(repo, &["checkout", "-q", "-b", name], None)?,
+        Some(base) => {
+            if git_out(repo, &["cat-file", "-e", &format!("{base}^{{commit}}")], None).is_err() {
+                return Err(IdeError::invalid(format!(
+                    "Base commit {} is not in this repository; fetch it, or restore on the current HEAD",
+                    &base[..base.len().min(8)]
+                )));
+            }
+            git_out(repo, &["checkout", "-q", "-b", name, &base], None)?
+        }
+        None => {
+            git_out(repo, &["checkout", "-q", "--orphan", name], None)?;
+            git_out(repo, &["rm", "-r", "-f", "-q", "--ignore-unmatch", "."], None)?
+        }
+    };
+    // Where the restored commits start (none on an orphan branch).
+    let start = git_out(repo, &["rev-parse", "--verify", "--quiet", "HEAD"], None).ok().map(|s| s.trim().to_string());
+    if let Err(e) = git_out(repo, &["am", "--3way", "--quiet"], Some(text)) {
+        let _ = git_out(repo, &["am", "--abort"], None);
+        let _ = git_out(repo, &["checkout", "-q", "-f", &previous], None);
+        let _ = git_out(repo, &["branch", "-D", name], None);
+        return Err(IdeError::invalid(format!("The commits did not apply; nothing was restored: {}", e.message)));
+    }
+    let range = start.map_or_else(|| "HEAD".to_string(), |s| format!("{s}..HEAD"));
+    let commits = git_out(repo, &["rev-list", "--count", &range], None)?.trim().parse().unwrap_or(0);
+    Ok(ClipBranchRestore { branch: name.to_string(), commits })
+}
+
+// ---------------------------------------------------------------------------
 // Commands
 
 pub async fn clip_copy(host: &Host, window: &str, source: ClipCopySource) -> IdeResult<ClipCopyResult> {
     let project = host.project(window)?;
-    blocking(move || copy(&project.root, source)).await
+    let settings = clip_settings(&project.settings.effective().vcs.clip_code);
+    blocking(move || copy(&project.root, source, &settings)).await
 }
 
 pub async fn clip_paste_preview(
@@ -587,7 +744,9 @@ pub async fn clip_paste_preview(
     repos: Vec<PathBuf>,
 ) -> IdeResult<ClipPastePreview> {
     let project = host.project(window)?;
-    blocking(move || paste_preview(dest.as_deref().unwrap_or(&project.root), &text, adjust_paths, &repos)).await
+    let settings = clip_settings(&project.settings.effective().vcs.clip_code);
+    blocking(move || paste_preview(dest.as_deref().unwrap_or(&project.root), &text, adjust_paths, &repos, &settings))
+        .await
 }
 
 pub async fn clip_paste_apply(host: &Host, window: &str, apply: ClipPasteApply) -> IdeResult<ClipPasteResult> {
@@ -598,7 +757,42 @@ pub async fn clip_paste_apply(host: &Host, window: &str, apply: ClipPasteApply) 
     Ok(result)
 }
 
+pub async fn clip_copy_branch_series(
+    host: &Host,
+    window: &str,
+    repo: PathBuf,
+    branch: String,
+    base: Option<String>,
+    full: bool,
+) -> IdeResult<ClipBranchSeries> {
+    host.project(window)?;
+    blocking(move || copy_branch_series(&repo, &branch, base.as_deref(), full)).await
+}
+
+pub async fn clip_paste_branch_series(
+    host: &Host,
+    window: &str,
+    repo: PathBuf,
+    text: String,
+    name: String,
+    on_head: bool,
+) -> IdeResult<ClipBranchRestore> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    let result = blocking(move || paste_branch_series(&repo, &text, &name, on_head)).await?;
+    project.sink.emit(ide_core::IdeEvent::VcsChanged { root: project.root.clone().into() });
+    Ok(result)
+}
+
 pub(crate) fn register(d: &mut Dispatcher) {
+    d.add("clip_copy_branch_series", |c| async move {
+        clip_copy_branch_series(&c.host, &c.window, c.arg("repo")?, c.arg("branch")?, c.arg("base")?, c.arg("full")?)
+            .await
+    });
+    d.add("clip_paste_branch_series", |c| async move {
+        clip_paste_branch_series(&c.host, &c.window, c.arg("repo")?, c.arg("text")?, c.arg("name")?, c.arg("onHead")?)
+            .await
+    });
     d.add("clip_copy", |c| async move { clip_copy(&c.host, &c.window, c.arg("source")?).await });
     d.add("clip_paste_preview", |c| async move {
         clip_paste_preview(&c.host, &c.window, c.arg("text")?, c.arg("dest")?, c.arg("adjustPaths")?, c.arg("repos")?)
@@ -643,13 +837,13 @@ mod tests {
         let a = repo(&tmp.path().join("a"));
         fs::create_dir_all(a.join("src")).unwrap();
         fs::write(a.join("src/App.kt"), "fun main() = println(\"hi\")\n").unwrap();
-        let copied = copy(&a, ClipCopySource::Files { paths: vec![a.join("src")] }).unwrap();
+        let copied = copy(&a, ClipCopySource::Files { paths: vec![a.join("src")] }, &Settings::default()).unwrap();
         assert_eq!(copied.mode, "files");
         assert_eq!(copied.files, 1);
         assert!(copied.text.contains("// file: src/App.kt"), "{}", copied.text);
 
         let b = repo(&tmp.path().join("b"));
-        let preview = paste_preview(&b, &copied.text, false, &[]).unwrap();
+        let preview = paste_preview(&b, &copied.text, false, &[], &Settings::default()).unwrap();
         assert_eq!(preview.mode, "files");
         assert_eq!(
             preview.files.iter().map(|f| (f.path.as_str(), f.action.as_str())).collect::<Vec<_>>(),
@@ -665,16 +859,17 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let a = repo(&tmp.path().join("a"));
         fs::write(a.join("README.md"), "from a\n").unwrap();
-        let copied = copy(&a, ClipCopySource::Files { paths: vec![a.join("README.md")] }).unwrap();
+        let copied =
+            copy(&a, ClipCopySource::Files { paths: vec![a.join("README.md")] }, &Settings::default()).unwrap();
         let b = repo(&tmp.path().join("b"));
 
-        let preview = paste_preview(&b, &copied.text, false, &[]).unwrap();
+        let preview = paste_preview(&b, &copied.text, false, &[], &Settings::default()).unwrap();
         assert_eq!(preview.files[0].action, "overwrite");
         let kept = paste_apply(ClipPasteApply { id: preview.id, ..Default::default() }).unwrap();
         assert_eq!(kept.overwritten, 0);
         assert_eq!(fs::read_to_string(b.join("README.md")).unwrap(), "base\n");
 
-        let preview = paste_preview(&b, &copied.text, false, &[]).unwrap();
+        let preview = paste_preview(&b, &copied.text, false, &[], &Settings::default()).unwrap();
         let written = paste_apply(ClipPasteApply { id: preview.id, overwrite: vec![0], ..Default::default() }).unwrap();
         assert_eq!(written.overwritten, 1);
         assert_eq!(fs::read_to_string(b.join("README.md")).unwrap(), "from a");
@@ -688,8 +883,12 @@ mod tests {
         fs::write(a.join("new.txt"), "new\n").unwrap();
         git(&a, &["add", "-A"]);
         fs::write(a.join("README.md"), "changed again, unstaged\n").unwrap();
-        let copied =
-            copy(&a, ClipCopySource::Changes { paths: vec![a.clone()], side: ClipChangeSide::Staged }).unwrap();
+        let copied = copy(
+            &a,
+            ClipCopySource::Changes { paths: vec![a.clone()], side: ClipChangeSide::Staged },
+            &Settings::default(),
+        )
+        .unwrap();
         assert!(copied.text.contains("// file: [MODIFIED] README.md"), "{}", copied.text);
         assert!(copied.text.contains("// file: [NEW] new.txt"), "{}", copied.text);
         // The index's content, not the working tree's.
@@ -709,15 +908,18 @@ mod tests {
         git(&a, &["commit", "-q", "-m", "feat: two"]);
         let tip = git(&a, &["rev-parse", "HEAD"]);
 
-        let copied =
-            copy(&a, ClipCopySource::Commits { repo: a.clone(), tip: tip.clone(), selected: vec![tip, first] })
-                .unwrap();
+        let copied = copy(
+            &a,
+            ClipCopySource::Commits { repo: a.clone(), tip: tip.clone(), selected: vec![tip, first] },
+            &Settings::default(),
+        )
+        .unwrap();
         assert_eq!(copied.mode, "commits");
         assert_eq!(copied.commits, 2);
         assert!(copied.text.starts_with("// snip-sync commits v1\n"));
 
         let b = repo(&tmp.path().join("b"));
-        let preview = paste_preview(&b, &copied.text, false, &[]).unwrap();
+        let preview = paste_preview(&b, &copied.text, false, &[], &Settings::default()).unwrap();
         assert_eq!(preview.mode, "commits");
         assert_eq!(preview.commits.len(), 2);
         let result = paste_apply(ClipPasteApply { id: preview.id, ..Default::default() }).unwrap();
@@ -736,11 +938,15 @@ mod tests {
         git(&a, &["add", "-A"]);
         git(&a, &["commit", "-q", "-m", "topic"]);
         let tip = git(&a, &["rev-parse", "HEAD"]);
-        let files =
-            copy(&a, ClipCopySource::Range { repo: a.clone(), base: base.clone(), tip: tip.clone(), paths: vec![] })
-                .unwrap();
+        let files = copy(
+            &a,
+            ClipCopySource::Range { repo: a.clone(), base: base.clone(), tip: tip.clone(), paths: vec![] },
+            &Settings::default(),
+        )
+        .unwrap();
         assert!(files.text.contains("// file: [NEW] feature.txt"), "{}", files.text);
-        let commits = copy(&a, ClipCopySource::CommitRange { repo: a.clone(), base, tip }).unwrap();
+        let commits =
+            copy(&a, ClipCopySource::CommitRange { repo: a.clone(), base, tip }, &Settings::default()).unwrap();
         assert_eq!(commits.commits, 1);
     }
 
@@ -749,11 +955,54 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let a = repo(&tmp.path().join("a"));
         fs::write(a.join("x.txt"), "x\n").unwrap();
-        let copied = copy(&a, ClipCopySource::Files { paths: vec![a.join("x.txt")] }).unwrap();
+        let copied = copy(&a, ClipCopySource::Files { paths: vec![a.join("x.txt")] }, &Settings::default()).unwrap();
         let b = repo(&tmp.path().join("b"));
-        let preview = paste_preview(&b, &copied.text, false, &[]).unwrap();
+        let preview = paste_preview(&b, &copied.text, false, &[], &Settings::default()).unwrap();
         fs::write(b.join("x.txt"), "appeared meanwhile\n").unwrap();
         assert!(paste_apply(ClipPasteApply { id: preview.id, ..Default::default() }).is_err());
         assert_eq!(fs::read_to_string(b.join("x.txt")).unwrap(), "appeared meanwhile\n");
+    }
+
+    #[test]
+    fn a_branch_series_restores_as_a_new_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = repo(&tmp.path().join("a"));
+        git(&a, &["checkout", "-q", "-b", "topic"]);
+        fs::write(a.join("one.txt"), "1\n").unwrap();
+        git(&a, &["add", "-A"]);
+        git(&a, &["commit", "-q", "-m", "one"]);
+        fs::write(a.join("two.txt"), "2\n").unwrap();
+        git(&a, &["add", "-A"]);
+        git(&a, &["commit", "-q", "-m", "two"]);
+        let series = copy_branch_series(&a, "topic", None, false).unwrap();
+        assert_eq!(series.commits, 2);
+        assert!(is_branch_series(&series.text));
+        assert!(series.text.contains("base-commit: "));
+
+        // The other side has the base commit (a clone of main).
+        let b = tmp.path().join("b");
+        git(tmp.path(), &["clone", "-q", "-b", "main", a.to_str().unwrap(), b.to_str().unwrap()]);
+        git(&b, &["config", "user.name", "Tester"]);
+        git(&b, &["config", "user.email", "t@example.com"]);
+        let r = paste_branch_series(&b, &series.text, "restored", false).unwrap();
+        assert_eq!(r.commits, 2);
+        assert_eq!(git(&b, &["log", "-2", "--format=%s", "restored"]), "two\none");
+
+        // Entire history into an unrelated repository: an orphan branch.
+        let full = copy_branch_series(&a, "topic", None, true).unwrap();
+        assert_eq!(full.base, None);
+        let c = repo(&tmp.path().join("c"));
+        let r = paste_branch_series(&c, &full.text, "imported", false).unwrap();
+        assert_eq!(r.commits, 3);
+        assert_eq!(git(&c, &["log", "--format=%s", "imported"]), "two\none\ninit");
+
+        // A series that does not apply is aborted and the branch removed.
+        git(&c, &["checkout", "-q", "main"]);
+        fs::write(c.join("one.txt"), "conflict\n").unwrap();
+        git(&c, &["add", "-A"]);
+        git(&c, &["commit", "-q", "-m", "conflict"]);
+        assert!(paste_branch_series(&c, &series.text, "clash", true).is_err());
+        assert_eq!(git(&c, &["rev-parse", "--abbrev-ref", "HEAD"]), "main");
+        assert!(git(&c, &["branch", "--list", "clash"]).is_empty());
     }
 }

@@ -20,6 +20,8 @@ pub struct VcsSettings {
     pub shelf: ShelfSettings,
     /// Issue Navigation: commit-message patterns turned into links.
     pub issue_navigation: Vec<IssueLink>,
+    /// ClipCode clipboard copies (the ClipCode plugins' settings).
+    pub clip_code: ClipCodeSettings,
 }
 
 impl Default for VcsSettings {
@@ -34,6 +36,7 @@ impl Default for VcsSettings {
             confirmation: VcsConfirmationSettings::default(),
             shelf: ShelfSettings::default(),
             issue_navigation: Vec::new(),
+            clip_code: ClipCodeSettings::default(),
         }
     }
 }
@@ -161,6 +164,63 @@ impl Default for VcsConfirmationSettings {
             on_patch_created: "ask".into(),
         }
     }
+}
+
+/// Version Control › ClipCode: what a ClipCode copy puts on the clipboard. The keys and
+/// defaults are the ClipCode plugins' (IntelliJ `CopyFileContentSettings`, VS Code
+/// `clipcode.*`), so the same payload comes out of either.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ClipCodeSettings {
+    /// `$FILE_PATH` is replaced with the file's path.
+    pub header_format: String,
+    pub pre_text: String,
+    /// Non-empty: written after a `// clipcode-end` line.
+    pub post_text: String,
+    pub add_extra_line_between_files: bool,
+    pub set_max_file_count: bool,
+    pub file_count_limit: u32,
+    /// Larger files are copied as a "size exceeds limit" placeholder.
+    #[serde(rename = "maxFileSizeKB")]
+    pub max_file_size_kb: u32,
+    pub show_copy_notification: bool,
+    pub use_filters: bool,
+    pub use_include_filters: bool,
+    pub use_exclude_filters: bool,
+    pub filter_rules: Vec<ClipFilterRule>,
+}
+
+impl Default for ClipCodeSettings {
+    fn default() -> Self {
+        Self {
+            header_format: "// file: $FILE_PATH".into(),
+            pre_text: String::new(),
+            post_text: String::new(),
+            add_extra_line_between_files: true,
+            set_max_file_count: true,
+            file_count_limit: 30,
+            max_file_size_kb: 500,
+            show_copy_notification: true,
+            use_filters: false,
+            use_include_filters: true,
+            use_exclude_filters: true,
+            filter_rules: Vec::new(),
+        }
+    }
+}
+
+/// A ClipCode filter rule: `PATH` matches the path or a parent of it, `PATTERN` the file
+/// name (`*` / `?` wildcards, else a regular expression).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default)]
+pub struct ClipFilterRule {
+    /// `PATH` | `PATTERN`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// `INCLUDE` | `EXCLUDE`.
+    pub action: String,
+    pub value: String,
+    pub enabled: bool,
 }
 
 /// Version Control › Shelf.
