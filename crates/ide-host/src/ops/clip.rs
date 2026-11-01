@@ -375,27 +375,40 @@ fn keep(p: Pending) -> u32 {
     id
 }
 
+fn same_dir(a: &Path, b: &Path) -> bool {
+    a == b || std::fs::canonicalize(a).ok().zip(std::fs::canonicalize(b).ok()).is_some_and(|(a, b)| a == b)
+}
+
 fn tag<T: Serialize>(v: &T) -> String {
     serde_json::to_value(v).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()
 }
 
 fn replay_file(f: &FilePlan) -> ClipReplayFile {
+    let action = tag(&f.action);
+    // A deletion whose target is not in the destination writes nothing (snip-sync shows
+    // it as skipped, "already absent", never as a deletion).
+    let absent = action == "DELETE" && !f.existed && f.layout_conflict.is_none();
     ClipReplayFile {
         path: f.path.clone(),
         old_path: f.old_path.clone(),
         change: tag(&f.change),
-        action: tag(&f.action),
+        action: if absent { "SKIP".into() } else { action },
         overwrites: f.overwrites_existing(),
         reason: f
             .layout_conflict
             .map(|c| c.describe().to_string())
             .or_else(|| f.not_copied.map(|r| tag(&r)))
-            .or_else(|| f.skip_reason.map(|r| tag(&r))),
+            .or_else(|| f.skip_reason.map(|r| tag(&r)))
+            .or_else(|| absent.then(|| "ALREADY_ABSENT".into())),
     }
 }
 
 /// Plans pasting `text` into `dest` (a folder; commits replay into its repository). Nothing is written.
-pub fn paste_preview(dest: &Path, text: &str, adjust_paths: bool) -> IdeResult<ClipPastePreview> {
+///
+/// A payload copied from several repositories names the others' files `<repo>/…`
+/// (it has no `clipcode-root` line). Such a prefix lands in the repository of
+/// `repos` with that folder name, as snip-sync's prefix mapping would put it.
+pub fn paste_preview(dest: &Path, text: &str, adjust_paths: bool, repos: &[PathBuf]) -> IdeResult<ClipPastePreview> {
     let opts = RunOptions::default();
     if text.len() > CLIPBOARD_PAYLOAD_MAX {
         return Err(IdeError::invalid("The clipboard holds more than 32 MiB"));
@@ -442,11 +455,26 @@ pub fn paste_preview(dest: &Path, text: &str, adjust_paths: bool) -> IdeResult<C
         ide_clip::format::extract_source_root(text).as_deref(),
     );
     let primary = CanonicalRootId::new(dest).map_err(err)?;
-    let mapping = match suggestion.as_ref().filter(|_| adjust_paths) {
+    let mut mapping = match suggestion.as_ref().filter(|_| adjust_paths) {
         Some(s) => ImportMapping::from_restore_base(s, primary),
         None => ImportMapping::with_primary(primary),
     };
-    let plan = transfer::plan_import_with(text, header, &[dest.to_path_buf()], &mapping, &opts).map_err(err)?;
+    let mut roots = vec![dest.to_path_buf()];
+    if ide_clip::format::extract_source_root(text).is_none() {
+        for prefix in transfer::detect_clipboard_prefixes(text, header) {
+            let Some(repo) =
+                repos.iter().find(|r| r.file_name().is_some_and(|n| n.to_string_lossy() == prefix.as_str()))
+            else {
+                continue;
+            };
+            if same_dir(repo, dest) {
+                continue;
+            }
+            mapping.map_prefix(prefix, CanonicalRootId::new(repo).map_err(err)?);
+            roots.push(repo.clone());
+        }
+    }
+    let plan = transfer::plan_import_with(text, header, &roots, &mapping, &opts).map_err(err)?;
     let restore = plan.restore_plan();
     let mut files = Vec::new();
     for (i, op) in restore.create_operations.iter().enumerate() {
@@ -556,9 +584,10 @@ pub async fn clip_paste_preview(
     text: String,
     dest: Option<PathBuf>,
     adjust_paths: bool,
+    repos: Vec<PathBuf>,
 ) -> IdeResult<ClipPastePreview> {
     let project = host.project(window)?;
-    blocking(move || paste_preview(dest.as_deref().unwrap_or(&project.root), &text, adjust_paths)).await
+    blocking(move || paste_preview(dest.as_deref().unwrap_or(&project.root), &text, adjust_paths, &repos)).await
 }
 
 pub async fn clip_paste_apply(host: &Host, window: &str, apply: ClipPasteApply) -> IdeResult<ClipPasteResult> {
@@ -572,7 +601,8 @@ pub async fn clip_paste_apply(host: &Host, window: &str, apply: ClipPasteApply) 
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("clip_copy", |c| async move { clip_copy(&c.host, &c.window, c.arg("source")?).await });
     d.add("clip_paste_preview", |c| async move {
-        clip_paste_preview(&c.host, &c.window, c.arg("text")?, c.arg("dest")?, c.arg("adjustPaths")?).await
+        clip_paste_preview(&c.host, &c.window, c.arg("text")?, c.arg("dest")?, c.arg("adjustPaths")?, c.arg("repos")?)
+            .await
     });
     d.add("clip_paste_apply", |c| async move { clip_paste_apply(&c.host, &c.window, c.arg("apply")?).await });
 }
@@ -619,7 +649,7 @@ mod tests {
         assert!(copied.text.contains("// file: src/App.kt"), "{}", copied.text);
 
         let b = repo(&tmp.path().join("b"));
-        let preview = paste_preview(&b, &copied.text, false).unwrap();
+        let preview = paste_preview(&b, &copied.text, false, &[]).unwrap();
         assert_eq!(preview.mode, "files");
         assert_eq!(
             preview.files.iter().map(|f| (f.path.as_str(), f.action.as_str())).collect::<Vec<_>>(),
@@ -638,13 +668,13 @@ mod tests {
         let copied = copy(&a, ClipCopySource::Files { paths: vec![a.join("README.md")] }).unwrap();
         let b = repo(&tmp.path().join("b"));
 
-        let preview = paste_preview(&b, &copied.text, false).unwrap();
+        let preview = paste_preview(&b, &copied.text, false, &[]).unwrap();
         assert_eq!(preview.files[0].action, "overwrite");
         let kept = paste_apply(ClipPasteApply { id: preview.id, ..Default::default() }).unwrap();
         assert_eq!(kept.overwritten, 0);
         assert_eq!(fs::read_to_string(b.join("README.md")).unwrap(), "base\n");
 
-        let preview = paste_preview(&b, &copied.text, false).unwrap();
+        let preview = paste_preview(&b, &copied.text, false, &[]).unwrap();
         let written = paste_apply(ClipPasteApply { id: preview.id, overwrite: vec![0], ..Default::default() }).unwrap();
         assert_eq!(written.overwritten, 1);
         assert_eq!(fs::read_to_string(b.join("README.md")).unwrap(), "from a");
@@ -687,7 +717,7 @@ mod tests {
         assert!(copied.text.starts_with("// snip-sync commits v1\n"));
 
         let b = repo(&tmp.path().join("b"));
-        let preview = paste_preview(&b, &copied.text, false).unwrap();
+        let preview = paste_preview(&b, &copied.text, false, &[]).unwrap();
         assert_eq!(preview.mode, "commits");
         assert_eq!(preview.commits.len(), 2);
         let result = paste_apply(ClipPasteApply { id: preview.id, ..Default::default() }).unwrap();
@@ -721,7 +751,7 @@ mod tests {
         fs::write(a.join("x.txt"), "x\n").unwrap();
         let copied = copy(&a, ClipCopySource::Files { paths: vec![a.join("x.txt")] }).unwrap();
         let b = repo(&tmp.path().join("b"));
-        let preview = paste_preview(&b, &copied.text, false).unwrap();
+        let preview = paste_preview(&b, &copied.text, false, &[]).unwrap();
         fs::write(b.join("x.txt"), "appeared meanwhile\n").unwrap();
         assert!(paste_apply(ClipPasteApply { id: preview.id, ..Default::default() }).is_err());
         assert_eq!(fs::read_to_string(b.join("x.txt")).unwrap(), "appeared meanwhile\n");
