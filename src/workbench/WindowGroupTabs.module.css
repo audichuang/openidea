@@ -110,3 +110,6 @@
 .item:focus-within .detach {
   opacity: 1;
 }
+.systemBar {
+  flex: none;
+}
