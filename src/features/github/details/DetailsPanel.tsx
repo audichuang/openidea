@@ -33,6 +33,9 @@ const PANEL_MENU: (n: number) => MenuItem[] = (n) => [
   { kind: "action", action: "github.pullRequest.refresh", arg: n },
   { kind: "action", action: "github.pullRequest.openInBrowser", arg: n },
   { kind: "action", action: "github.pullRequest.copyUrl", arg: n },
+  { kind: "separator" },
+  { kind: "action", action: "github.pullRequest.clipCopyFiles", arg: n },
+  { kind: "action", action: "github.pullRequest.clipCopyCommits", arg: n },
 ];
 
 export function DetailsPanel({ number }: { number: number }) {
