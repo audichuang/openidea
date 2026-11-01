@@ -175,6 +175,22 @@ function actions(): ActionSpec[] {
       when: CONNECTED,
     },
     {
+      id: "github.pullRequest.clipCopyFiles",
+      title: "ClipCode: Copy Changed Files",
+      category: "GitHub",
+      icon: "copy",
+      description: "Copy the pull request's changed files in the ClipCode format",
+      when: CONNECTED,
+    },
+    {
+      id: "github.pullRequest.clipCopyCommits",
+      title: "Copy Pull Request Commits",
+      category: "GitHub",
+      icon: "copy",
+      description: "Copy the pull request's commits so snip-sync or OpenIDEA can replay them",
+      when: CONNECTED,
+    },
+    {
       // Github.PullRequest.CheckoutBranch
       id: "github.pullRequest.checkoutBranch",
       title: "Checkout Branch",

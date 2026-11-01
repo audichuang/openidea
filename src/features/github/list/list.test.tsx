@@ -275,6 +275,9 @@ describe("ListPanel", () => {
       "github.pullRequest.openInBrowser",
       "github.pullRequest.copyUrl",
       "separator",
+      "github.pullRequest.clipCopyFiles",
+      "github.pullRequest.clipCopyCommits",
+      "separator",
       "github.refresh",
     ]);
   });
