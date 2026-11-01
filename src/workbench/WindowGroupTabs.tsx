@@ -1,7 +1,10 @@
 import { useRef, useState } from "react";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
+import { usePlatform } from "@/platform/platformInfo";
+import { useProject } from "@/platform/project";
 import { reorderedTabs, useWindowGroup } from "@/platform/windowGroups";
+import { clampZoom } from "@/platform/zoom";
 import { Icon, IconButton, showContextMenu } from "@/ui";
 import { notifications } from "./contributions";
 import styles from "./WindowGroupTabs.module.css";
@@ -10,7 +13,30 @@ function run(work: Promise<unknown>) {
   void work.catch((e) => notifications().notify({ level: "error", title: "Window group", body: String(e) }));
 }
 
-export function WindowGroupTabs() {
+/**
+ * macOS draws the group's tabs in its own tab bar over the page, below the title bar or, in
+ * fullscreen, at the very top: keep that room free on the matching side of the title bar.
+ */
+function SystemTabBarSpace({ top }: { top: boolean }) {
+  const bar = useWindowGroup((state) => state.systemTabBar);
+  const zoom = useProject((s) => clampZoom(s.settings?.appearance?.zoom));
+  const height = bar.height ?? 0;
+  if (height <= 0 || bar.top !== top) return null;
+  // Native points; page zoom scales CSS pixels.
+  return <div className={styles.systemBar} style={{ height: (height * 100) / zoom }} data-window-group="system" />;
+}
+
+/**
+ * `top`: the slot above the title bar (only the macOS fullscreen tab bar uses it). `hidePageTabs`
+ * (Distraction Free) hides page-drawn tabs; the system tab bar stays, and so does its room.
+ */
+export function WindowGroupTabs({ top = false, hidePageTabs = false }: { top?: boolean; hidePageTabs?: boolean }) {
+  const system = usePlatform((s) => s.overlayTitleBar);
+  if (system) return <SystemTabBarSpace top={top} />;
+  return top || hidePageTabs ? null : <PageTabs />;
+}
+
+function PageTabs() {
   const tabs = useWindowGroup((state) => state.tabs);
   const drag = useRef<{ label: string; x: number; moved: boolean } | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
