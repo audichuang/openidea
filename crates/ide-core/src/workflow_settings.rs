@@ -68,6 +68,9 @@ pub struct GitSettings {
     pub push_dialog_only_protected: bool,
     /// Stashes and shelves share one tab.
     pub combine_stash_and_shelf: bool,
+    /// IDEA's "Enable staging area": the Commit tool window shows the index (Staged /
+    /// Unstaged) instead of change lists, and Commit commits exactly what is staged.
+    pub staging_area: bool,
 }
 
 impl Default for GitSettings {
@@ -88,6 +91,7 @@ impl Default for GitSettings {
             show_push_dialog: true,
             push_dialog_only_protected: false,
             combine_stash_and_shelf: false,
+            staging_area: false,
         }
     }
 }
