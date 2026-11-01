@@ -218,6 +218,28 @@
   gap: 4px;
   border-radius: var(--radius-small);
 }
+/* Stage / Unstage of a staging area row: at the row's end, on hover or selection. */
+.stageAction {
+  flex: none;
+  margin-left: auto;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-small);
+  color: var(--fg-subtle);
+  --icon-color: currentColor;
+  visibility: hidden;
+}
+.stageAction:hover {
+  background: var(--bg-hover);
+  color: var(--fg-strong);
+}
+:global([role="treeitem"]):hover .stageAction,
+:global([role="treeitem"][aria-selected="true"]) .stageAction {
+  visibility: visible;
+}
 .dropTarget {
   box-shadow: inset 0 0 0 1px var(--accent);
   background: color-mix(in srgb, var(--accent) 12%, transparent);
