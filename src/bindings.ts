@@ -198,6 +198,10 @@ export const commands = {
 	clipPastePreview: (text: string, dest: string | null, adjustPaths: boolean, repos: string[]) => typedError<ClipPastePreview, IdeError>(__TAURI_INVOKE("clip_paste_preview", { text, dest, adjustPaths, repos })),
 	/**  Writes the preview `apply.id` as confirmed. */
 	clipPasteApply: (apply: ClipPasteApply) => typedError<ClipPasteResult, IdeError>(__TAURI_INVOKE("clip_paste_apply", { apply })),
+	/**  ClipCode for VS Code's Copy Branch Commits: `branch` since its fork point (or `full` history) as an mbox. */
+	clipCopyBranchSeries: (repo: string, branch: string, base: string | null, full: boolean) => typedError<ClipBranchSeries, IdeError>(__TAURI_INVOKE("clip_copy_branch_series", { repo, branch, base, full })),
+	/**  Paste Branch Commits: restores an mbox as the new branch `name` (`git am --3way`). */
+	clipPasteBranchSeries: (repo: string, text: string, name: string, onHead: boolean) => typedError<ClipBranchRestore, IdeError>(__TAURI_INVOKE("clip_paste_branch_series", { repo, text, name, onHead })),
 	/**  Absolute paths on the clipboard, empty when it holds no file list. */
 	clipboardFileList: () => typedError<string[], IdeError>(__TAURI_INVOKE("clipboard_file_list")),
 	/**  Whether the clipboard holds files: cheap, for the Paste item's enabled state. */
@@ -1988,10 +1992,46 @@ export type ClearCachesResult = {
 	rssAfterBytes: number | null,
 };
 
+export type ClipBranchRestore = {
+	branch: string,
+	commits: number,
+};
+
+/**  A branch's commits as a `git format-patch` mbox. */
+export type ClipBranchSeries = {
+	text: string,
+	commits: number,
+	/**  The fork point the patches apply onto; `None`: the entire history (self-contained). */
+	base: string | null,
+};
+
 /**  Which uncommitted side a Commit tool window copy reads. */
 export type ClipChangeSide = 
 /**  Working tree and index together, as the change list shows them. */
 "working" | "staged" | "unstaged";
+
+/**
+ *  Version Control › ClipCode: what a ClipCode copy puts on the clipboard. The keys and
+ *  defaults are the ClipCode plugins' (IntelliJ `CopyFileContentSettings`, VS Code
+ *  `clipcode.*`), so the same payload comes out of either.
+ */
+export type ClipCodeSettings = {
+	/**  `$FILE_PATH` is replaced with the file's path. */
+	headerFormat?: string,
+	preText?: string,
+	/**  Non-empty: written after a `// clipcode-end` line. */
+	postText?: string,
+	addExtraLineBetweenFiles?: boolean,
+	setMaxFileCount?: boolean,
+	fileCountLimit?: number,
+	/**  Larger files are copied as a "size exceeds limit" placeholder. */
+	maxFileSizeKB?: number,
+	showCopyNotification?: boolean,
+	useFilters?: boolean,
+	useIncludeFilters?: boolean,
+	useExcludeFilters?: boolean,
+	filterRules?: ClipFilterRule[],
+};
 
 export type ClipCopyResult = {
 	/**  The clipboard text. */
@@ -2003,14 +2043,23 @@ export type ClipCopyResult = {
 	/**  UTF-16 code units, as ClipCode counts them. */
 	chars: number,
 	lines: number,
+	words: number,
 	tokens: number,
 	/**
 	 *  Files left out: unreadable, not UTF-8, over the size limit, or (commit
 	 *  mode) binary / symlink files whose change the replay cannot carry.
 	 */
 	skipped: number,
+	/**  Of `skipped`: over the size limit (copied as a placeholder). */
+	skippedSize: number,
+	/**  Of `skipped`: binary, not UTF-8 or unreadable. */
+	skippedUnreadable: number,
 	/**  The file limit cut the copy short. */
 	truncated: boolean,
+	/**  The file limit in force (`truncated` names it). */
+	fileLimit: number,
+	/**  Settings › ClipCode › "Show notification after copying". */
+	notify: boolean,
 };
 
 /**
@@ -2030,6 +2079,19 @@ export type ClipCopySource =
 { kind: "commits"; repo: string; tip: string; selected: string[] } | 
 /**  The first-parent commits of `base`..`tip`, for replay (a pull request's commits). */
 { kind: "commitRange"; repo: string; base: string; tip: string };
+
+/**
+ *  A ClipCode filter rule: `PATH` matches the path or a parent of it, `PATTERN` the file
+ *  name (`*` / `?` wildcards, else a regular expression).
+ */
+export type ClipFilterRule = {
+	/**  `PATH` | `PATTERN`. */
+	type?: string,
+	/**  `INCLUDE` | `EXCLUDE`. */
+	action?: string,
+	value?: string,
+	enabled?: boolean,
+};
 
 export type ClipPasteApply = {
 	id: number,
@@ -7313,6 +7375,8 @@ export type VcsSettings = {
 	shelf?: ShelfSettings,
 	/**  Issue Navigation: commit-message patterns turned into links. */
 	issueNavigation?: IssueLink[],
+	/**  ClipCode clipboard copies (the ClipCode plugins' settings). */
+	clipCode?: ClipCodeSettings,
 };
 
 /**  What a view or custom editor shows. */
