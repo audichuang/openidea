@@ -60,3 +60,6 @@
   outline-offset: -2px;
   border-radius: var(--radius-small);
 }
+.systemBar {
+  flex: none;
+}
