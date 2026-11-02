@@ -661,20 +661,18 @@ pub fn paste_apply_with_paths(req: ClipPasteApply) -> IdeResult<(ClipPasteResult
                     unchecked.insert(i);
                 }
             }
-            let written: Vec<PathBuf> = restore
-                .create_operations
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !unchecked.contains(i))
-                .map(|(_, op)| op.absolute_path.clone())
-                .collect();
             let selection = RestoreSelection {
                 overwrite_existing: true,
                 skip_existing: false,
                 unchecked_creates: unchecked,
                 unchecked_deletes: req.unchecked_deletes.iter().map(|&i| i as usize).collect(),
             };
-            let r = plan.apply(&selection).map_err(|e| IdeError::invalid(e.paste_message()))?;
+            // Only writes that actually committed are reported: a failed write
+            // keeps its open buffer (and the user's unsaved edits).
+            let mut written: Vec<PathBuf> = Vec::new();
+            let r = plan
+                .apply_observed(&selection, &mut |op, _| written.push(op.absolute_path.clone()))
+                .map_err(|e| IdeError::invalid(e.paste_message()))?;
             let result = ClipPasteResult {
                 created: n(r.created_count),
                 overwritten: n(r.overwritten_count),
@@ -1161,6 +1159,36 @@ mod tests {
                 .unwrap();
         assert_eq!(written.len(), 1);
         assert!(written[0].ends_with("README.md"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_write_is_not_reported_as_written() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let a = repo(&tmp.path().join("a"));
+        fs::create_dir_all(a.join("locked")).unwrap();
+        fs::write(a.join("locked/f.txt"), "from a\n").unwrap();
+        fs::write(a.join("ok.txt"), "from a\n").unwrap();
+        let copied = copy(
+            &a,
+            ClipCopySource::Files { paths: vec![a.join("locked/f.txt"), a.join("ok.txt")] },
+            &Settings::default(),
+        )
+        .unwrap();
+        let b = repo(&tmp.path().join("b"));
+        fs::create_dir_all(b.join("locked")).unwrap();
+        fs::write(b.join("locked/f.txt"), "mine\n").unwrap();
+        fs::set_permissions(b.join("locked"), fs::Permissions::from_mode(0o555)).unwrap();
+
+        let preview = paste_preview(&b, &copied.text, false, &[], &Settings::default()).unwrap();
+        let all: Vec<u32> = (0..preview.files.len() as u32).collect();
+        let outcome = paste_apply_with_paths(ClipPasteApply { id: preview.id, overwrite: all, ..Default::default() });
+        fs::set_permissions(b.join("locked"), fs::Permissions::from_mode(0o755)).unwrap();
+        let (result, written) = outcome.unwrap();
+        assert!(!result.errors.is_empty(), "the locked write must fail: {result:?}");
+        assert!(written.iter().all(|p| !p.ends_with("locked/f.txt")), "{written:?}");
+        assert!(written.iter().any(|p| p.ends_with("ok.txt")), "{written:?}");
     }
 
     #[test]
