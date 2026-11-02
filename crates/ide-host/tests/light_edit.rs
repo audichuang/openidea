@@ -179,3 +179,29 @@ async fn light_notebooks_open_without_interpreter_detection_or_execution() {
     assert!(!bin.join("python.probed").exists());
     host.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_light_edit_window_anchors_no_saved_window_group() {
+    use ide_workspace::window_groups::{SavedGroup, restore_plan};
+    let tmp = tempfile::tempdir().unwrap();
+    let tmp_root = dunce::canonicalize(tmp.path()).unwrap();
+    let (dir, other) = (tmp_root.join("loose"), tmp_root.join("other"));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(dir.join("notes.txt"), "x\n").unwrap();
+    let host = host(&tmp_root.join("app"));
+    let saved = [SavedGroup { projects: vec![other.clone(), dir.clone()], selected: 0, fullscreen: false }];
+    let main_root = |host: &Host| host.opened_project("main").map(|p| p.root.clone());
+
+    // LightEdit's root is the file's folder, which a saved group may hold as a project.
+    host.open_light("main", &dir.join("notes.txt")).unwrap();
+    assert!(host.opened_project("main").is_none());
+    let plan = restore_plan(&saved, main_root(&host).as_deref(), |_| true);
+    assert_eq!(plan.len(), 1);
+    assert!(!plan[0].main, "the group reopens in new windows, not around the LightEdit window");
+    assert_eq!(plan[0].projects, vec![other.clone(), dir.clone()]);
+
+    host.open_project("main", &dir).unwrap();
+    let plan = restore_plan(&saved, main_root(&host).as_deref(), |_| true);
+    assert!(plan[0].main);
+}
