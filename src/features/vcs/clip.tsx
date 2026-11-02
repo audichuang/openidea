@@ -489,6 +489,11 @@ function pathsArg(arg: unknown): string[] {
   return [];
 }
 
+/** Local filesystem paths only: not `jdt://` or other virtual documents. */
+function isFilesystemPath(p: string): boolean {
+  return p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p);
+}
+
 export function registerClipActions(): () => void {
   const actions: Action[] = [
     {
@@ -502,7 +507,7 @@ export function registerClipActions(): () => void {
         // From the command palette: the focused editor's file.
         if (!paths.length) {
           const active = editorService().activePath();
-          if (active) paths = [active];
+          if (active && isFilesystemPath(active)) paths = [active];
         }
         if (!paths.length) {
           notifications().notify({ group: "clipcode", level: "info", title: "No files selected." });
@@ -591,7 +596,7 @@ export function registerClipActions(): () => void {
       category: "Git",
       icon: "copy",
       run: () => {
-        const paths = editorService().openPaths?.() ?? [];
+        const paths = (editorService().openPaths?.() ?? []).filter(isFilesystemPath);
         if (!paths.length) {
           notifications().notify({ group: "clipcode", level: "info", title: "No open tabs found to copy." });
           return;
@@ -627,7 +632,7 @@ export function registerClipActions(): () => void {
       menus: ["editorTab", "projectView", "editor"],
       order: 40,
       items: (menu, { paths }) => {
-        const files = paths.filter((p) => p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p));
+        const files = paths.filter(isFilesystemPath);
         // The plugin's CutCopyPasteGroup entries, acting on the current file.
         if (menu === "editor") {
           return files.length
