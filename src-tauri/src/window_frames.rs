@@ -138,7 +138,7 @@ mod runtime {
 
     /// window-state's label (`map_label` in lib.rs).
     fn key(label: &str) -> &str {
-        if crate::windows::is_settings_window(label) { "settings" } else { label }
+        crate::windows::state_key(label)
     }
 
     fn path(app: &AppHandle) -> Option<PathBuf> {
