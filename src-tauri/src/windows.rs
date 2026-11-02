@@ -227,8 +227,11 @@ pub struct WindowsState {
     pub groups: Mutex<ide_workspace::window_groups::WindowGroups>,
     /// `main` has started reopening the saved window groups.
     pub groups_restored: AtomicBool,
-    /// ... and has finished: until then saving keeps the saved groups not reopened yet.
+    /// ... and has finished: until then saving keeps the saved groups not reopened yet. Stays
+    /// unset when the saved groups could not be read, so saving never overwrites them.
     pub groups_restore_done: AtomicBool,
+    /// The saved groups the restore failed to reopen, kept in what is saved.
+    pub groups_unrestored: Mutex<Vec<ide_workspace::window_groups::SavedGroup>>,
     pub groups_persist: tokio::sync::Mutex<()>,
     launches: Mutex<HashMap<String, Launch>>,
     /// A taken launch still owns its window until the frontend finishes opening it.
