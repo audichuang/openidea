@@ -244,28 +244,21 @@ impl ExportSelection {
         Self::build(roots, primary_root, None, &[], &[], items)
     }
 
-    /// Like [`ExportSelection::new`], with `absolute` (a subset of `roots`)
-    /// spelled by absolute path, so validation sees the headers that are written.
-    pub fn with_absolute(
-        roots: Vec<PathBuf>,
-        primary_root: Option<PathBuf>,
-        absolute: &[PathBuf],
-        items: Vec<ExportItem>,
-    ) -> Result<Self, TransferError> {
-        Self::build(roots, primary_root, None, &[], absolute, items)
-    }
-
     /// A selection whose items are spelled relative to `anchor` (the opened
     /// project, with `content_roots` as its other roots) and named after it in
     /// the `clipcode-root` line when it has no other root; see
-    /// [`ExportSelection::anchor_root`]. Validated once, as anchored.
+    /// [`ExportSelection::anchor_root`]. `absolute` (a subset of `roots`) is
+    /// spelled by absolute path and `primary_root` is the root whose files the
+    /// filters match by their own spelling; validated once, with all of them.
     pub fn anchored(
         roots: Vec<PathBuf>,
+        primary_root: Option<PathBuf>,
         anchor: &Path,
         content_roots: &[PathBuf],
+        absolute: &[PathBuf],
         items: Vec<ExportItem>,
     ) -> Result<Self, TransferError> {
-        Self::build(roots, None, Some(anchor), content_roots, &[], items)
+        Self::build(roots, primary_root, Some(anchor), content_roots, absolute, items)
     }
 
     fn build(
