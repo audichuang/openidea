@@ -540,7 +540,8 @@ pub fn paste_preview(
 ///
 /// A payload copied from several repositories names the others' files `<repo>/…`
 /// (it has no `clipcode-root` line). Such a prefix lands in the repository of
-/// `repos` with that folder name, as snip-sync's prefix mapping would put it.
+/// `repos` with that folder name, as snip-sync's prefix mapping would put it,
+/// in a project without other roots only.
 pub fn paste_preview_into(
     dest: &Path,
     repo: Option<&Path>,
@@ -610,7 +611,10 @@ pub fn paste_preview_into(
     };
     let mut roots = vec![dest.to_path_buf()];
     roots.extend(mapping.map_root_labels(dest, &others).map_err(err)?);
-    if ide_clip::format::extract_source_root(text).is_none() {
+    // Like the restore base, the repository guess is for a single-root project only: with
+    // other roots, as in ClipCode, only their labels route a prefix, and the payload's other
+    // `<dir>/…` paths are the primary's own (a namesake repository must not take them).
+    if others.is_empty() && ide_clip::format::extract_source_root(text).is_none() {
         for prefix in transfer::detect_clipboard_prefixes(text, header) {
             // A project root's label is already routed (or ambiguous).
             if mapping.prefix_destinations.contains_key(&prefix) || mapping.blocked_prefixes.contains(&prefix) {
@@ -1153,6 +1157,59 @@ mod tests {
         let preview = paste_preview(&m, &text, false, &[], &Settings::default()).unwrap();
         let project_file = m.join("ext/a.txt").to_string_lossy().into_owned();
         assert!(!targets_of(&preview).contains(&project_file), "{:?}", preview.files);
+    }
+
+    /// Repository `W` with a committed `ext/a.txt`, the plain content root `C`, and
+    /// the repository `other/a/ext` (not a project root) sharing that folder name.
+    /// Returns (W, C, ext).
+    fn multi_root_with_a_namesake_repository(tmp: &Path) -> (PathBuf, PathBuf, PathBuf) {
+        let base = std::fs::canonicalize(tmp).unwrap();
+        let w = repo(&base.join("W"));
+        fs::create_dir_all(w.join("ext")).unwrap();
+        commit_file(&w, "ext/a.txt", Some("project\n"), "add ext/a");
+        let c = base.join("C");
+        fs::create_dir_all(&c).unwrap();
+        fs::write(c.join("c.txt"), "c\n").unwrap();
+        let ext = repo(&base.join("other/a/ext"));
+        commit_file(&ext, "a.txt", Some("external\n"), "add a");
+        (w, c, ext)
+    }
+
+    #[test]
+    fn a_multi_root_paste_keeps_primary_relative_paths_out_of_a_namesake_repository() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (w, c, ext) = multi_root_with_a_namesake_repository(tmp.path());
+        let roots = vec![c.clone()];
+        let repos = vec![w.clone(), ext.clone()];
+        let project_file = w.join("ext/a.txt").to_string_lossy().into_owned();
+        let external_file = ext.join("a.txt").to_string_lossy().into_owned();
+        let copy_w = || {
+            let source = ClipCopySource::Changes { paths: vec![w.clone()], side: ClipChangeSide::Working };
+            copy_in(&w, &roots, source, &Settings::default()).unwrap().text
+        };
+
+        // A write: the modified project file restores into the project.
+        fs::write(w.join("ext/a.txt"), "changed\n").unwrap();
+        let text = copy_w();
+        assert!(!text.contains("// clipcode-root:"), "{text}");
+        assert!(text.contains("// file: [MODIFIED] ext/a.txt\n"), "{text}");
+        fs::write(w.join("ext/a.txt"), "project\n").unwrap();
+        let preview = paste_preview_into(&w, None, &roots, &text, false, &repos, &Settings::default()).unwrap();
+        assert_eq!(targets_of(&preview), vec![project_file.clone()], "{:?}", preview.files);
+        assert_eq!(preview.files[0].action, "overwrite");
+
+        // A delete, also once the project's folder is gone with its last file.
+        fs::remove_file(w.join("ext/a.txt")).unwrap();
+        let text = copy_w();
+        assert!(text.contains("// file: [DELETED] ext/a.txt\n"), "{text}");
+        for remove_dir in [false, true] {
+            if remove_dir {
+                fs::remove_dir(w.join("ext")).unwrap();
+            }
+            let preview = paste_preview_into(&w, None, &roots, &text, false, &repos, &Settings::default()).unwrap();
+            assert!(!targets_of(&preview).contains(&external_file), "{:?}", preview.files);
+        }
+        assert_eq!(fs::read_to_string(ext.join("a.txt")).unwrap(), "external\n");
     }
 
     /// Workspace `W` (a plain folder) with the content root `x/a`, a repository
