@@ -431,15 +431,29 @@ async fn restore_groups(app: &AppHandle, caller: &str, root: &Path) -> IdeResult
     }
     // `create_main_window` may have just started this window's fullscreen animation; tabs moved
     // into a window during one are lost.
-    if let Some(window) = app.get_webview_window(caller) {
-        wait_fullscreen_transition(app, &window).await;
-    }
+    let main_fullscreen = match app.get_webview_window(caller) {
+        Some(window) => {
+            wait_fullscreen_transition(app, &window).await;
+            // `main`'s group takes its saved fullscreen state (`SavedGroup::fullscreen`), not the
+            // one `main` reopened in (`main-window-fullscreen.json`): leave it before tabs move in.
+            let fullscreen = in_fullscreen(app, &window);
+            let leave = plan.iter().any(|g| g.main && g.grouped() && g.fullscreen_change(fullscreen) == Some(false));
+            if leave {
+                if let Err(e) = window.set_fullscreen(false) {
+                    tracing::warn!("cannot reopen a window group out of full screen: {e}");
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                wait_fullscreen_transition(app, &window).await;
+            }
+            fullscreen && !leave
+        }
+        None => false,
+    };
     // Every group is merged before any enters fullscreen, so no tab moves during a transition.
     let mut fullscreen = Vec::new();
     for group in &plan {
         match restore_group(app, caller, root, group) {
-            // `main`'s group reopens in fullscreen with `main` (`main-window-fullscreen.json`).
-            Ok(Some(selected)) if group.fullscreen && !group.main => fullscreen.push(selected),
+            Ok(Some(selected)) if group.fullscreen_change(main_fullscreen) == Some(true) => fullscreen.push(selected),
             Ok(_) => {}
             Err(e) => tracing::warn!("cannot reopen a window group: {}", e.message),
         }
@@ -480,6 +494,15 @@ fn restore_group(app: &AppHandle, caller: &str, root: &Path, group: &PlannedGrou
     let selected = labels[group.selected].clone();
     group_windows(app, labels, &anchor, &selected)?;
     Ok(Some(selected))
+}
+
+/// Whether `window`'s group is in fullscreen once grouped. Elsewhere than on macOS grouping leaves
+/// fullscreen (`group_windows`).
+fn in_fullscreen(_app: &AppHandle, _window: &tauri::WebviewWindow) -> bool {
+    #[cfg(target_os = "macos")]
+    return crate::macos::in_fullscreen_any_thread(_app, vec![_window.clone()]).first().copied().unwrap_or(false);
+    #[cfg(not(target_os = "macos"))]
+    false
 }
 
 /// Waits (up to 3 s) for `window` to finish entering or leaving fullscreen.
