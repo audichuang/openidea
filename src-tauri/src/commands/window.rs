@@ -245,6 +245,16 @@ pub fn app_quit(app: AppHandle, windows: State<'_, WindowsState>) {
     if windows.quitting() {
         return;
     }
+    // Before any window closes. The system tab bar reorders tabs without telling the app; once
+    // quitting, nothing is saved.
+    #[cfg(target_os = "macos")]
+    {
+        windows::save_main_fullscreen(&app);
+        crate::window_groups::sync(&app);
+        if let Err(e) = tauri::async_runtime::block_on(crate::window_groups::persist(&app)) {
+            tracing::warn!("cannot save window groups: {}", e.message);
+        }
+    }
     windows.set_quitting(true);
     windows::continue_quit(&app, None);
 }
