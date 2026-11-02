@@ -1,7 +1,7 @@
 //! Window grouping is independent of a window's project or workspace.
 use ide_core::{IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Platform adapters supply the system's tab preference and active project state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,41 +129,77 @@ impl WindowGroups {
     }
 }
 
-/// One entry of the window session reopened at the next start (`window-groups.json`): a
-/// window group, or a single project window (one project).
+/// A window group as saved between launches: its projects in tab order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SavedWindows {
+pub struct SavedGroup {
     pub projects: Vec<PathBuf>,
-    /// Index into `projects` of the group's selected tab.
     pub selected: usize,
+    /// The group was in a fullscreen Space (files saved before this field: not).
+    #[serde(default)]
+    pub fullscreen: bool,
 }
 
-/// The project windows open now, to reopen at the next start: every group with its selected
-/// tab, then each window outside a group, in the order of `windows`. `project_of` gives a
-/// window's project (`None` for the welcome screen or LightEdit). `None` while a grouped
-/// window has no project yet (a restored member still opening): keep the previous session.
-pub fn session(
-    groups: &[WindowGroup],
-    windows: &[String],
-    project_of: impl Fn(&str) -> Option<PathBuf>,
-) -> Option<Vec<SavedWindows>> {
-    let mut saved = Vec::new();
-    for group in groups {
-        let projects: Option<Vec<PathBuf>> = group.members.iter().map(|label| project_of(label)).collect();
-        let selected = group.members.iter().position(|l| l == &group.selected).unwrap_or(0);
-        saved.push(SavedWindows { projects: projects?, selected });
+/// A saved group to reopen: the projects that still exist, in tab order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedGroup {
+    pub projects: Vec<PathBuf>,
+    pub selected: usize,
+    pub fullscreen: bool,
+    /// Holds `main`'s project, which anchors the group.
+    pub main: bool,
+}
+
+impl PlannedGroup {
+    /// Fewer than two projects left: they reopen as a plain window, not a group.
+    pub fn grouped(&self) -> bool {
+        self.projects.len() > 1
     }
-    for label in windows {
-        if groups.iter().any(|g| g.members.contains(label)) {
+}
+
+/// Which saved groups to reopen and with which projects. Projects that no longer exist (`exists`)
+/// or already belong to an earlier group are left out; the group holding `main_root` comes first.
+pub fn restore_plan(
+    saved: &[SavedGroup],
+    main_root: Option<&Path>,
+    exists: impl Fn(&Path) -> bool,
+) -> Vec<PlannedGroup> {
+    let mut taken: Vec<&Path> = Vec::new();
+    let mut plan = Vec::new();
+    for group in saved {
+        let mut projects = Vec::new();
+        for path in &group.projects {
+            let main = main_root == Some(path.as_path());
+            if !taken.contains(&path.as_path()) && (main || exists(path)) {
+                taken.push(path);
+                projects.push(path.clone());
+            }
+        }
+        if projects.is_empty() {
             continue;
         }
-        if let Some(project) = project_of(label)
-            && !saved.iter().any(|s| s.projects.contains(&project))
-        {
-            saved.push(SavedWindows { projects: vec![project], selected: 0 });
-        }
+        let selected = group.projects.get(group.selected).and_then(|s| projects.iter().position(|p| p == s));
+        let main = main_root.and_then(|root| projects.iter().position(|p| p == root));
+        plan.push(PlannedGroup {
+            selected: selected.or(main).unwrap_or(0),
+            projects,
+            fullscreen: group.fullscreen,
+            main: main.is_some(),
+        });
     }
-    Some(saved)
+    plan.sort_by_key(|g| !g.main);
+    plan
+}
+
+/// What to save: `current` (the open groups), plus, until the saved groups have been reopened,
+/// each saved group that shares no project with an open one, so a quit or a save part way through
+/// startup doesn't drop the groups not reopened yet.
+pub fn groups_to_save(current: Vec<SavedGroup>, saved: Vec<SavedGroup>, restored: bool) -> Vec<SavedGroup> {
+    if restored {
+        return current;
+    }
+    let open = |path: &PathBuf| current.iter().any(|g| g.projects.contains(path));
+    let kept: Vec<_> = saved.into_iter().filter(|g| !g.projects.iter().any(open)).collect();
+    current.into_iter().chain(kept).collect()
 }
 
 #[cfg(test)]
@@ -252,27 +288,86 @@ mod tests {
         assert_eq!(groups.group("a").unwrap().members[0], "d");
     }
 
+    fn paths(values: &[&str]) -> Vec<PathBuf> {
+        values.iter().map(PathBuf::from).collect()
+    }
+
+    fn saved(projects: &[&str], selected: usize, fullscreen: bool) -> SavedGroup {
+        SavedGroup { projects: paths(projects), selected, fullscreen }
+    }
+
     #[test]
-    fn the_session_keeps_groups_and_every_ungrouped_project_window() {
-        let groups = vec![WindowGroup { members: members(&["project-1", "project-2"]), selected: "project-2".into() }];
-        let windows = members(&["main", "project-1", "project-2", "project-3", "project-4"]);
-        let project_of = |label: &str| match label {
-            "main" => Some(PathBuf::from("/a")),
-            "project-1" => Some(PathBuf::from("/b")),
-            "project-2" => Some(PathBuf::from("/c")),
-            "project-3" => Some(PathBuf::from("/d")),
-            // The welcome screen or LightEdit.
-            _ => None,
-        };
+    fn restore_plan_reopens_every_group_with_main_first() {
+        let groups = [saved(&["/delta", "/epsilon"], 1, true), saved(&["/alpha", "/beta", "/gamma"], 2, false)];
+        let plan = restore_plan(&groups, Some(Path::new("/beta")), |_| true);
         assert_eq!(
-            session(&groups, &windows, project_of).unwrap(),
-            [
-                SavedWindows { projects: vec!["/b".into(), "/c".into()], selected: 1 },
-                SavedWindows { projects: vec!["/a".into()], selected: 0 },
-                SavedWindows { projects: vec!["/d".into()], selected: 0 },
+            plan,
+            vec![
+                PlannedGroup {
+                    projects: paths(&["/alpha", "/beta", "/gamma"]),
+                    selected: 2,
+                    fullscreen: false,
+                    main: true
+                },
+                PlannedGroup { projects: paths(&["/delta", "/epsilon"]), selected: 1, fullscreen: true, main: false },
             ]
         );
-        // A grouped window still opening its project: keep the previous session.
-        assert_eq!(session(&groups, &windows, |l| (l != "project-2").then(|| PathBuf::from(l))), None);
+        assert!(plan.iter().all(PlannedGroup::grouped));
+        // `main` showing a project of no saved group: every group still reopens.
+        let plan = restore_plan(&groups, Some(Path::new("/other")), |_| true);
+        assert_eq!(plan.len(), 2);
+        assert!(plan.iter().all(|g| !g.main));
+    }
+
+    #[test]
+    fn restore_plan_skips_missing_projects_and_keeps_a_lone_survivor_ungrouped() {
+        let groups = [
+            saved(&["/alpha", "/beta", "/gamma"], 1, false),
+            saved(&["/delta", "/gone"], 1, true),
+            saved(&["/gone", "/also-gone"], 0, false),
+        ];
+        let exists = |p: &Path| !p.starts_with("/gone") && !p.starts_with("/also-gone") && p != Path::new("/beta");
+        let plan = restore_plan(&groups, Some(Path::new("/alpha")), exists);
+        assert_eq!(plan.len(), 2);
+        // The selected project is gone: `main`'s tab is shown instead.
+        assert_eq!(plan[0].projects, paths(&["/alpha", "/gamma"]));
+        assert_eq!(plan[0].selected, 0);
+        assert!(plan[0].grouped());
+        assert_eq!(plan[1].projects, paths(&["/delta"]));
+        assert_eq!(plan[1].selected, 0);
+        assert!(!plan[1].grouped());
+    }
+
+    #[test]
+    fn restore_plan_reopens_a_project_saved_in_two_groups_once() {
+        let groups = [saved(&["/a", "/b"], 0, false), saved(&["/b", "/c", "/d"], 0, false)];
+        let plan = restore_plan(&groups, None, |_| true);
+        assert_eq!(plan[0].projects, paths(&["/a", "/b"]));
+        assert_eq!(plan[1].projects, paths(&["/c", "/d"]));
+        assert_eq!(plan[1].selected, 0);
+    }
+
+    #[test]
+    fn saved_groups_without_fullscreen_read_as_not_fullscreen() {
+        let groups: Vec<SavedGroup> = serde_json::from_str(r#"[{"projects":["/a","/b"],"selected":1}]"#).unwrap();
+        assert_eq!(groups, vec![saved(&["/a", "/b"], 1, false)]);
+        let json = serde_json::to_string(&saved(&["/a", "/b"], 0, true)).unwrap();
+        assert_eq!(serde_json::from_str::<SavedGroup>(&json).unwrap(), saved(&["/a", "/b"], 0, true));
+    }
+
+    #[test]
+    fn saving_before_the_restore_keeps_the_groups_not_reopened_yet() {
+        let on_disk = vec![saved(&["/alpha", "/beta"], 0, false), saved(&["/delta", "/epsilon"], 1, true)];
+        // Only the first group has been reopened (with its tabs reordered).
+        let current = vec![saved(&["/beta", "/alpha"], 1, false)];
+        assert_eq!(
+            groups_to_save(current.clone(), on_disk.clone(), false),
+            vec![saved(&["/beta", "/alpha"], 1, false), saved(&["/delta", "/epsilon"], 1, true)]
+        );
+        // Once every group has been reopened, the open groups are the whole truth.
+        assert_eq!(groups_to_save(current.clone(), on_disk, true), current);
+        // A saved group sharing a project with an open one was reopened (perhaps changed).
+        let on_disk = vec![saved(&["/beta", "/gamma"], 0, false)];
+        assert_eq!(groups_to_save(current.clone(), on_disk, false), current);
     }
 }
