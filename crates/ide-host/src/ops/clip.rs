@@ -914,7 +914,8 @@ pub async fn clip_paste_preview(
     blocking(move || {
         let dest = dest.as_deref().unwrap_or(&project.root);
         // The project's other roots resolve their labels only when restoring into the project itself.
-        let content_roots = if same_dir(dest, &project.root) { project.content_roots() } else { Vec::new() };
+        // Missing ones too: their labels must not fall through to `dest`.
+        let content_roots = if same_dir(dest, &project.root) { project.declared_content_roots() } else { Vec::new() };
         paste_preview_into(dest, repo.as_deref(), &content_roots, &text, adjust_paths, &repos, &settings)
     })
     .await
