@@ -141,7 +141,10 @@ fn main_was_fullscreen(app: &AppHandle) -> bool {
 #[derive(Default)]
 pub struct WindowsState {
     pub groups: Mutex<ide_workspace::window_groups::WindowGroups>,
+    /// `main` has started reopening the saved window groups.
     pub groups_restored: AtomicBool,
+    /// ... and has finished: until then saving keeps the saved groups not reopened yet.
+    pub groups_restore_done: AtomicBool,
     pub groups_persist: tokio::sync::Mutex<()>,
     launches: Mutex<HashMap<String, Launch>>,
     /// Caret positions asked for on the command line, by canonical file path, until a window takes the file.
