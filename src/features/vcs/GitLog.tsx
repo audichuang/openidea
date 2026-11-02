@@ -6,6 +6,7 @@ import { branchesByRepo, commitKey, commitRepo, graphCommit, type RepoCommit } f
 /** Git tool window: Log (graph, filters, commit details) and Console tabs. */
 import { IssueText } from "./issueLinks";
 import { BranchFilterPopup } from "./BranchFilterPopup";
+import { RepositoryFilterPopup } from "./RepositoryFilterPopup";
 import {
   Fragment,
   memo,
@@ -753,6 +754,7 @@ function FilterBar() {
   const [text, setText] = useState(filters.text);
   const [branchAnchor, setBranchAnchor] = useState<HTMLElement | null>(null);
   const [menuBelow, dropdown] = useDropdownMenu();
+  const [repoAnchor, setRepoAnchor] = useState<HTMLElement | null>(null);
   // Filters that do not fit move behind a chevron, like a toolbar's overflow.
   const groupRef = useRef<HTMLSpanElement>(null);
   const [hiddenFrom, setHiddenFrom] = useState(Infinity);
@@ -886,15 +888,7 @@ function FilterBar() {
           {
             label: "Repository",
             value: filters.repositories?.map(repoName).join(", ") || null,
-            onOpen: (anchor: HTMLElement) =>
-              menuBelow(
-                anchor,
-                repositories.map((repo) => ({
-                  label: repoName(repo),
-                  checked: filters.repositories?.includes(repo) ?? false,
-                  run: () => setLogFilters({ repositories: toggleRepository(filters.repositories, repo) }),
-                })),
-              ),
+            onOpen: setRepoAnchor,
             onClear: () => setLogFilters({ repositories: [] }),
           },
         ]
@@ -981,6 +975,15 @@ function FilterBar() {
         />
       )}
       {dropdown}
+      {repoAnchor && (
+        <RepositoryFilterPopup
+          anchor={repoAnchor}
+          repositories={repositories}
+          selected={filters.repositories ?? []}
+          onClose={() => setRepoAnchor(null)}
+          onSelect={(repo) => setLogFilters({ repositories: toggleRepository(filters.repositories, repo) })}
+        />
+      )}
       {branchAnchor && (
         <BranchFilterPopup
           anchor={branchAnchor}
