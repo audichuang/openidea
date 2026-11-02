@@ -344,10 +344,11 @@ fn main_was_fullscreen(app: &AppHandle) -> bool {
 pub struct WindowsState {
     primary: Mutex<HashMap<String, WebviewWindow>>,
     pub groups: Mutex<ide_workspace::window_groups::WindowGroups>,
+    /// `main` has started reopening the saved window groups.
     pub groups_restored: AtomicBool,
-    /// Serialises writes of the saved session. Holds the previous run's session once read: it is
-    /// read before this run first overwrites the file, so restoring still sees it.
-    pub groups_persist: tokio::sync::Mutex<Option<Vec<ide_workspace::window_groups::SavedWindows>>>,
+    /// ... and has finished: until then saving keeps the saved groups not reopened yet.
+    pub groups_restore_done: AtomicBool,
+    pub groups_persist: tokio::sync::Mutex<()>,
     launches: Mutex<HashMap<String, Launch>>,
     /// A taken launch still owns its window until the frontend finishes opening it.
     opening: Mutex<HashMap<String, Launch>>,
