@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { call, commands, isTauri, onIdeEvent, type SystemTabBar, type WindowTab } from "./ipc";
-import { startupLaunchHandled, useProject } from "./project";
+import { startupProjectKnown, useProject } from "./project";
 import { setContext } from "./context";
 import { usePlatform } from "./platformInfo";
 
@@ -49,9 +49,11 @@ export function installWindowGroups(): () => void {
   if (!isTauri()) return () => {};
   let disposed = false;
   const refresh = () => void refreshWindowGroup().catch(console.warn);
+  // Once this window's startup project is known, also when it stays on welcome: reopening the
+  // groups only when `main` later opens a project would pop them all up then (`restore` runs once).
   const restore = async () => {
-    await startupLaunchHandled();
-    if (disposed || !useProject.getState().project) return;
+    await startupProjectKnown();
+    if (disposed) return;
     await call(commands.windowGroupRestore());
     if (!disposed) await refreshWindowGroup();
   };
