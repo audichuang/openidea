@@ -26,6 +26,18 @@ function windowProject(value?: string | null): string | null {
   return null;
 }
 
+/**
+ * Only `main` keeps the remembered project: restored window-group members open theirs after
+ * `main`, and would otherwise make `main` reopen a group member instead of its own project.
+ */
+function isMainWindow(): boolean {
+  return !isTauri() || getCurrentWindow().label === "main";
+}
+
+function rememberSession(value: string | null) {
+  if (isMainWindow()) write(SESSION_KEY, value);
+}
+
 function read(key: string): string | null {
   try {
     return localStorage.getItem(key);
@@ -59,11 +71,14 @@ export function reopenEnabled(settings: Settings | null | undefined, pref: boole
   return typeof general?.reopenLastProject === "boolean" ? general.reopenLastProject : pref;
 }
 
-/** Keeps the remembered project in sync: set while a project is open, cleared on explicit close. */
+/**
+ * Keeps the remembered project in sync with `main`: set while a project is open, cleared on
+ * explicit close. Every window remembers its own project for a webview reload.
+ */
 export function trackSession(): () => void {
   const root = projectLocation(useProject.getState().project?.root);
   if (root) {
-    write(SESSION_KEY, root);
+    rememberSession(root);
     windowProject(root);
   }
   return useProject.subscribe((s, prev) => {
@@ -71,8 +86,8 @@ export function trackSession(): () => void {
     const now = projectLocation(s.project?.root);
     const before = projectLocation(prev.project?.root);
     if (now === before) return;
-    if (now) write(SESSION_KEY, now);
-    else if (before && !useSession.getState().reopening) write(SESSION_KEY, null);
+    if (now) rememberSession(now);
+    else if (before && !useSession.getState().reopening) rememberSession(null);
     if (now || !useSession.getState().reopening) windowProject(now);
   });
 }
@@ -107,7 +122,7 @@ async function reopenStartupProject(): Promise<void> {
     return;
   }
   // Secondary windows open the project they were created for (features/app/windows.ts).
-  if (getCurrentWindow().label !== "main") return;
+  if (!isMainWindow()) return;
   const path = lastSessionProject();
   if (!path) return;
   let settings: Settings | null = null;
@@ -130,7 +145,7 @@ async function reopen(path: string) {
     if (remote) await connectRemote(remote.target, remote.path);
     else await openProject(path);
   } catch (e) {
-    write(SESSION_KEY, null);
+    rememberSession(null);
     windowProject(null);
     if (isCancelled(e)) return;
     notifications().notify({
