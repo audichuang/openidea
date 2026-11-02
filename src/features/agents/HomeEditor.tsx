@@ -120,6 +120,7 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
               options={members.map((path) => ({
                 value: path,
                 label: basename(path),
+                literal: true,
                 detail: path,
                 icon: "folder",
               }))}
@@ -176,7 +177,7 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
                 aria-label="Base branch"
                 className={styles.basePicker}
                 value={base}
-                options={branches.map((b) => ({ value: b.name, label: b.name, icon: "branch" }))}
+                options={branches.map((b) => ({ value: b.name, label: b.name, literal: true, icon: "branch" }))}
                 onChange={(b) => updateDraft({ base: b === current ? null : b })}
               />
             </>
