@@ -1652,7 +1652,10 @@ mod tests {
         fs::write(root.join("f"), "2").unwrap();
         run(root, &["add", "."]);
         let tree = run(root, &["write-tree"]);
-        let hidden = run(root, &["commit-tree", &tree, "-p", &base, "-m", "internal"]);
+        let hidden = run(
+            root,
+            &["-c", "user.name=A", "-c", "user.email=a@x", "commit-tree", &tree, "-p", &base, "-m", "internal"],
+        );
         run(root, &["update-ref", "refs/stash", &hidden]);
         run(root, &["update-ref", "refs/notes/commits", &hidden]);
         run(root, &["reset", "-q", "--hard"]);
