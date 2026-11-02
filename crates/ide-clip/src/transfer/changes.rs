@@ -14,6 +14,8 @@ pub struct ChangedItems {
     pub gitlinks: Vec<String>,
     /// Changes outside `root` when `root` is a subdirectory of the repository.
     pub out_of_scope: Vec<String>,
+    /// Source paths of renames, relative to `root`: those paths no longer exist on the new side.
+    pub renamed_from: Vec<String>,
 }
 
 fn strip_offset(path: &str, offset: &Path) -> Option<String> {
@@ -70,8 +72,12 @@ pub fn changed_items(
     let mut items = Vec::new();
     let mut gitlinks = Vec::new();
     let mut out_of_scope = Vec::new();
+    let mut renamed_from = Vec::new();
 
     for change in changes {
+        if let Some(old) = change.renamed_from.as_deref().and_then(|p| strip_offset(p, offset)) {
+            renamed_from.push(old);
+        }
         if let Some(rel_path) = strip_offset(&change.path, offset) {
             if change.gitlink {
                 gitlinks.push(rel_path.clone());
@@ -88,5 +94,5 @@ pub fn changed_items(
         }
     }
 
-    Ok(ChangedItems { items, skipped_non_utf8, gitlinks, out_of_scope })
+    Ok(ChangedItems { items, skipped_non_utf8, gitlinks, out_of_scope, renamed_from })
 }
