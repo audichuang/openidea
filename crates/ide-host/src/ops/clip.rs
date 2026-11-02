@@ -614,8 +614,11 @@ pub fn paste_preview_into(
     }
     let paths: Vec<String> = entries.into_iter().map(|e| e.path).collect();
     let others: Vec<PathBuf> = content_roots.iter().filter(|r| !same_dir(r, dest)).cloned().collect();
+    // Missing roots only block their labels: like ClipCode's content roots, the
+    // single-root guesses below count only the roots that exist.
+    let single_root = !others.iter().any(|r| r.is_dir());
     // ClipCode detects a restore base for a single-root project only.
-    let suggestion = if others.is_empty() {
+    let suggestion = if single_root {
         suggest_restore_base(
             &dest.to_string_lossy(),
             &paths,
@@ -635,7 +638,7 @@ pub fn paste_preview_into(
     // Like the restore base, the repository guess is for a single-root project only: with
     // other roots, as in ClipCode, only their labels route a prefix, and the payload's other
     // `<dir>/…` paths are the primary's own (a namesake repository must not take them).
-    if others.is_empty() && ide_clip::format::extract_source_root(text).is_none() {
+    if single_root && ide_clip::format::extract_source_root(text).is_none() {
         for prefix in transfer::detect_clipboard_prefixes(text, header) {
             // A project root's label is already routed (or ambiguous).
             if mapping.prefix_destinations.contains_key(&prefix) || mapping.blocked_prefixes.contains(&prefix) {
@@ -1363,6 +1366,34 @@ mod tests {
         paste_apply(ClipPasteApply { id: preview.id, ..Default::default() }).unwrap();
         assert_eq!(fs::read_to_string(lib.join("x.txt")).unwrap().trim_end(), "new");
         assert!(!w.join("lib").exists());
+    }
+
+    /// A content root that no longer exists blocks its own label, but is not one of
+    /// the project's roots: the single-root restore base and repository guess still apply.
+    #[test]
+    fn a_missing_content_root_keeps_the_single_root_guesses() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        let w = base.join("W");
+        fs::create_dir_all(w.join("app/src")).unwrap();
+        fs::create_dir_all(w.join("app/test")).unwrap();
+        let lib = repo(&base.join("lib"));
+        let roots = vec![base.join("gone/ext")];
+
+        let text = "// file: lib/x.txt\nnew\n";
+        let preview =
+            paste_preview_into(&w, None, &roots, text, false, std::slice::from_ref(&lib), &Settings::default())
+                .unwrap();
+        assert_eq!(targets_of(&preview), vec![lib.join("x.txt").to_string_lossy().into_owned()]);
+
+        let text = "// file: src/a.txt\na\n// file: test/b.txt\nb\n";
+        let preview = paste_preview_into(&w, None, &roots, text, false, &[], &Settings::default()).unwrap();
+        assert_eq!(preview.suggestion.as_deref(), Some("place everything under \"app/\""));
+
+        // The missing root's label still restores nowhere.
+        let preview =
+            paste_preview_into(&w, None, &roots, "// file: ext/y.txt\ny\n", false, &[], &Settings::default()).unwrap();
+        assert!(targets_of(&preview).is_empty(), "{:?}", preview.files);
     }
 
     #[test]
