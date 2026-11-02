@@ -88,7 +88,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-22.04, windows-latest]
+        # Why no macOS: hosted macOS arm64 runners are scarce (a second job waited 15 min and was
+        # never acquired), so macOS runs clippy inside its test job instead.
+        os: [ubuntu-22.04, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -126,6 +128,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm }
       - uses: dtolnay/rust-toolchain@stable
+        with: { components: clippy }
       - uses: Swatinem/rust-cache@v2
         with:
           key: test
@@ -138,6 +141,9 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf
       - run: pnpm install --frozen-lockfile && mkdir -p dist
         shell: bash
+      - name: Clippy (macOS)
+        if: runner.os == 'macOS'
+        run: cargo clippy --workspace --all-targets -- -D warnings
       # Test fixtures write LF files; keep Git from converting them on checkout.
       - run: git config --global core.autocrlf false
       - run: cargo nextest run --workspace --no-fail-fast
