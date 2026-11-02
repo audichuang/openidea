@@ -1403,12 +1403,11 @@ fn root_basename(path: &Path) -> String {
 /// root (ClipCode's path resolver falls back to absolute paths the same way).
 ///
 /// With an anchor (the opened project) the path is ClipCode's
-/// `ClipboardPathResolver.toClipboardPath` over the project and the selected
-/// repositories outside it (`anchor_resolver`): relative to the project for a
-/// file under it, `<label>/<relative>` for a repository outside it whose label
-/// is unique and not taken in the project, and the absolute path otherwise —
-/// including a repository that contains the project (opened at a subfolder),
-/// which no project root covers.
+/// `ClipboardPathResolver.toClipboardPath` over the project roots only
+/// (`anchor_resolver`): relative to the project for a file under it,
+/// `<label>/<relative>` for a content root outside it whose label is unique and
+/// not taken in the project, and the absolute path for a file under no project
+/// root — a repository only supplies the bytes, never a label.
 fn wire_path_of(
     selection: &ExportSelection,
     primary: Option<&CanonicalRootId>,
@@ -1436,26 +1435,14 @@ fn wire_path_of(
     format!("{prefix}/{}", item.relative_path)
 }
 
-/// ClipCode's `ClipboardPathResolver` for an anchored selection: the project
-/// is the primary root beside its other project roots, and every selected
-/// repository outside all of them is a labelled root too. A repository
-/// containing the project is left out, so its files outside the project stay
-/// absolute; one inside a project root adds nothing (that root spells it).
+/// ClipCode's `ClipboardPathResolver.fromProject` for an anchored selection:
+/// the project is the primary root beside its content roots, and nothing
+/// else is a root. The selected repositories are where the items are read
+/// from, so a file of one outside every project root spells its absolute path.
 fn anchor_resolver(selection: &ExportSelection) -> Option<paths::PathResolver> {
     let anchor = selection.anchor_root.as_ref()?;
     let mut roots: Vec<&Path> = vec![anchor.path()];
     roots.extend(selection.project_roots.iter().map(CanonicalRootId::path));
-    let project_roots = roots.len();
-    for root in &selection.roots {
-        let r = root.path();
-        if selection.absolute_roots.contains(root)
-            || anchor.path().starts_with(r)
-            || roots[..project_roots].iter().any(|p| r.starts_with(p))
-        {
-            continue;
-        }
-        roots.push(r);
-    }
     Some(paths::PathResolver::new(&roots, Some(anchor.path())))
 }
 
