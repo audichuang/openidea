@@ -355,6 +355,12 @@ pub fn run() {
         if let tauri::RunEvent::Exit = event {
             #[cfg(target_os = "macos")]
             windows::flush_auxiliary_geometry(app);
+            // Quitting from the Dock or the system terminates without `app_quit`, which otherwise
+            // saved these before closing any window.
+            #[cfg(target_os = "macos")]
+            if app.try_state::<WindowsState>().is_some_and(|w| !w.quitting()) {
+                window_groups::save_before_quit(app);
+            }
             if let Some(state) = app.try_state::<AppState>() {
                 state.host.stop_processes_on_exit();
                 state.host.mcp.stop(&state.host);
