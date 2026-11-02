@@ -97,6 +97,7 @@ pub fn run() {
             .with_state_flags(window_state_flags())
             // One remembered geometry per kind of auxiliary window (all projects' settings windows share one).
             .map_label(windows::state_key)
+            .with_filter(windows::tracks_window_state)
             .build(),
     );
     let app = app
@@ -156,6 +157,7 @@ pub fn run() {
         #[cfg(target_os = "macos")]
         if let Some(mtm) = objc2::MainThreadMarker::new() {
             macos::init_window_tabbing(mtm);
+            macos::observe_fullscreen_transitions(mtm);
         }
         let state = AppState::new(app.handle().clone())?;
         let windows = WindowsState::default();
