@@ -57,24 +57,33 @@ pub struct RemoteLaunch {
     pub path: String,
 }
 
-/// macOS: windows created to restore a saved tab group. They take the group's frame and fullscreen
-/// state from the window they join, so window-state must not restore their own: tao keeps every
-/// tab a fullscreen group has shown marked fullscreen (AppKit only tells the tab that entered),
-/// and each would reopen in a fullscreen Space of its own, which merging into a group refuses.
+/// macOS: whether `main` reopens in fullscreen, kept here instead of by window-state. tao keeps
+/// every tab a fullscreen group has shown marked fullscreen (AppKit only tells the tab that entered
+/// or left), so window-state would reopen a group the user took out of fullscreen in fullscreen,
+/// and reopen each restored group member in a fullscreen Space of its own, which merging into a
+/// group refuses. Read from AppKit, group-aware; a group's other tabs join `main`'s Space.
 #[cfg(target_os = "macos")]
-static GROUP_RESTORES: std::sync::LazyLock<Mutex<std::collections::HashSet<String>>> =
-    std::sync::LazyLock::new(Default::default);
+const MAIN_FULLSCREEN: &str = "main-window-fullscreen.json";
 
-/// Whether window-state restores and saves `label`'s geometry (see `GROUP_RESTORES`).
-#[cfg(not(target_os = "linux"))]
-pub fn tracks_window_state(label: &str) -> bool {
-    #[cfg(target_os = "macos")]
-    return !GROUP_RESTORES.lock().contains(label);
-    #[cfg(not(target_os = "macos"))]
+/// Records whether `main` is in fullscreen (main thread; when Quit starts, or `main` closes).
+#[cfg(target_os = "macos")]
+pub fn save_main_fullscreen(app: &AppHandle) {
+    let Some(window) = app.get_webview_window(MAIN) else { return };
+    let fullscreen = crate::macos::in_fullscreen(&window);
+    let Ok(dir) = app.path().app_config_dir() else { return };
+    let bytes = serde_json::to_vec(&fullscreen).unwrap_or_default();
+    if let Err(e) = std::fs::create_dir_all(&dir)
+        .map_err(IdeError::from)
+        .and_then(|_| ide_vfs::write_atomic(&dir.join(MAIN_FULLSCREEN), &bytes).map(|_| ()))
     {
-        let _ = label;
-        true
+        tracing::warn!("cannot save the main window's fullscreen state: {}", e.message);
     }
+}
+
+#[cfg(target_os = "macos")]
+fn main_was_fullscreen(app: &AppHandle) -> bool {
+    let Ok(dir) = app.path().app_config_dir() else { return false };
+    std::fs::read(dir.join(MAIN_FULLSCREEN)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(false)
 }
 
 #[derive(Default)]
@@ -119,8 +128,6 @@ impl WindowsState {
 
     pub fn forget(&self, label: &str) {
         self.launches.lock().remove(label);
-        #[cfg(target_os = "macos")]
-        GROUP_RESTORES.lock().remove(label);
         let mut last = self.last_focused.lock();
         if last.as_deref() == Some(label) {
             *last = None;
@@ -391,7 +398,12 @@ fn align_titlebar(app: &AppHandle, window: &WebviewWindow) {
 
 /// The first window (`create: false` in tauri.conf.json so it can take the theme's colour).
 pub fn create_main_window(app: &AppHandle) -> IdeResult<WebviewWindow> {
-    build_project_window(app, window_config(app)?)
+    let window = build_project_window(app, window_config(app)?)?;
+    #[cfg(target_os = "macos")]
+    if main_was_fullscreen(app) {
+        let _ = window.set_fullscreen(true);
+    }
+    Ok(window)
 }
 
 /// Creates a new project window; `project` is opened by its frontend on load.
@@ -443,10 +455,6 @@ fn create_window_for(
         config.center = false;
     }
     app.state::<WindowsState>().set_launch(&label, launch);
-    #[cfg(target_os = "macos")]
-    if _restoring {
-        GROUP_RESTORES.lock().insert(label.clone());
-    }
     let window = build_project_window(app, config)?;
     #[cfg(target_os = "macos")]
     if let Some(target) = tab_target {

@@ -10,6 +10,7 @@
 import { commands, isTauri, onIdeEvent, type Settings } from "@/platform/ipc";
 import { t } from "@/platform/i18n";
 import { closeProject, provideLeaveProjectGuard, useProject } from "@/platform/project";
+import { useWindowGroup } from "@/platform/windowGroups";
 import { maybeEditorService, notifications, type EditorCloseSession } from "@/workbench/contributions";
 import { ask, type Ask } from "@/workbench/messages";
 
@@ -39,12 +40,18 @@ export interface CloseDeps {
   onSaveFailed: (e: unknown) => void;
   /** Stops custom document edits/execution before reading their final dirty state. */
   prepareClose?: () => Promise<EditorCloseSession | undefined>;
+  /** Shows this window before a prompt: closing a background tab asks in a window nobody sees. */
+  reveal?: () => Promise<void>;
 }
 
 /** Asks whatever must be asked; resolves true when the window may close. */
 export async function decideClose(input: CloseInput, deps: CloseDeps): Promise<boolean> {
+  const ask: Ask = async (request) => {
+    await deps.reveal?.();
+    return deps.ask(request);
+  };
   if (!input.quitting && input.windows <= 1 && input.confirmExit) {
-    const r = await deps.ask({
+    const r = await ask({
       title: t("app.exit.title"),
       body: t("app.exit.body"),
       buttons: [{ id: "exit", label: t("app.exit.confirm"), primary: true }],
@@ -59,7 +66,7 @@ export async function decideClose(input: CloseInput, deps: CloseDeps): Promise<b
     session = await deps.prepareClose?.();
     const dirty = input.dirty + (session?.dirty ?? 0);
     if (dirty > 0) {
-      const r = await deps.ask({
+      const r = await ask({
         title: t("app.unsaved.title"),
         body: t("app.unsaved.body", { count: dirty, project: input.project ?? t("app.title.default") }),
         buttons: [
@@ -89,6 +96,12 @@ const defaultDeps: CloseDeps = {
     await maybeEditorService()?.saveAll();
   },
   prepareClose: async () => maybeEditorService()?.prepareClose?.(),
+  reveal: async () => {
+    const { tabs } = useWindowGroup.getState();
+    const own = tabs.find((tab) => tab.current);
+    // An error result (the group just changed) must not stop the prompt.
+    if (tabs.length > 1 && own) await commands.windowGroupSelect(own.label).catch(() => {});
+  },
   disableConfirmExit: async () => {
     const r = await commands.settingsSet("global", "general.confirmExit", "false");
     if (r.status === "ok") useProject.setState({ settings: r.data });
