@@ -97,7 +97,9 @@ fn t03_t04_multi_repo_changes_land_in_their_repositories() {
     let other_status = git(&f.p("ws-dst/repo08"), &["status", "--porcelain"]);
     let other_head = git(&f.p("ws-dst/repo08"), &["rev-parse", "HEAD"]);
 
-    // T03: repo01's and repo03's unrelated.txt, both existing in the destination.
+    // T03: repo01's and repo03's unrelated.txt, both existing in the destination. The copy is
+    // anchored on the workspace (`repo01/…`, `repo03/…`), so it restores into the destination
+    // workspace's root, as ClipCode's Paste and Restore Files always resolves from the project.
     let copied = copy(
         &src,
         ClipCopySource::Changes {
@@ -108,7 +110,9 @@ fn t03_t04_multi_repo_changes_land_in_their_repositories() {
     )
     .unwrap();
     assert_eq!(copied.files, 2);
-    let p = paste_preview(&f.p("ws-dst/repo01"), &copied.text, false, &repos, &cli()).unwrap();
+    assert!(copied.text.starts_with("// clipcode-root: ws-src\n"), "{}", copied.text);
+    let p = paste_preview(&f.p("ws-dst"), &copied.text, false, &repos, &cli()).unwrap();
+    assert_eq!(p.suggestion, None);
     let targets: Vec<_> = p.files.iter().map(|r| (r.action.as_str(), r.target.clone().unwrap())).collect();
     assert_eq!(targets.len(), 2, "{targets:?}");
     assert!(targets.iter().all(|(a, _)| *a == "overwrite"), "{targets:?}");
@@ -130,7 +134,7 @@ fn t03_t04_multi_repo_changes_land_in_their_repositories() {
         &cli(),
     )
     .unwrap();
-    let p = paste_preview(&f.p("ws-dst/repo02"), &copied.text, false, &repos, &cli()).unwrap();
+    let p = paste_preview(&f.p("ws-dst"), &copied.text, false, &repos, &cli()).unwrap();
     let r = apply(&p, ClipPasteApply { overwrite: overwrite_all(&p), ..Default::default() });
     assert_eq!((r.created, r.overwritten), (2, 2), "{r:?}");
     assert_eq!(read(f.p("ws-dst/repo05/only-src.txt")), "create-b");
