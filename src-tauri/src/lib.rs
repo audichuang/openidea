@@ -153,8 +153,7 @@ pub fn run() {
     let window_state = tauri_plugin_window_state::Builder::default()
         .with_state_flags(window_state_flags())
         // One remembered geometry per kind of auxiliary window (all projects' settings windows share one).
-        .map_label(windows::state_key)
-        .with_filter(windows::tracks_window_state);
+        .map_label(windows::state_key);
     // The plugin stores its file in the OS configuration directory; an absolute name follows
     // `OPENIDEA_CONFIG_DIR` instead.
     #[cfg(not(target_os = "linux"))]
@@ -285,6 +284,11 @@ pub fn run() {
             }
             #[cfg(target_os = "linux")]
             linux_window_state::save_before_close(window.app_handle());
+            // While quitting, `app_quit` recorded it before closing any window.
+            #[cfg(target_os = "macos")]
+            if window.label() == "main" && window.try_state::<WindowsState>().is_some_and(|w| !w.quitting()) {
+                windows::save_main_fullscreen(window.app_handle());
+            }
         }
         tauri::WindowEvent::Focused(true) => {
             application_focus::changed(window.app_handle(), true);
@@ -396,10 +400,9 @@ fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        // No FULLSCREEN on macOS: state is kept per window label, and `project-N` labels are reused
-        // by other projects, so a stale flag put later windows into full screen, each claiming a
-        // Space, some while still hidden and blank. A full-screen window comes back maximized.
-        StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED
+        let flags = StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED;
+        // macOS: `windows::save_main_fullscreen` instead.
+        if cfg!(target_os = "macos") { flags } else { flags | StateFlags::FULLSCREEN }
     }
 }
 
