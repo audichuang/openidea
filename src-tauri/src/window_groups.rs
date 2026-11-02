@@ -431,16 +431,10 @@ pub async fn persist(app: &AppHandle) -> IdeResult<()> {
     }
     let groups = state.groups.lock().groups().to_vec();
     let host = app.state::<AppState>();
+    // A restored member may still be opening its project, or have failed to: saved as launched.
     let current = snapshot(
         &groups,
-        |label| {
-            host.project(label)
-                .ok()
-                .map(|p| p.root.clone())
-                .or_else(|| state.pending(label).and_then(|l| l.project).map(Into::into))
-                // A restored member may have taken its launch but not finished opening yet.
-                .or_else(|| state.opening(label))
-        },
+        |label| state.saved_project(label, host.project(label).ok().map(|p| p.root.clone())),
         &fullscreen,
     );
     let restored = state.groups_restore_done.load(Ordering::SeqCst)
@@ -474,7 +468,7 @@ pub async fn persist(app: &AppHandle) -> IdeResult<()> {
     Ok(())
 }
 
-/// The open groups as saved. `resolve`: the project a member window holds or is opening.
+/// The open groups as saved. `resolve`: the project a member window holds or was launched with.
 fn snapshot(
     groups: &[WindowGroup],
     resolve: impl Fn(&str) -> Option<PathBuf>,
@@ -483,7 +477,7 @@ fn snapshot(
     groups
         .iter()
         .filter_map(|group| {
-            // Left out: a member holding no project, its opening failed or was cancelled.
+            // Left out: a member holding no project and not launched with one.
             let kept: Vec<_> =
                 group.members.iter().enumerate().filter_map(|(i, label)| Some((i, resolve(label)?))).collect();
             // Fewer than two left: a plain window, as when tabs leave a group.
@@ -703,8 +697,9 @@ mod tests {
         labels.iter().map(|l| (*l).to_owned()).collect()
     }
 
-    // A member whose project failed to open (or whose trust prompt was cancelled) leaves its group
-    // in the saved state; the rest is still saved, fullscreen included.
+    // A member holding no project and launched with none (a welcome window joined through the
+    // system tab bar) leaves its group in the saved state; the rest is still saved, fullscreen
+    // included.
     #[test]
     fn snapshot_drops_a_member_that_holds_no_project() {
         let groups = [group(&["a", "b", "c"], "a"), group(&["d", "e"], "e"), group(&["f", "g"], "f")];
@@ -727,6 +722,24 @@ mod tests {
         let groups = [group(&["a", "b"], "b")];
         let opening = |label: &str| Some(PathBuf::from(format!("/{label}")));
         assert_eq!(snapshot(&groups, opening, &set(&["b"])), [saved(&["/a", "/b"], 1, true)]);
+    }
+
+    // A restored member whose project failed to open (or whose trust prompt was cancelled) keeps
+    // the project it was launched with: its group is still saved, so the healthy member reopens
+    // with it next launch and the failed one is retried (a missing folder is skipped then).
+    #[test]
+    fn snapshot_keeps_a_member_whose_launch_did_not_open() {
+        let st = WindowsState::default();
+        for label in ["a", "b"] {
+            let launch =
+                windows::Launch { project: Some(PathBuf::from(format!("/{label}")).into()), ..Default::default() };
+            st.set_launch(label, launch);
+            st.take_launch(label);
+            st.launch_settled(label, label == "a");
+        }
+        let held = |label: &str| (label == "a").then(|| PathBuf::from("/a"));
+        let current = snapshot(&[group(&["a", "b"], "b")], |l| st.saved_project(l, held(l)), &set(&["a"]));
+        assert_eq!(current, [saved(&["/a", "/b"], 1, true)]);
     }
 
     // Before the restore has run, saved groups not reopened yet stay saved, also when a member
