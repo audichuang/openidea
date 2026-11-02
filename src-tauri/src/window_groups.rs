@@ -86,6 +86,17 @@ pub fn sync(app: &AppHandle) {
     }
 }
 
+/// macOS, main thread, before a quit closes any window: records `main`'s fullscreen state and the
+/// tab groups as AppKit has them (the system tab bar reorders tabs without telling the app).
+#[cfg(target_os = "macos")]
+pub fn save_before_quit(app: &AppHandle) {
+    windows::save_main_fullscreen(app);
+    sync(app);
+    if let Err(e) = tauri::async_runtime::block_on(persist(app)) {
+        tracing::warn!("cannot save window groups: {}", e.message);
+    }
+}
+
 /// macOS window resize: a group entering or leaving fullscreen moves the system tab bar from below
 /// the title bar to the top of every tab, shown or not, so tell them all; and once the size has
 /// settled, give the hidden tabs the new frame (window events: main thread).
