@@ -1,6 +1,7 @@
 import { useMemo, useState, type KeyboardEvent } from "react";
 import { HighlightedText, Icon, List, Popup, SearchField, T, firstSelectable, fuzzyMatch, listNavigate } from "@/ui";
 import { tx } from "@/platform/i18n";
+import { isImeKey } from "@/platform/ime";
 import { repoName } from "./store";
 import styles from "./GitLog.module.css";
 
@@ -45,6 +46,8 @@ export function RepositoryFilterPopup({
   };
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Enter") {
+      // The Enter that confirms an IME candidate must not pick a repository.
+      if (isImeKey(e.nativeEvent)) return;
       e.preventDefault();
       activate(rows[activeIndex]);
       return;
