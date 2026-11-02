@@ -234,7 +234,6 @@ pub fn copy(project: &Path, source: ClipCopySource, settings: &Settings) -> IdeR
     let opts = RunOptions::default();
     match source {
         ClipCopySource::Files { paths } => {
-            let mut sel: Option<ExportSelection> = None;
             let mut skipped = 0;
             // Files of one root plan together; several roots join one selection.
             let mut groups: Vec<(PathBuf, Vec<PathBuf>)> = Vec::new();
@@ -257,36 +256,37 @@ pub fn copy(project: &Path, source: ClipCopySource, settings: &Settings) -> IdeR
                     None => groups.push((root, vec![p.clone()])),
                 }
             }
-            // The project is the primary root (relative headers) wherever it sits in the batch.
-            let primary = groups
+            // The project is the primary root (relative headers) wherever it sits in the batch;
+            // without one, the first root a repository covers, else the first root.
+            let primary_idx = groups
                 .iter()
-                .map(|(r, _)| r)
-                .find(|r| *r == project)
-                .or_else(|| groups.iter().map(|(r, _)| r).find(|r| !absolute.contains(r)))
-                .cloned();
-            for (root, list) in groups {
-                let part = selection_from_paths(&root, &root, &list).map_err(err)?;
+                .position(|(r, _)| r == project)
+                .or_else(|| groups.iter().position(|(r, _)| !absolute.contains(r)))
+                .unwrap_or(0);
+            // Plan every group first, then validate the merged selection once: the primary,
+            // the roots and the absolute spelling must all be known before validation.
+            let mut parts = Vec::with_capacity(groups.len());
+            for (root, list) in &groups {
+                let part = selection_from_paths(root, root, list).map_err(err)?;
                 skipped += part.skipped;
-                sel = Some(match sel {
-                    None => part.sel,
-                    Some(prev) => {
-                        let mut items = prev.items.clone();
-                        items.extend(part.sel.items);
-                        let mut roots: Vec<PathBuf> = prev.roots.iter().map(|r| r.path().to_path_buf()).collect();
-                        roots.extend(part.sel.roots.iter().map(|r| r.path().to_path_buf()));
-                        ExportSelection::new(
-                            roots,
-                            primary.clone().or(prev.primary_root.map(|r| r.path().to_path_buf())),
-                            items,
-                        )
-                        .map_err(err)?
-                        .with_source_root(prev.source_root)
-                        .with_spelled_root(prev.spelled_root)
-                    }
-                });
+                parts.push(part.sel);
             }
-            let sel = sel.ok_or_else(|| IdeError::invalid("Nothing to copy"))?;
-            let sel = if absolute.is_empty() { sel } else { sel.with_absolute_roots(&absolute).map_err(err)? };
+            if parts.is_empty() {
+                return Err(IdeError::invalid("Nothing to copy"));
+            }
+            let (source_root, spelled_root) =
+                (parts[primary_idx].source_root.clone(), parts[primary_idx].spelled_root.clone());
+            let primary = parts[primary_idx].primary_root.as_ref().map(|r| r.path().to_path_buf());
+            let mut roots: Vec<PathBuf> = Vec::new();
+            let mut items = Vec::new();
+            for part in parts {
+                roots.extend(part.roots.iter().map(|r| r.path().to_path_buf()));
+                items.extend(part.items);
+            }
+            let sel = ExportSelection::with_absolute(roots, primary, &absolute, items)
+                .map_err(err)?
+                .with_source_root(source_root)
+                .with_spelled_root(spelled_root);
             file_copy(sel, skipped, settings)
         }
         ClipCopySource::Changes { paths, side } => {
@@ -1137,6 +1137,61 @@ mod tests {
             copy(&a, ClipCopySource::Files { paths: vec![outside.join(".zshrc")] }, &Settings::default()).unwrap();
         assert_eq!(copied.files, 1);
         assert!(copied.text.contains(&format!("// file: {abs}")), "{}", copied.text);
+    }
+
+    #[test]
+    fn several_external_roots_and_a_project_file_copy_in_any_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = repo(&tmp.path().join("a"));
+        fs::write(a.join("main.kt"), "fun main() {}\n").unwrap();
+        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        // Two roots no repository covers, with the same basename and file name.
+        let x = base.join("x/loose");
+        let y = base.join("y/loose");
+        for d in [&x, &y] {
+            fs::create_dir_all(d).unwrap();
+            fs::write(d.join(".zshrc"), "export A=1\n").unwrap();
+        }
+        let orders = [
+            vec![x.join(".zshrc"), y.join(".zshrc"), a.join("main.kt")],
+            vec![a.join("main.kt"), x.join(".zshrc"), y.join(".zshrc")],
+            vec![x.join(".zshrc"), a.join("main.kt"), y.join(".zshrc")],
+        ];
+        for paths in orders {
+            let copied = copy(&a, ClipCopySource::Files { paths }, &Settings::default()).unwrap();
+            assert_eq!(copied.files, 3, "{}", copied.text);
+            assert!(copied.text.contains("// file: main.kt"), "{}", copied.text);
+            for d in [&x, &y] {
+                assert!(copied.text.contains(&format!("// file: {}/.zshrc", d.to_string_lossy())), "{}", copied.text);
+            }
+        }
+    }
+
+    #[test]
+    fn filter_rules_still_match_project_files_when_an_external_file_is_selected_first() {
+        use ide_clip::settings::{FilterAction, FilterRule, FilterType};
+        let tmp = tempfile::tempdir().unwrap();
+        let a = repo(&tmp.path().join("a"));
+        fs::write(a.join("main.kt"), "fun main() {}\n").unwrap();
+        fs::write(a.join("secret.txt"), "s\n").unwrap();
+        let outside = std::fs::canonicalize(tmp.path()).unwrap().join("loose");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join(".zshrc"), "export A=1\n").unwrap();
+        let settings = Settings {
+            use_filters: true,
+            use_exclude_filters: true,
+            filter_rules: vec![FilterRule {
+                kind: FilterType::Path,
+                action: FilterAction::Exclude,
+                value: a.join("secret.txt").to_string_lossy().into_owned(),
+                enabled: true,
+            }],
+            ..Settings::default()
+        };
+        let paths = vec![outside.join(".zshrc"), a.join("main.kt"), a.join("secret.txt")];
+        let copied = copy(&a, ClipCopySource::Files { paths }, &settings).unwrap();
+        assert!(copied.text.contains("// file: main.kt"), "{}", copied.text);
+        assert!(!copied.text.contains("secret.txt"), "{}", copied.text);
     }
 
     #[test]
