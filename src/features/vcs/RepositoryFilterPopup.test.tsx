@@ -41,6 +41,15 @@ describe("RepositoryFilterPopup", () => {
     fireEvent.change(search(), { target: { value: "zzz" } });
     expect(screen.getByText("No matching repositories")).toBeInTheDocument();
   });
+  it("ignores the Enter that confirms an IME candidate (keyCode 229, isComposing already false)", () => {
+    const { onSelect } = setup();
+    fireEvent.keyDown(search(), { key: "Enter", keyCode: 229 });
+    expect(onSelect).not.toHaveBeenCalled();
+    fireEvent.keyDown(search(), { key: "Enter", isComposing: true });
+    expect(onSelect).not.toHaveBeenCalled();
+    fireEvent.keyDown(search(), { key: "Enter" });
+    expect(onSelect).toHaveBeenCalledExactlyOnceWith("/w/alpha");
+  });
   it("closes on Escape", () => {
     const { onClose } = setup();
     fireEvent.keyDown(search(), { key: "Escape" });
