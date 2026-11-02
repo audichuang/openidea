@@ -4,6 +4,7 @@ import { Icon, type IconName } from "./icons";
 import { Popup } from "./Popup";
 import { List, listNavigate } from "./List";
 import { tx, useGivenTx } from "@/platform/i18n";
+import { isImeKey } from "@/platform/ime";
 import { SearchField } from "./Input";
 import styles from "./Select.module.css";
 
@@ -154,6 +155,8 @@ export function SelectListbox<V extends string = string>({
 
   const onPopupKey = (e: KeyboardEvent) => {
     const searching = searchable && e.target instanceof HTMLInputElement;
+    // The Enter that confirms an IME candidate must not pick the first match.
+    if (searching && isImeKey(e.nativeEvent)) return;
     if (e.key === "Enter" || (e.key === " " && !searching)) {
       e.preventDefault();
       choose(filtered[activeIndex]);

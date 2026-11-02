@@ -167,3 +167,15 @@ describe("Select preview lifecycle", () => {
     expect(trigger).toHaveFocus();
   });
 });
+
+describe("Select searchable IME", () => {
+  it("ignores the keyCode-229 Enter that confirms an IME candidate", () => {
+    const changed = setup();
+    query("beam");
+    const input = screen.getByRole("textbox");
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 229 });
+    expect(changed).not.toHaveBeenCalled();
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 13 });
+    expect(changed).toHaveBeenCalledTimes(1);
+  });
+});
