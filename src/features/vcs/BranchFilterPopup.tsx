@@ -2,6 +2,7 @@ import { useMemo, useState, type KeyboardEvent } from "react";
 import type { Branch } from "@/bindings";
 import { HighlightedText, Icon, List, Popup, SearchField, T, firstSelectable, fuzzyMatch, listNavigate } from "@/ui";
 import { tx } from "@/platform/i18n";
+import { isImeKey } from "@/platform/ime";
 import { sortLocal, sortRemote } from "./branches";
 import styles from "./GitLog.module.css";
 
@@ -57,6 +58,7 @@ export function BranchFilterPopup({
     if (row?.type === "ref") onSelect(row.value);
   };
   const onKeyDown = (e: KeyboardEvent) => {
+    if (isImeKey(e.nativeEvent)) return;
     if (e.key === "Enter") {
       e.preventDefault();
       activate(rows[activeIndex]);
