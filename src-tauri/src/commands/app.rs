@@ -99,7 +99,7 @@ pub async fn open_project(window: Window, path: PathBuf) -> IdeResult<ProjectInf
 pub async fn light_edit_open(window: Window, path: PathBuf) -> IdeResult<Settings> {
     let app = window.app_handle().clone();
     let label = window.label().to_owned();
-    if app.state::<AppState>().project(&label).is_ok_and(|p| !p.light) {
+    if app.state::<AppState>().opened_project(&label).is_some() {
         crate::windows::close_auxiliary_windows(&app, &label);
         crate::window_groups::detach(&app, &label)?;
         crate::window_groups::persist(&app).await?;
@@ -283,7 +283,7 @@ pub fn project_roots(window: Window, state: State<'_, AppState>) -> IdeResult<id
 #[tauri::command]
 #[specta::specta]
 pub fn project_current(window: Window, state: State<'_, AppState>) -> Option<ProjectInfo> {
-    state.project(window.label()).ok().filter(|p| !p.light).map(|p| project_info(&p))
+    state.opened_project(window.label()).map(|p| project_info(&p))
 }
 
 #[tauri::command]
