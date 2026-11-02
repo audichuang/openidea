@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Commit } from "@/bindings";
 import { DEFAULT_WORKFLOW } from "@/platform/workflowSettings";
+import { useLogOptions, DEFAULT_LOG_OPTIONS } from "../logOptions";
+import { useGitLog } from "../logStore";
 import { commitFilesSource, commitsSource, withIgnoredPaths } from "../clip";
 
 const commit = (id: string, parents: string[]) => ({ id, parents, summary: id }) as unknown as Commit;
@@ -45,6 +47,23 @@ describe("ClipCode copy sources from the Git log", () => {
     expect(commitFilesSource([d, b])).toMatchObject({ kind: "commitList", revs: [d.id, b.id] });
     expect(commitFilesSource([d, c, a])).toMatchObject({ kind: "commitList", revs: [d.id, c.id, a.id] });
     expect(commitFilesSource([d, c, b])).toMatchObject({ kind: "range", base: a.id, tip: d.id });
+  });
+
+  it("copies the union when the log rewrites parents (No Merges or a date filter), as a chain by parents may skip unselected commits", () => {
+    // With a filtered log, c's parent reads as a although the hidden commit sits between them.
+    const shown = commit("c".repeat(40), [a.id]);
+    try {
+      useLogOptions.setState({ ...DEFAULT_LOG_OPTIONS, noMerges: true });
+      expect(commitFilesSource([shown, a])).toMatchObject({ kind: "commitList", revs: [shown.id, a.id] });
+      useLogOptions.setState(DEFAULT_LOG_OPTIONS);
+      expect(commitFilesSource([shown, a])).toMatchObject({ kind: "range" });
+      const filters = useGitLog.getState().filters;
+      useGitLog.setState({ filters: { ...filters, date: { after: 1, before: null } as never } });
+      expect(commitFilesSource([shown, a])).toMatchObject({ kind: "commitList" });
+      useGitLog.setState({ filters });
+    } finally {
+      useLogOptions.setState(DEFAULT_LOG_OPTIONS);
+    }
   });
 
   it("keeps the whole chain when its oldest commit is a root commit", () => {
