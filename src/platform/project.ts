@@ -48,6 +48,21 @@ export function startupLaunchHandled(): Promise<void> {
   return (startupLaunch ?? Promise.resolve()).catch(() => {});
 }
 
+let decideStartupProject: () => void = () => {};
+const startupProject = new Promise<void>((resolve) => {
+  decideStartupProject = resolve;
+});
+
+/** Called once this window knows the project it starts with: launched, reopened, or none (welcome). */
+export function startupProjectDecided(): void {
+  decideStartupProject();
+}
+
+/** Settles after `startupProjectDecided`: until then a window on welcome may still reopen its last project. */
+export function startupProjectKnown(): Promise<void> {
+  return startupProject;
+}
+
 export async function openProject(path: string): Promise<ProjectInfo> {
   await confirmProjectTrust(path, "local");
   useProject.setState({ opening: true });
