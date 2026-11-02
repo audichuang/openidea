@@ -1430,7 +1430,7 @@ export function StashesPanel() {
             searchable
             value={repo}
             onChange={(root) => void selectRepo(root)}
-            options={repos.map((root) => ({ value: root, label: repoName(root) }))}
+            options={repos.map((root) => ({ value: root, label: repoName(root), literal: true }))}
           />
         )}
         <IconButton
