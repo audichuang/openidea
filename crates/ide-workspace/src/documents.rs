@@ -841,17 +841,63 @@ impl Documents {
                     .then(|| st.path.clone())
             })
             .collect();
-        self.reload_from_disk(&paths, force_clean);
+        self.refresh_from_disk(&paths, force_clean);
+    }
+
+    /// Re-reads the document from disk and replaces its text (minimal diff).
+    /// `keep_codec` re-reads with the document's selected encoding instead of
+    /// re-detecting it.
+    fn reload_locked(&self, id: DocId, st: &mut DocState, keep_codec: bool) -> IdeResult<()> {
+        let loaded = if keep_codec {
+            Self::load_as(&st.path, &st.encoding, st.native_to_ascii)?
+        } else {
+            let defaults = self.file_defaults();
+            let loaded = Self::load_with_defaults(&st.path, &defaults)?;
+            st.native_to_ascii = defaults.native_to_ascii_for(&st.path);
+            loaded
+        };
+        st.disk_mtime = loaded.mtime_ms;
+        st.disk_len = disk_len(&st.path);
+        if loaded.binary || st.binary {
+            return Ok(());
+        }
+        st.encoding = loaded.encoding;
+        st.has_bom = loaded.has_bom;
+        st.large = loaded.large;
+        let ec_eol = st.editorconfig.as_ref().and_then(|ec| ec.end_of_line);
+        st.doc.set_line_ending(ec_eol.unwrap_or_else(|| LineEnding::detect(&loaded.text)));
+        self.replace_locked(id, st, &loaded.text)?;
+        Ok(())
+    }
+
+    /// Reloads the open documents among `paths` from disk, discarding unsaved
+    /// changes. For files the user explicitly had overwritten (e.g. Paste and
+    /// Restore), where the editor must end up showing exactly the disk content.
+    pub fn reload_from_disk(&self, paths: &[PathBuf]) {
+        for path in paths {
+            let Some(id) = self.by_path(path) else { continue };
+            let result = self.with_doc(id, |st| {
+                if st.uri.is_some() || st.binary || ide_vfs::is_archive_path(&st.path) {
+                    return Ok(());
+                }
+                self.reload_locked(id, st, false)?;
+                self.set_dirty(id, st, false);
+                Ok(())
+            });
+            if let Err(e) = result {
+                tracing::warn!("reload {}: {e}", path.display());
+            }
+        }
     }
 
     /// Re-reads from disk after an external change. Clean documents reload
     /// silently; dirty ones are left alone and reported via `IdeEvent::Notify`.
     /// Changes matching our own last save are ignored.
     pub fn on_disk_changed(&self, paths: &[PathBuf]) {
-        self.reload_from_disk(paths, false);
+        self.refresh_from_disk(paths, false);
     }
 
-    fn reload_from_disk(&self, paths: &[PathBuf], force_clean: bool) {
+    fn refresh_from_disk(&self, paths: &[PathBuf], force_clean: bool) {
         for path in paths {
             let Some(id) = self.by_path(path) else { continue };
             let result = self.with_doc(id, |st| {
@@ -878,26 +924,7 @@ impl Documents {
                     });
                     return Ok(());
                 }
-                let loaded = if force_clean {
-                    Self::load_as(&st.path, &st.encoding, st.native_to_ascii)?
-                } else {
-                    let defaults = self.file_defaults();
-                    let loaded = Self::load_with_defaults(&st.path, &defaults)?;
-                    st.native_to_ascii = defaults.native_to_ascii_for(&st.path);
-                    loaded
-                };
-                st.disk_mtime = loaded.mtime_ms;
-                st.disk_len = disk_len(&st.path);
-                if loaded.binary || st.binary {
-                    return Ok(());
-                }
-                st.encoding = loaded.encoding;
-                st.has_bom = loaded.has_bom;
-                st.large = loaded.large;
-                let ec_eol = st.editorconfig.as_ref().and_then(|ec| ec.end_of_line);
-                st.doc.set_line_ending(ec_eol.unwrap_or_else(|| LineEnding::detect(&loaded.text)));
-                self.replace_locked(id, st, &loaded.text)?;
-                Ok(())
+                self.reload_locked(id, st, force_clean)
             });
             if let Err(e) = result {
                 tracing::warn!("reload {}: {e}", path.display());
