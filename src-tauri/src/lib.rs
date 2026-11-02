@@ -119,7 +119,6 @@ pub fn run() {
             .with_state_flags(window_state_flags())
             // One remembered geometry per kind of auxiliary window (all projects' settings windows share one).
             .map_label(windows::state_key)
-            .with_filter(windows::tracks_window_state)
             .build(),
     );
     let app = app
@@ -217,6 +216,13 @@ pub fn run() {
     .on_window_event(|window, event| match event {
         #[cfg(target_os = "linux")]
         tauri::WindowEvent::CloseRequested { .. } => linux_window_state::save_before_close(window.app_handle()),
+        // While quitting, `app_quit` recorded it before closing any window.
+        #[cfg(target_os = "macos")]
+        tauri::WindowEvent::CloseRequested { .. }
+            if window.label() == "main" && window.try_state::<WindowsState>().is_some_and(|w| !w.quitting()) =>
+        {
+            windows::save_main_fullscreen(window.app_handle())
+        }
         tauri::WindowEvent::Focused(true) => {
             application_focus::changed(window.app_handle(), true);
             if let Some(w) = window.try_state::<WindowsState>() {
@@ -297,7 +303,9 @@ fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED | StateFlags::FULLSCREEN
+        let flags = StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED;
+        // macOS: `windows::save_main_fullscreen` instead.
+        if cfg!(target_os = "macos") { flags } else { flags | StateFlags::FULLSCREEN }
     }
 }
 
