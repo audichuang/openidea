@@ -620,6 +620,12 @@ pub fn paste_preview(
 
 /// Writes the preview `req.id` as confirmed. Refuses when the destination changed since.
 pub fn paste_apply(req: ClipPasteApply) -> IdeResult<ClipPasteResult> {
+    paste_apply_with_paths(req).map(|(result, _)| result)
+}
+
+/// Like [`paste_apply`], also returning the files the restore wrote (created
+/// or overwritten), so open documents can be reloaded from disk.
+pub fn paste_apply_with_paths(req: ClipPasteApply) -> IdeResult<(ClipPasteResult, Vec<PathBuf>)> {
     let pending = {
         let mut guard = PENDING.lock().unwrap_or_else(|e| e.into_inner());
         guard.as_mut().and_then(|m| m.remove(&req.id))
@@ -636,6 +642,13 @@ pub fn paste_apply(req: ClipPasteApply) -> IdeResult<ClipPasteResult> {
                     unchecked.insert(i);
                 }
             }
+            let written: Vec<PathBuf> = restore
+                .create_operations
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !unchecked.contains(i))
+                .map(|(_, op)| op.absolute_path.clone())
+                .collect();
             let selection = RestoreSelection {
                 overwrite_existing: true,
                 skip_existing: false,
@@ -643,14 +656,15 @@ pub fn paste_apply(req: ClipPasteApply) -> IdeResult<ClipPasteResult> {
                 unchecked_deletes: req.unchecked_deletes.iter().map(|&i| i as usize).collect(),
             };
             let r = plan.apply(&selection).map_err(|e| IdeError::invalid(e.paste_message()))?;
-            Ok(ClipPasteResult {
+            let result = ClipPasteResult {
                 created: n(r.created_count),
                 overwritten: n(r.overwritten_count),
                 deleted: n(r.deleted_count),
                 skipped: n(r.total_skipped()),
                 commits: Vec::new(),
                 errors: r.errors,
-            })
+            };
+            Ok((result, written))
         }
         Pending::Commits(preview) => {
             preview.revalidate().map_err(|e| IdeError::invalid(e.paste_message()))?;
@@ -667,7 +681,7 @@ pub fn paste_apply(req: ClipPasteApply) -> IdeResult<ClipPasteResult> {
                     f.error
                 ));
             }
-            Ok(ClipPasteResult { commits: r.created, errors, ..Default::default() })
+            Ok((ClipPasteResult { commits: r.created, errors, ..Default::default() }, Vec::new()))
         }
     }
 }
@@ -822,7 +836,9 @@ pub async fn clip_paste_preview(
 pub async fn clip_paste_apply(host: &Host, window: &str, apply: ClipPasteApply) -> IdeResult<ClipPasteResult> {
     host.require_trust(window)?;
     let project = host.project(window)?;
-    let result = blocking(move || paste_apply(apply)).await?;
+    let (result, written) = blocking(move || paste_apply_with_paths(apply)).await?;
+    // The user confirmed the overwrite: open editors show the restored content, not their unsaved buffer.
+    project.documents.reload_from_disk(&written);
     project.sink.emit(ide_core::IdeEvent::VcsChanged { root: project.root.clone().into() });
     Ok(result)
 }
@@ -925,6 +941,28 @@ mod tests {
             copy(&a, ClipCopySource::Files { paths: vec![outside.join(".zshrc")] }, &Settings::default()).unwrap();
         assert_eq!(copied.files, 1);
         assert!(copied.text.contains(&format!("// file: {abs}")), "{}", copied.text);
+    }
+
+    #[test]
+    fn apply_reports_only_the_files_it_wrote() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = repo(&tmp.path().join("a"));
+        fs::write(a.join("README.md"), "from a\n").unwrap();
+        let copied =
+            copy(&a, ClipCopySource::Files { paths: vec![a.join("README.md")] }, &Settings::default()).unwrap();
+        let b = repo(&tmp.path().join("b"));
+
+        // An existing file not chosen for overwrite is left alone and not reported.
+        let preview = paste_preview(&b, &copied.text, false, &[], &Settings::default()).unwrap();
+        let (_, kept) = paste_apply_with_paths(ClipPasteApply { id: preview.id, ..Default::default() }).unwrap();
+        assert!(kept.is_empty());
+
+        let preview = paste_preview(&b, &copied.text, false, &[], &Settings::default()).unwrap();
+        let (_, written) =
+            paste_apply_with_paths(ClipPasteApply { id: preview.id, overwrite: vec![0], ..Default::default() })
+                .unwrap();
+        assert_eq!(written.len(), 1);
+        assert!(written[0].ends_with("README.md"));
     }
 
     #[test]
