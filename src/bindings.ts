@@ -910,6 +910,8 @@ export const commands = {
 	/**  Deployment windows: the server and local selection to compare. */
 	deployment?: DeploymentLaunch | null,
 } | null>("window_take_launch"),
+	/**  This window is done with the launch it took: its project opened, failed to, or was cancelled. */
+	windowLaunchSettled: () => __TAURI_INVOKE<void>("window_launch_settled"),
 	windowCloseContext: () => __TAURI_INVOKE<CloseContext>("window_close_context"),
 	/**  Projects open in project windows, in window order (title bar project widget). */
 	windowOpenProjects: () => typedError<OpenProject[], IdeError>(__TAURI_INVOKE("window_open_projects")),
