@@ -46,6 +46,8 @@ pub enum ErrorData {
     JavaBuildProblems {
         problems: Vec<String>,
     },
+    /// A commit copy found nothing to copy: the selection changes no files.
+    NoNetChanges,
 }
 
 /// Git's reported result for each destination ref. A remote with several push URLs can
@@ -120,6 +122,14 @@ impl IdeError {
             self.data = Some(ErrorData::Tool { tool: tool.into(), missing: false });
         }
         self
+    }
+    /// A commit copy with no net file changes (the UI shows an info notice, not a failure).
+    pub fn no_net_changes() -> Self {
+        Self {
+            kind: ErrorKind::InvalidInput,
+            message: "Selected commit introduces no net file changes. Clipboard unchanged.".into(),
+            data: Some(ErrorData::NoNetChanges),
+        }
     }
     pub fn missing_tool(tool: impl Into<String>) -> Self {
         let tool = tool.into();
