@@ -620,11 +620,7 @@ pub async fn restore(app: &AppHandle, caller: &str) -> IdeResult<()> {
         Some(project) => project.settings.effective().general.reopen_last_project,
         None => host.global_settings.effective().general.reopen_last_project,
     };
-    if !reopen {
-        state.groups_restore_done.store(true, Ordering::SeqCst);
-        return Ok(());
-    }
-    if state.groups_restored.swap(true, Ordering::SeqCst) {
+    if restore_gate(&state, reopen) != RestoreGate::Restore {
         return Ok(());
     }
     // Unreadable saved groups: not done, so saving leaves them on disk.
@@ -636,6 +632,29 @@ pub async fn restore(app: &AppHandle, caller: &str) -> IdeResult<()> {
         tracing::warn!("cannot save window groups: {}", e.message);
     }
     Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RestoreGate {
+    /// The saved groups are reopened now.
+    Restore,
+    /// Reopening is off for this launch: saving may overwrite the saved groups.
+    Off,
+    /// An earlier call already decided.
+    Decided,
+}
+
+/// Only `main`'s first call per launch decides, the setting as it is then included: `main` calls
+/// again whenever its project changes.
+fn restore_gate(state: &WindowsState, reopen: bool) -> RestoreGate {
+    if state.groups_restored.swap(true, Ordering::SeqCst) {
+        return RestoreGate::Decided;
+    }
+    if !reopen {
+        state.groups_restore_done.store(true, Ordering::SeqCst);
+        return RestoreGate::Off;
+    }
+    RestoreGate::Restore
 }
 
 /// Returns the groups that failed to reopen.
@@ -744,5 +763,28 @@ async fn wait_fullscreen_transition(_app: &AppHandle, _window: &tauri::WebviewWi
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restore_gate_decides_once_per_launch() {
+        let state = WindowsState::default();
+        assert_eq!(restore_gate(&state, true), RestoreGate::Restore);
+        assert_eq!(restore_gate(&state, true), RestoreGate::Decided);
+    }
+
+    // Turning the setting on later and opening a project in `main` must not pop every old group
+    // up mid-session.
+    #[test]
+    fn restore_gate_off_at_startup_stays_off() {
+        let state = WindowsState::default();
+        assert_eq!(restore_gate(&state, false), RestoreGate::Off);
+        assert!(state.groups_restore_done.load(Ordering::SeqCst));
+        assert_eq!(restore_gate(&state, true), RestoreGate::Decided);
+        assert_eq!(restore_gate(&state, false), RestoreGate::Decided);
     }
 }
