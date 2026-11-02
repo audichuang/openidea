@@ -70,7 +70,7 @@ pub async fn window_group_reorder(window: WebviewWindow, labels: Vec<String>) ->
 #[specta::specta]
 pub async fn window_group_restore(window: WebviewWindow) -> IdeResult<()> {
     groups::restore(window.app_handle(), window.label()).await?;
-    // The window's project is open now: name its system tab after it.
+    // The window's project, if any, is open now: name its system tab after it.
     #[cfg(target_os = "macos")]
     groups::sync(window.app_handle());
     Ok(())
