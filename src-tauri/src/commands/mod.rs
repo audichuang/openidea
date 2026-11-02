@@ -485,6 +485,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         window::window_take_launch,
         window::window_complete_launch,
         window::window_launch_settled,
+        window::window_owns_session,
         window::window_close_context,
         window::window_open_projects,
         window::app_quit,
