@@ -777,6 +777,8 @@ struct Change {
     deleted_from: Vec<String>,
     /// The new side is a submodule commit (mode 160000), not a file.
     gitlink: bool,
+    /// Source path of a rename (`R`, UTF-8 only).
+    renamed_from: Option<String>,
 }
 
 /// Appends `entries` to `changes`, first entry per path wins (TS keys on
@@ -799,6 +801,7 @@ fn union_into(changes: &mut Vec<Change>, entries: Vec<RawEntry>, skipped: &mut u
             continue;
         }
         index.insert(path.clone(), changes.len());
+        let renamed_from = if e.status == b'R' { e.old_path.and_then(|p| String::from_utf8(p).ok()) } else { None };
         let deleted_from = if e.status == b'D' { vec![e.old_oid] } else { Vec::new() };
         changes.push(Change {
             status: e.status,
@@ -806,6 +809,7 @@ fn union_into(changes: &mut Vec<Change>, entries: Vec<RawEntry>, skipped: &mut u
             new_oid: e.new_oid,
             deleted_from,
             gitlink: e.new_mode == "160000",
+            renamed_from,
         });
     }
 }
@@ -895,6 +899,8 @@ pub struct ChangedPathEntry {
     pub path: String,
     pub change_type: ChangeType,
     pub gitlink: bool,
+    /// Source path of a rename (`R`); a copy keeps its source, so it has none.
+    pub renamed_from: Option<String>,
 }
 
 /// Lists all changes for `source` with their change types and gitlink flags,
@@ -907,7 +913,12 @@ pub fn list_changes_with(
     let (changes, skipped) = collect_changes(git, source, opts)?;
     let entries = changes
         .into_iter()
-        .map(|c| ChangedPathEntry { path: c.path, change_type: change_type_for_status(c.status), gitlink: c.gitlink })
+        .map(|c| ChangedPathEntry {
+            path: c.path,
+            change_type: change_type_for_status(c.status),
+            gitlink: c.gitlink,
+            renamed_from: c.renamed_from,
+        })
         .collect();
     already_cancelled(opts, "list changes")?;
     Ok((entries, skipped))
@@ -1125,7 +1136,7 @@ pub fn read_changed_file_for(
         ChangeType::Deleted => b'D',
         ChangeType::Moved => b'R',
     };
-    let change = Change { status, path: path.to_string(), new_oid, deleted_from, gitlink: false };
+    let change = Change { status, path: path.to_string(), new_oid, deleted_from, gitlink: false, renamed_from: None };
     let max = max.min(opts.max_stdout as u64);
     read_changes(git, source, vec![change], Some(max), opts)?
         .pop()
