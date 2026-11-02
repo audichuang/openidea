@@ -40,6 +40,19 @@ describe("ClipCode copy sources from the Git log", () => {
     expect(commitFilesSource([c, b, a])).toMatchObject({ kind: "range", base: "0".repeat(40), tip: c.id });
   });
 
+  it("copies a non-contiguous selection as the union of the selected commits, not the range between them", () => {
+    const d = commit("d".repeat(40), [c.id]);
+    expect(commitFilesSource([d, b])).toMatchObject({ kind: "commitList", revs: [d.id, b.id] });
+    expect(commitFilesSource([d, c, a])).toMatchObject({ kind: "commitList", revs: [d.id, c.id, a.id] });
+    expect(commitFilesSource([d, c, b])).toMatchObject({ kind: "range", base: a.id, tip: d.id });
+  });
+
+  it("keeps the whole chain when its oldest commit is a root commit", () => {
+    const root = commit("e".repeat(40), []);
+    const next = commit("f".repeat(40), [root.id]);
+    expect(commitFilesSource([next, root])).toMatchObject({ kind: "rootRange", tip: next.id });
+  });
+
   it("copies commits for replay with the newest selected one as the tip", () => {
     expect(commitsSource([c, b])).toMatchObject({ kind: "commits", tip: c.id, selected: [c.id, b.id] });
   });
