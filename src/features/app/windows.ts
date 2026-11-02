@@ -246,7 +246,16 @@ async function consumePendingLaunch(): Promise<void> {
     }
     const files = launch.files ?? [];
     const positions = launch.positions ?? [];
-    if (launch.project && !(await openHere(launch.project))) return;
+    if (launch.project) {
+      let opened = false;
+      try {
+        opened = await openHere(launch.project);
+      } finally {
+        // Until now its window group saves this project for it; opened, the window holds it.
+        await commands.windowLaunchSettled().catch(() => {});
+      }
+      if (!opened) return;
+    }
     if (launch.diff && launch.diffBeforeFiles) {
       const diff = launch.diff;
       await openCliDiff(diff).catch((e) => openFailed(diff.right, e));
