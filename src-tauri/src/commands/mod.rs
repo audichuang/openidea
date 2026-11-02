@@ -423,6 +423,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         window::window_set_titlebar_height,
         window_drag::window_start_drag,
         window::window_take_launch,
+        window::window_launch_settled,
         window::window_close_context,
         window::window_open_projects,
         window::app_quit,
