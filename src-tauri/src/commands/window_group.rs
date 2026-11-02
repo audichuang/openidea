@@ -93,7 +93,7 @@ pub async fn window_group_reorder(window: Window, labels: Vec<String>) -> IdeRes
 #[specta::specta]
 pub async fn window_group_restore(window: Window) -> IdeResult<()> {
     groups::restore(window.app_handle(), window.label()).await?;
-    // The window's project is open now: name its system tab after it.
+    // The window's project, if any, is open now: name its system tab after it.
     #[cfg(target_os = "macos")]
     groups::sync(window.app_handle());
     Ok(())
