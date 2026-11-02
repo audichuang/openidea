@@ -613,8 +613,8 @@ pub async fn restore(app: &AppHandle, caller: &str) -> IdeResult<()> {
             }
         }
         if labels.len() > 1 {
-            // window-state may have just started this window's fullscreen animation; tabs moved
-            // into a window during one are lost.
+            // `create_main_window` may have just started this window's fullscreen animation; tabs
+            // moved into a window during one are lost.
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window(caller) {
                 for _ in 0..30 {
