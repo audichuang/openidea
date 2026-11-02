@@ -653,7 +653,8 @@ impl ImportMapping {
     ///
     /// A root outside the primary that cannot be canonicalized (deleted,
     /// unmounted) blocks its label unless an existing root routes it: its files
-    /// would otherwise restore into a same-named folder of the primary.
+    /// would otherwise restore into a same-named folder of the primary. A prefix
+    /// mapped before this call (a restore base) does not count as routing it.
     pub fn map_root_labels(&mut self, primary: &Path, roots: &[PathBuf]) -> Result<Vec<PathBuf>, TransferError> {
         let given_primary = primary;
         let primary = CanonicalRootId::new(primary)?;
@@ -676,12 +677,17 @@ impl ImportMapping {
         all.extend(canonical.iter().map(CanonicalRootId::path));
         let resolver = paths::PathResolver::new(&all, Some(primary.path()));
         let mut mapped = Vec::new();
+        // Labels an existing root routes: only these spare a missing root's label. A
+        // mapping made before (a restore base stripping the label into the primary) must
+        // not, or the missing root's files and deletes would land in the primary.
+        let mut routed: HashSet<String> = HashSet::new();
         for root in canonical {
             match resolver.label_of(root.path()) {
                 Some((label, true)) => {
                     self.block_prefix(label);
                 }
                 Some((label, false)) => {
+                    routed.insert(label.to_string());
                     self.map_prefix(label, root.clone());
                 }
                 None => {}
@@ -692,7 +698,7 @@ impl ImportMapping {
             }
         }
         for label in missing_labels {
-            if !self.prefix_destinations.contains_key(&label) {
+            if !routed.contains(&label) {
                 self.block_prefix(label);
             }
         }
@@ -4392,6 +4398,33 @@ mod parsed_import_tests {
         assert!(mapped.is_empty());
         // Its label restores nowhere rather than into `a/gone`.
         assert!(mapping.blocked_prefixes.contains("gone"), "{:?}", mapping.blocked_prefixes);
+    }
+
+    /// A restore base stripping a missing root's label does not unblock it: only an
+    /// existing root routes a label, so the missing root's files never reach the primary.
+    #[test]
+    fn a_restore_base_does_not_unblock_a_missing_roots_label() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let w = base.join("W");
+        fs::create_dir_all(w.join("src")).unwrap();
+        fs::write(w.join("src/a.txt"), "keep\n").unwrap();
+        let suggestion = restore::RestoreBaseSuggestion {
+            base: restore::RestoreBase::Strip { segment: "W".into() },
+            label: "strip W/".into(),
+            matched: 2,
+            total: 2,
+        };
+        let mut mapping = ImportMapping::from_restore_base(&suggestion, CanonicalRootId::new(&w).unwrap());
+        let mut roots = vec![w.clone()];
+        roots.extend(mapping.map_root_labels(&w, &[base.join("missing/W")]).unwrap());
+        assert!(mapping.blocked_prefixes.contains("W"), "{:?}", mapping.blocked_prefixes);
+        for text in ["// FILE: W/src/a.txt\nnew\n", "// FILE: [DELETED] W/src/a.txt\n"] {
+            let p = plan_import_with(text, "", &roots, &mapping, &RunOptions::default()).unwrap();
+            assert!(p.create_operations().is_empty() && p.delete_operations().is_empty(), "{text:?} {p:?}");
+            let reasons: Vec<_> = p.skipped_operations().iter().map(|op| op.reason).collect();
+            assert_eq!(reasons, [SkipReason::UnresolvedPath], "{text:?}");
+        }
     }
 
     /// A label is read from the normalised path, so `./label/…` and `label\…` route
