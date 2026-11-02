@@ -282,7 +282,8 @@ impl ExportSelection {
         };
         let mut project_roots = Vec::with_capacity(content_roots.len());
         for r in content_roots {
-            let id = CanonicalRootId::new(r)?;
+            // A content root that no longer exists must not fail the whole copy.
+            let Ok(id) = CanonicalRootId::new(r) else { continue };
             id.validate()?;
             if Some(&id) != anchor_root.as_ref() && !project_roots.contains(&id) {
                 project_roots.push(id);
@@ -648,7 +649,8 @@ impl ImportMapping {
         let primary = CanonicalRootId::new(primary)?;
         let mut canonical: Vec<CanonicalRootId> = Vec::with_capacity(roots.len());
         for root in roots {
-            let id = CanonicalRootId::new(root)?;
+            // A root that cannot be canonicalized (deleted, unmounted) has no label to route.
+            let Ok(id) = CanonicalRootId::new(root) else { continue };
             if id != primary && !canonical.contains(&id) {
                 canonical.push(id);
             }
@@ -4328,5 +4330,25 @@ mod parsed_import_tests {
             Err(TransferError::UnknownRoot(_))
         ));
         assert!(!root.join("a").exists());
+    }
+
+    #[test]
+    fn a_missing_content_root_is_skipped_by_export_and_label_mapping() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let (a, gone) = (base.join("a"), base.join("gone"));
+        fs::create_dir(&a).unwrap();
+        let item = ExportItem {
+            root: CanonicalRootId::new(&a).unwrap(),
+            relative_path: "x.txt".into(),
+            source: SourceKind::File,
+            change_type: None,
+            gitlink: false,
+        };
+        let sel = ExportSelection::anchored(vec![a.clone()], None, &a, std::slice::from_ref(&gone), &[], vec![item]);
+        assert!(sel.is_ok(), "{:?}", sel.err());
+        let mut mapping = ImportMapping::with_primary(CanonicalRootId::new(&a).unwrap());
+        let mapped = mapping.map_root_labels(&a, &[gone]).unwrap();
+        assert!(mapped.is_empty());
     }
 }
