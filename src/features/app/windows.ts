@@ -216,7 +216,14 @@ export async function consumeLaunch(): Promise<void> {
   const files = launch?.files ?? [];
   const positions = launch?.positions ?? [];
   if (launch?.project) {
-    if (await openHere(launch.project)) await openInEditor(files, positions);
+    let opened = false;
+    try {
+      opened = await openHere(launch.project);
+    } finally {
+      // Until now its window group saves this project for it; opened, the window holds it.
+      await commands.windowLaunchSettled().catch(() => {});
+    }
+    if (opened) await openInEditor(files, positions);
   } else if (files.length) await openFilesHere(files, positions);
   else if (launch?.remote) {
     const { sshConfig, path } = launch.remote;
