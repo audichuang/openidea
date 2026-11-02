@@ -165,6 +165,14 @@ pub fn window_take_launch(window: WebviewWindow, windows: State<'_, WindowsState
     windows.take_launch(window.label())
 }
 
+/// Whether this window records the project reopened on the next launch: `main` while it is
+/// open, then a window left when it closed (told by `openidea://session-owner`).
+#[tauri::command]
+#[specta::specta]
+pub fn window_owns_session(window: WebviewWindow, windows: State<'_, WindowsState>) -> bool {
+    windows.owns_session(window.label())
+}
+
 /// This window is done with the launch it took: its project opened, failed to, or was cancelled.
 #[tauri::command]
 #[specta::specta]
@@ -236,6 +244,8 @@ pub fn app_quit(app: AppHandle, windows: State<'_, WindowsState>) {
 #[specta::specta]
 pub fn app_cancel_quit(app: AppHandle, windows: State<'_, WindowsState>) {
     windows.set_quitting(false);
+    // The windows closed before the veto, `main` among them, handed nothing over.
+    windows::hand_over_session(&app, None);
     tauri::async_runtime::spawn(async move {
         let _ = crate::window_groups::persist(&app).await;
     });
