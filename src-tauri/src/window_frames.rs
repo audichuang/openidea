@@ -33,16 +33,48 @@ pub fn remember(current: Option<Frame>, live: Frame, mode: Mode) -> Option<Frame
     if normal { Some(live) } else { current }
 }
 
-/// The frames in window-state's file, by label: the normal frames it restored this launch.
+/// The frame to keep for a window that has none and is closing or quitting in fullscreen (it was
+/// created in fullscreen or joined a fullscreen group before showing its normal frame); otherwise
+/// window-state's screen-sized frame would stay. Its tab mates share its frame outside fullscreen,
+/// so one of theirs is taken, else `default`. A minimized or zoomed window keeps window-state's
+/// own frame, which is not updated in those states.
+pub fn fallback(
+    mode: Mode,
+    mates: impl IntoIterator<Item = Frame>,
+    default: impl FnOnce() -> Option<Frame>,
+) -> Option<Frame> {
+    if !(mode.fullscreen || mode.transition) {
+        return None;
+    }
+    mates.into_iter().next().or_else(default)
+}
+
+/// A `width`×`height` frame centred in `area`, no larger than it.
+pub fn centred(width: u32, height: u32, area: Frame) -> Frame {
+    let (width, height) = (width.min(area.width), height.min(area.height));
+    let offset = |free: u32| i32::try_from(free / 2).unwrap_or(i32::MAX);
+    Frame {
+        x: area.x.saturating_add(offset(area.width - width)),
+        y: area.y.saturating_add(offset(area.height - height)),
+        width,
+        height,
+    }
+}
+
+/// The frames in window-state's file, by label: the normal frames it restored this launch. A
+/// zoomed window's x / y is where it was zoomed to (window-state follows every move); it is
+/// restored at prev_x / prev_y, with the size from before it was zoomed.
 pub fn saved(state: &Value) -> HashMap<String, Frame> {
     let Some(windows) = state.as_object() else { return HashMap::new() };
     windows
         .iter()
         .filter_map(|(label, s)| {
             let int = |key: &str| s.get(key).and_then(Value::as_i64);
+            let zoomed = s.get("maximized").and_then(Value::as_bool).unwrap_or(false);
+            let (x, y) = if zoomed { ("prev_x", "prev_y") } else { ("x", "y") };
             let frame = Frame {
-                x: int("x")?.try_into().ok()?,
-                y: int("y")?.try_into().ok()?,
+                x: int(x)?.try_into().ok()?,
+                y: int(y)?.try_into().ok()?,
                 width: int("width")?.try_into().ok()?,
                 height: int("height")?.try_into().ok()?,
             };
@@ -92,8 +124,9 @@ mod runtime {
         std::fs::read(path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok())
     }
 
-    /// Main thread (window and run events).
-    fn sample(app: &AppHandle, label: &str) {
+    /// Main thread (window and run events). `last`: the window is closing or the app quitting, so
+    /// a window without a normal frame yet takes a [`fallback`] one.
+    fn sample(app: &AppHandle, label: &str, last: bool) {
         let Some(window) = app.get_webview_window(label) else { return };
         let (Ok(size), Ok(position)) = (window.inner_size(), window.outer_position()) else { return };
         let live = Frame { x: position.x, y: position.y, width: size.width, height: size.height };
@@ -103,12 +136,28 @@ mod runtime {
             minimized: window.is_minimized().unwrap_or(true),
             maximized: window.is_maximized().unwrap_or(true),
         };
+        let mates = if last { crate::macos::tab_mates(app, &window) } else { Vec::new() };
         let frames = app.state::<Frames>();
         let mut frames = frames.0.lock();
         let key = key(label);
-        if let Some(frame) = remember(frames.get(key).copied(), live, mode) {
+        let mut frame = remember(frames.get(key).copied(), live, mode);
+        if last && frame.is_none() {
+            let mates = mates.iter().filter_map(|mate| frames.get(self::key(mate)).copied());
+            frame = fallback(mode, mates, || default_frame(app, &window));
+        }
+        if let Some(frame) = frame {
             frames.insert(key.to_owned(), frame);
         }
+    }
+
+    /// The configured size of a new window, centred in the work area of `window`'s display.
+    fn default_frame(app: &AppHandle, window: &tauri::WebviewWindow) -> Option<Frame> {
+        let config = crate::windows::window_config(app).ok()?;
+        let monitor = window.current_monitor().ok().flatten().or_else(|| window.primary_monitor().ok().flatten())?;
+        let size = tauri::LogicalSize::new(config.width, config.height).to_physical::<u32>(monitor.scale_factor());
+        let area = monitor.work_area();
+        let area = Frame { x: area.position.x, y: area.position.y, width: area.size.width, height: area.size.height };
+        Some(centred(size.width, size.height, area))
     }
 
     /// After window-state has saved its file at exit (it is registered first).
@@ -137,19 +186,16 @@ mod runtime {
             .on_window_ready(|window| {
                 let app = window.app_handle().clone();
                 let label = window.label().to_owned();
-                window.on_window_event(move |event| {
-                    if matches!(
-                        event,
-                        WindowEvent::Moved(_) | WindowEvent::Resized(_) | WindowEvent::CloseRequested { .. }
-                    ) {
-                        sample(&app, &label);
-                    }
+                window.on_window_event(move |event| match event {
+                    WindowEvent::Moved(_) | WindowEvent::Resized(_) => sample(&app, &label, false),
+                    WindowEvent::CloseRequested { .. } => sample(&app, &label, true),
+                    _ => {}
                 });
             })
             .on_event(|app, event| {
                 if let RunEvent::Exit = event {
                     for label in app.webview_windows().keys() {
-                        sample(app, label);
+                        sample(app, label, true);
                     }
                     persist(app);
                 }
@@ -182,6 +228,28 @@ mod tests {
         assert_eq!(remember(Some(NORMAL), moved, Mode::default()), Some(moved));
     }
 
+    #[test]
+    fn a_window_never_seen_outside_fullscreen_takes_a_mates_or_the_default_frame() {
+        let fullscreen = Mode { fullscreen: true, ..Default::default() };
+        let mate = Frame { x: 300, ..NORMAL };
+        assert_eq!(fallback(fullscreen, [mate], || Some(NORMAL)), Some(mate));
+        assert_eq!(fallback(fullscreen, [], || Some(NORMAL)), Some(NORMAL));
+        assert_eq!(fallback(Mode { transition: true, ..Default::default() }, [], || Some(NORMAL)), Some(NORMAL));
+        assert_eq!(fallback(fullscreen, [], || None), None);
+        // window-state does not save the frame of a minimized or zoomed window.
+        assert_eq!(fallback(Mode { minimized: true, ..Default::default() }, [mate], || Some(NORMAL)), None);
+        assert_eq!(fallback(Mode { maximized: true, ..Default::default() }, [mate], || Some(NORMAL)), None);
+    }
+
+    #[test]
+    fn centres_the_default_size_in_the_work_area() {
+        let area = Frame { x: 0, y: 50, width: 3024, height: 1900 };
+        assert_eq!(centred(2880, 1800, area), Frame { x: 72, y: 100, width: 2880, height: 1800 });
+        assert_eq!(centred(4000, 2000, area), area);
+        let right = Frame { x: 3024, y: -200, width: 1920, height: 1080 };
+        assert_eq!(centred(1440, 900, right), Frame { x: 3264, y: -110, width: 1440, height: 900 });
+    }
+
     fn state() -> Value {
         json!({
             "main": { "width": 3024, "height": 1964, "x": 0, "y": 0, "prev_x": 0, "prev_y": 0,
@@ -197,9 +265,18 @@ mod tests {
     fn reads_saved_frames() {
         let frames = saved(&state());
         assert_eq!(frames.get("main"), Some(&SCREEN));
-        assert_eq!(frames.get("window-2"), Some(&Frame { x: 40, y: 40, width: 900, height: 600 }));
+        // Zoomed: x / y is where it was zoomed to, prev_x / prev_y where it is restored.
+        assert_eq!(frames.get("window-2"), Some(&Frame { x: 10, y: 10, width: 900, height: 600 }));
         assert_eq!(frames.get("settings"), None);
         assert!(saved(&json!(null)).is_empty());
+    }
+
+    #[test]
+    fn keeps_a_zoomed_windows_restore_position() {
+        let mut state = state();
+        let frames = saved(&state);
+        patch(&mut state, &frames);
+        assert_eq!((state["window-2"]["prev_x"].as_i64(), state["window-2"]["prev_y"].as_i64()), (Some(10), Some(10)));
     }
 
     #[test]
