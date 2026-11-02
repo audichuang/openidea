@@ -6,7 +6,13 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { create } from "zustand";
 import { commands, isCancelled, isTauri, type Settings } from "@/platform/ipc";
-import { openProject, startupLaunchHandled, startupProjectDecided, useProject } from "@/platform/project";
+import {
+  openProject,
+  startupLaunchHandled,
+  startupProjectDecided,
+  startupProjectKnown,
+  useProject,
+} from "@/platform/project";
 import { connectRemote, parseRemoteLocation, projectLocation } from "@/platform/remote";
 import { notifications } from "@/workbench/contributions";
 
@@ -50,23 +56,26 @@ function followSessionOwner(): () => void {
   if (isMainWindow()) return () => {};
   let disposed = false;
   let unlisten: (() => void) | undefined;
-  // Opened after every window closed, or reloaded after taking over: it already holds it.
-  void commands
-    .windowOwnsSession()
-    .then((owns) => {
-      if (owns && !disposed) ownsSession = true;
-    })
-    .catch(() => {});
-  void getCurrentWindow()
-    .listen(SESSION_OWNER_EVENT, () => {
+  // What this window shows now is what the next launch reopens.
+  const syncCurrent = () => write(SESSION_KEY, projectLocation(useProject.getState().project?.root));
+  void (async () => {
+    const off = await getCurrentWindow().listen(SESSION_OWNER_EVENT, () => {
       ownsSession = true;
-      // What this window shows now is what the next launch reopens.
-      write(SESSION_KEY, projectLocation(useProject.getState().project?.root));
-    })
-    .then((off) => {
-      if (disposed) off();
-      else unlisten = off;
+      syncCurrent();
     });
+    if (disposed) {
+      off();
+      return;
+    }
+    unlisten = off;
+    // Asked only once the listener is in place: a hand-over before it is seen here instead.
+    // Opened after every window closed, reloaded after taking over, or main closed meanwhile.
+    if (!(await commands.windowOwnsSession()) || disposed) return;
+    ownsSession = true;
+    // A window still reopening its project records it once that is decided (welcome: none).
+    await startupProjectKnown();
+    if (!disposed) syncCurrent();
+  })().catch(() => {});
   return () => {
     disposed = true;
     unlisten?.();
