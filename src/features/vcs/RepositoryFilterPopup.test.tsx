@@ -1,0 +1,49 @@
+import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { RepositoryFilterPopup } from "./RepositoryFilterPopup";
+
+function setup(selected: string[] = []) {
+  const onSelect = vi.fn();
+  const onClose = vi.fn();
+  const anchor = document.createElement("button");
+  document.body.append(anchor);
+  render(
+    <RepositoryFilterPopup
+      anchor={anchor}
+      repositories={["/w/alpha", "/w/beta", "/w/gamma"]}
+      selected={selected}
+      onSelect={onSelect}
+      onClose={onClose}
+    />,
+  );
+  return { onSelect, onClose };
+}
+const search = () => screen.getByRole("textbox", { name: "Search repositories" });
+
+describe("RepositoryFilterPopup", () => {
+  it("lists every repository and focuses the search field", () => {
+    setup();
+    expect(screen.getAllByRole("option")).toHaveLength(3);
+    expect(search()).toHaveFocus();
+  });
+  it("filters while typing and Enter picks the filtered repository", () => {
+    const { onSelect } = setup();
+    fireEvent.change(search(), { target: { value: "gam" } });
+    expect(screen.getAllByRole("option")).toHaveLength(1);
+    fireEvent.keyDown(search(), { key: "Enter" });
+    expect(onSelect).toHaveBeenCalledExactlyOnceWith("/w/gamma");
+  });
+  it("moves with arrow keys and shows a message when nothing matches", () => {
+    const { onSelect } = setup();
+    fireEvent.keyDown(search(), { key: "ArrowDown" });
+    fireEvent.keyDown(search(), { key: "Enter" });
+    expect(onSelect).toHaveBeenCalledExactlyOnceWith("/w/beta");
+    fireEvent.change(search(), { target: { value: "zzz" } });
+    expect(screen.getByText("No matching repositories")).toBeInTheDocument();
+  });
+  it("closes on Escape", () => {
+    const { onClose } = setup();
+    fireEvent.keyDown(search(), { key: "Escape" });
+    expect(onClose).toHaveBeenCalled();
+  });
+});
