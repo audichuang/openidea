@@ -144,6 +144,26 @@ pub fn wsl_launch(path: &Path) -> Option<RemoteLaunch> {
     Some(RemoteLaunch { target: RemoteTarget::Wsl { distro: w.distro }, path: w.path })
 }
 
+/// macOS: windows created to restore a saved tab group. They take the group's frame and fullscreen
+/// state from the window they join, so window-state must not restore their own: tao keeps every
+/// tab a fullscreen group has shown marked fullscreen (AppKit only tells the tab that entered),
+/// and each would reopen in a fullscreen Space of its own, which merging into a group refuses.
+#[cfg(target_os = "macos")]
+static GROUP_RESTORES: std::sync::LazyLock<Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Whether window-state restores and saves `label`'s geometry (see `GROUP_RESTORES`).
+#[cfg(not(target_os = "linux"))]
+pub fn tracks_window_state(label: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    return !GROUP_RESTORES.lock().contains(label);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = label;
+        true
+    }
+}
+
 #[derive(Default)]
 pub struct WindowsState {
     pub groups: Mutex<ide_workspace::window_groups::WindowGroups>,
@@ -226,6 +246,8 @@ impl WindowsState {
             launches.remove(label);
             opening.remove(label);
         }
+        #[cfg(target_os = "macos")]
+        GROUP_RESTORES.lock().remove(label);
         let mut last = self.last_focused.lock();
         if last.as_deref() == Some(label) {
             *last = None;
@@ -705,6 +727,10 @@ fn create_window_for(
         config.center = false;
     }
     app.state::<WindowsState>().set_launch(&label, launch);
+    #[cfg(target_os = "macos")]
+    if _restoring {
+        GROUP_RESTORES.lock().insert(label.clone());
+    }
     let window = build_project_window(app, config)?;
     drop(creating);
     #[cfg(target_os = "macos")]

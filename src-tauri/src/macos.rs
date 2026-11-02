@@ -4,9 +4,9 @@ use crate::windows::{Launch, WindowsState};
 use ide_core::{IdeError, IdeResult};
 use ide_workspace::window_groups::{TabbingPreference, WindowGroup, should_group_new_project};
 use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
-use objc2::{MainThreadMarker, Message, rc::Retained};
+use objc2::{MainThreadMarker, Message, rc::Retained, runtime::ProtocolObject};
 use objc2_app_kit::{NSWindow, NSWindowOrderingMode, NSWindowStyleMask, NSWindowUserTabbingPreference};
-use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{NSNotification, NSNotificationCenter, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 use tauri::{AppHandle, Manager, WebviewWindow};
 
 fn tabbing_preference(app: &AppHandle) -> IdeResult<TabbingPreference> {
@@ -104,6 +104,11 @@ pub fn add_tabs(
         if elsewhere {
             return Err(IdeError::invalid(
                 "Another project window is in its own full screen space. Exit full screen there first, then merge.",
+            ));
+        }
+        if order.iter().any(|w| ns_window(w).is_some_and(|n| in_fullscreen_transition(unsafe { &*n }))) {
+            return Err(IdeError::invalid(
+                "A project window is entering or leaving full screen. Try again when it has.",
             ));
         }
         arrange(&anchor, &order, &select);
@@ -254,6 +259,79 @@ pub fn match_tab_frames(window: &WebviewWindow) {
             tab.setFrame_display(frame, false);
         }
     }
+}
+
+/// Fullscreen transitions by `NSWindow` address: when the last one started, and when it ended
+/// (`None` while running). AppKit animates them with a snapshot window, so neither the window's
+/// frame nor its fullscreen style shows one in progress; only the will/did notifications do.
+#[derive(Clone, Copy)]
+struct Transition {
+    started: std::time::Instant,
+    ended: Option<std::time::Instant>,
+}
+
+thread_local! {
+    static TRANSITIONS: std::cell::RefCell<std::collections::HashMap<usize, Transition>> =
+        std::cell::RefCell::default();
+    static TRANSITION_OBSERVERS: std::cell::RefCell<Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// After a transition has ended AppKit still settles the window (moving a tab out of a group in
+/// `DidExitFullScreen` raises NSInternalInconsistencyException). A transition still running after
+/// `STUCK` is taken as over: its window may have closed without an end notification.
+const SETTLE: std::time::Duration = std::time::Duration::from_millis(300);
+const STUCK: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Starts tracking every window's fullscreen transitions (main thread, once at startup).
+pub fn observe_fullscreen_transitions(_mtm: MainThreadMarker) {
+    let names = unsafe {
+        [
+            (objc2_app_kit::NSWindowWillEnterFullScreenNotification, false),
+            (objc2_app_kit::NSWindowDidEnterFullScreenNotification, true),
+            (objc2_app_kit::NSWindowWillExitFullScreenNotification, false),
+            (objc2_app_kit::NSWindowDidExitFullScreenNotification, true),
+        ]
+    };
+    for (name, ends) in names {
+        let block = block2::RcBlock::new(move |notification: std::ptr::NonNull<NSNotification>| {
+            let Some(window) = (unsafe { notification.as_ref() }).object() else { return };
+            let key = Retained::as_ptr(&window) as usize;
+            let now = std::time::Instant::now();
+            TRANSITIONS.with_borrow_mut(|transitions| {
+                if ends {
+                    let started = transitions.get(&key).map_or(now, |t| t.started);
+                    transitions.insert(key, Transition { started, ended: Some(now) });
+                } else {
+                    transitions.insert(key, Transition { started: now, ended: None });
+                }
+            });
+        });
+        let observer = unsafe {
+            NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+                Some(name),
+                None,
+                None,
+                &block,
+            )
+        };
+        TRANSITION_OBSERVERS.with_borrow_mut(|observers| observers.push(observer));
+    }
+}
+
+fn in_fullscreen_transition(window: &NSWindow) -> bool {
+    let key = window as *const NSWindow as usize;
+    TRANSITIONS.with_borrow(|transitions| match transitions.get(&key) {
+        Some(Transition { ended: Some(ended), .. }) => ended.elapsed() < SETTLE,
+        Some(Transition { started, ended: None }) => started.elapsed() < STUCK,
+        None => false,
+    })
+}
+
+/// Whether `window` is entering or leaving fullscreen.
+pub fn fullscreen_transition(app: &AppHandle, window: &WebviewWindow) -> bool {
+    let window = window.clone();
+    on_main(app, move |_| ns_window(&window).is_some_and(|n| in_fullscreen_transition(unsafe { &*n }))).unwrap_or(false)
 }
 
 /// Whether `window` is in a fullscreen Space, itself or as a tab of a fullscreen group. Main
