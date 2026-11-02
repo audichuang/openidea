@@ -458,6 +458,7 @@ pub async fn persist(app: &AppHandle) -> IdeResult<()> {
     let restored = state.groups_restore_done.load(Ordering::SeqCst)
         || !host.global_settings.effective().general.reopen_last_project;
     let unrestored = state.groups_unrestored.lock().clone();
+    let open_count = current.len();
     let path = host.config_dir.join(SAVED_GROUPS);
     let written = tauri::async_runtime::spawn_blocking(move || {
         let not_reopened = if restored {
@@ -478,9 +479,9 @@ pub async fn persist(app: &AppHandle) -> IdeResult<()> {
     })
     .await
     .map_err(|e| IdeError::internal(e.to_string()))??;
-    // A failed group whose project has been opened in a group since is not kept any more.
-    if let (true, Some(written)) = (restored, written) {
-        state.groups_unrestored.lock().retain(|g| written.contains(g));
+    // Only the failed groups just kept stay: one whose project was opened in a group since is gone.
+    if restored && let Some(mut written) = written {
+        *state.groups_unrestored.lock() = written.split_off(open_count);
     }
     Ok(())
 }
@@ -555,8 +556,11 @@ async fn restore_groups(app: &AppHandle, caller: &str, root: Option<&Path>) -> I
             Ok(_) => {}
             Err(e) => {
                 tracing::warn!("cannot reopen a window group: {}", e.message);
-                let (projects, selected, fullscreen) = (group.projects.clone(), group.selected, group.fullscreen);
-                failed.push(SavedGroup { projects, selected, fullscreen });
+                failed.push(SavedGroup {
+                    projects: group.projects.clone(),
+                    selected: group.selected,
+                    fullscreen: group.fullscreen,
+                });
             }
         }
     }
