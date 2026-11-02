@@ -116,6 +116,7 @@ function RepositorySelector() {
           options={remotes.map((r) => ({ value: nameWithOwner(r), label: repositoryDisplayName(remotes, r, true) }))}
           onChange={setChosen}
           aria-label="Repository"
+          searchable
         />
         <Button
           size="small"

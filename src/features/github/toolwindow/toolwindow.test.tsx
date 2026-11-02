@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { getAction } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import * as ipc from "@/platform/ipc";
@@ -131,6 +131,24 @@ describe("tool window", () => {
     });
     render(<PullRequestsToolWindow />);
     expect(screen.getByText("View Pull Requests")).toBeTruthy();
+  });
+
+  it("filters the repository selector as you type", () => {
+    useGhRepository.setState({
+      availability: { kind: "ready", repo: {} as never, login: "me" },
+      remotes: [
+        { owner: "me", name: "app", remote: "origin", url: "" },
+        { owner: "org", name: "tools", remote: "upstream", url: "" },
+      ],
+      defaultRemote: { owner: "me", name: "app" },
+    });
+    render(<PullRequestsToolWindow />);
+    fireEvent.click(screen.getByRole("button", { name: "Repository" }));
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "tools" } });
+    const options = within(screen.getByRole("listbox")).getAllByRole("option");
+    expect(options).toHaveLength(1);
+    fireEvent.keyDown(screen.getByRole("listbox"), { key: "Enter" });
+    expect(screen.getByRole("button", { name: "Repository" })).toHaveTextContent("org/tools");
   });
 
   it("shows the list tab, named after the repository, once connected", async () => {
