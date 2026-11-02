@@ -250,9 +250,10 @@ pub fn copy_in(
             // Files of one root plan together; several roots join one selection,
             // anchored on the project like the git sources.
             let mut groups: Vec<(PathBuf, Vec<PathBuf>)> = Vec::new();
-            // Roots of files that no project root covers: their headers are absolute paths, as
-            // ClipCode's resolver spells a file under none of the project's roots. Such files
-            // group by their repository (else their folder) only to be read together.
+            // Roots of selected paths that no project root covers, grouped by their repository
+            // (else their folder) only to be read together. Each file's header is still resolved
+            // on its own: absolute under none of the project's roots, as ClipCode spells it, but
+            // labelled when a selected folder holds a content root.
             let mut absolute: Vec<PathBuf> = Vec::new();
             for p in &paths {
                 let root = if p.starts_with(project) {
@@ -1265,6 +1266,42 @@ mod tests {
             assert_eq!(fs::read_to_string(ext.join("subdir/b.txt")).unwrap().trim_end(), "b2");
             fs::write(ext.join("a.txt"), "a2\n").unwrap();
         }
+    }
+
+    #[test]
+    fn a_selected_folder_spanning_a_content_root_labels_and_filters_each_file_by_its_own_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (w, ext) = content_root_inside_a_repository(tmp.path());
+        fs::write(ext.join("subdir/secrets.env"), "TOKEN=hunter2\n").unwrap();
+        let roots = vec![ext.join("subdir")];
+        use ide_clip::settings::{FilterAction, FilterRule, FilterType};
+        let settings = Settings {
+            use_filters: true,
+            use_exclude_filters: true,
+            filter_rules: vec![FilterRule {
+                kind: FilterType::Path,
+                action: FilterAction::Exclude,
+                value: "subdir/secrets.env".into(),
+                enabled: true,
+            }],
+            ..Settings::default()
+        };
+        let source = ClipCopySource::Files { paths: vec![ext.clone()] };
+        let text = copy_in(&w, &roots, source, &settings).unwrap().text;
+        let (_, headers) = spelling(&text);
+        assert!(headers.contains(&"subdir/b.txt".to_string()), "{text}");
+        assert!(!text.contains("secrets.env") && !text.contains("hunter2"), "{text}");
+        assert!(headers.contains(&format!("{}/a.txt", ext.to_string_lossy())), "{text}");
+
+        // The content root's file restores into the content root.
+        fs::write(ext.join("subdir/b.txt"), "b2\n").unwrap();
+        let preview = paste_preview_into(&w, None, &roots, &text, false, &[], &Settings::default()).unwrap();
+        let b = ext.join("subdir/b.txt").to_string_lossy().into_owned();
+        assert!(targets_of(&preview).contains(&b), "{:?}", preview.files);
+        let overwrite = preview.files.iter().filter(|f| f.action == "overwrite").map(|f| f.index).collect();
+        paste_apply(ClipPasteApply { id: preview.id, overwrite, ..Default::default() }).unwrap();
+        assert_eq!(fs::read_to_string(ext.join("subdir/b.txt")).unwrap().trim_end(), "b1");
+        assert!(!w.join("subdir").exists());
     }
 
     #[test]
