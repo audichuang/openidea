@@ -2378,6 +2378,16 @@ export type ClipCopySource =
 { kind: "commitFiles"; repo: string; rev: string; paths: string[] } | 
 /**  The files changed between two revisions (`base`..`tip` endpoints), at `tip`. */
 { kind: "range"; repo: string; base: string; tip: string; paths: string[] } | 
+/**
+ *  The files changed between a root commit's empty base and `tip`, at `tip`
+ *  (a range whose oldest commit has no parent).
+ */
+{ kind: "rootRange"; repo: string; tip: string; paths: string[] } | 
+/**
+ *  The union of the files each of `revs` (newest first) changed, each read as of
+ *  the newest listed commit that touches it (`[DELETED]` when deleted there).
+ */
+{ kind: "commitList"; repo: string; revs: string[]; paths: string[] } | 
 /**  Commits for replay: `selected` must be one first-parent chain ending at `tip`. */
 { kind: "commits"; repo: string; tip: string; selected: string[] } | 
 /**  The first-parent commits of `base`..`tip`, for replay (a pull request's commits). */
@@ -3907,7 +3917,9 @@ export type EnvReloaded = {
 	shellRead: boolean,
 };
 
-export type ErrorData = { type: "tool"; tool: string; missing: boolean };
+export type ErrorData = { type: "tool"; tool: string; missing: boolean } | 
+/**  A commit copy found nothing to copy: the selection changes no files. */
+{ type: "noNetChanges" };
 
 export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "invalidInput" | 
 /**  Document version mismatch; the UI must resync the full text. */
