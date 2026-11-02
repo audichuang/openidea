@@ -1,4 +1,5 @@
 /** Chooser for revision actions, including a selection spanning multiple repositories. */
+import { isImeKey } from "@/platform/ime";
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import { Dialog, HighlightedText, Icon, List, SearchField, fuzzyMatch, listNavigate } from "@/ui";
 import { sortLocal, sortRemote } from "./branches";
@@ -149,6 +150,8 @@ function Chooser({
   const items = useMemo(() => revisionItems(repos, query), [repos, query]);
   const idx = Math.min(active, items.length - 1);
   const onKeyDown = (e: KeyboardEvent) => {
+    // Keys that drive an IME candidate window (including the Enter that confirms one) are not list commands.
+    if (isImeKey(e.nativeEvent)) return;
     if (e.key === "Enter") {
       e.preventDefault();
       const it = items[idx];
