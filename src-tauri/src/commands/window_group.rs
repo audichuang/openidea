@@ -9,6 +9,9 @@ use tauri::{Manager, Window};
 #[tauri::command]
 #[specta::specta]
 pub fn window_group_current(window: Window) -> IdeResult<Vec<groups::WindowTab>> {
+    // Reordering in the system tab bar doesn't tell the app.
+    #[cfg(target_os = "macos")]
+    groups::sync(window.app_handle());
     Ok(groups::current(window.app_handle(), window.label()))
 }
 
