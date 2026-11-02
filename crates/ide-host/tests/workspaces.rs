@@ -361,3 +361,61 @@ async fn clipcode_still_works_after_a_workspace_member_folder_is_deleted() {
         ops::clip::clip_paste_preview(&host, "main", copied.text, None, None, false, Vec::new()).await.unwrap();
     assert_eq!(preview.files.len(), 1, "{:?}", preview.files);
 }
+
+/// A payload path labelled for a member that no longer exists must not fall through to the
+/// workspace root: `b/x.txt` of the missing sibling member `b` would write or delete
+/// `<workspace>/b/x.txt`, an unrelated file. A missing member under the workspace root resolves
+/// to the same place either way and keeps working.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_deleted_workspace_members_label_does_not_resolve_into_the_workspace_root() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(temp.path()).unwrap();
+    let root = base.join("workspace");
+    let (a, b, c) = (base.join("a"), base.join("b"), root.join("c"));
+    for dir in [&a, &b, &c] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    Workspace::save(&root, "Trio", vec![a.clone(), b.clone(), c.clone()], true).unwrap();
+    std::fs::create_dir_all(root.join("b")).unwrap();
+    let unrelated = root.join("b").join("x.txt");
+    std::fs::write(&unrelated, "unrelated\n").unwrap();
+    let host = Host::new(HostConfig {
+        config_dir: base.join("config"),
+        data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    });
+    host.trust.decide(&root, true, false).unwrap();
+    host.open_project("main", &root).unwrap();
+    std::fs::remove_dir_all(&b).unwrap();
+    std::fs::remove_dir_all(&c).unwrap();
+
+    let unrelated = unrelated.to_string_lossy().into_owned();
+    for text in ["// file: b/x.txt\nhacked\n", "// file: [DELETED] b/x.txt\n"] {
+        for adjust_paths in [false, true] {
+            let preview =
+                ops::clip::clip_paste_preview(&host, "main", text.into(), None, None, adjust_paths, Vec::new())
+                    .await
+                    .unwrap();
+            assert_eq!(preview.files.len(), 1, "{:?}", preview.files);
+            let file = &preview.files[0];
+            assert_ne!(file.target.as_deref(), Some(unrelated.as_str()), "{text:?} adjust={adjust_paths}: {file:?}");
+            assert_eq!(file.action, "skip", "{text:?} adjust={adjust_paths}: {file:?}");
+        }
+    }
+
+    let preview =
+        ops::clip::clip_paste_preview(&host, "main", "// file: c/y.txt\ny\n".into(), None, None, false, Vec::new())
+            .await
+            .unwrap();
+    let expected = root.join("c").join("y.txt").to_string_lossy().into_owned();
+    assert_eq!(preview.files.len(), 1, "{:?}", preview.files);
+    assert_eq!(preview.files[0].target.as_deref(), Some(expected.as_str()), "{:?}", preview.files);
+    assert_eq!(preview.files[0].action, "create", "{:?}", preview.files);
+    host.close_project("main");
+}
