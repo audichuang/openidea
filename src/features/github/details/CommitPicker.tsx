@@ -6,6 +6,7 @@
  * row, the selected commit's info block with Show / Hide details
  * (`CodeReviewDetailsCommitInfoComponentFactory`).
  */
+import { isImeKey } from "@/platform/ime";
 import { useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import {
@@ -144,6 +145,8 @@ function CommitsPopup(props: {
     props.onClose();
   };
   const onKeyDown = (e: KeyboardEvent) => {
+    // Keys that drive an IME candidate window (including the Enter that confirms one) are not list commands.
+    if (isImeKey(e.nativeEvent)) return;
     const n = listNavigate(e.key, { items: rows, active: current, isSection, wrap: true, pageSize: 7 });
     if (n !== null && e.key !== "Home" && e.key !== "End") {
       e.preventDefault();
