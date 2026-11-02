@@ -234,13 +234,32 @@ pub fn copy(project: &Path, source: ClipCopySource, settings: &Settings) -> IdeR
             let mut skipped = 0;
             // Files of one root plan together; several roots join one selection.
             let mut groups: Vec<(PathBuf, Vec<PathBuf>)> = Vec::new();
+            // Roots of files that no repository covers: their headers are absolute paths.
+            let mut absolute: Vec<PathBuf> = Vec::new();
             for p in &paths {
-                let root = if p.starts_with(project) { project.to_path_buf() } else { repo_root(p)? };
+                let root = if p.starts_with(project) {
+                    project.to_path_buf()
+                } else {
+                    repo_root(p).unwrap_or_else(|_| {
+                        let dir = if p.is_dir() { p.clone() } else { p.parent().unwrap_or(p).to_path_buf() };
+                        if !absolute.contains(&dir) {
+                            absolute.push(dir.clone());
+                        }
+                        dir
+                    })
+                };
                 match groups.iter_mut().find(|(r, _)| *r == root) {
                     Some((_, list)) => list.push(p.clone()),
                     None => groups.push((root, vec![p.clone()])),
                 }
             }
+            // The project is the primary root (relative headers) wherever it sits in the batch.
+            let primary = groups
+                .iter()
+                .map(|(r, _)| r)
+                .find(|r| *r == project)
+                .or_else(|| groups.iter().map(|(r, _)| r).find(|r| !absolute.contains(r)))
+                .cloned();
             for (root, list) in groups {
                 let part = selection_from_paths(&root, &root, &list).map_err(err)?;
                 skipped += part.skipped;
@@ -251,14 +270,20 @@ pub fn copy(project: &Path, source: ClipCopySource, settings: &Settings) -> IdeR
                         items.extend(part.sel.items);
                         let mut roots: Vec<PathBuf> = prev.roots.iter().map(|r| r.path().to_path_buf()).collect();
                         roots.extend(part.sel.roots.iter().map(|r| r.path().to_path_buf()));
-                        ExportSelection::new(roots, prev.primary_root.map(|r| r.path().to_path_buf()), items)
-                            .map_err(err)?
-                            .with_source_root(prev.source_root)
-                            .with_spelled_root(prev.spelled_root)
+                        ExportSelection::new(
+                            roots,
+                            primary.clone().or(prev.primary_root.map(|r| r.path().to_path_buf())),
+                            items,
+                        )
+                        .map_err(err)?
+                        .with_source_root(prev.source_root)
+                        .with_spelled_root(prev.spelled_root)
                     }
                 });
             }
-            file_copy(sel.ok_or_else(|| IdeError::invalid("Nothing to copy"))?, skipped, settings)
+            let sel = sel.ok_or_else(|| IdeError::invalid("Nothing to copy"))?;
+            let sel = if absolute.is_empty() { sel } else { sel.with_absolute_roots(&absolute).map_err(err)? };
+            file_copy(sel, skipped, settings)
         }
         ClipCopySource::Changes { paths, side } => {
             let repos = by_repo(&paths)?;
@@ -874,6 +899,32 @@ mod tests {
         git(dir, &["add", "-A"]);
         git(dir, &["commit", "-q", "-m", "init"]);
         std::fs::canonicalize(dir).unwrap()
+    }
+
+    #[test]
+    fn files_outside_the_project_and_any_repo_copy_with_absolute_headers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = repo(&tmp.path().join("a"));
+        fs::write(a.join("main.kt"), "fun main() {}\n").unwrap();
+        let outside = std::fs::canonicalize(tmp.path()).unwrap().join("loose");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join(".zshrc"), "export A=1\n").unwrap();
+        let abs = format!("{}/.zshrc", outside.to_string_lossy());
+
+        // The external file first: the project file keeps its relative header.
+        for paths in [vec![outside.join(".zshrc"), a.join("main.kt")], vec![a.join("main.kt"), outside.join(".zshrc")]]
+        {
+            let copied = copy(&a, ClipCopySource::Files { paths }, &Settings::default()).unwrap();
+            assert_eq!(copied.files, 2, "{}", copied.text);
+            assert!(copied.text.contains("// file: main.kt"), "{}", copied.text);
+            assert!(copied.text.contains(&format!("// file: {abs}")), "{}", copied.text);
+        }
+
+        // Only the external file: still copies, with the absolute header.
+        let copied =
+            copy(&a, ClipCopySource::Files { paths: vec![outside.join(".zshrc")] }, &Settings::default()).unwrap();
+        assert_eq!(copied.files, 1);
+        assert!(copied.text.contains(&format!("// file: {abs}")), "{}", copied.text);
     }
 
     #[test]
