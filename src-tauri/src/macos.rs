@@ -42,7 +42,7 @@ pub fn new_project_tab_target(app: &AppHandle, launch: &Launch) -> IdeResult<Opt
     });
     let active = active.filter(|w| {
         let host = app.state::<crate::state::AppState>();
-        host.project(w.label()).is_ok_and(|p| !p.light) || host.remote_dev.get(w.label()).is_some()
+        host.opened_project(w.label()).is_some() || host.remote_dev.get(w.label()).is_some()
     });
     let fullscreen = active.as_ref().is_some_and(|w| w.is_fullscreen().unwrap_or(false));
     let light_edit = launch.project.is_none() && launch.remote.is_none();
