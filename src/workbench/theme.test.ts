@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { rememberStartupTheme, STARTUP_THEME_KEY, windowBackgroundColor, windowBackgroundHex } from "./theme";
+import { useProject } from "@/platform/project";
+import {
+  nativeAppearance,
+  rememberStartupTheme,
+  STARTUP_THEME_KEY,
+  useThemeOverride,
+  windowBackgroundColor,
+  windowBackgroundHex,
+} from "./theme";
 
 const mockFrame = (token: string, resolved = "") =>
   vi
@@ -40,5 +48,42 @@ describe("window background", () => {
       fg: "#657b83",
       accent: "#268bd2",
     });
+  });
+});
+
+describe("native appearance", () => {
+  const root = document.documentElement;
+  afterEach(() => {
+    useThemeOverride.setState({ theme: null });
+    useProject.setState({ settings: null } as never);
+    delete root.dataset.theme;
+    delete root.dataset.pluginThemeKind;
+  });
+  const appearance = (a: Record<string, unknown>) => useProject.setState({ settings: { appearance: a } } as never);
+
+  it("pins native chrome to the IDE theme's base so a dark OS doesn't darken a light IDE's tabs", () => {
+    appearance({ theme: "solarized-light", syncWithOs: false });
+    root.dataset.theme = "light";
+    expect(nativeAppearance(root)).toBe("light");
+    root.dataset.theme = "dark";
+    expect(nativeAppearance(root)).toBe("dark");
+  });
+
+  it("follows the OS under Sync with OS, whose theme pick reads prefers-color-scheme", () => {
+    root.dataset.theme = "dark";
+    appearance({ theme: "light", syncWithOs: true });
+    expect(nativeAppearance(root)).toBeNull();
+    appearance({ theme: "system" });
+    expect(nativeAppearance(root)).toBeNull();
+    appearance({ theme: "light" });
+    useThemeOverride.setState({ theme: "system" });
+    expect(nativeAppearance(root)).toBeNull();
+  });
+
+  it("takes a plugin theme's kind in either mode", () => {
+    appearance({ theme: "light", syncWithOs: true });
+    root.dataset.theme = "dark";
+    root.dataset.pluginThemeKind = "dark";
+    expect(nativeAppearance(root)).toBe("dark");
   });
 });
