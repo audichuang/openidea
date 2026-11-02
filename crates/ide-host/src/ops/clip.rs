@@ -188,7 +188,10 @@ fn file_copy(sel: ExportSelection, primary_skipped: usize, settings: &Settings) 
     })
 }
 
-fn selection(items: Vec<ExportItem>, primary: Option<PathBuf>) -> IdeResult<ExportSelection> {
+/// A selection of git items (rooted at their repositories, which the export
+/// reads) whose headers and `clipcode-root` line are anchored on `project`,
+/// as ClipCode's `ClipboardPathResolver.fromProject` spells every copy.
+fn git_selection(project: &Path, items: Vec<ExportItem>) -> IdeResult<ExportSelection> {
     if items.is_empty() {
         return Err(IdeError::invalid("Nothing to copy"));
     }
@@ -199,8 +202,7 @@ fn selection(items: Vec<ExportItem>, primary: Option<PathBuf>) -> IdeResult<Expo
             roots.push(root);
         }
     }
-    let primary = primary.filter(|p| roots.contains(p)).unwrap_or_else(|| roots[0].clone());
-    ExportSelection::new(roots, Some(primary), items).map_err(err)
+    ExportSelection::anchored(roots, project, items).map_err(err)
 }
 
 fn commit_result(export: commits::CommitExport, settings: &Settings) -> ClipCopyResult {
@@ -224,8 +226,10 @@ fn commit_result(export: commits::CommitExport, settings: &Settings) -> ClipCopy
     }
 }
 
-/// Builds the clipboard text for `source`. `project` is the primary root (its
-/// name goes in the `clipcode-root` line when the copy has one root).
+/// Builds the clipboard text for `source`. Every file copy is anchored on
+/// `project`, git-sourced ones included: headers are relative to it (a nested
+/// repository's files read `repo/…`) and its name is the `clipcode-root` line,
+/// as in ClipCode for IntelliJ, VS Code and Orca.
 pub fn copy(project: &Path, source: ClipCopySource, settings: &Settings) -> IdeResult<ClipCopyResult> {
     let opts = RunOptions::default();
     match source {
@@ -296,7 +300,7 @@ pub fn copy(project: &Path, source: ClipCopySource, settings: &Settings) -> IdeR
                     item.source = transfer::SourceKind::Unstaged;
                 }
             }
-            file_copy(selection(items, Some(project.to_path_buf()))?, skipped, settings)
+            file_copy(git_selection(project, items)?, skipped, settings)
         }
         ClipCopySource::CommitFiles { repo, rev, paths } => {
             let root = repo_root(&repo)?;
@@ -305,7 +309,7 @@ pub fn copy(project: &Path, source: ClipCopySource, settings: &Settings) -> IdeR
             if items.is_empty() && no_filter {
                 return Err(IdeError::no_net_changes());
             }
-            file_copy(selection(items, Some(root))?, skipped, settings)
+            file_copy(git_selection(project, items)?, skipped, settings)
         }
         ClipCopySource::Range { repo, base, tip, paths } => {
             let root = repo_root(&repo)?;
@@ -314,7 +318,7 @@ pub fn copy(project: &Path, source: ClipCopySource, settings: &Settings) -> IdeR
             if items.is_empty() && no_filter {
                 return Err(IdeError::no_net_changes());
             }
-            file_copy(selection(items, Some(root))?, skipped, settings)
+            file_copy(git_selection(project, items)?, skipped, settings)
         }
         ClipCopySource::RootRange { repo, tip, paths } => {
             let root = repo_root(&repo)?;
@@ -325,7 +329,7 @@ pub fn copy(project: &Path, source: ClipCopySource, settings: &Settings) -> IdeR
             if items.is_empty() && no_filter {
                 return Err(IdeError::no_net_changes());
             }
-            file_copy(selection(items, Some(root))?, skipped, settings)
+            file_copy(git_selection(project, items)?, skipped, settings)
         }
         ClipCopySource::CommitList { repo, revs, paths } => {
             let root = repo_root(&repo)?;
@@ -345,7 +349,7 @@ pub fn copy(project: &Path, source: ClipCopySource, settings: &Settings) -> IdeR
             if items.is_empty() && no_filter {
                 return Err(IdeError::no_net_changes());
             }
-            file_copy(selection(items, Some(root))?, skipped, settings)
+            file_copy(git_selection(project, items)?, skipped, settings)
         }
         ClipCopySource::Commits { repo, tip, selected } => {
             let git = Git::open(&repo).map_err(err)?;
@@ -498,12 +502,27 @@ fn replay_file(f: &FilePlan) -> ClipReplayFile {
 }
 
 /// Plans pasting `text` into `dest` (a folder; commits replay into its repository). Nothing is written.
+pub fn paste_preview(
+    dest: &Path,
+    text: &str,
+    adjust_paths: bool,
+    repos: &[PathBuf],
+    settings: &Settings,
+) -> IdeResult<ClipPastePreview> {
+    paste_preview_into(dest, None, text, adjust_paths, repos, settings)
+}
+
+/// Plans pasting `text`: files restore under `dest` (the project root, as
+/// ClipCode's Paste and Restore Files always resolves from the project), while
+/// commits replay into the repository of `repo` (the selected repository; `dest`'s
+/// when `None`). Nothing is written.
 ///
 /// A payload copied from several repositories names the others' files `<repo>/…`
 /// (it has no `clipcode-root` line). Such a prefix lands in the repository of
 /// `repos` with that folder name, as snip-sync's prefix mapping would put it.
-pub fn paste_preview(
+pub fn paste_preview_into(
     dest: &Path,
+    repo: Option<&Path>,
     text: &str,
     adjust_paths: bool,
     repos: &[PathBuf],
@@ -515,7 +534,7 @@ pub fn paste_preview(
     }
     if commits::is_commit_payload(text) {
         let payload: CommitsPayload = commits::parse_commit_payload(text).map_err(err)?;
-        let root = repo_root(dest)?;
+        let root = repo_root(repo.unwrap_or(dest))?;
         let preview = CommitReplayPreview::capture_in(&root, &root, &payload, &opts).map_err(err)?;
         let plan = preview.plan();
         let commits = plan
@@ -819,18 +838,24 @@ pub async fn clip_copy(host: &Host, window: &str, source: ClipCopySource) -> Ide
     blocking(move || copy(&project.root, source, &settings)).await
 }
 
+/// `dest` defaults to the project root; `repo` (the selected repository) is where
+/// a commit payload replays.
 pub async fn clip_paste_preview(
     host: &Host,
     window: &str,
     text: String,
     dest: Option<PathBuf>,
+    repo: Option<PathBuf>,
     adjust_paths: bool,
     repos: Vec<PathBuf>,
 ) -> IdeResult<ClipPastePreview> {
     let project = host.project(window)?;
     let settings = clip_settings(&project.settings.effective().vcs.clip_code);
-    blocking(move || paste_preview(dest.as_deref().unwrap_or(&project.root), &text, adjust_paths, &repos, &settings))
-        .await
+    blocking(move || {
+        let dest = dest.as_deref().unwrap_or(&project.root);
+        paste_preview_into(dest, repo.as_deref(), &text, adjust_paths, &repos, &settings)
+    })
+    .await
 }
 
 pub async fn clip_paste_apply(host: &Host, window: &str, apply: ClipPasteApply) -> IdeResult<ClipPasteResult> {
@@ -881,8 +906,16 @@ pub(crate) fn register(d: &mut Dispatcher) {
     });
     d.add("clip_copy", |c| async move { clip_copy(&c.host, &c.window, c.arg("source")?).await });
     d.add("clip_paste_preview", |c| async move {
-        clip_paste_preview(&c.host, &c.window, c.arg("text")?, c.arg("dest")?, c.arg("adjustPaths")?, c.arg("repos")?)
-            .await
+        clip_paste_preview(
+            &c.host,
+            &c.window,
+            c.arg("text")?,
+            c.arg("dest")?,
+            c.arg("repo")?,
+            c.arg("adjustPaths")?,
+            c.arg("repos")?,
+        )
+        .await
     });
     d.add("clip_paste_apply", |c| async move { clip_paste_apply(&c.host, &c.window, c.arg("apply")?).await });
 }
@@ -915,6 +948,171 @@ mod tests {
         git(dir, &["add", "-A"]);
         git(dir, &["commit", "-q", "-m", "init"]);
         std::fs::canonicalize(dir).unwrap()
+    }
+
+    /// Project `M` (a plain folder with `src/x.txt`) holding the repository `M/repo`,
+    /// whose `src/a.ts` is added by `c1` and changed by `c2`. Returns (M, repo, c1, c2).
+    fn monorepo(tmp: &Path) -> (PathBuf, PathBuf, String, String) {
+        fs::create_dir_all(tmp).unwrap();
+        let m = std::fs::canonicalize(tmp).unwrap().join("M");
+        fs::create_dir_all(m.join("src")).unwrap();
+        fs::write(m.join("src/x.txt"), "x\n").unwrap();
+        let r = repo(&m.join("repo"));
+        fs::create_dir_all(r.join("src")).unwrap();
+        let c1 = commit_file(&r, "src/a.ts", Some("a1\n"), "add a");
+        let c2 = commit_file(&r, "src/a.ts", Some("a2\n"), "change a");
+        (m, r, c1, c2)
+    }
+
+    fn copied(project: &Path, source: ClipCopySource) -> String {
+        copy(project, source, &Settings::default()).unwrap().text
+    }
+
+    #[test]
+    fn git_copies_are_anchored_on_the_project_not_the_nested_repository() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (m, r, c1, c2) = monorepo(tmp.path());
+        let file = r.join("src/a.ts");
+        let modified = "// file: [MODIFIED] repo/src/a.ts\n";
+        let cases = [
+            (ClipCopySource::CommitFiles { repo: r.clone(), rev: c2.clone(), paths: vec![] }, modified),
+            (ClipCopySource::Range { repo: r.clone(), base: c1.clone(), tip: c2.clone(), paths: vec![] }, modified),
+            (
+                ClipCopySource::RootRange { repo: r.clone(), tip: c2.clone(), paths: vec![] },
+                "// file: [NEW] repo/src/a.ts\n",
+            ),
+            (
+                ClipCopySource::CommitList { repo: r.clone(), revs: vec![c2.clone(), c1.clone()], paths: vec![] },
+                modified,
+            ),
+        ];
+        for (source, header) in cases {
+            let text = copied(&m, source.clone());
+            assert!(text.starts_with("// clipcode-root: M\n"), "{source:?}:\n{text}");
+            assert!(text.contains(header), "{source:?}:\n{text}");
+        }
+        // The root range carries the repository's other files under its folder too.
+        let text = copied(&m, ClipCopySource::RootRange { repo: r.clone(), tip: c2, paths: vec![] });
+        assert!(text.contains("// file: [NEW] repo/README.md\n"), "{text}");
+
+        fs::write(&file, "a3\n").unwrap();
+        for side in [ClipChangeSide::Working, ClipChangeSide::Unstaged] {
+            let text = copied(&m, ClipCopySource::Changes { paths: vec![file.clone()], side });
+            assert!(text.starts_with("// clipcode-root: M\n"), "{side:?}:\n{text}");
+            assert!(text.contains(modified), "{side:?}:\n{text}");
+            assert!(text.contains("a3"), "{text}");
+        }
+        git(&r, &["add", "-A"]);
+        let text = copied(&m, ClipCopySource::Changes { paths: vec![r.clone()], side: ClipChangeSide::Staged });
+        assert!(text.starts_with("// clipcode-root: M\n"), "{text}");
+        assert!(text.contains(modified), "{text}");
+    }
+
+    #[test]
+    fn git_copy_filters_match_the_project_relative_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (m, r, _, _) = monorepo(tmp.path());
+        fs::write(r.join("src/a.ts"), "a3\n").unwrap();
+        fs::write(r.join("README.md"), "changed\n").unwrap();
+        use ide_clip::settings::{FilterAction, FilterRule, FilterType};
+        let settings = Settings {
+            use_filters: true,
+            use_exclude_filters: true,
+            filter_rules: vec![FilterRule {
+                kind: FilterType::Path,
+                action: FilterAction::Exclude,
+                value: "repo/src/a.ts".into(),
+                enabled: true,
+            }],
+            ..Settings::default()
+        };
+        let source = ClipCopySource::Changes { paths: vec![r.clone()], side: ClipChangeSide::Working };
+        let text = copy(&m, source, &settings).unwrap().text;
+        assert!(text.contains("// file: [MODIFIED] repo/README.md\n"), "{text}");
+        assert!(!text.contains("a.ts"), "{text}");
+    }
+
+    #[test]
+    fn several_nested_repositories_share_the_project_root_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let m = std::fs::canonicalize(tmp.path()).unwrap().join("M");
+        let a = repo(&m.join("a"));
+        let b = repo(&m.join("b"));
+        fs::write(a.join("README.md"), "from a\n").unwrap();
+        fs::write(b.join("README.md"), "from b\n").unwrap();
+        let text =
+            copied(&m, ClipCopySource::Changes { paths: vec![a.clone(), b.clone()], side: ClipChangeSide::Working });
+        assert!(text.starts_with("// clipcode-root: M\n"), "{text}");
+        assert_eq!(text.matches("// clipcode-root:").count(), 1, "{text}");
+        assert!(text.contains("// file: [MODIFIED] a/README.md\n"), "{text}");
+        assert!(text.contains("// file: [MODIFIED] b/README.md\n"), "{text}");
+
+        // `a/b/README.md` and `b/README.md` differ once anchored on the project, though
+        // spelled against repository `a` they would both read `b/README.md`.
+        fs::create_dir_all(a.join("b")).unwrap();
+        fs::write(a.join("b/README.md"), "nested\n").unwrap();
+        let text =
+            copied(&m, ClipCopySource::Changes { paths: vec![a.clone(), b.clone()], side: ClipChangeSide::Working });
+        assert!(text.contains("// file: [NEW] a/b/README.md\n"), "{text}");
+        assert!(text.contains("// file: [MODIFIED] b/README.md\n"), "{text}");
+    }
+
+    #[test]
+    fn a_project_inside_a_repository_spells_outside_files_absolute() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = repo(&tmp.path().join("repo"));
+        let sub = r.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        commit_file(&r, "sub/s.txt", Some("s\n"), "add s");
+        fs::write(sub.join("s.txt"), "s2\n").unwrap();
+        fs::write(r.join("README.md"), "changed\n").unwrap();
+        let text = copied(&sub, ClipCopySource::Changes { paths: vec![r.clone()], side: ClipChangeSide::Working });
+        assert!(text.starts_with("// clipcode-root: sub\n"), "{text}");
+        assert!(text.contains("// file: [MODIFIED] s.txt\n"), "{text}");
+        let abs = format!("{}/README.md", r.to_string_lossy());
+        assert!(text.contains(&format!("// file: [MODIFIED] {abs}\n")), "{text}");
+
+        // A repository beside the project keeps its folder label, as Files copies do.
+        let ext = repo(&tmp.path().join("ext"));
+        fs::write(ext.join("README.md"), "ext\n").unwrap();
+        let text = copied(&sub, ClipCopySource::Changes { paths: vec![ext], side: ClipChangeSide::Working });
+        assert!(text.contains("// file: [MODIFIED] ext/README.md\n"), "{text}");
+    }
+
+    #[test]
+    fn a_monorepo_copy_restores_into_the_project_without_adjustment() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (m, r, _, _) = monorepo(tmp.path());
+        fs::write(r.join("src/a.ts"), "a3\n").unwrap();
+        let text = copied(&m, ClipCopySource::Changes { paths: vec![r.clone()], side: ClipChangeSide::Working });
+        fs::write(r.join("src/a.ts"), "a2\n").unwrap();
+        let preview = paste_preview(&m, &text, false, &[], &Settings::default()).unwrap();
+        assert_eq!(preview.suggestion, None);
+        assert_eq!(preview.files.len(), 1, "{:?}", preview.files);
+        let target = r.join("src/a.ts").to_string_lossy().into_owned();
+        assert_eq!(preview.files[0].target.as_deref(), Some(target.as_str()));
+        assert_eq!(preview.files[0].action, "overwrite");
+    }
+
+    #[test]
+    fn commits_pasted_from_the_project_replay_into_the_selected_repository() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_, src, _, c2) = monorepo(&tmp.path().join("src"));
+        let commits = copied(&src, ClipCopySource::Commits { repo: src.clone(), tip: c2.clone(), selected: vec![c2] });
+        let dst = std::fs::canonicalize(tmp.path()).unwrap().join("dst");
+        let target = repo(&dst.join("repo"));
+        fs::create_dir_all(target.join("src")).unwrap();
+        commit_file(&target, "src/a.ts", Some("a1\n"), "add a");
+
+        // The project root is a plain folder: the files destination, never the replay's.
+        assert!(paste_preview(&dst, &commits, false, &[], &Settings::default()).is_err());
+        let preview = paste_preview_into(&dst, Some(&target), &commits, false, &[], &Settings::default()).unwrap();
+        assert_eq!(preview.mode, "commits");
+        assert_eq!(preview.destination, target.to_string_lossy());
+        let result =
+            paste_apply(ClipPasteApply { id: preview.id, overwrite_existing: true, ..Default::default() }).unwrap();
+        assert_eq!(result.commits.len(), 1, "{:?}", result.errors);
+        assert_eq!(fs::read_to_string(target.join("src/a.ts")).unwrap(), "a2\n");
     }
 
     #[test]
