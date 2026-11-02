@@ -257,6 +257,7 @@ function PullDialog({ initialRepo, onClose }: { initialRepo?: string | null; onC
             />
             <Select
               aria-label="Remote branch"
+              searchable
               className={styles.grow}
               value={branch}
               placeholder="Branch"
@@ -335,6 +336,7 @@ function MergeDialog({ initialRepo, onClose }: { initialRepo?: string | null; on
         </div>
         <Select
           aria-label="Branch to merge"
+          searchable
           value={branch}
           placeholder="Select branch"
           options={options}
@@ -426,6 +428,7 @@ function RebaseDialog({ initialRepo, onClose }: { initialRepo?: string | null; o
         </div>
         <Select
           aria-label="Upstream"
+          searchable
           value={upstream}
           placeholder="Select branch"
           options={options}
@@ -433,7 +436,14 @@ function RebaseDialog({ initialRepo, onClose }: { initialRepo?: string | null; o
         />
         <Checkbox label="--onto" checked={useOnto} onChange={setUseOnto} />
         {useOnto && (
-          <Select aria-label="New base" value={onto} placeholder="New base" options={options} onChange={setOnto} />
+          <Select
+            aria-label="New base"
+            searchable
+            value={onto}
+            placeholder="New base"
+            options={options}
+            onChange={setOnto}
+          />
         )}
         <Checkbox label="--rebase-merges" checked={rebaseMerges} onChange={setRebaseMerges} />
         <Checkbox label="--keep-empty" checked={keepEmpty} onChange={setKeepEmpty} />
@@ -915,6 +925,7 @@ function NewWorktreeDialog({
         </div>
         <Select
           aria-label="Check out"
+          searchable
           value={source}
           placeholder="Select branch"
           options={options}
