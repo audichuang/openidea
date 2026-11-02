@@ -223,6 +223,9 @@ pub struct ExportSelection {
     pub filter_root: Option<PathBuf>,
     /// Roots whose files are spelled with their absolute path in the payload
     /// (files under none of the project's roots, repository files included).
+    /// With an anchor the per-file resolver spells the headers instead, so a
+    /// content root under such a root keeps its label; these roots then only
+    /// keep the primary-root filter spelling off them.
     pub absolute_roots: Vec<CanonicalRootId>,
     /// The opened project the payload paths are relative to (ClipCode's
     /// `ClipboardPathResolver.fromProject`), when it is not itself one of
@@ -1407,7 +1410,9 @@ fn root_basename(path: &Path) -> String {
 /// (`anchor_resolver`): relative to the project for a file under it,
 /// `<label>/<relative>` for a content root outside it whose label is unique and
 /// not taken in the project, and the absolute path for a file under no project
-/// root — a repository only supplies the bytes, never a label.
+/// root — a repository only supplies the bytes, never a label. The resolver
+/// decides per file, ahead of `absolute_roots`: a selected folder outside every
+/// root can still hold a content root, whose files keep their label.
 fn wire_path_of(
     selection: &ExportSelection,
     primary: Option<&CanonicalRootId>,
@@ -1418,11 +1423,11 @@ fn wire_path_of(
         let full = item.root.path().join(&item.relative_path);
         paths::normalize_system_path(&full.to_string_lossy().replace('\\', "/"))
     };
-    if selection.absolute_roots.contains(&item.root) {
-        return absolute();
-    }
     if let Some(resolver) = anchor {
         return resolver.to_clipboard_path(&item.root.path().join(&item.relative_path).to_string_lossy());
+    }
+    if selection.absolute_roots.contains(&item.root) {
+        return absolute();
     }
     if primary == Some(&item.root) {
         return item.relative_path.clone();
