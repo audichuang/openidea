@@ -164,7 +164,7 @@ struct TargetCandidate {
     root_relative_path: String,
 }
 
-struct PathResolver {
+pub(crate) struct PathResolver {
     ordered_roots: Vec<RootEntry>,
     primary_root: Option<usize>,
     primary_reserved_labels: HashSet<String>,
@@ -179,7 +179,7 @@ fn reject(reason: RejectReason, relative_path: Option<String>) -> RejectedRestor
 }
 
 impl PathResolver {
-    fn new<P: AsRef<Path>>(roots: &[P], primary: Option<&Path>) -> Self {
+    pub(crate) fn new<P: AsRef<Path>>(roots: &[P], primary: Option<&Path>) -> Self {
         let normalized_roots = distinct_by(
             roots.iter().map(|r| normalize_system_path(&lossy(r.as_ref()))).filter(|r| !r.is_empty()).collect(),
             |r| path_key(r),
@@ -265,7 +265,7 @@ impl PathResolver {
         TargetCandidate { root, target: join_str(&self.ordered_roots[root].path, &rel), root_relative_path: rel }
     }
 
-    fn to_clipboard_path(&self, absolute_path: &str) -> String {
+    pub(crate) fn to_clipboard_path(&self, absolute_path: &str) -> String {
         let normalized = normalize_system_path(absolute_path);
         if let Some(primary) = self.primary() {
             if let Some(rel) = relativize_path(&normalized, &primary.path) {
