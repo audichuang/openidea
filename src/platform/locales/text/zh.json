@@ -630,6 +630,7 @@
   "Clear file system cache and Local History": "清除文件系统缓存和本地历史记录",
   "Clear language server workspaces (Java import data and indexes)": "清除语言服务器工作区（Java 导入数据和索引）",
   "Clipboard": "剪贴板",
+  "ClipCode": "ClipCode",
   "Clone": "克隆",
   "Clone depth": "克隆深度",
   "Clone Repository": "克隆仓库",
