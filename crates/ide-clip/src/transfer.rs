@@ -645,12 +645,24 @@ impl ImportMapping {
     ///
     /// Labels are taken from the canonical paths, as the export spells them, so a
     /// root configured through a symlink is known by its target's name.
+    ///
+    /// A root outside the primary that cannot be canonicalized (deleted,
+    /// unmounted) blocks its label unless an existing root routes it: its files
+    /// would otherwise restore into a same-named folder of the primary.
     pub fn map_root_labels(&mut self, primary: &Path, roots: &[PathBuf]) -> Result<Vec<PathBuf>, TransferError> {
+        let given_primary = primary;
         let primary = CanonicalRootId::new(primary)?;
         let mut canonical: Vec<CanonicalRootId> = Vec::with_capacity(roots.len());
+        let mut missing_labels: Vec<String> = Vec::new();
         for root in roots {
-            // A root that cannot be canonicalized (deleted, unmounted) has no label to route.
-            let Ok(id) = CanonicalRootId::new(root) else { continue };
+            let Ok(id) = CanonicalRootId::new(root) else {
+                // Under the primary, its files are primary-relative and land in the same place.
+                let under_primary = root.starts_with(given_primary) || root.starts_with(primary.path());
+                if let Some(label) = root.file_name().and_then(|n| n.to_str()).filter(|_| !under_primary) {
+                    missing_labels.push(label.to_string());
+                }
+                continue;
+            };
             if id != primary && !canonical.contains(&id) {
                 canonical.push(id);
             }
@@ -669,6 +681,11 @@ impl ImportMapping {
                 self.map_prefix(label, root.clone());
             }
             mapped.push(root.path().to_path_buf());
+        }
+        for label in missing_labels {
+            if !self.prefix_destinations.contains_key(&label) {
+                self.block_prefix(label);
+            }
         }
         Ok(mapped)
     }
@@ -4350,5 +4367,7 @@ mod parsed_import_tests {
         let mut mapping = ImportMapping::with_primary(CanonicalRootId::new(&a).unwrap());
         let mapped = mapping.map_root_labels(&a, &[gone]).unwrap();
         assert!(mapped.is_empty());
+        // Its label restores nowhere rather than into `a/gone`.
+        assert!(mapping.blocked_prefixes.contains("gone"), "{:?}", mapping.blocked_prefixes);
     }
 }
