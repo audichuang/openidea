@@ -26,16 +26,51 @@ function windowProject(value?: string | null): string | null {
   return null;
 }
 
-/**
- * Only `main` keeps the remembered project: restored window-group members open theirs after
- * `main`, and would otherwise make `main` reopen a group member instead of its own project.
- */
+/** Tells a window it now records the remembered project (src-tauri/src/windows.rs). */
+const SESSION_OWNER_EVENT = "openidea://session-owner";
+
 function isMainWindow(): boolean {
   return !isTauri() || getCurrentWindow().label === "main";
 }
 
+/** This window took the remembered project over from `main`, which closed. */
+let ownsSession = false;
+
+/**
+ * Only `main` keeps the remembered project while it is open: restored window-group members open
+ * theirs after `main`, and would otherwise make `main` reopen a group member instead of its own
+ * project. Once `main` closes, a window left takes over.
+ */
 function rememberSession(value: string | null) {
-  if (isMainWindow()) write(SESSION_KEY, value);
+  if (isMainWindow() || ownsSession) write(SESSION_KEY, value);
+}
+
+/** Follows the backend's hand-over of the remembered project to this (non-`main`) window. */
+function followSessionOwner(): () => void {
+  if (isMainWindow()) return () => {};
+  let disposed = false;
+  let unlisten: (() => void) | undefined;
+  // Opened after every window closed, or reloaded after taking over: it already holds it.
+  void commands
+    .windowOwnsSession()
+    .then((owns) => {
+      if (owns && !disposed) ownsSession = true;
+    })
+    .catch(() => {});
+  void getCurrentWindow()
+    .listen(SESSION_OWNER_EVENT, () => {
+      ownsSession = true;
+      // What this window shows now is what the next launch reopens.
+      write(SESSION_KEY, projectLocation(useProject.getState().project?.root));
+    })
+    .then((off) => {
+      if (disposed) off();
+      else unlisten = off;
+    });
+  return () => {
+    disposed = true;
+    unlisten?.();
+  };
 }
 
 function read(key: string): string | null {
@@ -72,8 +107,9 @@ export function reopenEnabled(settings: Settings | null | undefined, pref: boole
 }
 
 /**
- * Keeps the remembered project in sync with `main`: set while a project is open, cleared on
- * explicit close. Every window remembers its own project for a webview reload.
+ * Keeps the remembered project in sync with `main` (or the window that took over once it
+ * closed): set while a project is open, cleared on explicit close. Every window remembers its
+ * own project for a webview reload.
  */
 export function trackSession(): () => void {
   const root = projectLocation(useProject.getState().project?.root);
@@ -81,7 +117,8 @@ export function trackSession(): () => void {
     rememberSession(root);
     windowProject(root);
   }
-  return useProject.subscribe((s, prev) => {
+  const stopFollowing = isTauri() ? followSessionOwner() : () => {};
+  const stopTracking = useProject.subscribe((s, prev) => {
     // A remote project is remembered by its location (`ssh://…`), reopened over SSH.
     const now = projectLocation(s.project?.root);
     const before = projectLocation(prev.project?.root);
@@ -90,6 +127,10 @@ export function trackSession(): () => void {
     else if (before && !useSession.getState().reopening) rememberSession(null);
     if (now || !useSession.getState().reopening) windowProject(now);
   });
+  return () => {
+    stopFollowing();
+    stopTracking();
+  };
 }
 
 export function lastSessionProject(): string | null {
@@ -162,5 +203,6 @@ async function reopen(path: string) {
 /** Tests only. */
 export function _resetSessionForTests() {
   attempted = false;
+  ownsSession = false;
   useSession.setState({ reopening: null, reopenPref: read(PREF_KEY) !== "false" });
 }
