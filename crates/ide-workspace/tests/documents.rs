@@ -1135,3 +1135,35 @@ fn language_of_a_closed_file_reads_the_hashbang() {
     docs.apply_edits(doc.id, &[TextEdit { range: all, new_text: "#!/usr/bin/env python3".into() }]).unwrap();
     assert_eq!(language(None), "python", "the open buffer's first line");
 }
+
+#[test]
+fn reload_from_disk_discards_unsaved_changes_only_for_given_paths() {
+    let f = fixture();
+    let a = f.root.join("a.txt");
+    let b = f.root.join("b.txt");
+    fs::write(&a, "alpha\n").unwrap();
+    fs::write(&b, "bravo\n").unwrap();
+    let ida = f.docs.open(&a).unwrap().id;
+    let idb = f.docs.open(&b).unwrap().id;
+    f.docs.edit(ida, 0, change(0, 0, "// ")).unwrap();
+    f.docs.edit(idb, 0, change(0, 0, "// ")).unwrap();
+    assert!(f.docs.snapshot(ida).unwrap().dirty);
+
+    // A restore rewrites both on disk; only `a` is reported as restored.
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    fs::write(&a, "restored\n").unwrap();
+    fs::write(&b, "restored\n").unwrap();
+    f.docs.reload_from_disk(std::slice::from_ref(&a));
+    let snap = f.docs.snapshot(ida).unwrap();
+    assert_eq!(snap.text, "restored\n");
+    assert!(!snap.dirty);
+    // Saving the clean document must not bring the old buffer back.
+    f.docs.save(ida).unwrap();
+    assert_eq!(fs::read_to_string(&a).unwrap(), "restored\n");
+
+    // A normal external change keeps the unsaved buffer of `b` (and warns).
+    f.docs.on_disk_changed(std::slice::from_ref(&b));
+    let snap = f.docs.snapshot(idb).unwrap();
+    assert_eq!(snap.text, "// bravo\n");
+    assert!(snap.dirty);
+}
