@@ -1077,6 +1077,49 @@ mod tests {
         assert!(text.contains("// file: [MODIFIED] ext/README.md\n"), "{text}");
     }
 
+    /// Project `M` holding a plain `ext/a.txt`, beside the repository `ext` whose
+    /// committed `a.txt` shares that label. Returns (M, ext).
+    fn colliding_external_label(tmp: &Path) -> (PathBuf, PathBuf) {
+        let base = std::fs::canonicalize(tmp).unwrap();
+        let m = base.join("M");
+        fs::create_dir_all(m.join("ext")).unwrap();
+        fs::write(m.join("ext/a.txt"), "project\n").unwrap();
+        let ext = repo(&base.join("other/ext"));
+        commit_file(&ext, "a.txt", Some("external\n"), "add a");
+        (m, ext)
+    }
+
+    fn targets_of(preview: &ClipPastePreview) -> Vec<String> {
+        preview.files.iter().filter_map(|f| f.target.clone()).collect()
+    }
+
+    #[test]
+    fn an_external_label_taken_in_the_project_is_spelled_absolute_so_a_delete_cannot_hit_the_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (m, ext) = colliding_external_label(tmp.path());
+        fs::remove_file(ext.join("a.txt")).unwrap();
+        let text = copied(&m, ClipCopySource::Changes { paths: vec![ext.clone()], side: ClipChangeSide::Working });
+        let abs = format!("{}/a.txt", ext.to_string_lossy());
+        assert!(text.contains(&format!("// file: [DELETED] {abs}\n")), "{text}");
+        let preview = paste_preview(&m, &text, false, &[], &Settings::default()).unwrap();
+        let project_file = m.join("ext/a.txt").to_string_lossy().into_owned();
+        assert!(!targets_of(&preview).contains(&project_file), "{:?}", preview.files);
+        assert!(preview.files.iter().all(|f| f.action != "delete"), "{:?}", preview.files);
+    }
+
+    #[test]
+    fn an_external_label_taken_in_the_project_is_spelled_absolute_so_a_write_cannot_hit_the_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (m, ext) = colliding_external_label(tmp.path());
+        fs::write(ext.join("a.txt"), "external changed\n").unwrap();
+        let text = copied(&m, ClipCopySource::Changes { paths: vec![ext.clone()], side: ClipChangeSide::Working });
+        let abs = format!("{}/a.txt", ext.to_string_lossy());
+        assert!(text.contains(&format!("// file: [MODIFIED] {abs}\n")), "{text}");
+        let preview = paste_preview(&m, &text, false, &[], &Settings::default()).unwrap();
+        let project_file = m.join("ext/a.txt").to_string_lossy().into_owned();
+        assert!(!targets_of(&preview).contains(&project_file), "{:?}", preview.files);
+    }
+
     #[test]
     fn a_monorepo_copy_restores_into_the_project_without_adjustment() {
         let tmp = tempfile::tempdir().unwrap();
