@@ -6,7 +6,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { create } from "zustand";
 import { commands, isCancelled, isTauri, type Settings } from "@/platform/ipc";
-import { closeProject, openProject, startupLaunchHandled, useProject } from "@/platform/project";
+import { closeProject, openProject, startupLaunchHandled, startupProjectDecided, useProject } from "@/platform/project";
 import { connectRemote, projectLocation, resolveRemoteLocation, useRemoteProgress } from "@/platform/remote";
 import { notifications } from "@/workbench/contributions";
 
@@ -102,6 +102,15 @@ export function cancelReopen() {
 export async function reopenLastProject(): Promise<void> {
   if (attempted || !isTauri()) return;
   attempted = true;
+  try {
+    await reopenStartupProject();
+  } finally {
+    // Reopened or not, this window's startup project is known (window groups wait for it).
+    startupProjectDecided();
+  }
+}
+
+async function reopenStartupProject(): Promise<void> {
   // An explicit launch wins over both this window's and the last session's project.
   await startupLaunchHandled();
   const startup = useProject.getState();
