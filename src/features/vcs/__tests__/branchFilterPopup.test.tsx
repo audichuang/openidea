@@ -61,4 +61,12 @@ describe("branch filter popup", () => {
     fireEvent.change(input, { target: { value: "missing" } });
     expect(screen.getByText("No matching branches")).toBeTruthy();
   });
+
+  it("ignores the keyCode-229 Enter that confirms an IME candidate", () => {
+    const { input, onSelect } = renderPopup();
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 229 });
+    expect(onSelect).not.toHaveBeenCalled();
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 13 });
+    expect(onSelect).toHaveBeenCalled();
+  });
 });
