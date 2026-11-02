@@ -2486,8 +2486,15 @@ pub fn detect_clipboard_prefixes(clipboard_text: &str, header_format: &str) -> V
     let mut prefixes = HashSet::new();
     let mut list = Vec::new();
     for entry in entries {
-        if let Some((first, _)) = entry.path.split_once('/') {
-            if !first.is_empty() && prefixes.insert(first.to_string()) {
+        // The same normalised relative path `plan_import` reads its labels from.
+        if paths::is_absolute_path(&paths::normalize_system_path(&entry.path)) {
+            continue;
+        }
+        let Some(rel) = sanitize_relative_path(&entry.path) else {
+            continue;
+        };
+        if let Some((first, _)) = rel.split_once('/') {
+            if prefixes.insert(first.to_string()) {
                 list.push(first.to_string());
             }
         }
@@ -2656,8 +2663,21 @@ pub fn plan_import_parsed_with(
                     });
                     continue;
                 }
-            } else if let Some((prefix, rest)) = entry.path.split_once('/') {
-                if mapping.blocked_prefixes.contains(prefix) {
+            } else {
+                // Labels are read from the normalised path: `./label/…` and
+                // `label\…` are `label/…`, so neither slips past a blocked label.
+                let Some(rel) = sanitize_relative_path(&entry.path) else {
+                    skipped_operations.push(SkippedOperation {
+                        raw_path: entry.path.clone(),
+                        relative_path: None,
+                        reason: SkipReason::UnresolvedPath,
+                        detail: paths::has_git_segment(&entry.path)
+                            .then_some(restore::SkipDetail::ProtectedGitMetadata),
+                    });
+                    continue;
+                };
+                let label = rel.split_once('/');
+                if label.is_some_and(|(prefix, _)| mapping.blocked_prefixes.contains(prefix)) {
                     skipped_operations.push(SkippedOperation {
                         raw_path: entry.path.clone(),
                         relative_path: None,
@@ -2666,18 +2686,18 @@ pub fn plan_import_parsed_with(
                     });
                     continue;
                 }
-                if let Some(dest) = mapping.prefix_destinations.get(prefix) {
+                if let Some((dest, rest)) =
+                    label.and_then(|(prefix, rest)| mapping.prefix_destinations.get(prefix).map(|d| (d, rest)))
+                {
                     // Prefix consumed EXACTLY ONCE
-                    (dest, std::borrow::Cow::Borrowed(rest))
+                    (dest, std::borrow::Cow::Owned(rest.to_string()))
                 } else if let Some(ref primary) = mapping.primary_destination {
                     let rel = match &mapping.primary_prefix {
-                        Some(p) if restore::is_relative(&entry.path) => {
-                            std::borrow::Cow::Owned(format!("{p}/{}", entry.path))
-                        }
-                        _ => std::borrow::Cow::Borrowed(entry.path.as_str()),
+                        Some(p) => format!("{p}/{rel}"),
+                        None => rel,
                     };
                     unlabelled = true;
-                    (primary, rel)
+                    (primary, std::borrow::Cow::Owned(rel))
                 } else {
                     skipped_operations.push(SkippedOperation {
                         raw_path: entry.path.clone(),
@@ -2687,23 +2707,6 @@ pub fn plan_import_parsed_with(
                     });
                     continue;
                 }
-            } else if let Some(ref primary) = mapping.primary_destination {
-                let rel = match &mapping.primary_prefix {
-                    Some(p) if restore::is_relative(&entry.path) => {
-                        std::borrow::Cow::Owned(format!("{p}/{}", entry.path))
-                    }
-                    _ => std::borrow::Cow::Borrowed(entry.path.as_str()),
-                };
-                unlabelled = true;
-                (primary, rel)
-            } else {
-                skipped_operations.push(SkippedOperation {
-                    raw_path: entry.path.clone(),
-                    relative_path: None,
-                    reason: SkipReason::UnresolvedPath,
-                    detail: None,
-                });
-                continue;
             }
         };
 
@@ -4395,6 +4398,45 @@ mod parsed_import_tests {
         assert!(mapped.is_empty());
         // Its label restores nowhere rather than into `a/gone`.
         assert!(mapping.blocked_prefixes.contains("gone"), "{:?}", mapping.blocked_prefixes);
+    }
+
+    /// A label is read from the normalised path, so `./label/…` and `label\…` route
+    /// (or are blocked) exactly as `label/…` is.
+    #[test]
+    fn root_labels_are_matched_on_the_normalised_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let (w, c) = (base.join("W"), base.join("c"));
+        fs::create_dir_all(w.join("gone")).unwrap();
+        fs::write(w.join("gone/x.txt"), "w\n").unwrap();
+        fs::create_dir_all(&c).unwrap();
+        fs::write(c.join("y.txt"), "c\n").unwrap();
+        let mut mapping = ImportMapping::with_primary(CanonicalRootId::new(&w).unwrap());
+        let mut roots = vec![w.clone()];
+        roots.extend(mapping.map_root_labels(&w, &[base.join("gone"), c.clone()]).unwrap());
+        let plan = |text: &str| plan_import_with(text, "", &roots, &mapping, &RunOptions::default()).unwrap();
+
+        for spelling in ["gone/x.txt", "./gone/x.txt", r"gone\x.txt", r".\gone\x.txt"] {
+            for text in [format!("// FILE: {spelling}\nnew\n"), format!("// FILE: [DELETED] {spelling}\n")] {
+                let p = plan(&text);
+                assert!(p.create_operations().is_empty() && p.delete_operations().is_empty(), "{text:?} {p:?}");
+                let reasons: Vec<_> = p.skipped_operations().iter().map(|op| op.reason).collect();
+                assert_eq!(reasons, [SkipReason::UnresolvedPath], "{text:?}");
+            }
+        }
+        for spelling in ["c/y.txt", "./c/y.txt", r"c\y.txt"] {
+            let p = plan(&format!("// FILE: {spelling}\nnew\n"));
+            let creates: Vec<_> = p.create_operations().iter().map(|op| op.absolute_path.clone()).collect();
+            assert_eq!(creates, [c.join("y.txt")], "{spelling} {:?}", p.skipped_operations());
+            let p = plan(&format!("// FILE: [DELETED] {spelling}\n"));
+            let deletes: Vec<_> = p.delete_operations().iter().map(|op| op.absolute_path.clone()).collect();
+            assert_eq!(deletes, [c.join("y.txt")], "{spelling} {:?}", p.skipped_operations());
+        }
+        assert_eq!(fs::read_to_string(w.join("gone/x.txt")).unwrap(), "w\n");
+        assert!(!w.join("c").exists());
+
+        let text = "// FILE: ./lib/a.txt\na\n// FILE: lib\\b.txt\nb\n// FILE: /abs/c.txt\nc\n";
+        assert_eq!(detect_clipboard_prefixes(text, ""), ["lib"]);
     }
 
     /// ClipCode's `legacyTargetCandidates`: an unlabelled relative path is looked up in
