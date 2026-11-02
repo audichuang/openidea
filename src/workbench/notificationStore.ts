@@ -32,6 +32,7 @@ export const NOTIFICATION_GROUPS: ReadonlyArray<{ id: string; title: string }> =
   { id: "system", title: "System Messages" },
   { id: "lsp", title: "Language Servers" },
   { id: "vcs", title: "Version Control" },
+  { id: "clipcode", title: "ClipCode" },
   { id: "run", title: "Run and Debug" },
   { id: "tools", title: "External Tools" },
   { id: "search", title: "Find in Files" },
