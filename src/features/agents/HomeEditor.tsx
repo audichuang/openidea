@@ -267,6 +267,7 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
               options={members.map((path) => ({
                 value: path,
                 label: basename(path),
+                literal: true,
                 detail: path,
                 icon: "folder",
               }))}
@@ -317,7 +318,7 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
               aria-label="Base branch"
               searchable
               value={base}
-              options={branches.map((b) => ({ value: b.name, label: b.name, icon: "branch" }))}
+              options={branches.map((b) => ({ value: b.name, label: b.name, literal: true, icon: "branch" }))}
               onChange={(b) => updateDraft({ base: b === current ? null : b })}
             />
           )}
