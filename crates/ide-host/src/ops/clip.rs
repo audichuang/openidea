@@ -1017,6 +1017,11 @@ mod tests {
     use std::fs;
     use std::process::Command;
 
+    /// A path as ClipCode headers spell it: `/` on every OS (`C:/x` on Windows).
+    fn slash(path: &Path) -> String {
+        path.to_string_lossy().replace('\\', "/")
+    }
+
     fn git(dir: &Path, args: &[&str]) -> String {
         let out = Command::new("git")
             .args(args)
@@ -1038,14 +1043,14 @@ mod tests {
         fs::write(dir.join("README.md"), "base\n").unwrap();
         git(dir, &["add", "-A"]);
         git(dir, &["commit", "-q", "-m", "init"]);
-        std::fs::canonicalize(dir).unwrap()
+        dunce::canonicalize(dir).unwrap()
     }
 
     /// Project `M` (a plain folder with `src/x.txt`) holding the repository `M/repo`,
     /// whose `src/a.ts` is added by `c1` and changed by `c2`. Returns (M, repo, c1, c2).
     fn monorepo(tmp: &Path) -> (PathBuf, PathBuf, String, String) {
         fs::create_dir_all(tmp).unwrap();
-        let m = std::fs::canonicalize(tmp).unwrap().join("M");
+        let m = dunce::canonicalize(tmp).unwrap().join("M");
         fs::create_dir_all(m.join("src")).unwrap();
         fs::write(m.join("src/x.txt"), "x\n").unwrap();
         let r = repo(&m.join("repo"));
@@ -1126,7 +1131,7 @@ mod tests {
     #[test]
     fn several_nested_repositories_share_the_project_root_line() {
         let tmp = tempfile::tempdir().unwrap();
-        let m = std::fs::canonicalize(tmp.path()).unwrap().join("M");
+        let m = dunce::canonicalize(tmp.path()).unwrap().join("M");
         let a = repo(&m.join("a"));
         let b = repo(&m.join("b"));
         fs::write(a.join("README.md"), "from a\n").unwrap();
@@ -1160,21 +1165,21 @@ mod tests {
         let text = copied(&sub, ClipCopySource::Changes { paths: vec![r.clone()], side: ClipChangeSide::Working });
         assert!(text.starts_with("// clipcode-root: sub\n"), "{text}");
         assert!(text.contains("// file: [MODIFIED] s.txt\n"), "{text}");
-        let abs = format!("{}/README.md", r.to_string_lossy());
+        let abs = format!("{}/README.md", slash(&r));
         assert!(text.contains(&format!("// file: [MODIFIED] {abs}\n")), "{text}");
 
         // A repository beside the project is no project root either: absolute, as Files copies spell it.
         let ext = repo(&tmp.path().join("ext"));
         fs::write(ext.join("README.md"), "ext\n").unwrap();
         let text = copied(&sub, ClipCopySource::Changes { paths: vec![ext.clone()], side: ClipChangeSide::Working });
-        let abs = format!("{}/README.md", ext.to_string_lossy());
+        let abs = format!("{}/README.md", slash(&ext));
         assert!(text.contains(&format!("// file: [MODIFIED] {abs}\n")), "{text}");
     }
 
     /// Project `M` holding a plain `ext/a.txt`, beside the repository `ext` whose
     /// committed `a.txt` shares that label. Returns (M, ext).
     fn colliding_external_label(tmp: &Path) -> (PathBuf, PathBuf) {
-        let base = std::fs::canonicalize(tmp).unwrap();
+        let base = dunce::canonicalize(tmp).unwrap();
         let m = base.join("M");
         fs::create_dir_all(m.join("ext")).unwrap();
         fs::write(m.join("ext/a.txt"), "project\n").unwrap();
@@ -1184,7 +1189,7 @@ mod tests {
     }
 
     fn targets_of(preview: &ClipPastePreview) -> Vec<String> {
-        preview.files.iter().filter_map(|f| f.target.clone()).collect()
+        preview.files.iter().filter_map(|f| f.target.as_deref().map(|t| slash(Path::new(t)))).collect()
     }
 
     #[test]
@@ -1193,10 +1198,10 @@ mod tests {
         let (m, ext) = colliding_external_label(tmp.path());
         fs::remove_file(ext.join("a.txt")).unwrap();
         let text = copied(&m, ClipCopySource::Changes { paths: vec![ext.clone()], side: ClipChangeSide::Working });
-        let abs = format!("{}/a.txt", ext.to_string_lossy());
+        let abs = format!("{}/a.txt", slash(&ext));
         assert!(text.contains(&format!("// file: [DELETED] {abs}\n")), "{text}");
         let preview = paste_preview(&m, &text, false, &[], &Settings::default()).unwrap();
-        let project_file = m.join("ext/a.txt").to_string_lossy().into_owned();
+        let project_file = slash(&m.join("ext/a.txt"));
         assert!(!targets_of(&preview).contains(&project_file), "{:?}", preview.files);
         assert!(preview.files.iter().all(|f| f.action != "delete"), "{:?}", preview.files);
     }
@@ -1207,10 +1212,10 @@ mod tests {
         let (m, ext) = colliding_external_label(tmp.path());
         fs::write(ext.join("a.txt"), "external changed\n").unwrap();
         let text = copied(&m, ClipCopySource::Changes { paths: vec![ext.clone()], side: ClipChangeSide::Working });
-        let abs = format!("{}/a.txt", ext.to_string_lossy());
+        let abs = format!("{}/a.txt", slash(&ext));
         assert!(text.contains(&format!("// file: [MODIFIED] {abs}\n")), "{text}");
         let preview = paste_preview(&m, &text, false, &[], &Settings::default()).unwrap();
-        let project_file = m.join("ext/a.txt").to_string_lossy().into_owned();
+        let project_file = slash(&m.join("ext/a.txt"));
         assert!(!targets_of(&preview).contains(&project_file), "{:?}", preview.files);
     }
 
@@ -1218,7 +1223,7 @@ mod tests {
     /// the repository `other/a/ext` (not a project root) sharing that folder name.
     /// Returns (W, C, ext).
     fn multi_root_with_a_namesake_repository(tmp: &Path) -> (PathBuf, PathBuf, PathBuf) {
-        let base = std::fs::canonicalize(tmp).unwrap();
+        let base = dunce::canonicalize(tmp).unwrap();
         let w = repo(&base.join("W"));
         fs::create_dir_all(w.join("ext")).unwrap();
         commit_file(&w, "ext/a.txt", Some("project\n"), "add ext/a");
@@ -1236,8 +1241,8 @@ mod tests {
         let (w, c, ext) = multi_root_with_a_namesake_repository(tmp.path());
         let roots = vec![c.clone()];
         let repos = vec![w.clone(), ext.clone()];
-        let project_file = w.join("ext/a.txt").to_string_lossy().into_owned();
-        let external_file = ext.join("a.txt").to_string_lossy().into_owned();
+        let project_file = slash(&w.join("ext/a.txt"));
+        let external_file = slash(&ext.join("a.txt"));
         let copy_w = || {
             let source = ClipCopySource::Changes { paths: vec![w.clone()], side: ClipChangeSide::Working };
             copy_in(&w, &roots, source, &Settings::default()).unwrap().text
@@ -1270,7 +1275,7 @@ mod tests {
     /// Workspace `W` (a plain folder) whose content root `repos/ext/subdir` lies inside the
     /// repository `repos/ext` (committed `a.txt` and `subdir/b.txt`). Returns (W, ext).
     fn content_root_inside_a_repository(tmp: &Path) -> (PathBuf, PathBuf) {
-        let base = std::fs::canonicalize(tmp).unwrap();
+        let base = dunce::canonicalize(tmp).unwrap();
         let w = base.join("W");
         fs::create_dir_all(&w).unwrap();
         fs::write(w.join("notes.txt"), "w\n").unwrap();
@@ -1288,7 +1293,7 @@ mod tests {
         let roots = vec![ext.join("subdir")];
         fs::write(ext.join("a.txt"), "a2\n").unwrap();
         fs::write(ext.join("subdir/b.txt"), "b2\n").unwrap();
-        let abs = format!("{}/a.txt", ext.to_string_lossy());
+        let abs = format!("{}/a.txt", slash(&ext));
         let sources = [
             ClipCopySource::Files { paths: vec![ext.join("a.txt"), ext.join("subdir/b.txt")] },
             ClipCopySource::Changes { paths: vec![ext.clone()], side: ClipChangeSide::Working },
@@ -1305,7 +1310,7 @@ mod tests {
             fs::write(ext.join("subdir/b.txt"), "b1\n").unwrap();
             let repos = vec![ext.clone()];
             let preview = paste_preview_into(&w, None, &roots, &text, false, &repos, &Settings::default()).unwrap();
-            let project_file = w.join("ext/a.txt").to_string_lossy().into_owned();
+            let project_file = slash(&w.join("ext/a.txt"));
             assert!(!targets_of(&preview).contains(&project_file), "{:?}", preview.files);
             let overwrite = preview.files.iter().filter(|f| f.action == "overwrite").map(|f| f.index).collect();
             paste_apply(ClipPasteApply { id: preview.id, overwrite, ..Default::default() }).unwrap();
@@ -1338,12 +1343,12 @@ mod tests {
         let (_, headers) = spelling(&text);
         assert!(headers.contains(&"subdir/b.txt".to_string()), "{text}");
         assert!(!text.contains("secrets.env") && !text.contains("hunter2"), "{text}");
-        assert!(headers.contains(&format!("{}/a.txt", ext.to_string_lossy())), "{text}");
+        assert!(headers.contains(&format!("{}/a.txt", slash(&ext))), "{text}");
 
         // The content root's file restores into the content root.
         fs::write(ext.join("subdir/b.txt"), "b2\n").unwrap();
         let preview = paste_preview_into(&w, None, &roots, &text, false, &[], &Settings::default()).unwrap();
-        let b = ext.join("subdir/b.txt").to_string_lossy().into_owned();
+        let b = slash(&ext.join("subdir/b.txt"));
         assert!(targets_of(&preview).contains(&b), "{:?}", preview.files);
         let overwrite = preview.files.iter().filter(|f| f.action == "overwrite").map(|f| f.index).collect();
         paste_apply(ClipPasteApply { id: preview.id, overwrite, ..Default::default() }).unwrap();
@@ -1354,7 +1359,7 @@ mod tests {
     #[test]
     fn a_legacy_repository_prefix_never_takes_a_folder_the_project_holds() {
         let tmp = tempfile::tempdir().unwrap();
-        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        let base = dunce::canonicalize(tmp.path()).unwrap();
         let w = base.join("W");
         fs::create_dir_all(w.join("ext")).unwrap();
         fs::write(w.join("ext/a.txt"), "project\n").unwrap();
@@ -1362,19 +1367,19 @@ mod tests {
         commit_file(&ext, "a.txt", Some("external\n"), "add a");
         let text = "// file: ext/a.txt\nnew\n";
         let preview = paste_preview(&w, text, false, std::slice::from_ref(&ext), &Settings::default()).unwrap();
-        assert_eq!(targets_of(&preview), vec![w.join("ext/a.txt").to_string_lossy().into_owned()]);
+        assert_eq!(targets_of(&preview), vec![slash(&w.join("ext/a.txt"))]);
     }
 
     #[test]
     fn a_legacy_multi_repository_payload_restores_into_the_named_repository() {
         let tmp = tempfile::tempdir().unwrap();
-        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        let base = dunce::canonicalize(tmp.path()).unwrap();
         let w = base.join("W");
         fs::create_dir_all(&w).unwrap();
         let lib = repo(&base.join("lib"));
         let text = "// file: lib/x.txt\nnew\n";
         let preview = paste_preview(&w, text, false, std::slice::from_ref(&lib), &Settings::default()).unwrap();
-        assert_eq!(targets_of(&preview), vec![lib.join("x.txt").to_string_lossy().into_owned()]);
+        assert_eq!(targets_of(&preview), vec![slash(&lib.join("x.txt"))]);
         paste_apply(ClipPasteApply { id: preview.id, ..Default::default() }).unwrap();
         assert_eq!(fs::read_to_string(lib.join("x.txt")).unwrap().trim_end(), "new");
         assert!(!w.join("lib").exists());
@@ -1382,7 +1387,7 @@ mod tests {
         // Spelled `./lib/…` or `lib\…`, it is the same repository prefix.
         for text in ["// file: ./lib/y.txt\ny\n", "// file: lib\\y.txt\ny\n"] {
             let preview = paste_preview(&w, text, false, std::slice::from_ref(&lib), &Settings::default()).unwrap();
-            assert_eq!(targets_of(&preview), vec![lib.join("y.txt").to_string_lossy().into_owned()], "{text:?}");
+            assert_eq!(targets_of(&preview), vec![slash(&lib.join("y.txt"))], "{text:?}");
         }
     }
 
@@ -1391,7 +1396,7 @@ mod tests {
     #[test]
     fn a_missing_content_root_keeps_the_single_root_guesses() {
         let tmp = tempfile::tempdir().unwrap();
-        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        let base = dunce::canonicalize(tmp.path()).unwrap();
         let w = base.join("W");
         fs::create_dir_all(w.join("app/src")).unwrap();
         fs::create_dir_all(w.join("app/test")).unwrap();
@@ -1402,7 +1407,7 @@ mod tests {
         let preview =
             paste_preview_into(&w, None, &roots, text, false, std::slice::from_ref(&lib), &Settings::default())
                 .unwrap();
-        assert_eq!(targets_of(&preview), vec![lib.join("x.txt").to_string_lossy().into_owned()]);
+        assert_eq!(targets_of(&preview), vec![slash(&lib.join("x.txt"))]);
 
         let text = "// file: src/a.txt\na\n// file: test/b.txt\nb\n";
         let preview = paste_preview_into(&w, None, &roots, text, false, &[], &Settings::default()).unwrap();
@@ -1419,7 +1424,7 @@ mod tests {
     #[test]
     fn a_restore_base_does_not_route_a_missing_roots_label_into_the_project() {
         let tmp = tempfile::tempdir().unwrap();
-        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        let base = dunce::canonicalize(tmp.path()).unwrap();
         let w = base.join("W");
         fs::create_dir_all(w.join("src")).unwrap();
         fs::create_dir_all(w.join("test")).unwrap();
@@ -1442,7 +1447,7 @@ mod tests {
     #[test]
     fn a_legacy_repository_prefix_shared_by_two_repositories_restores_nowhere() {
         let tmp = tempfile::tempdir().unwrap();
-        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        let base = dunce::canonicalize(tmp.path()).unwrap();
         let m = base.join("M");
         fs::create_dir_all(&m).unwrap();
         let (a, b) = (repo(&base.join("a/lib")), repo(&base.join("b/lib")));
@@ -1459,18 +1464,18 @@ mod tests {
     #[test]
     fn a_legacy_repository_prefix_never_routes_into_a_repository_inside_the_project() {
         let tmp = tempfile::tempdir().unwrap();
-        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        let base = dunce::canonicalize(tmp.path()).unwrap();
         let p = base.join("P");
         let inside = repo(&p.join("libs/a"));
         let text = "// file: a/src/f.ts\nnew\n";
         let preview = paste_preview(&p, text, false, std::slice::from_ref(&inside), &Settings::default()).unwrap();
-        assert_eq!(targets_of(&preview), vec![p.join("a/src/f.ts").to_string_lossy().into_owned()]);
+        assert_eq!(targets_of(&preview), vec![slash(&p.join("a/src/f.ts"))]);
 
         // Beside a same-named repository outside the project, only the outside one counts.
         let outside = repo(&base.join("a"));
         let repos = [inside.clone(), outside.clone()];
         let preview = paste_preview(&p, text, false, &repos, &Settings::default()).unwrap();
-        assert_eq!(targets_of(&preview), vec![outside.join("src/f.ts").to_string_lossy().into_owned()]);
+        assert_eq!(targets_of(&preview), vec![slash(&outside.join("src/f.ts"))]);
     }
 
     /// As ClipCode's `ClipboardPathResolver`: an unlabelled path the primary lacks
@@ -1478,14 +1483,14 @@ mod tests {
     #[test]
     fn an_unlabelled_path_restores_into_the_content_root_that_holds_it() {
         let tmp = tempfile::tempdir().unwrap();
-        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        let base = dunce::canonicalize(tmp.path()).unwrap();
         let w = base.join("W");
         fs::create_dir_all(&w).unwrap();
         let c = base.join("C");
         fs::create_dir_all(c.join("src")).unwrap();
         fs::write(c.join("src/x.ts"), "c\n").unwrap();
         let roots = vec![c.clone()];
-        let c_file = c.join("src/x.ts").to_string_lossy().into_owned();
+        let c_file = slash(&c.join("src/x.ts"));
         let preview_of =
             |text: &str| paste_preview_into(&w, None, &roots, text, false, &[], &Settings::default()).unwrap();
 
@@ -1510,7 +1515,7 @@ mod tests {
     /// Workspace `W` (a plain folder) with the content root `x/a`, a repository
     /// whose committed `src/f.ts` is modified. Returns (W, a).
     fn workspace_with_external_root(tmp: &Path) -> (PathBuf, PathBuf) {
-        let base = std::fs::canonicalize(tmp).unwrap();
+        let base = dunce::canonicalize(tmp).unwrap();
         let w = base.join("W");
         fs::create_dir_all(&w).unwrap();
         fs::write(w.join("notes.txt"), "w\n").unwrap();
@@ -1535,7 +1540,7 @@ mod tests {
         let preview = paste_preview_into(&w, None, &roots, &text, false, &[], &Settings::default()).unwrap();
         assert_eq!(preview.suggestion, None);
         assert_eq!(preview.files.len(), 1, "{:?}", preview.files);
-        assert_eq!(preview.files[0].target.as_deref(), Some(a.join("src/f.ts").to_string_lossy().as_ref()));
+        assert_eq!(preview.files[0].target.as_deref().map(|t| slash(Path::new(t))), Some(slash(&a.join("src/f.ts"))));
         assert_eq!(preview.files[0].action, "overwrite");
         paste_apply(ClipPasteApply { id: preview.id, overwrite: vec![0], ..Default::default() }).unwrap();
         assert_eq!(fs::read_to_string(a.join("src/f.ts")).unwrap().trim_end(), "f2");
@@ -1550,7 +1555,7 @@ mod tests {
         let text = "// clipcode-root: W\n// file: a/src/f.ts\nf3\n";
         let preview = paste_preview_into(&w, None, &roots, text, false, &[], &Settings::default()).unwrap();
         assert_eq!(preview.files.len(), 1, "{:?}", preview.files);
-        assert_eq!(preview.files[0].target.as_deref(), Some(a.join("src/f.ts").to_string_lossy().as_ref()));
+        assert_eq!(preview.files[0].target.as_deref().map(|t| slash(Path::new(t))), Some(slash(&a.join("src/f.ts"))));
 
         // A label the project also holds as a folder is ambiguous: nothing is written to either.
         fs::create_dir_all(w.join("a/src")).unwrap();
@@ -1584,7 +1589,7 @@ mod tests {
     #[test]
     fn files_and_changes_spell_the_same_files_alike() {
         let tmp = tempfile::tempdir().unwrap();
-        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        let base = dunce::canonicalize(tmp.path()).unwrap();
         let m = repo(&base.join("M"));
         let ext = repo(&base.join("ext"));
         fs::write(m.join("README.md"), "m\n").unwrap();
@@ -1597,7 +1602,7 @@ mod tests {
             spelling(&f.text)
         };
         // Only a file of a repository beside the project: no project root covers it, so it is absolute.
-        let abs = format!("{}/README.md", ext.to_string_lossy());
+        let abs = format!("{}/README.md", slash(&ext));
         let (first, headers) = same(&[], vec![ext.join("README.md")], vec![ext.clone()]);
         assert_eq!(first, "// clipcode-root: M");
         assert_eq!(headers, vec![abs.clone()]);
@@ -1627,8 +1632,8 @@ mod tests {
         let preview = paste_preview(&m, &text, false, &[], &Settings::default()).unwrap();
         assert_eq!(preview.suggestion, None);
         assert_eq!(preview.files.len(), 1, "{:?}", preview.files);
-        let target = r.join("src/a.ts").to_string_lossy().into_owned();
-        assert_eq!(preview.files[0].target.as_deref(), Some(target.as_str()));
+        let target = slash(&r.join("src/a.ts"));
+        assert_eq!(preview.files[0].target.as_deref().map(|t| slash(Path::new(t))), Some(target));
         assert_eq!(preview.files[0].action, "overwrite");
     }
 
@@ -1637,7 +1642,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (_, src, _, c2) = monorepo(&tmp.path().join("src"));
         let commits = copied(&src, ClipCopySource::Commits { repo: src.clone(), tip: c2.clone(), selected: vec![c2] });
-        let dst = std::fs::canonicalize(tmp.path()).unwrap().join("dst");
+        let dst = dunce::canonicalize(tmp.path()).unwrap().join("dst");
         let target = repo(&dst.join("repo"));
         fs::create_dir_all(target.join("src")).unwrap();
         commit_file(&target, "src/a.ts", Some("a1\n"), "add a");
@@ -1646,7 +1651,7 @@ mod tests {
         assert!(paste_preview(&dst, &commits, false, &[], &Settings::default()).is_err());
         let preview = paste_preview_into(&dst, Some(&target), &[], &commits, false, &[], &Settings::default()).unwrap();
         assert_eq!(preview.mode, "commits");
-        assert_eq!(preview.destination, target.to_string_lossy());
+        assert_eq!(slash(Path::new(&preview.destination)), slash(&target));
         let result =
             paste_apply(ClipPasteApply { id: preview.id, overwrite_existing: true, ..Default::default() }).unwrap();
         assert_eq!(result.commits.len(), 1, "{:?}", result.errors);
@@ -1658,10 +1663,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let a = repo(&tmp.path().join("a"));
         fs::write(a.join("main.kt"), "fun main() {}\n").unwrap();
-        let outside = std::fs::canonicalize(tmp.path()).unwrap().join("loose");
+        let outside = dunce::canonicalize(tmp.path()).unwrap().join("loose");
         fs::create_dir_all(&outside).unwrap();
         fs::write(outside.join(".zshrc"), "export A=1\n").unwrap();
-        let abs = format!("{}/.zshrc", outside.to_string_lossy());
+        let abs = format!("{}/.zshrc", slash(&outside));
 
         // The external file first: the project file keeps its relative header.
         for paths in [vec![outside.join(".zshrc"), a.join("main.kt")], vec![a.join("main.kt"), outside.join(".zshrc")]]
@@ -1684,7 +1689,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let a = repo(&tmp.path().join("a"));
         fs::write(a.join("main.kt"), "fun main() {}\n").unwrap();
-        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        let base = dunce::canonicalize(tmp.path()).unwrap();
         // Two roots no repository covers, with the same basename and file name.
         let x = base.join("x/loose");
         let y = base.join("y/loose");
@@ -1702,7 +1707,7 @@ mod tests {
             assert_eq!(copied.files, 3, "{}", copied.text);
             assert!(copied.text.contains("// file: main.kt"), "{}", copied.text);
             for d in [&x, &y] {
-                assert!(copied.text.contains(&format!("// file: {}/.zshrc", d.to_string_lossy())), "{}", copied.text);
+                assert!(copied.text.contains(&format!("// file: {}/.zshrc", slash(d))), "{}", copied.text);
             }
         }
     }
@@ -1714,7 +1719,7 @@ mod tests {
         let a = repo(&tmp.path().join("a"));
         fs::write(a.join("main.kt"), "fun main() {}\n").unwrap();
         fs::write(a.join("secret.txt"), "s\n").unwrap();
-        let outside = std::fs::canonicalize(tmp.path()).unwrap().join("loose");
+        let outside = dunce::canonicalize(tmp.path()).unwrap().join("loose");
         fs::create_dir_all(&outside).unwrap();
         fs::write(outside.join(".zshrc"), "export A=1\n").unwrap();
         let settings = Settings {
