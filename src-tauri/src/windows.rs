@@ -130,7 +130,9 @@ pub fn wsl_launch(path: &Path) -> Option<RemoteLaunch> {
 /// every tab a fullscreen group has shown marked fullscreen (AppKit only tells the tab that entered
 /// or left), so window-state would reopen a group the user took out of fullscreen in fullscreen,
 /// and reopen each restored group member in a fullscreen Space of its own, which merging into a
-/// group refuses. Read from AppKit, group-aware; a group's other tabs join `main`'s Space.
+/// group refuses. Read from AppKit, group-aware; a group's other tabs join `main`'s Space. Only
+/// a first guess while `main`'s project is unknown: once it is, the saved group holding it
+/// decides (`SavedGroup::fullscreen`, `window_groups::restore`).
 #[cfg(target_os = "macos")]
 const MAIN_FULLSCREEN: &str = "main-window-fullscreen.json";
 
