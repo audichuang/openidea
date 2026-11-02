@@ -961,7 +961,8 @@ fn index_roots(root: &Path, folders: Vec<PathBuf>) -> ide_index::IndexRoots {
 /// Workspace members in manifest order, or extra Project Structure directories.
 fn content_roots(settings: &ide_core::settings::Settings, root: &Path) -> Vec<PathBuf> {
     if let Ok(Some(workspace)) = ide_workspace::workspace::Workspace::load(root) {
-        return workspace.projects;
+        // A member whose folder was deleted, renamed or unmounted stays in the manifest but is not content.
+        return workspace.projects.into_iter().filter(|p| p.is_dir()).collect();
     }
     let mut out: Vec<PathBuf> = Vec::new();
     for r in &settings.project_structure.content_roots {
