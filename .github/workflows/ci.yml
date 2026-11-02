@@ -6,6 +6,8 @@ on:
     branches: [main]
     types: [opened, synchronize, reopened]
   workflow_dispatch:
+  # Fork: fork-ci.yml calls this workflow for develop.
+  workflow_call:
 
 concurrency:
   group: ci-${{ github.ref }}
