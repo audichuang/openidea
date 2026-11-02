@@ -114,6 +114,9 @@ fn truncated_identity_commands_fail_instead_of_returning_a_prefix() {
     fs::create_dir_all(&deep).unwrap();
     let init = Command::new("git").args(["init", "-q", "-b", "main"]).current_dir(&deep).output().unwrap();
     assert!(init.status.success());
+    // The deep path passes Windows' MAX_PATH once `.git/objects/..` is appended.
+    let longpaths = Command::new("git").args(["config", "core.longpaths", "true"]).current_dir(&deep).output().unwrap();
+    assert!(longpaths.status.success());
     fs::write(deep.join("a.txt"), b"a\n").unwrap();
     for args in [["add", "a.txt"].as_slice(), ["commit", "-qm", "root"].as_slice()] {
         let out = Command::new("git")
