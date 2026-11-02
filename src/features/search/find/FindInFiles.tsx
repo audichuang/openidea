@@ -662,6 +662,8 @@ function FindInFilesDialog() {
                 options={modules.map((m) => ({
                   value: m.path,
                   label: m.name || m.path || "Project",
+                  // Folder names stay as they are; only the fallback is translated.
+                  literal: !!(m.name || m.path),
                   icon: "module",
                   detail: m.path || undefined,
                 }))}
