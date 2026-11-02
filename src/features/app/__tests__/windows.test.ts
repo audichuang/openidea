@@ -11,6 +11,7 @@ const windowOpenFiles = vi.fn();
 const windowTakeLaunch = vi.fn();
 const windowCompleteLaunch = vi.fn();
 const wslResolve = vi.fn();
+const windowLaunchSettled = vi.fn(async () => null);
 const cancelClose = vi.fn();
 const notify = vi.fn();
 const listen = vi.fn();
@@ -47,6 +48,7 @@ vi.mock("@/platform/ipc", async (orig) => {
       windowTakeLaunch: () => windowTakeLaunch(),
       windowCompleteLaunch: () => windowCompleteLaunch(),
       wslResolve: (p: string) => wslResolve(p),
+      windowLaunchSettled: () => windowLaunchSettled(),
       lightEditOpen: (p: string) => lightEditOpen(p),
       fsReadDir: (p: string) => fsReadDir(p),
     },
@@ -116,7 +118,7 @@ beforeEach(() => {
   windowCompleteLaunch.mockReset().mockResolvedValue(ok(null));
   wslResolve.mockResolvedValue(null);
   vi.mocked(connectRemote).mockClear();
-  for (const f of [lightEditOpen, fsReadDir, openProject]) f.mockClear();
+  for (const f of [lightEditOpen, fsReadDir, openProject, windowLaunchSettled]) f.mockClear();
   cancelClose.mockClear();
   vi.mocked(confirmLeaveProject).mockClear();
   notify.mockClear();
@@ -461,6 +463,22 @@ describe("launch", () => {
     expect(openProject).toHaveBeenCalledTimes(1);
     expect(openProject).toHaveBeenCalledWith("/p/launch");
     expect(windowCompleteLaunch).toHaveBeenCalledOnce();
+    expect(windowLaunchSettled).toHaveBeenCalledTimes(1);
+  });
+
+  // Its window group stops saving the project for it, so the failed tab leaves the saved group.
+  it("settles a launched project that fails to open or is cancelled", async () => {
+    openProject.mockRejectedValueOnce(new IpcError({ kind: "cancelled", message: "Project opening cancelled" }));
+    windowTakeLaunch.mockResolvedValueOnce({ project: "/p/untrusted", files: ["/p/untrusted/a.txt"] });
+    await consumeLaunch();
+    expect(windowLaunchSettled).toHaveBeenCalledTimes(1);
+    expect(opened).toEqual([]);
+  });
+
+  it("does not settle a launch without a project", async () => {
+    windowTakeLaunch.mockResolvedValueOnce({ project: null, files: ["/x/a.txt"] });
+    await consumeLaunch();
+    expect(windowLaunchSettled).not.toHaveBeenCalled();
   });
 
   it("opens launched files in LightEdit without a project", async () => {
