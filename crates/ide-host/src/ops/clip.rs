@@ -17,7 +17,7 @@ use ide_clip::transfer::{
 use ide_core::{IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -126,14 +126,25 @@ fn rel_set(root: &Path, paths: &[PathBuf]) -> BTreeSet<String> {
 
 /// The labelled changes of `source` in each repository of `paths` (or `repo`), narrowed to `paths`.
 fn git_items(repos: &[(PathBuf, Vec<PathBuf>)], source: impl Fn() -> GitSource) -> IdeResult<(Vec<ExportItem>, usize)> {
+    let (items, skipped, _) = git_items_with_renames(repos, source)?;
+    Ok((items, skipped))
+}
+
+/// [`git_items`], plus the source paths of the renames (repo-relative, unfiltered by `paths`).
+fn git_items_with_renames(
+    repos: &[(PathBuf, Vec<PathBuf>)],
+    source: impl Fn() -> GitSource,
+) -> IdeResult<(Vec<ExportItem>, usize, Vec<String>)> {
     let opts = RunOptions::default();
     let mut items = Vec::new();
+    let mut renamed_from = Vec::new();
     let mut skipped = 0;
     for (root, paths) in repos {
         let git = Git::open(root).map_err(err)?;
         let id = CanonicalRootId::new(git.root()).map_err(err)?;
         let changed = changed_items(&id, &git, &source(), &opts).map_err(err)?;
         skipped += changed.skipped_non_utf8;
+        renamed_from.extend(changed.renamed_from);
         let wanted = rel_set(git.root(), paths);
         items.extend(changed.items.into_iter().filter(|i| {
             // "" is the repository itself (its root was selected).
@@ -142,7 +153,7 @@ fn git_items(repos: &[(PathBuf, Vec<PathBuf>)], source: impl Fn() -> GitSource) 
                 || wanted.iter().any(|w| i.relative_path == *w || i.relative_path.starts_with(&format!("{w}/")))
         }));
     }
-    Ok((items, skipped))
+    Ok((items, skipped, renamed_from))
 }
 
 /// `paths` grouped by repository, in first-seen order.
@@ -354,15 +365,22 @@ pub fn copy_in(
             let no_filter = paths.is_empty();
             let mut items: Vec<ExportItem> = Vec::new();
             let mut skipped = 0;
+            // Paths a newer selected commit renamed away: they no longer exist there.
+            let mut renamed_away: HashSet<String> = HashSet::new();
             // Newest first: a path keeps the item of the newest selected commit touching it.
             for rev in &revs {
-                let (found, s) = git_items(&[(root.clone(), paths.clone())], || GitSource::Commit(rev.clone()))?;
+                let (found, s, renamed_from) =
+                    git_items_with_renames(&[(root.clone(), paths.clone())], || GitSource::Commit(rev.clone()))?;
                 skipped += s;
                 for item in found {
+                    if renamed_away.contains(&item.relative_path) {
+                        continue;
+                    }
                     if !items.iter().any(|i| i.relative_path == item.relative_path) {
                         items.push(item);
                     }
                 }
+                renamed_away.extend(renamed_from);
             }
             if items.is_empty() && no_filter {
                 return Err(IdeError::no_net_changes());
@@ -1770,6 +1788,37 @@ mod tests {
         assert!(out.text.contains("1 changed"), "{}", out.text);
         assert!(out.text.contains("[DELETED] gone.txt"), "{}", out.text);
         assert_eq!(out.files, 3);
+    }
+
+    #[test]
+    fn a_commit_list_does_not_resurrect_a_path_a_newer_selected_commit_renamed_away() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = repo(&tmp.path().join("a"));
+        commit_file(&a, "a.txt", Some("base content line one\nline two\nline three\n"), "add a");
+        let c1 = commit_file(&a, "a.txt", Some("base content line one\nline two\nline three\nold edit\n"), "edit a");
+        commit_file(&a, "other.txt", Some("unrelated\n"), "unrelated");
+        git(&a, &["mv", "a.txt", "b.txt"]);
+        git(&a, &["commit", "-q", "-m", "rename a to b"]);
+        let c3 = git(&a, &["rev-parse", "HEAD"]);
+
+        let out = copy(
+            &a,
+            ClipCopySource::CommitList { repo: a.clone(), revs: vec![c3, c1], paths: vec![] },
+            &Settings::default(),
+        )
+        .unwrap();
+        assert!(out.text.contains("b.txt"), "{}", out.text);
+        assert!(!out.text.contains("a.txt"), "{}", out.text);
+        assert_eq!(out.files, 1, "{}", out.text);
+
+        // An older commit that only touches other files is unaffected.
+        let out = copy(
+            &a,
+            ClipCopySource::CommitList { repo: a.clone(), revs: vec![git(&a, &["rev-parse", "HEAD"])], paths: vec![] },
+            &Settings::default(),
+        )
+        .unwrap();
+        assert_eq!(out.files, 1, "{}", out.text);
     }
 
     #[test]
