@@ -1352,12 +1352,19 @@ fn root_basename(path: &Path) -> String {
 /// for a root marked absolute or whose basename is empty or shared with another
 /// root (ClipCode's path resolver falls back to absolute paths the same way).
 ///
-/// With an anchor (the opened project) a file under it is spelled relative to
-/// it whichever repository it comes from, as ClipCode's `toClipboardPath`
-/// does. A file outside it keeps its repository's label when that repository
-/// lies outside the project too, and its absolute path when the repository
-/// contains the project (opened at a subfolder): no project root covers it.
-fn wire_path_of(selection: &ExportSelection, primary: Option<&CanonicalRootId>, item: &ExportItem) -> String {
+/// With an anchor (the opened project) the path is ClipCode's
+/// `ClipboardPathResolver.toClipboardPath` over the project and the selected
+/// repositories outside it (`anchor_resolver`): relative to the project for a
+/// file under it, `<label>/<relative>` for a repository outside it whose label
+/// is unique and not taken in the project, and the absolute path otherwise —
+/// including a repository that contains the project (opened at a subfolder),
+/// which no project root covers.
+fn wire_path_of(
+    selection: &ExportSelection,
+    primary: Option<&CanonicalRootId>,
+    anchor: Option<&paths::PathResolver>,
+    item: &ExportItem,
+) -> String {
     let absolute = || {
         let full = item.root.path().join(&item.relative_path);
         paths::normalize_system_path(&full.to_string_lossy().replace('\\', "/"))
@@ -1365,17 +1372,10 @@ fn wire_path_of(selection: &ExportSelection, primary: Option<&CanonicalRootId>, 
     if selection.absolute_roots.contains(&item.root) {
         return absolute();
     }
-    if let Some(anchor) = &selection.anchor_root {
-        let full = item.root.path().join(&item.relative_path);
-        if let Ok(rel) = full.strip_prefix(anchor.path()) {
-            if !rel.as_os_str().is_empty() {
-                return rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
-            }
-        }
-        if anchor.path().starts_with(item.root.path()) {
-            return absolute();
-        }
-    } else if primary == Some(&item.root) {
+    if let Some(resolver) = anchor {
+        return resolver.to_clipboard_path(&item.root.path().join(&item.relative_path).to_string_lossy());
+    }
+    if primary == Some(&item.root) {
         return item.relative_path.clone();
     }
     let prefix = root_basename(item.root.path());
@@ -1384,6 +1384,24 @@ fn wire_path_of(selection: &ExportSelection, primary: Option<&CanonicalRootId>, 
         return absolute();
     }
     format!("{prefix}/{}", item.relative_path)
+}
+
+/// ClipCode's `ClipboardPathResolver` for an anchored selection: the project
+/// is the primary root, and every selected repository outside it is a labelled
+/// root. A repository containing the project is left out, so its files outside
+/// the project stay absolute; one inside the project adds nothing (its files
+/// are project-relative).
+fn anchor_resolver(selection: &ExportSelection) -> Option<paths::PathResolver> {
+    let anchor = selection.anchor_root.as_ref()?;
+    let mut roots: Vec<&Path> = vec![anchor.path()];
+    for root in &selection.roots {
+        let r = root.path();
+        if selection.absolute_roots.contains(root) || anchor.path().starts_with(r) || r.starts_with(anchor.path()) {
+            continue;
+        }
+        roots.push(r);
+    }
+    Some(paths::PathResolver::new(&roots, Some(anchor.path())))
 }
 
 /// Resolves target identity across symlinks and platform case folding.
@@ -1604,8 +1622,9 @@ pub fn validate_export_selection(selection: &ExportSelection) -> Result<(), Tran
     // 3. Actual wire header collision check
     let primary = selection.primary_root.clone().or_else(|| selection.roots.first().cloned());
     let mut seen_wire_paths = HashSet::new();
+    let anchor = anchor_resolver(selection);
     for item in &selection.items {
-        let wire_path = wire_path_of(selection, primary.as_ref(), item);
+        let wire_path = wire_path_of(selection, primary.as_ref(), anchor.as_ref(), item);
 
         if !seen_wire_paths.insert(wire_path.clone()) {
             return Err(TransferError::WireHeaderCollision { wire_path });
@@ -1871,6 +1890,7 @@ pub fn plan_export_with(
         let mut working_files = HashMap::new();
 
         let primary = selection.primary_root.clone().or_else(|| selection.roots.first().cloned());
+        let anchor = anchor_resolver(selection);
 
         // Commit and range selections begin with fallback = true (omitting empty wrappers);
         // Staged and Deleted only trigger fallback once an included entry is admitted.
@@ -1928,7 +1948,7 @@ pub fn plan_export_with(
 
         for item in &selection.items {
             cancelled_err(opts, "plan-export")?;
-            let wire_path = wire_path_of(selection, primary.as_ref(), item);
+            let wire_path = wire_path_of(selection, primary.as_ref(), anchor.as_ref(), item);
             let is_primary = primary.as_ref() == Some(&item.root) && !selection.absolute_roots.contains(&item.root);
 
             let absolute = item.root.path().join(&item.relative_path);
