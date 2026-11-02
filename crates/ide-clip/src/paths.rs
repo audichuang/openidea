@@ -253,6 +253,14 @@ impl PathResolver {
         Self { ordered_roots, primary_root, primary_reserved_labels: reserved }
     }
 
+    /// The clipboard label of `root` (a non-primary root outside the primary)
+    /// and whether it is ambiguous (shared, or taken in the primary root).
+    pub(crate) fn label_of(&self, root: &Path) -> Option<(&str, bool)> {
+        let key = path_key(&normalize_system_path(&lossy(root)));
+        let entry = self.ordered_roots.iter().find(|r| path_key(&r.path) == key)?;
+        entry.clipboard_label.as_deref().map(|label| (label, entry.has_ambiguous_label))
+    }
+
     fn others(&self) -> impl Iterator<Item = (usize, &RootEntry)> {
         self.ordered_roots.iter().enumerate().filter(move |(i, _)| Some(*i) != self.primary_root)
     }
