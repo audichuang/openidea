@@ -591,6 +591,10 @@ pub struct ImportMapping {
     pub prefix_destinations: HashMap<String, CanonicalRootId>,
     pub entry_destinations: HashMap<String, EntryMapping>,
     pub blocked_prefixes: HashSet<String>,
+    /// The project's other roots, which a relative path no label routes is also
+    /// looked up in, primary first, as ClipCode's `legacyTargetCandidates`: the one
+    /// root holding the file takes it, several holding it make it ambiguous.
+    pub fallback_roots: Vec<CanonicalRootId>,
 }
 
 impl ImportMapping {
@@ -639,9 +643,10 @@ impl ImportMapping {
     /// as ClipCode's `explicitRootLabelCandidates` resolves them: a label that
     /// one root owns and the primary does not hold maps to that root, a shared
     /// or taken label is ambiguous and restores nowhere. Roots under the primary
-    /// carry no label (their files are primary-relative). Returns the labelled
-    /// roots, which the destination roots must include (absolute headers under
-    /// them resolve there too).
+    /// carry no label (their files are primary-relative). Every root, labelled or
+    /// not, becomes a fallback root for unlabelled paths. Returns those roots, which
+    /// the destination roots must include (absolute headers under them resolve
+    /// there too).
     ///
     /// Labels are taken from the canonical paths, as the export spells them, so a
     /// root configured through a symlink is known by its target's name.
@@ -672,15 +677,19 @@ impl ImportMapping {
         let resolver = paths::PathResolver::new(&all, Some(primary.path()));
         let mut mapped = Vec::new();
         for root in canonical {
-            let Some((label, ambiguous)) = resolver.label_of(root.path()) else {
-                continue;
-            };
-            if ambiguous {
-                self.block_prefix(label);
-            } else {
-                self.map_prefix(label, root.clone());
+            match resolver.label_of(root.path()) {
+                Some((label, true)) => {
+                    self.block_prefix(label);
+                }
+                Some((label, false)) => {
+                    self.map_prefix(label, root.clone());
+                }
+                None => {}
             }
             mapped.push(root.path().to_path_buf());
+            if !self.fallback_roots.contains(&root) {
+                self.fallback_roots.push(root);
+            }
         }
         for label in missing_labels {
             if !self.prefix_destinations.contains_key(&label) {
@@ -2565,6 +2574,12 @@ pub fn plan_import_parsed_with(
             return Err(TransferError::UnknownRoot(entry_mapping.root.path().to_path_buf()));
         }
     }
+    for root in &mapping.fallback_roots {
+        cancelled_err(opts, "plan-import")?;
+        if !canonical_dest_roots.contains(root) {
+            return Err(TransferError::UnknownRoot(root.path().to_path_buf()));
+        }
+    }
 
     let mut root_case_insensitive: HashMap<PathBuf, bool> = HashMap::new();
     for root in &canonical_dest_roots {
@@ -2575,11 +2590,14 @@ pub fn plan_import_parsed_with(
     let dest_root_paths: Vec<&Path> = canonical_dest_roots.iter().map(|id| id.path()).collect();
     let primary_dest_path = mapping.primary_destination.as_ref().map(|id| id.path());
 
-    let mut planned_entries: Vec<(CanonicalRootId, ParsedEntry, String, usize)> = Vec::new();
+    // The flag marks a relative path no label routed: it resolves across the
+    // primary and the fallback roots.
+    let mut planned_entries: Vec<(CanonicalRootId, bool, ParsedEntry, String, usize)> = Vec::new();
     let mut skipped_operations = Vec::new();
 
     for (entry_index, entry) in entries.into_iter().enumerate() {
         cancelled_err(opts, "plan-import")?;
+        let mut unlabelled = false;
         let (target_root, rel_path) = if let Some(em) = mapping.entry_destinations.get(&entry.path) {
             let rel = em.relative_path.as_deref().unwrap_or(entry.path.as_str());
             (&em.root, std::borrow::Cow::Borrowed(rel))
@@ -2658,6 +2676,7 @@ pub fn plan_import_parsed_with(
                         }
                         _ => std::borrow::Cow::Borrowed(entry.path.as_str()),
                     };
+                    unlabelled = true;
                     (primary, rel)
                 } else {
                     skipped_operations.push(SkippedOperation {
@@ -2675,6 +2694,7 @@ pub fn plan_import_parsed_with(
                     }
                     _ => std::borrow::Cow::Borrowed(entry.path.as_str()),
                 };
+                unlabelled = true;
                 (primary, rel)
             } else {
                 skipped_operations.push(SkippedOperation {
@@ -2719,6 +2739,7 @@ pub fn plan_import_parsed_with(
 
         planned_entries.push((
             target_root.clone(),
+            unlabelled,
             ParsedEntry { path: sanitized, content: entry.content, change_types: entry.change_types },
             entry.path,
             entry_index,
@@ -2732,9 +2753,14 @@ pub fn plan_import_parsed_with(
 
     // Same `plan_restore` as before, one entry at a time so a cancel is
     // observed before the next file's encoding read.
-    for (root_id, entry, raw_path, entry_index) in planned_entries {
+    for (root_id, unlabelled, entry, raw_path, entry_index) in planned_entries {
         cancelled_err(opts, "plan-import")?;
-        let sub_plan = restore::plan_restore(&[root_id.path()], std::slice::from_ref(&entry));
+        // Primary first: `plan_restore` takes its first root as the primary.
+        let mut roots = vec![root_id.path()];
+        if unlabelled {
+            roots.extend(mapping.fallback_roots.iter().map(CanonicalRootId::path));
+        }
+        let sub_plan = restore::plan_restore(&roots, std::slice::from_ref(&entry));
         create_entry_indices.extend(std::iter::repeat_n(entry_index, sub_plan.create_operations.len()));
         combined_creates.extend(sub_plan.create_operations);
         combined_deletes.extend(sub_plan.delete_operations);
@@ -4369,5 +4395,48 @@ mod parsed_import_tests {
         assert!(mapped.is_empty());
         // Its label restores nowhere rather than into `a/gone`.
         assert!(mapping.blocked_prefixes.contains("gone"), "{:?}", mapping.blocked_prefixes);
+    }
+
+    /// ClipCode's `legacyTargetCandidates`: an unlabelled relative path is looked up in
+    /// every project root, primary first, for a content root beside the primary and one
+    /// nested in it alike.
+    #[test]
+    fn an_unlabelled_path_resolves_across_every_project_root_as_clipcode_does() {
+        for nested in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let base = dunce::canonicalize(temp.path()).unwrap();
+            let w = base.join("W");
+            let c = if nested { w.join("mod") } else { base.join("C") };
+            fs::create_dir_all(&w).unwrap();
+            fs::create_dir_all(c.join("src")).unwrap();
+            fs::write(c.join("src/x.ts"), "c\n").unwrap();
+            let plan = |text: &str| {
+                let mut mapping = ImportMapping::with_primary(CanonicalRootId::new(&w).unwrap());
+                let mut roots = vec![w.clone()];
+                roots.extend(mapping.map_root_labels(&w, std::slice::from_ref(&c)).unwrap());
+                plan_import_with(text, "", &roots, &mapping, &RunOptions::default()).unwrap()
+            };
+            let write = "// FILE: src/x.ts\nnew\n";
+            let delete = format!("// FILE: [DELETED] src/x.ts\n{DELETED_FILE_MARKER}\n");
+
+            // Only the content root holds the file: it is overwritten, or deleted.
+            let p = plan(write);
+            let creates: Vec<_> =
+                p.create_operations().iter().map(|op| (op.absolute_path.clone(), op.existed)).collect();
+            assert_eq!(creates, [(c.join("src/x.ts"), true)], "nested={nested} {:?}", p.skipped_operations());
+            let p = plan(&delete);
+            let deletes: Vec<_> = p.delete_operations().iter().map(|op| op.absolute_path.clone()).collect();
+            assert_eq!(deletes, [c.join("src/x.ts")], "nested={nested} {:?}", p.skipped_operations());
+
+            // Both the primary and the content root hold it: ambiguous, nothing is touched.
+            fs::create_dir_all(w.join("src")).unwrap();
+            fs::write(w.join("src/x.ts"), "w\n").unwrap();
+            for text in [write, delete.as_str()] {
+                let p = plan(text);
+                assert!(p.create_operations().is_empty() && p.delete_operations().is_empty(), "nested={nested} {p:?}");
+                let reasons: Vec<_> = p.skipped_operations().iter().map(|op| op.reason).collect();
+                assert_eq!(reasons, [SkipReason::AmbiguousPath], "nested={nested}");
+            }
+        }
     }
 }
