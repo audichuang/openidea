@@ -12,6 +12,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
   return { ...real, isTauri: () => true };
 });
 
+import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
 import { useApplyTheme, useThemeOverride } from "./theme";
 
@@ -20,6 +21,7 @@ const last = () => setTheme.mock.calls.at(-1)?.[0];
 
 beforeEach(() => {
   vi.clearAllMocks();
+  usePlatform.setState({ os: "macos" });
   vi.spyOn(globalThis, "getComputedStyle").mockReturnValue({
     getPropertyValue: () => "#eee8d5",
   } as unknown as CSSStyleDeclaration);
@@ -51,5 +53,31 @@ describe("native appearance follows Sync with OS", () => {
     expect(last()).toBeNull();
     act(() => useThemeOverride.setState({ theme: "dark" }));
     expect(last()).toBe("dark");
+  });
+});
+
+describe("native appearance per platform", () => {
+  it("never calls setTheme on Linux, where tao would force GTK light for null", () => {
+    usePlatform.setState({ os: "linux" });
+    appearance({ theme: "dark", syncWithOs: false });
+    const { unmount } = renderHook(() => useApplyTheme());
+    act(() => appearance({ theme: "dark", syncWithOs: true, preferredDarkTheme: "dark" }));
+    act(() => useThemeOverride.setState({ theme: "light" }));
+    expect(setTheme).not.toHaveBeenCalled();
+    expect(setBackgroundColor).toHaveBeenCalled();
+    unmount();
+  });
+
+  it("still sends setTheme on macOS (null under Sync with OS) and Windows", () => {
+    for (const os of ["macos", "windows"]) {
+      setTheme.mockClear();
+      usePlatform.setState({ os });
+      appearance({ theme: "dark", syncWithOs: false });
+      const { unmount } = renderHook(() => useApplyTheme());
+      expect(last()).toBe("dark");
+      act(() => appearance({ theme: "dark", syncWithOs: true, preferredDarkTheme: "dark" }));
+      expect(last()).toBeNull();
+      unmount();
+    }
   });
 });
