@@ -118,7 +118,9 @@ function useBranches(repo: string | null): Branch[] {
 }
 
 const branchOptions = (list: readonly Branch[]): SelectOption[] =>
-  list.filter((b) => !b.name.endsWith("/HEAD")).map((b) => ({ value: b.name, label: b.name, icon: "branch" }));
+  list
+    .filter((b) => !b.name.endsWith("/HEAD"))
+    .map((b) => ({ value: b.name, label: b.name, literal: true, icon: "branch" }));
 
 /** Every branch choice in these dialogs: repositories hold hundreds of branches, so type to filter, Enter picks. */
 function BranchSelect(props: Omit<SelectProps, "searchable">) {
@@ -258,7 +260,7 @@ function PullDialog({ initialRepo, onClose }: { initialRepo?: string | null; onC
             <Select
               aria-label="Remote"
               value={remote}
-              options={(remotes ?? []).map((r) => ({ value: r.name, label: r.name, detail: r.url }))}
+              options={(remotes ?? []).map((r) => ({ value: r.name, label: r.name, literal: true, detail: r.url }))}
               onChange={setRemote}
             />
             <BranchSelect
@@ -266,7 +268,7 @@ function PullDialog({ initialRepo, onClose }: { initialRepo?: string | null; onC
               className={styles.grow}
               value={branch}
               placeholder="Branch"
-              options={remoteBranches.map((b) => ({ value: b, label: b, icon: "branch" }))}
+              options={remoteBranches.map((b) => ({ value: b, label: b, literal: true, icon: "branch" }))}
               onChange={setBranch}
             />
           </div>
