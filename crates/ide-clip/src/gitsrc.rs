@@ -548,6 +548,15 @@ impl Git {
         }
     }
 
+    /// Resolves the base end of a range: a commit, or this repository's empty
+    /// tree (the base of a range that starts at a root commit).
+    pub fn resolve_range_base_with(&self, rev: &str, opts: &RunOptions) -> Result<String, GitError> {
+        if (rev == EMPTY_TREE || rev == SHA256_EMPTY_TREE) && self.empty_tree_with(opts)? == rev {
+            return Ok(rev.to_string());
+        }
+        self.resolve_commit_with(rev, opts)
+    }
+
     /// HEAD's commit under explicit runner options, `None` for an unborn branch.
     pub fn head_with(&self, opts: &RunOptions) -> Result<Option<String>, GitError> {
         match self.resolve_commit_with("HEAD", opts) {
@@ -1018,7 +1027,7 @@ fn collect_changes_in(
             }
         }
         GitSource::Range(from, to) => {
-            let from = git.resolve_commit_with(from, opts)?;
+            let from = git.resolve_range_base_with(from, opts)?;
             let to = git.resolve_commit_with(to, opts)?;
             let mut args = RAW.to_vec();
             args.extend([from.as_str(), to.as_str()]);
