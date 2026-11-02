@@ -75,9 +75,7 @@ pub fn changed_items(
     let mut renamed_from = Vec::new();
 
     for change in changes {
-        if let Some(old) = change.renamed_from.as_deref().and_then(|p| strip_offset(p, offset)) {
-            renamed_from.push(old);
-        }
+        renamed_from.extend(change.renamed_from.iter().filter_map(|p| strip_offset(p, offset)));
         if let Some(rel_path) = strip_offset(&change.path, offset) {
             if change.gitlink {
                 gitlinks.push(rel_path.clone());
