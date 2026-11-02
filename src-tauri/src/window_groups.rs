@@ -395,23 +395,28 @@ pub async fn persist(app: &AppHandle) -> IdeResult<()> {
     .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
-/// Reopens every saved window group once `main` has reopened its project: the group holding that
-/// project around `main`, every other one in new windows.
+/// Reopens every saved window group once `main` knows its startup project: the group holding that
+/// project around `main`, every other one in new windows. Also when `main` stays on welcome, as
+/// IntelliJ reopens every project open at exit; later projects opened in `main` restore nothing.
 pub async fn restore(app: &AppHandle, caller: &str) -> IdeResult<()> {
     if caller != "main" {
         return Ok(());
     }
     let state = app.state::<WindowsState>();
     let host = app.state::<AppState>();
-    let project = host.project(caller)?;
-    if !project.settings.effective().general.reopen_last_project {
+    let project = host.project(caller).ok();
+    let reopen = match &project {
+        Some(project) => project.settings.effective().general.reopen_last_project,
+        None => host.global_settings.effective().general.reopen_last_project,
+    };
+    if !reopen {
         state.groups_restore_done.store(true, Ordering::SeqCst);
         return Ok(());
     }
     if state.groups_restored.swap(true, Ordering::SeqCst) {
         return Ok(());
     }
-    let result = restore_groups(app, caller, &project.root).await;
+    let result = restore_groups(app, caller, project.as_ref().map(|p| p.root.as_path())).await;
     state.groups_restore_done.store(true, Ordering::SeqCst);
     // Saves made while reopening kept the groups not reopened yet; now the open ones are complete.
     if let Err(e) = persist(app).await {
@@ -420,12 +425,12 @@ pub async fn restore(app: &AppHandle, caller: &str) -> IdeResult<()> {
     result
 }
 
-async fn restore_groups(app: &AppHandle, caller: &str, root: &Path) -> IdeResult<()> {
+async fn restore_groups(app: &AppHandle, caller: &str, root: Option<&Path>) -> IdeResult<()> {
     let path = app.state::<AppState>().config_dir.join(SAVED_GROUPS);
     let saved = tauri::async_runtime::spawn_blocking(move || read_saved(&path))
         .await
         .map_err(|e| IdeError::internal(e.to_string()))??;
-    let plan = restore_plan(&saved, Some(root), Path::is_dir);
+    let plan = restore_plan(&saved, root, Path::is_dir);
     if plan.is_empty() {
         return Ok(());
     }
@@ -472,10 +477,15 @@ async fn restore_groups(app: &AppHandle, caller: &str, root: &Path) -> IdeResult
 }
 
 /// Opens `group`'s projects (`root` in `caller`) and tabs them together; returns the shown tab.
-fn restore_group(app: &AppHandle, caller: &str, root: &Path, group: &PlannedGroup) -> IdeResult<Option<String>> {
+fn restore_group(
+    app: &AppHandle,
+    caller: &str,
+    root: Option<&Path>,
+    group: &PlannedGroup,
+) -> IdeResult<Option<String>> {
     let mut labels = Vec::new();
     for path in &group.projects {
-        let label = if group.main && path == root {
+        let label = if group.main && Some(path.as_path()) == root {
             caller.to_owned()
         } else {
             match windows::find_project_window(app, path) {
