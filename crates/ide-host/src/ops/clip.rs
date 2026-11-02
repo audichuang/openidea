@@ -1366,6 +1366,12 @@ mod tests {
         paste_apply(ClipPasteApply { id: preview.id, ..Default::default() }).unwrap();
         assert_eq!(fs::read_to_string(lib.join("x.txt")).unwrap().trim_end(), "new");
         assert!(!w.join("lib").exists());
+
+        // Spelled `./lib/…` or `lib\…`, it is the same repository prefix.
+        for text in ["// file: ./lib/y.txt\ny\n", "// file: lib\\y.txt\ny\n"] {
+            let preview = paste_preview(&w, text, false, std::slice::from_ref(&lib), &Settings::default()).unwrap();
+            assert_eq!(targets_of(&preview), vec![lib.join("y.txt").to_string_lossy().into_owned()], "{text:?}");
+        }
     }
 
     /// A content root that no longer exists blocks its own label, but is not one of
