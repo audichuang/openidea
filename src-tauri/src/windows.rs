@@ -225,7 +225,7 @@ fn main_was_fullscreen(app: &AppHandle) -> bool {
 #[derive(Default)]
 pub struct WindowsState {
     pub groups: Mutex<ide_workspace::window_groups::WindowGroups>,
-    /// `main` has started reopening the saved window groups.
+    /// `main` has decided whether this launch reopens the saved window groups, and started if so.
     pub groups_restored: AtomicBool,
     /// ... and has finished: until then saving keeps the saved groups not reopened yet. Stays
     /// unset when the saved groups could not be read, so saving never overwrites them.
