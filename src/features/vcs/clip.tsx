@@ -469,8 +469,17 @@ export function registerClipActions(): () => void {
       icon: "copy",
       description: "Copy the selected files and folders in the ClipCode format",
       run: ({ arg }) => {
-        const paths = pathsArg(arg);
-        if (paths.length) void copyClip({ kind: "files", paths });
+        let paths = pathsArg(arg);
+        // From the command palette: the focused editor's file.
+        if (!paths.length) {
+          const active = editorService().activePath();
+          if (active) paths = [active];
+        }
+        if (!paths.length) {
+          notifications().notify({ group: "clipcode", level: "info", title: "No files selected." });
+          return;
+        }
+        void copyClip({ kind: "files", paths });
       },
     },
     {
@@ -588,10 +597,19 @@ export function registerClipActions(): () => void {
     // The plugin's EditorTabPopupMenu / ProjectViewPopupMenu entries.
     registerMenuGroup({
       id: "clipcode",
-      menus: ["editorTab", "projectView"],
+      menus: ["editorTab", "projectView", "editor"],
       order: 40,
       items: (menu, { paths }) => {
         const files = paths.filter((p) => p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p));
+        // The plugin's CutCopyPasteGroup entries, acting on the current file.
+        if (menu === "editor") {
+          return files.length
+            ? [
+                { kind: "action" as const, action: "clip.copyFiles", arg: files },
+                { kind: "action" as const, action: "clip.paste" },
+              ]
+            : [];
+        }
         return [
           ...(menu === "editorTab"
             ? [{ kind: "action" as const, action: "clip.copyOpenTabs", label: "ClipCode: Copy All Open Tabs" }]
