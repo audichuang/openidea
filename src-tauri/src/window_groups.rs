@@ -34,7 +34,7 @@ static FRAME_SYNC_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 fn is_project_window(app: &AppHandle, label: &str) -> bool {
     let state = app.state::<AppState>();
-    state.remote_dev.get(label).is_some() || state.project(label).is_ok_and(|p| !p.light)
+    state.remote_dev.get(label).is_some() || state.opened_project(label).is_some()
 }
 
 #[derive(Clone, Serialize, Deserialize, Type)]
@@ -108,7 +108,7 @@ pub fn sync(app: &AppHandle) {
     let labels = windows
         .iter()
         .filter_map(|w| {
-            let project = host.project(w.label()).ok().filter(|p| !p.light)?;
+            let project = host.opened_project(w.label())?;
             let tab = crate::macos::TabLabel {
                 title: ide_host::ops::project::info(&project).name,
                 tooltip: Some(project.root.to_string_lossy().into_owned()),
@@ -653,7 +653,7 @@ pub async fn restore(app: &AppHandle, caller: &str) -> IdeResult<()> {
     }
     let state = app.state::<WindowsState>();
     let host = app.state::<AppState>();
-    let project = host.project(caller).ok();
+    let project = host.opened_project(caller);
     let reopen = match &project {
         Some(project) => project.settings.effective().general.reopen_last_project,
         None => host.global_settings.effective().general.reopen_last_project,
