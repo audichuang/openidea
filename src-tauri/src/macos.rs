@@ -333,6 +333,16 @@ pub fn fullscreen_transition(app: &AppHandle, window: &WebviewWindow) -> bool {
     on_main(app, move |_| ns_window(&window).is_some_and(|n| in_fullscreen_transition(unsafe { &*n }))).unwrap_or(false)
 }
 
+/// Whether `window`, or the tab its group shows, is entering or leaving fullscreen. Main thread
+/// only.
+pub fn group_in_fullscreen_transition(window: &WebviewWindow) -> bool {
+    ns_window(window).is_some_and(|native| {
+        let native = unsafe { &*native };
+        in_fullscreen_transition(native)
+            || native.tabGroup().and_then(|g| g.selectedWindow()).is_some_and(|w| in_fullscreen_transition(&w))
+    })
+}
+
 /// Whether `window` is in a fullscreen Space, itself or as a tab of a fullscreen group. Main
 /// thread only.
 pub fn in_fullscreen(window: &WebviewWindow) -> bool {
