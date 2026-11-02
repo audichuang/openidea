@@ -316,7 +316,9 @@ pub fn frame_color(appearance: &AppearanceSettings, os_dark: bool) -> Color {
 /// The appearance native chrome takes, mirroring `nativeAppearance` in theme.ts: the
 /// theme's light / dark base, or the OS one (`None`) under "Sync with OS".
 fn native_theme(appearance: &AppearanceSettings) -> Option<Theme> {
-    if appearance.sync_with_os || appearance.theme == "system" {
+    // On Linux tao turns any theme into GTK's "prefer dark" flag (None means light), which would
+    // override the user's GTK setting; leave it untouched there.
+    if cfg!(target_os = "linux") || appearance.sync_with_os || appearance.theme == "system" {
         return None;
     }
     // Built-in dark themes (BUILTIN_THEMES in platform/themes.ts); anything else resolves light,
@@ -1038,6 +1040,17 @@ mod tests {
         assert_eq!(frame_color(&a, true), Color(0x26, 0x28, 0x2c, 0xff));
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn native_theme_is_left_to_gtk_on_linux() {
+        let mut a = AppearanceSettings::default();
+        for id in ["light", "dark", "system"] {
+            a.theme = id.into();
+            assert_eq!(native_theme(&a), None, "{id}");
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
     #[test]
     fn native_theme_pins_the_theme_base_unless_following_the_os() {
         let mut a = AppearanceSettings::default();
