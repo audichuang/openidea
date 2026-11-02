@@ -557,6 +557,21 @@ pub fn frame_color(appearance: &AppearanceSettings, os_dark: bool) -> Color {
         .unwrap_or(Color(0xe9, 0xea, 0xee, 0xff))
 }
 
+/// The appearance native chrome takes, mirroring `nativeAppearance` in theme.ts: the
+/// theme's light / dark base, or the OS one (`None`) under "Sync with OS".
+fn native_theme(appearance: &AppearanceSettings) -> Option<Theme> {
+    if appearance.sync_with_os || appearance.theme == "system" {
+        return None;
+    }
+    // Built-in dark themes (BUILTIN_THEMES in platform/themes.ts); anything else resolves light,
+    // as `resolveThemeId` does.
+    Some(if matches!(appearance.theme.as_str(), "dark" | "dark-hc" | "solarized-dark" | "one-dark") {
+        Theme::Dark
+    } else {
+        Theme::Light
+    })
+}
+
 /// A `#rgb` / `#rrggbb` / `#rrggbbaa` colour sent by the UI (Tauri's own parser).
 fn hex_color(hex: &str) -> Option<Color> {
     serde_json::from_value(serde_json::Value::String(hex.to_owned())).ok()
@@ -581,6 +596,8 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
         config.background_color = Some(color);
     } else if let Some(a) = &appearance {
         config.background_color = Some(frame_color(a, false));
+        // Native chrome (macOS window tabs) takes the theme's base before the page applies it.
+        config.theme = native_theme(a);
     }
     #[cfg(target_os = "linux")]
     let show_after_build = crate::linux_window_state::prepare(app, &mut config);
@@ -1501,6 +1518,30 @@ mod tests {
         a.sync_with_os = true;
         assert_eq!(frame_color(&a, false), Color(0xe9, 0xea, 0xee, 0xff));
         assert_eq!(frame_color(&a, true), Color(0x26, 0x28, 0x2c, 0xff));
+    }
+
+    #[test]
+    fn native_theme_pins_the_theme_base_unless_following_the_os() {
+        let mut a = AppearanceSettings::default();
+        for (id, expected) in [
+            ("light", Theme::Light),
+            ("solarized-light", Theme::Light),
+            ("one-light", Theme::Light),
+            ("dark", Theme::Dark),
+            ("dark-hc", Theme::Dark),
+            ("solarized-dark", Theme::Dark),
+            ("one-dark", Theme::Dark),
+            ("unknown-theme", Theme::Light),
+        ] {
+            a.theme = id.into();
+            assert_eq!(native_theme(&a), Some(expected), "{id}");
+        }
+        a.theme = "dark".into();
+        a.sync_with_os = true;
+        assert_eq!(native_theme(&a), None);
+        a.sync_with_os = false;
+        a.theme = "system".into();
+        assert_eq!(native_theme(&a), None);
     }
 
     #[test]
