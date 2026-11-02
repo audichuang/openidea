@@ -1,15 +1,244 @@
 name: Fork CI
-# Fork-only: runs upstream's CI (ci.yml) for the fork's integration branch `develop`.
-# ci.yml itself only triggers on `main`; see FORK.md.
+# Fork-only merge gate for `develop` (see FORK.md "Merge gate"). It runs the same checks as
+# upstream's ci.yml, split for speed: clippy and tests in parallel jobs, a develop cache PRs
+# restore, no debug info, and jobs skipped when a PR touches none of their paths. Upstream's
+# ci.yml stays unedited; the `upstream-ci` job fails when it changes, so its edits get ported.
 on:
   push:
-    branches: [develop]
+    branches: [develop, "rebase/**"]
   pull_request:
     branches: [develop]
     types: [opened, synchronize, reopened]
   workflow_dispatch:
 
+concurrency:
+  group: fork-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # Why: debug info is most of the link time of ~100 test binaries, and CI reads no debugger.
+  CARGO_PROFILE_DEV_DEBUG: 0
+  # Why: Windows' default link.exe is the slowest step there; rust-lld links the same objects.
+  CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld.exe
+
 jobs:
-  ci:
-    uses: ./.github/workflows/ci.yml
-    secrets: inherit
+  scope:
+    name: Scope
+    # Why: the auto-rebase's lock commit only carries the old develop's tree.
+    if: ${{ !startsWith(github.event.head_commit.message, 'auto-rebase lock') }}
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.scope.outputs.rust }}
+      web: ${{ steps.scope.outputs.web }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - id: scope
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # Pushes (develop, rebase/**) and manual runs check everything.
+          if [ -z "$BASE" ]; then
+            echo "rust=true" >> "$GITHUB_OUTPUT"; echo "web=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          rust=false web=false
+          while IFS= read -r f; do
+            case "$f" in
+              # Never reaches the app or a test: agent docs, fork rules, the auto-rebase skill.
+              *.md|docs/*|LICENSE|NOTICE|.claude/*|scripts/fork/*) ;;
+              crates/*|src-tauri/*|Cargo.toml|Cargo.lock|deny.toml|rustfmt.toml|wit/*) rust=true ;;
+              # src/bindings.ts is generated from Rust: a change there needs the bindings check too.
+              src/bindings.ts) rust=true; web=true ;;
+              src/*|e2e/*|public/*|perf/*|index.html|vite.config.ts|playwright.config.ts|knip.ts|tsconfig*.json) web=true ;;
+              *) rust=true; web=true ;;
+            esac
+          done < <(git diff --name-only "$BASE...$GITHUB_SHA")
+          echo "rust=$rust web=$web"
+          echo "rust=$rust" >> "$GITHUB_OUTPUT"; echo "web=$web" >> "$GITHUB_OUTPUT"
+
+  upstream-ci:
+    name: Upstream ci.yml unchanged
+    needs: scope
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          # Port upstream's ci.yml edits into this file, then update the pin.
+          pin=75d7fdec13adba7a2f7b5b853b77683e600d7238ec10568b451850a1202145ed
+          sha=$(sha256sum .github/workflows/ci.yml | cut -d' ' -f1)
+          [ "$sha" = "$pin" ] || { echo "::error::upstream ci.yml changed ($sha); port it into fork-ci.yml and update the pin"; exit 1; }
+
+  precheck:
+    name: Auto-rebase precheck scenarios
+    needs: scope
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash .claude/skills/openidea-fork-auto-rebase/scripts/precheck.test.sh
+        if: hashFiles('.claude/skills/openidea-fork-auto-rebase/scripts/precheck.test.sh') != ''
+      - run: python3 -m py_compile scripts/fork/resolve-conflicts.py
+        if: hashFiles('scripts/fork/resolve-conflicts.py') != ''
+
+  clippy:
+    name: Clippy (${{ matrix.os }})
+    needs: scope
+    if: needs.scope.outputs.rust == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: "clippy, rustfmt" }
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: clippy
+          save-if: ${{ github.ref == 'refs/heads/develop' }}
+      - name: Linux deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf
+      # tauri-build checks that frontendDist exists.
+      - run: mkdir -p dist
+        shell: bash
+      - if: runner.os == 'Linux'
+        run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: Rust tests (${{ matrix.os }})
+    needs: scope
+    if: needs.scope.outputs.rust == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 11 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test
+          save-if: ${{ github.ref == 'refs/heads/develop' }}
+      - uses: taiki-e/install-action@nextest
+      - name: Linux deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf
+      - run: pnpm install --frozen-lockfile && mkdir -p dist
+        shell: bash
+      # Test fixtures write LF files; keep Git from converting them on checkout.
+      - run: git config --global core.autocrlf false
+      - run: cargo nextest run --workspace --no-fail-fast
+      # nextest ran export_bindings, which rewrites src/bindings.ts.
+      - name: Bindings are up to date
+        if: runner.os == 'Linux'
+        run: git diff --exit-code src/bindings.ts
+
+  server:
+    name: Remote server (linux musl)
+    needs: scope
+    if: needs.scope.outputs.rust == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: x86_64-unknown-linux-musl }
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: server-musl
+          save-if: ${{ github.ref == 'refs/heads/develop' }}
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --locked -p ide-host --bin openidea-server --target x86_64-unknown-linux-musl
+      - run: target/x86_64-unknown-linux-musl/debug/openidea-server --version
+
+  deny:
+    name: Cargo deny
+    needs: scope
+    if: needs.scope.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-deny
+      - run: cargo deny check
+
+  frontend-static:
+    name: Frontend static checks
+    needs: scope
+    if: needs.scope.outputs.web == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 11 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm format:check
+      - run: pnpm knip
+
+  frontend-test:
+    name: Frontend tests and build
+    needs: scope
+    if: needs.scope.outputs.web == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 11 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm build
+
+  e2e:
+    name: E2E
+    needs: scope
+    if: needs.scope.outputs.web == 'true'
+    runs-on: ubuntu-24.04
+    # Keep the tag in step with @playwright/test (same as ci.yml).
+    container: mcr.microsoft.com/playwright:v1.64.1-noble
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 11 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm e2e
+        env:
+          HOME: /root
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+
+  passed:
+    name: Fork CI passed
+    if: ${{ always() && !startsWith(github.event.head_commit.message, 'auto-rebase lock') }}
+    needs: [scope, upstream-ci, precheck, clippy, test, server, deny, frontend-static, frontend-test, e2e]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          # A job the scope skipped is fine; any failure or cancellation is not.
+          echo "$RESULTS"
+          echo "$RESULTS" | grep -Eq '"(failure|cancelled)"' && exit 1 || exit 0
