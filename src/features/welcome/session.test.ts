@@ -1,17 +1,33 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const openProject = vi.fn();
-const win = vi.hoisted(() => ({ label: "main" }));
+const win = vi.hoisted(() => ({
+  label: "main",
+  owns: false,
+  listeners: new Map<string, () => void>(),
+}));
 
 vi.mock("@/platform/ipc", async (orig) => {
   const real = await orig<typeof import("@/platform/ipc")>();
   return {
     ...real,
     isTauri: () => true,
-    commands: { ...real.commands, settingsGet: async () => ({ general: { reopenLastProject: true } }) },
+    commands: {
+      ...real.commands,
+      settingsGet: async () => ({ general: { reopenLastProject: true } }),
+      windowOwnsSession: async () => win.owns,
+    },
   };
 });
-vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ label: win.label }) }));
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({
+    label: win.label,
+    listen: async (event: string, handler: () => void) => {
+      win.listeners.set(event, handler);
+      return () => win.listeners.delete(event);
+    },
+  }),
+}));
 vi.mock("@/platform/project", async (orig) => {
   const real = await orig<typeof import("@/platform/project")>();
   return { ...real, openProject: (p: string) => openProject(p) };
@@ -20,8 +36,12 @@ vi.mock("@/platform/project", async (orig) => {
 const { lastSessionProject, reopenLastProject, trackSession, _resetSessionForTests } = await import("./session");
 const { provideStartupLaunch, useProject } = await import("@/platform/project");
 
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
 beforeEach(() => {
   win.label = "main";
+  win.owns = false;
+  win.listeners.clear();
   openProject.mockReset();
   useProject.setState({ project: null, lightEdit: false });
   sessionStorage.clear();
@@ -114,6 +134,47 @@ describe("trackSession", () => {
     const stop = trackSession();
     useProject.setState({ project: project("/p/next") });
     expect(lastSessionProject()).toBe("/p/next");
+    stop();
+  });
+
+  // Main closed, the window left behind went back to welcome (Cmd-W): relaunching stays there.
+  it("hands the remembered project to the window left once main is gone", async () => {
+    localStorage.setItem("openidea.session.openProject", "/p/main");
+    win.label = "window-1";
+    useProject.setState({ project: project("/p/member") });
+    const stop = trackSession();
+    await flush();
+    expect(lastSessionProject()).toBe("/p/main");
+    win.listeners.get("openidea://session-owner")?.();
+    expect(lastSessionProject()).toBe("/p/member");
+    useProject.setState({ project: project("/p/next") });
+    expect(lastSessionProject()).toBe("/p/next");
+    useProject.setState({ project: null });
+    expect(lastSessionProject()).toBeNull();
+    stop();
+  });
+
+  it("forgets main's project when the window taking over is on welcome", async () => {
+    localStorage.setItem("openidea.session.openProject", "/p/main");
+    win.label = "window-1";
+    const stop = trackSession();
+    await flush();
+    win.listeners.get("openidea://session-owner")?.();
+    expect(lastSessionProject()).toBeNull();
+    stop();
+  });
+
+  // A window opened after every other one closed, or one whose webview reloaded after taking over.
+  it("remembers the projects of a window that already holds the session", async () => {
+    localStorage.setItem("openidea.session.openProject", "/p/main");
+    win.label = "window-1";
+    win.owns = true;
+    const stop = trackSession();
+    await flush();
+    // Nothing is written until this window's project changes.
+    expect(lastSessionProject()).toBe("/p/main");
+    useProject.setState({ project: project("/p/new") });
+    expect(lastSessionProject()).toBe("/p/new");
     stop();
   });
 });
