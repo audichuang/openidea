@@ -2008,8 +2008,22 @@ mod tests {
         let mut child = cmd.spawn().unwrap();
         let pgid = child.id() as i32;
 
+        // A member Darwin still lists as `?` (exec in progress) is settling; look again like the
+        // production caller does (`is_settling`).
+        let look = || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                match tree::check_group_liveness(pgid) {
+                    Err(e) if is_settling(&e) && Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(20))
+                    }
+                    other => return other.unwrap(),
+                }
+            }
+        };
+
         // While child is alive, check_group_liveness returns true
-        let has_live = tree::check_group_liveness(pgid).unwrap();
+        let has_live = look();
         assert!(has_live, "active child must be detected as live member");
 
         // Kill the whole process group and wait for child
@@ -2020,7 +2034,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut has_live_after = true;
         while Instant::now() < deadline {
-            has_live_after = tree::check_group_liveness(pgid).unwrap();
+            has_live_after = look();
             if !has_live_after {
                 break;
             }
