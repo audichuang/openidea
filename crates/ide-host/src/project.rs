@@ -1101,6 +1101,12 @@ impl Project {
         content_roots(&self.settings.effective(), &self.root, &self.build_cache_dir())
     }
 
+    /// [`Self::content_roots`] plus the configured ones whose folder is missing: a paste still
+    /// knows their labels, so their files are not restored into the project folder instead.
+    pub fn declared_content_roots(&self) -> Vec<PathBuf> {
+        declared_content_roots(&self.settings.effective(), &self.root, &self.build_cache_dir())
+    }
+
     /// Applies Settings › File Types; open documents whose language changed are
     /// re-detected (language servers and syntax trees follow) and the index
     /// re-parses the files whose language changed.
@@ -1242,10 +1248,15 @@ pub(crate) fn workspace_member_roots(root: &Path) -> Vec<PathBuf> {
 /// Workspace members in manifest order, or extra Project Structure directories and the
 /// Gradle project folders outside the project as of the last sync (`build_cache`).
 fn content_roots(settings: &ide_core::settings::Settings, root: &Path, build_cache: &Path) -> Vec<PathBuf> {
+    // A root whose folder was deleted, renamed or unmounted stays configured but is not content.
+    declared_content_roots(settings, root, build_cache).into_iter().filter(|p| p.is_dir()).collect()
+}
+
+/// [`content_roots`] including the configured ones whose folder is missing.
+fn declared_content_roots(settings: &ide_core::settings::Settings, root: &Path, build_cache: &Path) -> Vec<PathBuf> {
     if let Ok(Some(workspace)) = ide_workspace::workspace::Workspace::load(root) {
         if workspace.is_container(root) {
-            // A member whose folder was deleted, renamed or unmounted stays in the manifest but is not content.
-        return workspace.projects.into_iter().filter(|p| p.is_dir()).collect();
+            return workspace.projects;
         }
         let mut roots = workspace.projects.into_iter().filter(|p| !p.starts_with(root)).collect::<Vec<_>>();
         for path in extra_content_roots(settings, root, build_cache) {
@@ -1334,7 +1345,7 @@ fn extra_content_roots(settings: &ide_core::settings::Settings, root: &Path, bui
         .chain(settings.project_structure.dependencies.iter())
         .map(|r| PathBuf::from(r.trim()));
     for p in user.chain(ide_build::gradle_external_roots(root, build_cache, &settings.languages.java.gradle)) {
-        if p.is_absolute() && p.is_dir() && !p.starts_with(root) && !out.contains(&p) {
+        if p.is_absolute() && !p.starts_with(root) && !out.contains(&p) {
             out.push(p);
         }
     }
