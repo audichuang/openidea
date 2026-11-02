@@ -122,7 +122,7 @@ pub(crate) async fn open_project(window: Window, path: PathBuf) -> IdeResult<Pro
 pub async fn light_edit_open(window: Window, path: PathBuf) -> IdeResult<Settings> {
     let app = window.app_handle().clone();
     let label = window.label().to_owned();
-    if app.state::<AppState>().project(&label).is_ok_and(|p| !p.light) {
+    if app.state::<AppState>().opened_project(&label).is_some() {
         crate::windows::close_auxiliary_windows(&app, &label);
         crate::window_groups::detach(&app, &label)?;
         crate::window_groups::persist(&app).await?;
@@ -343,7 +343,7 @@ pub async fn settings_list_jetbrains_ides() -> IdeResult<Vec<ide_host::plugins::
 
 pub(crate) fn project_current(window: Window) -> Option<ProjectInfo> {
     let state = window.state::<AppState>();
-    state.project(window.label()).ok().filter(|p| !p.light).map(|p| project_info(&p))
+    state.opened_project(window.label()).map(|p| project_info(&p))
 }
 
 // Off the IPC thread: each member's `for_project().layer(Project)` re-parses both settings layers
