@@ -638,21 +638,32 @@ impl ImportMapping {
     /// carry no label (their files are primary-relative). Returns the labelled
     /// roots, which the destination roots must include (absolute headers under
     /// them resolve there too).
+    ///
+    /// Labels are taken from the canonical paths, as the export spells them, so a
+    /// root configured through a symlink is known by its target's name.
     pub fn map_root_labels(&mut self, primary: &Path, roots: &[PathBuf]) -> Result<Vec<PathBuf>, TransferError> {
-        let mut all: Vec<&Path> = vec![primary];
-        all.extend(roots.iter().map(PathBuf::as_path));
-        let resolver = paths::PathResolver::new(&all, Some(primary));
-        let mut mapped = Vec::new();
+        let primary = CanonicalRootId::new(primary)?;
+        let mut canonical: Vec<CanonicalRootId> = Vec::with_capacity(roots.len());
         for root in roots {
-            let Some((label, ambiguous)) = resolver.label_of(root) else {
+            let id = CanonicalRootId::new(root)?;
+            if id != primary && !canonical.contains(&id) {
+                canonical.push(id);
+            }
+        }
+        let mut all: Vec<&Path> = vec![primary.path()];
+        all.extend(canonical.iter().map(CanonicalRootId::path));
+        let resolver = paths::PathResolver::new(&all, Some(primary.path()));
+        let mut mapped = Vec::new();
+        for root in canonical {
+            let Some((label, ambiguous)) = resolver.label_of(root.path()) else {
                 continue;
             };
             if ambiguous {
                 self.block_prefix(label);
             } else {
-                self.map_prefix(label, CanonicalRootId::new(root)?);
+                self.map_prefix(label, root.clone());
             }
-            mapped.push(root.clone());
+            mapped.push(root.path().to_path_buf());
         }
         Ok(mapped)
     }
