@@ -128,7 +128,8 @@ pub fn run() {
     let window_state = tauri_plugin_window_state::Builder::default()
         .with_state_flags(window_state_flags())
         // One remembered geometry per kind of auxiliary window (all projects' settings windows share one).
-        .map_label(windows::state_key);
+        .map_label(windows::state_key)
+        .with_filter(windows::tracks_window_state);
     // The plugin stores its file in the OS configuration directory; an absolute name follows
     // `OPENIDEA_CONFIG_DIR` instead.
     #[cfg(not(target_os = "linux"))]
@@ -177,6 +178,7 @@ pub fn run() {
         #[cfg(target_os = "macos")]
         if let Some(mtm) = objc2::MainThreadMarker::new() {
             macos::init_window_tabbing(mtm);
+            macos::observe_fullscreen_transitions(mtm);
         }
         #[cfg(windows)]
         tauri::async_runtime::spawn_blocking(|| {
