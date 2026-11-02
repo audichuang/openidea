@@ -777,12 +777,15 @@ struct Change {
     deleted_from: Vec<String>,
     /// The new side is a submodule commit (mode 160000), not a file.
     gitlink: bool,
-    /// Source path of a rename (`R`, UTF-8 only).
-    renamed_from: Option<String>,
+    /// Source paths of renames onto `path` (`R`, UTF-8 only), from every
+    /// listing: a merge can be `M` against one parent and a rename against
+    /// another.
+    renamed_from: Vec<String>,
 }
 
 /// Appends `entries` to `changes`, first entry per path wins (TS keys on
-/// `renameUri ?? uri`). A later deletion of the same path adds its old OID.
+/// `renameUri ?? uri`). A later deletion of the same path adds its old OID,
+/// and a later rename onto it adds its source.
 fn union_into(changes: &mut Vec<Change>, entries: Vec<RawEntry>, skipped: &mut usize) {
     // Path -> position in `changes`, rebuilt per union because the Working
     // source unions four listings into one vector: a linear `find` per
@@ -793,15 +796,19 @@ fn union_into(changes: &mut Vec<Change>, entries: Vec<RawEntry>, skipped: &mut u
             *skipped += 1;
             continue;
         };
+        let rename_source = if e.status == b'R' { e.old_path.and_then(|p| String::from_utf8(p).ok()) } else { None };
         if let Some(i) = index.get(&path).copied() {
             let c = &mut changes[i];
             if c.status == b'D' && e.status == b'D' {
                 c.deleted_from.push(e.old_oid);
             }
+            if let Some(old) = rename_source.filter(|old| !c.renamed_from.contains(old)) {
+                c.renamed_from.push(old);
+            }
             continue;
         }
         index.insert(path.clone(), changes.len());
-        let renamed_from = if e.status == b'R' { e.old_path.and_then(|p| String::from_utf8(p).ok()) } else { None };
+        let renamed_from = rename_source.into_iter().collect();
         let deleted_from = if e.status == b'D' { vec![e.old_oid] } else { Vec::new() };
         changes.push(Change {
             status: e.status,
@@ -899,8 +906,9 @@ pub struct ChangedPathEntry {
     pub path: String,
     pub change_type: ChangeType,
     pub gitlink: bool,
-    /// Source path of a rename (`R`); a copy keeps its source, so it has none.
-    pub renamed_from: Option<String>,
+    /// Source paths of renames onto `path` (`R`), from every parent of a
+    /// merge; a copy keeps its source, so it adds none.
+    pub renamed_from: Vec<String>,
 }
 
 /// Lists all changes for `source` with their change types and gitlink flags,
@@ -1136,7 +1144,8 @@ pub fn read_changed_file_for(
         ChangeType::Deleted => b'D',
         ChangeType::Moved => b'R',
     };
-    let change = Change { status, path: path.to_string(), new_oid, deleted_from, gitlink: false, renamed_from: None };
+    let change =
+        Change { status, path: path.to_string(), new_oid, deleted_from, gitlink: false, renamed_from: Vec::new() };
     let max = max.min(opts.max_stdout as u64);
     read_changes(git, source, vec![change], Some(max), opts)?
         .pop()
@@ -1459,6 +1468,37 @@ mod tests {
         let g = &changes[3];
         assert_eq!(g.status, b'D');
         assert_eq!(g.deleted_from, vec!["old-g.txt", "old-g.txt", "old-g.txt"]);
+    }
+
+    /// A merge diffed per parent can list one target as `M` first and as a
+    /// rename later, or as renames from different sources: every source is
+    /// kept, while the first sighting still decides the row.
+    #[test]
+    fn union_into_keeps_every_rename_source_of_a_path() {
+        let entry = |status: u8, old: Option<&str>, path: &str| RawEntry {
+            status,
+            old_mode: "100644".into(),
+            new_mode: "100644".into(),
+            old_oid: String::new(),
+            new_oid: format!("new-{path}"),
+            old_path: old.map(|p| p.as_bytes().to_vec()),
+            path: path.as_bytes().to_vec(),
+        };
+        let mut changes = Vec::new();
+        let mut skipped = 0;
+        union_into(&mut changes, vec![entry(b'M', None, "b.txt"), entry(b'R', Some("x.txt"), "y.txt")], &mut skipped);
+        union_into(
+            &mut changes,
+            vec![entry(b'R', Some("a.txt"), "b.txt"), entry(b'R', Some("z.txt"), "y.txt")],
+            &mut skipped,
+        );
+        union_into(&mut changes, vec![entry(b'R', Some("a.txt"), "b.txt")], &mut skipped);
+
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0].status, b'M');
+        assert_eq!(changes[0].renamed_from, ["a.txt"]);
+        assert_eq!(changes[1].status, b'R');
+        assert_eq!(changes[1].renamed_from, ["x.txt", "z.txt"]);
     }
 
     /// Initializes `root` as a SHA-256 repository, or returns `false` when
