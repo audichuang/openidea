@@ -173,6 +173,11 @@ impl Host {
             .ok_or_else(|| IdeError::not_found("no project is open in this window"))
     }
 
+    /// The project opened in `window`: `None` when it holds none or a LightEdit session.
+    pub fn opened_project(&self, window: &str) -> Option<Arc<Project>> {
+        self.project(window).ok().filter(|p| !p.light)
+    }
+
     pub fn require_trust(&self, window: &str) -> IdeResult<()> {
         self.project(window)?.require_trust()
     }
