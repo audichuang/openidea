@@ -3,6 +3,7 @@ import { useEffect, useSyncExternalStore } from "react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { create } from "zustand";
 import { call, commands, isTauri } from "@/platform/ipc";
+import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
 import {
   baseTheme,
@@ -194,8 +195,10 @@ export function syncWindowBackground() {
   if (!isTauri()) return;
   const win = getCurrentWebviewWindow();
   // Native chrome (macOS window tabs, title bar, menus) follows the app appearance, the OS one
-  // unless set: a light IDE theme under a dark OS got a dark tab strip.
-  win.setTheme(nativeAppearance()).catch(() => {});
+  // unless set: a light IDE theme under a dark OS got a dark tab strip. Not on Linux: tao maps
+  // SetTheme(None) to "GTK prefer dark = false", which would force light over a dark desktop and
+  // never restore the user's GTK setting; the frameless title bar is drawn by the page anyway.
+  if (usePlatform.getState().os !== "linux") win.setTheme(nativeAppearance()).catch(() => {});
   const color = windowBackgroundColor();
   if (!color) return;
   win.setBackgroundColor(color).catch(() => {});
