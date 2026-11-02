@@ -476,7 +476,7 @@ pub fn target_window(app: &AppHandle) -> Option<WebviewWindow> {
     sorted_labels(windows.keys().map(String::as_str)).first().and_then(|l| windows.get(l)).cloned()
 }
 
-fn window_config(app: &AppHandle) -> IdeResult<WindowConfig> {
+pub(crate) fn window_config(app: &AppHandle) -> IdeResult<WindowConfig> {
     app.config()
         .app
         .windows
