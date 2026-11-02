@@ -17,6 +17,8 @@ import { copyText } from "@/ui/selectableText";
 import { editorService, notifications, registerMenuGroup } from "@/workbench/contributions";
 import { confirmDialog, openDialog, promptText } from "./dialogs";
 import type { LogChange } from "./logChanges";
+import { logOptions } from "./logOptions";
+import { useGitLog } from "./logStore";
 import { commitRepo } from "./multiRoot";
 import { commitsArg } from "./historyActions";
 import { refreshNow, useVcs } from "./store";
@@ -83,8 +85,21 @@ export async function copyClip(source: ClipCopySource): Promise<boolean> {
 
 const repoOf = (c: Commit) => commitRepo(c) ?? useVcs.getState().repo ?? useVcs.getState().root ?? "";
 
-/** True when `cs` (newest first) is one first-parent chain: each commit's first parent is the next one. */
+/**
+ * The loaded log's `parents` are not the commits' real ones: No Merges and the date filter hide
+ * commits and rewrite the parents of the shown ones past them (like git's parent rewriting).
+ */
+function logRewritesParents(): boolean {
+  const date = useGitLog.getState().filters.date;
+  return logOptions().noMerges || date != null;
+}
+
+/**
+ * True when `cs` (newest first) is one first-parent chain: each commit's first parent is the
+ * next one. Never true while the log rewrites parents, since an unselected commit may sit between.
+ */
 export function isFirstParentChain(cs: readonly Commit[]): boolean {
+  if (logRewritesParents()) return false;
   return cs.every((c, i) => i === cs.length - 1 || c.parents[0] === cs[i + 1]!.id);
 }
 
