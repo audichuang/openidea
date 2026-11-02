@@ -193,7 +193,7 @@ pub fn window_open_projects(
     Ok(windows::project_window_labels(&app)
         .into_iter()
         .filter_map(|label| {
-            let project = state.project(&label).ok().filter(|p| !p.light)?;
+            let project = state.opened_project(&label)?;
             Some(OpenProject {
                 name: project.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                 root: project.root.clone(),
