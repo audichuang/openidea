@@ -59,7 +59,7 @@ function notifyCopied(r: ClipCopyResult) {
   if (level === "error") body += ` ${tx("Over 2,000,000 tokens.")}`;
   else if (level === "warning") body += ` ${tx("Over 1,000,000 tokens.")}`;
   if (!r.notify && level === "info") return;
-  notifications().notify({ group: "vcs", level, title: parts.join(" "), body });
+  notifications().notify({ group: "clipcode", level, title: parts.join(" "), body });
 }
 
 /** Builds the payload for `source` and puts it on the clipboard, reporting what was copied. */
@@ -68,7 +68,7 @@ export async function copyClip(source: ClipCopySource): Promise<boolean> {
   try {
     result = await call(commands.clipCopy(source));
   } catch (e) {
-    notifications().notify({ group: "vcs", level: "warning", title: "ClipCode copy failed", body: String(e) });
+    notifications().notify({ group: "clipcode", level: "warning", title: "ClipCode copy failed", body: String(e) });
     return false;
   }
   await copyText(result.text);
@@ -110,7 +110,7 @@ export function logChangesSource(commits: readonly Commit[], changes: readonly L
 export async function pasteClip(dest?: string | null) {
   const text = await readClipboardText();
   if (!text.trim()) {
-    notifications().notify({ group: "vcs", level: "info", title: "The clipboard is empty" });
+    notifications().notify({ group: "clipcode", level: "info", title: "The clipboard is empty" });
     return;
   }
   if (/^From [0-9a-f]{7,64} /.test(text)) return pasteBranchSeries(text);
@@ -123,7 +123,7 @@ async function loadPreview(text: string, dest: string | null, adjust: boolean): 
   try {
     return await call(commands.clipPastePreview(text, dest, adjust, [...useVcs.getState().roots]));
   } catch (e) {
-    notifications().notify({ group: "vcs", level: "warning", title: "Nothing to paste", body: String(e) });
+    notifications().notify({ group: "clipcode", level: "warning", title: "Nothing to paste", body: String(e) });
     return null;
   }
 }
@@ -134,7 +134,7 @@ function reportPaste(r: ClipPasteResult, commits: boolean) {
     ? tx`${created} commits created`
     : tx`Restored: ${r.created} created, ${r.overwritten} overwritten, ${r.deleted} deleted, ${r.skipped} skipped`;
   notifications().notify({
-    group: "vcs",
+    group: "clipcode",
     level: r.errors.length ? "warning" : "info",
     title,
     body: r.errors.length ? r.errors.join("\n") : undefined,
@@ -218,7 +218,7 @@ export function PastePreviewDialog({
       onClose();
       void refreshNow();
     } catch (e) {
-      notifications().notify({ group: "vcs", level: "error", title: "Paste failed", body: String(e) });
+      notifications().notify({ group: "clipcode", level: "error", title: "Paste failed", body: String(e) });
       setBusy(false);
     }
   };
@@ -349,7 +349,7 @@ export async function copyBranchSeries(branch: string, full: boolean) {
     const { commits } = r;
     const base = r.base?.slice(0, 8);
     notifications().notify({
-      group: "vcs",
+      group: "clipcode",
       level: "info",
       title: base
         ? tx`Copied ${commits} commits from ${branch}. Restoring needs commit ${base} on the other side.`
@@ -357,7 +357,7 @@ export async function copyBranchSeries(branch: string, full: boolean) {
     });
   } catch (e) {
     notifications().notify({
-      group: "vcs",
+      group: "clipcode",
       level: "warning",
       title: "Nothing copied",
       body: String(e),
@@ -379,7 +379,7 @@ async function pasteBranchSeries(text: string) {
       const r = await call(commands.clipPasteBranchSeries(currentRepoPath(), text, name.value.trim(), onHead));
       const { branch, commits } = r;
       notifications().notify({
-        group: "vcs",
+        group: "clipcode",
         level: "info",
         title: tx`Restored ${commits} commits as the branch ${branch}.`,
       });
@@ -395,7 +395,12 @@ async function pasteBranchSeries(text: string) {
         if (ok) return restore(true);
         return;
       }
-      notifications().notify({ group: "vcs", level: "error", title: "Paste Branch Commits failed", body: message });
+      notifications().notify({
+        group: "clipcode",
+        level: "error",
+        title: "Paste Branch Commits failed",
+        body: message,
+      });
     }
   };
   await restore(false);
@@ -437,7 +442,7 @@ async function ignorePaths(paths: readonly string[]) {
   await loadSettings();
   const count = paths.length;
   notifications().notify({
-    group: "vcs",
+    group: "clipcode",
     level: "info",
     title: tx`Ignored ${count} selected paths when copying with ClipCode.`,
   });
@@ -550,7 +555,7 @@ export function registerClipActions(): () => void {
       run: () => {
         const paths = editorService().openPaths?.() ?? [];
         if (!paths.length) {
-          notifications().notify({ group: "vcs", level: "info", title: "No open tabs found to copy." });
+          notifications().notify({ group: "clipcode", level: "info", title: "No open tabs found to copy." });
           return;
         }
         void copyClip({ kind: "files", paths });
