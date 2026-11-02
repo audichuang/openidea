@@ -8,7 +8,7 @@ use crate::rpc::Dispatcher;
 use ide_clip::commits::{self, CommitsPayload, FilePlan};
 use ide_clip::gitrun::RunOptions;
 use ide_clip::gitsrc::{Git, GitSource};
-use ide_clip::restore::{FsProbe, RestoreSelection, suggest_restore_base};
+use ide_clip::restore::{FsProbe, RestoreBase, RestoreSelection, suggest_restore_base};
 use ide_clip::settings::Settings;
 use ide_clip::transfer::{
     self, CLIPBOARD_PAYLOAD_MAX, CanonicalRootId, CommitReplayPreview, ExportItem, ExportSelection, ImportMapping,
@@ -640,6 +640,10 @@ pub fn paste_preview_into(
     };
     let mut roots = vec![dest.to_path_buf()];
     roots.extend(mapping.map_root_labels(dest, &others).map_err(err)?);
+    // A missing root's label stays blocked whatever the restore base says, so a base
+    // stripping it would only skip those files: don't offer it.
+    let suggestion = suggestion
+        .filter(|s| !matches!(&s.base, RestoreBase::Strip { segment } if mapping.blocked_prefixes.contains(segment)));
     // Like the restore base, the repository guess is for a single-root project only: with
     // other roots, as in ClipCode, only their labels route a prefix, and the payload's other
     // `<dir>/…` paths are the primary's own (a namesake repository must not take them).
@@ -1408,6 +1412,31 @@ mod tests {
         let preview =
             paste_preview_into(&w, None, &roots, "// file: ext/y.txt\ny\n", false, &[], &Settings::default()).unwrap();
         assert!(targets_of(&preview).is_empty(), "{:?}", preview.files);
+    }
+
+    /// A missing root named like the project: stripping its label as a restore base
+    /// would land its files (and deletes) in the project, so they restore nowhere.
+    #[test]
+    fn a_restore_base_does_not_route_a_missing_roots_label_into_the_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        let w = base.join("W");
+        fs::create_dir_all(w.join("src")).unwrap();
+        fs::create_dir_all(w.join("test")).unwrap();
+        fs::write(w.join("src/a.txt"), "keep\n").unwrap();
+        let roots = vec![base.join("missing/W")];
+
+        for text in [
+            "// file: W/src/a.txt\nnew\n// file: W/test/b.txt\nb\n",
+            "// file: [DELETED] W/src/a.txt\n// file: W/test/b.txt\nb\n",
+        ] {
+            let preview = paste_preview_into(&w, None, &roots, text, true, &[], &Settings::default()).unwrap();
+            assert!(targets_of(&preview).is_empty(), "{text:?} {:?}", preview.files);
+            assert!(preview.files.iter().all(|f| f.action == "skip"), "{text:?} {:?}", preview.files);
+            assert_eq!(preview.suggestion, None, "{text:?}");
+        }
+        assert_eq!(fs::read_to_string(w.join("src/a.txt")).unwrap(), "keep\n");
+        assert!(!w.join("test/b.txt").exists());
     }
 
     #[test]
