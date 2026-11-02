@@ -1821,6 +1821,39 @@ mod tests {
         assert_eq!(out.files, 1, "{}", out.text);
     }
 
+    /// A merge whose first parent renamed `a.txt` to `b.txt` lists `M b.txt` against that parent
+    /// and `R a.txt -> b.txt` against the second: the rename source must still count as renamed
+    /// away, or an older selected commit on the second parent's side resurrects `a.txt`.
+    #[test]
+    fn a_commit_list_does_not_resurrect_a_path_a_selected_merge_renamed_away_on_one_side() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = repo(&tmp.path().join("a"));
+        let body: String = (1..=20).map(|i| format!("shared line {i}\n")).collect();
+        commit_file(&a, "a.txt", Some(&body), "add a");
+        git(&a, &["checkout", "-q", "-b", "feature"]);
+        let edit = commit_file(&a, "a.txt", Some(&format!("{body}feature edit\n")), "edit a on feature");
+        git(&a, &["checkout", "-q", "main"]);
+        git(&a, &["mv", "a.txt", "b.txt"]);
+        git(&a, &["commit", "-q", "-m", "rename a to b"]);
+        git(&a, &["merge", "-q", "--no-ff", "-m", "merge feature", "feature"]);
+        let merge = git(&a, &["rev-parse", "HEAD"]);
+        // The shape under test: one parent lists the target as modified, the other as a rename.
+        let first = git(&a, &["diff-tree", "-r", "--name-status", "--no-commit-id", "-M", "HEAD^1", "HEAD"]);
+        let second = git(&a, &["diff-tree", "-r", "--name-status", "--no-commit-id", "-M", "HEAD^2", "HEAD"]);
+        assert_eq!(first, "M\tb.txt");
+        assert!(second.starts_with('R') && second.ends_with("a.txt\tb.txt"), "{second}");
+
+        let out = copy(
+            &a,
+            ClipCopySource::CommitList { repo: a.clone(), revs: vec![merge, edit], paths: vec![] },
+            &Settings::default(),
+        )
+        .unwrap();
+        assert!(out.text.contains("b.txt"), "{}", out.text);
+        assert!(!out.text.contains("a.txt"), "{}", out.text);
+        assert_eq!(out.files, 1, "{}", out.text);
+    }
+
     #[test]
     fn a_root_range_copies_everything_from_the_root_commit_through_the_tip() {
         let tmp = tempfile::tempdir().unwrap();
