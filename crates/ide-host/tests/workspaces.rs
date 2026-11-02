@@ -326,3 +326,38 @@ async fn attach_and_detach_preserve_the_primary_project_session() {
     assert!(!reopened.is_trusted());
     host.close_project("main");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clipcode_still_works_after_a_workspace_member_folder_is_deleted() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(temp.path()).unwrap();
+    let (a, b) = (base.join("a"), base.join("b"));
+    for dir in [&a, &b] {
+        std::fs::create_dir(dir).unwrap();
+        std::fs::write(dir.join("x.txt"), "x\n").unwrap();
+    }
+    let root = base.join("workspace");
+    Workspace::save(&root, "Pair", vec![a.clone(), b.clone()], true).unwrap();
+    let host = Host::new(HostConfig {
+        config_dir: base.join("config"),
+        data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    });
+    host.trust.decide(&root, true, false).unwrap();
+    host.open_project("main", &root).unwrap();
+    std::fs::remove_dir_all(&b).unwrap();
+
+    let copied = ops::clip::clip_copy(&host, "main", ops::clip::ClipCopySource::Files { paths: vec![a.join("x.txt")] })
+        .await
+        .unwrap();
+    assert!(copied.text.contains("x\n"), "{}", copied.text);
+    let preview =
+        ops::clip::clip_paste_preview(&host, "main", copied.text, None, None, false, Vec::new()).await.unwrap();
+    assert_eq!(preview.files.len(), 1, "{:?}", preview.files);
+}
