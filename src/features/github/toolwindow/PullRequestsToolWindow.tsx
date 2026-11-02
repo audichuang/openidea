@@ -223,6 +223,7 @@ function RepositorySelector() {
           }))}
           onChange={setChosen}
           aria-label="Repository"
+          searchable
         />
         <Button
           size="small"
