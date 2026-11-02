@@ -250,7 +250,9 @@ pub fn copy_in(
             // Files of one root plan together; several roots join one selection,
             // anchored on the project like the git sources.
             let mut groups: Vec<(PathBuf, Vec<PathBuf>)> = Vec::new();
-            // Roots of files that no project root or repository covers: their headers are absolute paths.
+            // Roots of files that no project root covers: their headers are absolute paths, as
+            // ClipCode's resolver spells a file under none of the project's roots. Such files
+            // group by their repository (else their folder) only to be read together.
             let mut absolute: Vec<PathBuf> = Vec::new();
             for p in &paths {
                 let root = if p.starts_with(project) {
@@ -258,13 +260,12 @@ pub fn copy_in(
                 } else if let Some(r) = content_roots.iter().find(|r| p.starts_with(r)) {
                     r.clone()
                 } else {
-                    repo_root(p).unwrap_or_else(|_| {
-                        let dir = if p.is_dir() { p.clone() } else { p.parent().unwrap_or(p).to_path_buf() };
-                        if !absolute.contains(&dir) {
-                            absolute.push(dir.clone());
-                        }
-                        dir
-                    })
+                    let dir = repo_root(p)
+                        .unwrap_or_else(|_| if p.is_dir() { p.clone() } else { p.parent().unwrap_or(p).to_path_buf() });
+                    if !absolute.contains(&dir) {
+                        absolute.push(dir.clone());
+                    }
+                    dir
                 };
                 match groups.iter_mut().find(|(r, _)| *r == root) {
                     Some((_, list)) => list.push(p.clone()),
@@ -272,7 +273,7 @@ pub fn copy_in(
                 }
             }
             // The project is the primary root (relative headers) wherever it sits in the batch;
-            // without one, the first root a repository covers, else the first root.
+            // without one, the first content root, else the first root.
             let primary_idx = groups
                 .iter()
                 .position(|(r, _)| r == project)
@@ -536,12 +537,13 @@ pub fn paste_preview(
 /// `content_roots` are the project's other roots (when `dest` is the project):
 /// as in ClipCode's `ClipboardPathResolver.fromProject`, a `<label>/…` path of a
 /// root outside `dest` restores into that root, whatever `clipcode-root` says,
-/// and only a project without other roots is offered a restore base.
+/// and only a project without other roots is offered a restore base. Only
+/// these roots resolve labels; repositories are not roots.
 ///
-/// A payload copied from several repositories names the others' files `<repo>/…`
-/// (it has no `clipcode-root` line). Such a prefix lands in the repository of
-/// `repos` with that folder name, as snip-sync's prefix mapping would put it,
-/// in a project without other roots only.
+/// The one exception is snip-sync's legacy multi-repository payload, which
+/// names each repository's files `<repo>/…` and has no `clipcode-root` line:
+/// in a project without other roots, a prefix that is no root label and no
+/// entry of `dest` lands in the repository of `repos` with that folder name.
 pub fn paste_preview_into(
     dest: &Path,
     repo: Option<&Path>,
@@ -618,6 +620,10 @@ pub fn paste_preview_into(
         for prefix in transfer::detect_clipboard_prefixes(text, header) {
             // A project root's label is already routed (or ambiguous).
             if mapping.prefix_destinations.contains_key(&prefix) || mapping.blocked_prefixes.contains(&prefix) {
+                continue;
+            }
+            // A folder or file the project holds is the project's own path, whatever repository shares its name.
+            if std::fs::symlink_metadata(dest.join(&prefix)).is_ok() {
                 continue;
             }
             let Some(repo) =
@@ -1109,11 +1115,12 @@ mod tests {
         let abs = format!("{}/README.md", r.to_string_lossy());
         assert!(text.contains(&format!("// file: [MODIFIED] {abs}\n")), "{text}");
 
-        // A repository beside the project keeps its folder label, as Files copies do.
+        // A repository beside the project is no project root either: absolute, as Files copies spell it.
         let ext = repo(&tmp.path().join("ext"));
         fs::write(ext.join("README.md"), "ext\n").unwrap();
-        let text = copied(&sub, ClipCopySource::Changes { paths: vec![ext], side: ClipChangeSide::Working });
-        assert!(text.contains("// file: [MODIFIED] ext/README.md\n"), "{text}");
+        let text = copied(&sub, ClipCopySource::Changes { paths: vec![ext.clone()], side: ClipChangeSide::Working });
+        let abs = format!("{}/README.md", ext.to_string_lossy());
+        assert!(text.contains(&format!("// file: [MODIFIED] {abs}\n")), "{text}");
     }
 
     /// Project `M` holding a plain `ext/a.txt`, beside the repository `ext` whose
@@ -1212,6 +1219,83 @@ mod tests {
         assert_eq!(fs::read_to_string(ext.join("a.txt")).unwrap(), "external\n");
     }
 
+    /// Workspace `W` (a plain folder) whose content root `repos/ext/subdir` lies inside the
+    /// repository `repos/ext` (committed `a.txt` and `subdir/b.txt`). Returns (W, ext).
+    fn content_root_inside_a_repository(tmp: &Path) -> (PathBuf, PathBuf) {
+        let base = std::fs::canonicalize(tmp).unwrap();
+        let w = base.join("W");
+        fs::create_dir_all(&w).unwrap();
+        fs::write(w.join("notes.txt"), "w\n").unwrap();
+        let ext = repo(&base.join("repos/ext"));
+        fs::create_dir_all(ext.join("subdir")).unwrap();
+        commit_file(&ext, "a.txt", Some("a1\n"), "add a");
+        commit_file(&ext, "subdir/b.txt", Some("b1\n"), "add b");
+        (w, ext)
+    }
+
+    #[test]
+    fn a_repository_file_outside_every_project_root_is_spelled_absolute_and_never_lands_in_the_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (w, ext) = content_root_inside_a_repository(tmp.path());
+        let roots = vec![ext.join("subdir")];
+        fs::write(ext.join("a.txt"), "a2\n").unwrap();
+        fs::write(ext.join("subdir/b.txt"), "b2\n").unwrap();
+        let abs = format!("{}/a.txt", ext.to_string_lossy());
+        let sources = [
+            ClipCopySource::Files { paths: vec![ext.join("a.txt"), ext.join("subdir/b.txt")] },
+            ClipCopySource::Changes { paths: vec![ext.clone()], side: ClipChangeSide::Working },
+        ];
+        for source in sources {
+            let text = copy_in(&w, &roots, source.clone(), &Settings::default()).unwrap().text;
+            assert!(!text.contains("// clipcode-root:"), "{source:?}:\n{text}");
+            let (_, headers) = spelling(&text);
+            assert!(headers.contains(&abs), "{source:?}:\n{text}");
+            assert!(headers.contains(&"subdir/b.txt".to_string()), "{source:?}:\n{text}");
+            assert!(!headers.contains(&"ext/a.txt".to_string()), "{source:?}:\n{text}");
+
+            fs::write(ext.join("a.txt"), "a1\n").unwrap();
+            fs::write(ext.join("subdir/b.txt"), "b1\n").unwrap();
+            let repos = vec![ext.clone()];
+            let preview = paste_preview_into(&w, None, &roots, &text, false, &repos, &Settings::default()).unwrap();
+            let project_file = w.join("ext/a.txt").to_string_lossy().into_owned();
+            assert!(!targets_of(&preview).contains(&project_file), "{:?}", preview.files);
+            let overwrite = preview.files.iter().filter(|f| f.action == "overwrite").map(|f| f.index).collect();
+            paste_apply(ClipPasteApply { id: preview.id, overwrite, ..Default::default() }).unwrap();
+            assert!(!w.join("ext").exists());
+            assert_eq!(fs::read_to_string(ext.join("subdir/b.txt")).unwrap().trim_end(), "b2");
+            fs::write(ext.join("a.txt"), "a2\n").unwrap();
+        }
+    }
+
+    #[test]
+    fn a_legacy_repository_prefix_never_takes_a_folder_the_project_holds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        let w = base.join("W");
+        fs::create_dir_all(w.join("ext")).unwrap();
+        fs::write(w.join("ext/a.txt"), "project\n").unwrap();
+        let ext = repo(&base.join("other/a/ext"));
+        commit_file(&ext, "a.txt", Some("external\n"), "add a");
+        let text = "// file: ext/a.txt\nnew\n";
+        let preview = paste_preview(&w, text, false, std::slice::from_ref(&ext), &Settings::default()).unwrap();
+        assert_eq!(targets_of(&preview), vec![w.join("ext/a.txt").to_string_lossy().into_owned()]);
+    }
+
+    #[test]
+    fn a_legacy_multi_repository_payload_restores_into_the_named_repository() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        let w = base.join("W");
+        fs::create_dir_all(&w).unwrap();
+        let lib = repo(&base.join("lib"));
+        let text = "// file: lib/x.txt\nnew\n";
+        let preview = paste_preview(&w, text, false, std::slice::from_ref(&lib), &Settings::default()).unwrap();
+        assert_eq!(targets_of(&preview), vec![lib.join("x.txt").to_string_lossy().into_owned()]);
+        paste_apply(ClipPasteApply { id: preview.id, ..Default::default() }).unwrap();
+        assert_eq!(fs::read_to_string(lib.join("x.txt")).unwrap().trim_end(), "new");
+        assert!(!w.join("lib").exists());
+    }
+
     /// Workspace `W` (a plain folder) with the content root `x/a`, a repository
     /// whose committed `src/f.ts` is modified. Returns (W, a).
     fn workspace_with_external_root(tmp: &Path) -> (PathBuf, PathBuf) {
@@ -1301,10 +1385,11 @@ mod tests {
             assert_eq!(spelling(&f.text), spelling(&c.text), "Files:\n{}\nChanges:\n{}", f.text, c.text);
             spelling(&f.text)
         };
-        // Only a file of a repository beside the project.
+        // Only a file of a repository beside the project: no project root covers it, so it is absolute.
+        let abs = format!("{}/README.md", ext.to_string_lossy());
         let (first, headers) = same(&[], vec![ext.join("README.md")], vec![ext.clone()]);
         assert_eq!(first, "// clipcode-root: M");
-        assert_eq!(headers, vec!["ext/README.md"]);
+        assert_eq!(headers, vec![abs.clone()]);
         // A project file and the external one, in either order.
         for (files, repos) in [
             (vec![m.join("README.md"), ext.join("README.md")], vec![m.clone(), ext.clone()]),
@@ -1313,7 +1398,7 @@ mod tests {
             let (first, mut headers) = same(&[], files, repos);
             headers.sort();
             assert_eq!(first, "// clipcode-root: M");
-            assert_eq!(headers, vec!["README.md", "ext/README.md"]);
+            assert_eq!(headers, vec![abs.clone(), "README.md".to_string()]);
         }
         // The repository as a content root of the project: no root line, labelled alike.
         let (first, headers) = same(std::slice::from_ref(&ext), vec![ext.join("README.md")], vec![ext.clone()]);
