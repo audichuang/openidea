@@ -237,20 +237,32 @@ impl ExportSelection {
         primary_root: Option<PathBuf>,
         items: Vec<ExportItem>,
     ) -> Result<Self, TransferError> {
-        Self::build(roots, primary_root, None, items)
+        Self::build(roots, primary_root, None, &[], items)
+    }
+
+    /// Like [`ExportSelection::new`], with `absolute` (a subset of `roots`)
+    /// spelled by absolute path, so validation sees the headers that are written.
+    pub fn with_absolute(
+        roots: Vec<PathBuf>,
+        primary_root: Option<PathBuf>,
+        absolute: &[PathBuf],
+        items: Vec<ExportItem>,
+    ) -> Result<Self, TransferError> {
+        Self::build(roots, primary_root, None, absolute, items)
     }
 
     /// A selection whose items are spelled relative to `anchor` (the opened
     /// project) and named after it in the `clipcode-root` line; see
     /// [`ExportSelection::anchor_root`]. Validated once, as anchored.
     pub fn anchored(roots: Vec<PathBuf>, anchor: &Path, items: Vec<ExportItem>) -> Result<Self, TransferError> {
-        Self::build(roots, None, Some(anchor), items)
+        Self::build(roots, None, Some(anchor), &[], items)
     }
 
     fn build(
         roots: Vec<PathBuf>,
         primary_root: Option<PathBuf>,
         anchor: Option<&Path>,
+        absolute: &[PathBuf],
         items: Vec<ExportItem>,
     ) -> Result<Self, TransferError> {
         let anchor_root = match anchor {
@@ -275,7 +287,7 @@ impl ExportSelection {
             }
             None => None,
         };
-        let sel = Self {
+        let mut sel = Self {
             roots: canonical_roots,
             primary_root: primary,
             items,
@@ -285,6 +297,9 @@ impl ExportSelection {
             absolute_roots: Vec::new(),
             anchor_root,
         };
+        if !absolute.is_empty() {
+            sel = sel.with_absolute_roots(absolute)?;
+        }
         validate_export_selection(&sel)?;
         Ok(sel)
     }
