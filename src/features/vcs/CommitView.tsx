@@ -1022,6 +1022,7 @@ export function StashesPanel() {
         {repos.length > 1 && (
           <Select
             aria-label="Repository"
+            searchable
             value={repo}
             onChange={(root) => void selectRepo(root)}
             options={repos.map((root) => ({ value: root, label: repoName(root) }))}
