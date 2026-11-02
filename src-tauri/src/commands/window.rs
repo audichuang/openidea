@@ -204,8 +204,8 @@ pub fn window_owns_session(window: WebviewWindow, windows: State<'_, WindowsStat
 /// This window is done with the launch it took: its project opened, failed to, or was cancelled.
 #[tauri::command]
 #[specta::specta]
-pub fn window_launch_settled(window: WebviewWindow, windows: State<'_, WindowsState>) {
-    windows.launch_settled(window.label());
+pub fn window_launch_settled(window: WebviewWindow, windows: State<'_, WindowsState>, state: State<'_, AppState>) {
+    windows.launch_settled(window.label(), state.opened_project(window.label()).is_some());
 }
 
 #[derive(Serialize, Deserialize, Type)]
