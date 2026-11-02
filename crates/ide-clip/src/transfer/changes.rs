@@ -61,7 +61,7 @@ pub fn changed_items(
             SourceKind::Commit { rev: sha }
         }
         GitSource::Range(a, b) => {
-            let base = git.resolve_commit_with(a, opts)?;
+            let base = git.resolve_range_base_with(a, opts)?;
             let tip = git.resolve_commit_with(b, opts)?;
             SourceKind::Range { base, tip }
         }
