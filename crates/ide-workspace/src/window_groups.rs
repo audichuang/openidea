@@ -200,15 +200,13 @@ pub fn restore_plan(
     plan
 }
 
-/// What to save: `current` (the open groups), plus, until the saved groups have been reopened,
-/// each saved group that shares no project with an open one, so a quit or a save part way through
-/// startup doesn't drop the groups not reopened yet.
-pub fn groups_to_save(current: Vec<SavedGroup>, saved: Vec<SavedGroup>, restored: bool) -> Vec<SavedGroup> {
-    if restored {
-        return current;
-    }
+/// What to save: `current` (the open groups), plus each group of `not_reopened` that shares no
+/// project with an open one, so a quit or a save part way through startup, or a group that failed
+/// to reopen, doesn't drop saved groups. `not_reopened`: the saved groups until the restore has
+/// run, then the ones it failed to reopen.
+pub fn groups_to_save(current: Vec<SavedGroup>, not_reopened: Vec<SavedGroup>) -> Vec<SavedGroup> {
     let open = |path: &PathBuf| current.iter().any(|g| g.projects.contains(path));
-    let kept: Vec<_> = saved.into_iter().filter(|g| !g.projects.iter().any(open)).collect();
+    let kept: Vec<_> = not_reopened.into_iter().filter(|g| !g.projects.iter().any(open)).collect();
     current.into_iter().chain(kept).collect()
 }
 
@@ -387,13 +385,24 @@ mod tests {
         // Only the first group has been reopened (with its tabs reordered).
         let current = vec![saved(&["/beta", "/alpha"], 1, false)];
         assert_eq!(
-            groups_to_save(current.clone(), on_disk.clone(), false),
+            groups_to_save(current.clone(), on_disk),
             vec![saved(&["/beta", "/alpha"], 1, false), saved(&["/delta", "/epsilon"], 1, true)]
         );
         // Once every group has been reopened, the open groups are the whole truth.
-        assert_eq!(groups_to_save(current.clone(), on_disk, true), current);
+        assert_eq!(groups_to_save(current.clone(), Vec::new()), current);
         // A saved group sharing a project with an open one was reopened (perhaps changed).
         let on_disk = vec![saved(&["/beta", "/gamma"], 0, false)];
-        assert_eq!(groups_to_save(current.clone(), on_disk, false), current);
+        assert_eq!(groups_to_save(current.clone(), on_disk), current);
+    }
+
+    #[test]
+    fn saving_after_the_restore_keeps_the_groups_that_failed_to_reopen() {
+        let current = vec![saved(&["/alpha", "/beta"], 0, false)];
+        let failed = vec![saved(&["/delta", "/epsilon"], 1, true), saved(&["/beta", "/gamma"], 0, false)];
+        // A failed group sharing a project with an open one was opened again since.
+        assert_eq!(
+            groups_to_save(current.clone(), failed),
+            vec![saved(&["/alpha", "/beta"], 0, false), saved(&["/delta", "/epsilon"], 1, true)]
+        );
     }
 }
