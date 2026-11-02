@@ -2289,6 +2289,10 @@ mod tests {
         let handle = std::thread::spawn(move || {
             let mut cmd = Command::new("git");
             cmd.args(["-c", "alias.slow=!sleep 2", "slow"]);
+            // Outside any checkout: a git worktree synced to another host has
+            // a `.git` file pointing at a missing gitdir, and git then exits
+            // before running the alias.
+            cmd.current_dir(std::env::temp_dir());
             run(cmd, "slow", None, &opts)
         });
 
