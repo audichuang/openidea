@@ -624,6 +624,7 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
         {repos.length > 1 && (
           <Select
             aria-label="Repository"
+            searchable
             value={repo}
             options={repos.map((r) => ({ value: r, label: repoName(r) }))}
             onChange={(r) => void selectRepo(r)}
