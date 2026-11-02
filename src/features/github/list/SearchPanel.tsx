@@ -8,6 +8,7 @@
  * else the value and a reset ✕; Delete / Backspace resets. The popup opens 4px below.
  * As in IntelliJ, closing a chip's popup without choosing resets the chip.
  */
+import { isImeKey } from "@/platform/ime";
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { tx, useTx } from "@/platform/i18n";
 import { Icon, IconButton, Menu, SearchField, showContextMenu, type MenuItem } from "@/ui";
@@ -69,7 +70,7 @@ function SearchTextField({ search, apply }: { search: PrSearchValue; apply: Appl
         onHistory={showHistory}
         clearable={false}
         onKeyDown={(e) => {
-          if (e.key !== "Enter") return;
+          if (e.key !== "Enter" || isImeKey(e.nativeEvent)) return;
           e.preventDefault();
           apply(withQuery(search, text));
         }}

@@ -14,6 +14,7 @@
  *     chosen={current} getKey={(u) => u.id} present={(u) => ({ text: u.login, detail: u.name,
  *     avatarUrl: u.avatarUrl })} onClose={(chosen) => chosen && apply(chosen)} />
  */
+import { isImeKey } from "@/platform/ime";
 import { useMemo, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 import type { Placement } from "@floating-ui/react-dom";
 import {
@@ -145,6 +146,8 @@ export function ChooserPopup<T>(props: ChooserPopupProps<T>) {
     });
   };
   const onKeyDown = (e: KeyboardEvent) => {
+    // Keys that drive an IME candidate window (including the Enter that confirms one) are not list commands.
+    if (isImeKey(e.nativeEvent)) return;
     const next = listNavigate(e.key, { items: rows, active: current, wrap: true, pageSize: 7 });
     if (next !== null && e.key !== "Home" && e.key !== "End") {
       e.preventDefault();
