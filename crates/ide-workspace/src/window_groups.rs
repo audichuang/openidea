@@ -154,6 +154,16 @@ impl PlannedGroup {
     pub fn grouped(&self) -> bool {
         self.projects.len() > 1
     }
+
+    /// Once reopened as a group: `Some(on)` to enter (`true`) or leave (`false`) fullscreen,
+    /// `None` to keep it as it is. `main_fullscreen`: whether `main` is in fullscreen now. The
+    /// saved group decides, also for `main`'s group: `main` reopened in the fullscreen state it
+    /// last recorded, which may be stale or about a project of another group.
+    pub fn fullscreen_change(&self, main_fullscreen: bool) -> Option<bool> {
+        // The other groups open in new windows, never in fullscreen.
+        let now = self.main && main_fullscreen;
+        (self.fullscreen != now).then_some(self.fullscreen)
+    }
 }
 
 /// Which saved groups to reopen and with which projects. Projects that no longer exist (`exists`)
@@ -317,6 +327,22 @@ mod tests {
         let plan = restore_plan(&groups, Some(Path::new("/other")), |_| true);
         assert_eq!(plan.len(), 2);
         assert!(plan.iter().all(|g| !g.main));
+    }
+
+    #[test]
+    fn mains_group_takes_its_saved_fullscreen_not_mains_own() {
+        let group = |fullscreen, main| PlannedGroup { projects: paths(&["/a", "/b"]), selected: 0, fullscreen, main };
+        // `main` reopened windowed (`main-window-fullscreen.json` stale or about another project).
+        assert_eq!(group(true, true).fullscreen_change(false), Some(true));
+        // `main` reopened in fullscreen, but its group was saved out of fullscreen.
+        assert_eq!(group(false, true).fullscreen_change(true), Some(false));
+        assert_eq!(group(true, true).fullscreen_change(true), None);
+        assert_eq!(group(false, true).fullscreen_change(false), None);
+        // The other groups open in new windows, whatever `main` is in.
+        for main_fullscreen in [false, true] {
+            assert_eq!(group(true, false).fullscreen_change(main_fullscreen), Some(true));
+            assert_eq!(group(false, false).fullscreen_change(main_fullscreen), None);
+        }
     }
 
     #[test]
