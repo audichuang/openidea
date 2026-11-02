@@ -161,6 +161,8 @@ pub struct WindowsState {
     launches: Mutex<HashMap<String, Launch>>,
     /// Caret positions asked for on the command line, by canonical file path, until a window takes the file.
     positions: Mutex<HashMap<PathBuf, (u32, u32)>>,
+    /// Project launches taken by a window whose frontend has not settled them yet.
+    opening: Mutex<HashMap<String, PathBuf>>,
     /// Most recently focused window label (menu events go there).
     last_focused: Mutex<Option<String>>,
     /// Set by Quit while windows close one by one.
@@ -187,6 +189,9 @@ impl WindowsState {
                 launch.positions.push(FilePosition { path: file.clone(), line, column });
             }
         }
+        if let Some(project) = launch.project.clone() {
+            self.opening.lock().insert(label.to_owned(), project.into());
+        }
         Some(launch)
     }
 
@@ -207,12 +212,23 @@ impl WindowsState {
         self.launches.lock().get(label).cloned()
     }
 
+    /// The project `label` took a launch for and is still opening.
+    pub(crate) fn opening(&self, label: &str) -> Option<PathBuf> {
+        self.opening.lock().get(label).cloned()
+    }
+
+    /// `label`'s frontend is done with the launch it took, its project opened or not.
+    pub fn launch_settled(&self, label: &str) {
+        self.opening.lock().remove(label);
+    }
+
     pub fn focused(&self, label: &str) {
         *self.last_focused.lock() = Some(label.to_owned());
     }
 
     pub fn forget(&self, label: &str) {
         self.launches.lock().remove(label);
+        self.opening.lock().remove(label);
         let mut last = self.last_focused.lock();
         if last.as_deref() == Some(label) {
             *last = None;
@@ -1774,6 +1790,24 @@ mod tests {
         st.set_launch("project-1", Launch { project: Some("/p".into()), ..Default::default() });
         assert_eq!(st.take_launch("project-1").and_then(|l| l.project), Some("/p".into()));
         assert_eq!(st.take_launch("project-1"), None);
+    }
+
+    // Between taking its launch and opening the project, a window is still opening it.
+    #[test]
+    fn a_taken_project_launch_is_opening_until_settled() {
+        let st = WindowsState::default();
+        st.set_launch("project-1", Launch { project: Some("/p".into()), ..Default::default() });
+        st.set_launch("project-2", Launch { files: vec!["/x/a.txt".into()], ..Default::default() });
+        st.take_launch("project-1");
+        st.take_launch("project-2");
+        assert_eq!(st.opening("project-1"), Some(p("/p")));
+        assert_eq!(st.opening("project-2"), None);
+        st.launch_settled("project-1");
+        assert_eq!(st.opening("project-1"), None);
+        st.set_launch("project-3", Launch { project: Some("/q".into()), ..Default::default() });
+        st.take_launch("project-3");
+        st.forget("project-3");
+        assert_eq!(st.opening("project-3"), None);
     }
 
     #[test]
