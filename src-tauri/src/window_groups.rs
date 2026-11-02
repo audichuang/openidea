@@ -12,7 +12,7 @@ use ide_workspace::window_groups::{PlannedGroup, SavedGroup, WindowGroup, groups
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::{HashSet, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 #[cfg(not(target_os = "macos"))]
 use tauri::WebviewWindow;
@@ -431,30 +431,18 @@ pub async fn persist(app: &AppHandle) -> IdeResult<()> {
     }
     let groups = state.groups.lock().groups().to_vec();
     let host = app.state::<AppState>();
-    let current: Vec<_> = groups
-        .iter()
-        .filter_map(|group| {
-            let projects: Vec<_> = group
-                .members
-                .iter()
-                .filter_map(|label| {
-                    host.project(label)
-                        .ok()
-                        .map(|p| p.root.clone())
-                        .or_else(|| state.pending(label).and_then(|l| l.project).map(Into::into))
-                })
-                .collect();
-            (projects.len() == group.members.len()).then(|| SavedGroup {
-                projects,
-                selected: group.members.iter().position(|l| l == &group.selected).unwrap_or(0),
-                fullscreen: group.members.iter().any(|l| fullscreen.contains(l)),
-            })
-        })
-        .collect();
-    // A restored member may have taken its launch but not finished opening yet.
-    if current.len() != groups.len() {
-        return Ok(());
-    }
+    let current = snapshot(
+        &groups,
+        |label| {
+            host.project(label)
+                .ok()
+                .map(|p| p.root.clone())
+                .or_else(|| state.pending(label).and_then(|l| l.project).map(Into::into))
+                // A restored member may have taken its launch but not finished opening yet.
+                .or_else(|| state.opening(label))
+        },
+        &fullscreen,
+    );
     let restored = state.groups_restore_done.load(Ordering::SeqCst)
         || !host.global_settings.effective().general.reopen_last_project;
     let unrestored = state.groups_unrestored.lock().clone();
@@ -484,6 +472,35 @@ pub async fn persist(app: &AppHandle) -> IdeResult<()> {
         *state.groups_unrestored.lock() = written.split_off(open_count);
     }
     Ok(())
+}
+
+/// The open groups as saved. `resolve`: the project a member window holds or is opening.
+fn snapshot(
+    groups: &[WindowGroup],
+    resolve: impl Fn(&str) -> Option<PathBuf>,
+    fullscreen: &HashSet<String>,
+) -> Vec<SavedGroup> {
+    groups
+        .iter()
+        .filter_map(|group| {
+            // Left out: a member holding no project, its opening failed or was cancelled.
+            let kept: Vec<_> =
+                group.members.iter().enumerate().filter_map(|(i, label)| Some((i, resolve(label)?))).collect();
+            // Fewer than two left: a plain window, as when tabs leave a group.
+            if kept.len() < 2 {
+                return None;
+            }
+            // A dropped shown tab passes to the next one, else the last, as `WindowGroups::detach`.
+            let shown = group.members.iter().position(|l| l == &group.selected).unwrap_or(0);
+            let selected = kept.iter().position(|(i, _)| *i >= shown).unwrap_or(kept.len() - 1);
+            Some(SavedGroup {
+                selected,
+                // Every tab shares the group's Space, the dropped ones too.
+                fullscreen: group.members.iter().any(|l| fullscreen.contains(l)),
+                projects: kept.into_iter().map(|(_, project)| project).collect(),
+            })
+        })
+        .collect()
 }
 
 /// Reopens every saved window group once `main` knows its startup project: the group holding that
@@ -666,5 +683,67 @@ mod tests {
         assert!(state.groups_restore_done.load(Ordering::SeqCst));
         assert_eq!(restore_gate(&state, true), RestoreGate::Decided);
         assert_eq!(restore_gate(&state, false), RestoreGate::Decided);
+    }
+
+    fn group(members: &[&str], selected: &str) -> WindowGroup {
+        WindowGroup { members: members.iter().map(|m| (*m).to_owned()).collect(), selected: selected.to_owned() }
+    }
+
+    fn saved(projects: &[&str], selected: usize, fullscreen: bool) -> SavedGroup {
+        SavedGroup { projects: projects.iter().map(PathBuf::from).collect(), selected, fullscreen }
+    }
+
+    /// Member `x` holds project `/x`, except those in `failed`.
+    fn resolver(failed: &[&str]) -> impl Fn(&str) -> Option<PathBuf> {
+        let failed: Vec<String> = failed.iter().map(|f| (*f).to_owned()).collect();
+        move |label| (!failed.iter().any(|f| f == label)).then(|| PathBuf::from(format!("/{label}")))
+    }
+
+    fn set(labels: &[&str]) -> HashSet<String> {
+        labels.iter().map(|l| (*l).to_owned()).collect()
+    }
+
+    // A member whose project failed to open (or whose trust prompt was cancelled) leaves its group
+    // in the saved state; the rest is still saved, fullscreen included.
+    #[test]
+    fn snapshot_drops_a_member_that_holds_no_project() {
+        let groups = [group(&["a", "b", "c"], "a"), group(&["d", "e"], "e"), group(&["f", "g"], "f")];
+        let current = snapshot(&groups, resolver(&["b", "f"]), &set(&["a", "d"]));
+        // `f`'s group keeps one project: a plain window, not a group.
+        assert_eq!(current, [saved(&["/a", "/c"], 0, true), saved(&["/d", "/e"], 1, true)]);
+    }
+
+    // The shown tab failed: the one after it is shown, as when a tab leaves the group.
+    #[test]
+    fn snapshot_moves_the_selection_off_a_dropped_member() {
+        let groups = [group(&["a", "b", "c"], "b"), group(&["d", "e", "f"], "f")];
+        let current = snapshot(&groups, resolver(&["b", "f"]), &set(&[]));
+        assert_eq!(current, [saved(&["/a", "/c"], 1, false), saved(&["/d", "/e"], 1, false)]);
+    }
+
+    // A member still opening its project (launch pending or taken) stays in its group.
+    #[test]
+    fn snapshot_keeps_a_member_still_opening_its_project() {
+        let groups = [group(&["a", "b"], "b")];
+        let opening = |label: &str| Some(PathBuf::from(format!("/{label}")));
+        assert_eq!(snapshot(&groups, opening, &set(&["b"])), [saved(&["/a", "/b"], 1, true)]);
+    }
+
+    // Before the restore has run, saved groups not reopened yet stay saved, also when a member
+    // that left a group held one of their projects.
+    #[test]
+    fn snapshot_keeps_the_saved_groups_not_reopened_yet() {
+        let groups = [group(&["a", "b"], "a"), group(&["c", "d", "e"], "c")];
+        let current = snapshot(&groups, resolver(&["e"]), &set(&["c"]));
+        let on_disk = vec![saved(&["/x", "/y"], 1, true), saved(&["/e", "/z"], 0, false)];
+        assert_eq!(
+            groups_to_save(current, on_disk),
+            [
+                saved(&["/a", "/b"], 0, false),
+                saved(&["/c", "/d"], 0, true),
+                saved(&["/x", "/y"], 1, true),
+                saved(&["/e", "/z"], 0, false),
+            ]
+        );
     }
 }
