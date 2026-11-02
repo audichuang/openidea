@@ -193,6 +193,7 @@ pub(crate) fn close_project(window: Window) {
     let state = window.state::<AppState>();
     crate::windows::close_auxiliary_windows(window.app_handle(), window.label());
     let _ = crate::window_groups::detach(window.app_handle(), window.label());
+    window.state::<crate::windows::WindowsState>().forget_launch(window.label());
     state.close_project(window.label());
     let app = window.app_handle().clone();
     tauri::async_runtime::spawn(async move {
