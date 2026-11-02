@@ -340,6 +340,12 @@ pub fn in_fullscreen(window: &WebviewWindow) -> bool {
     ns_window(window).is_some_and(|n| in_fullscreen_space(unsafe { &*n }))
 }
 
+/// Which of `windows` are in a fullscreen Space (see [`in_fullscreen`]), from any thread.
+pub fn in_fullscreen_any_thread(app: &AppHandle, windows: Vec<WebviewWindow>) -> Vec<bool> {
+    let count = windows.len();
+    on_main(app, move |_| windows.iter().map(in_fullscreen).collect()).unwrap_or_else(|_| vec![false; count])
+}
+
 /// The standard title bar height for `window`'s style, without a tab bar.
 pub unsafe fn titlebar_height(window: &NSWindow, mtm: MainThreadMarker) -> f64 {
     let content = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(100.0, 100.0));
