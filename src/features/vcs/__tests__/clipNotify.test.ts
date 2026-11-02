@@ -23,6 +23,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
   };
 });
 
+import { IpcError } from "@/platform/ipc";
 import { copyClip, pasteClip } from "../clip";
 
 describe("ClipCode notifications use their own group", () => {
@@ -45,5 +46,13 @@ describe("ClipCode notifications use their own group", () => {
       expect.objectContaining({ group: "clipcode", level: "warning", title: "ClipCode copy failed" }),
     );
     expect(notify.mock.calls.every(([n]) => (n as { group: string }).group === "clipcode")).toBe(true);
+  });
+
+  it("reports a commit without net changes as information, not a failure", async () => {
+    const message = "Selected commit introduces no net file changes. Clipboard unchanged.";
+    call.mockRejectedValue(new IpcError({ kind: "invalidInput", message, data: { type: "noNetChanges" } }));
+    await expect(copyClip({ kind: "commitFiles", repo: "/p", rev: "a", paths: [] })).resolves.toBe(false);
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith({ group: "clipcode", level: "info", title: message });
   });
 });
