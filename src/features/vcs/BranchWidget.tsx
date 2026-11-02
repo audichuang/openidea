@@ -39,6 +39,7 @@ import {
 import { currentRepo, focusRepo, loadBranches, repoName, useVcs } from "./store";
 import styles from "./BranchWidget.module.css";
 import { tx } from "@/platform/i18n";
+import { isImeKey } from "@/platform/ime";
 
 export const useBranchesPopup = create<{ open: boolean }>(() => ({ open: false }));
 export const showBranchesPopup = () => useBranchesPopup.setState({ open: true });
@@ -399,6 +400,8 @@ function BranchesPanel({ onClose, actions: baseActions, root, fallback, onBack }
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
+    // Keys that drive an IME candidate window (including the Enter that confirms one) are not list commands.
+    if (isImeKey(e.nativeEvent)) return;
     if (isNewBranchStroke(strokeOf(e))) {
       e.preventDefault();
       run("vcs.newBranch");
@@ -652,6 +655,8 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
+    // Keys that drive an IME candidate window (including the Enter that confirms one) are not list commands.
+    if (isImeKey(e.nativeEvent)) return;
     if (isNewBranchStroke(strokeOf(e))) {
       e.preventDefault();
       onClose();
