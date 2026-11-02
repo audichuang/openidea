@@ -25,6 +25,8 @@ mod state;
 mod theme_frame;
 #[cfg(target_os = "macos")]
 mod titlebar;
+#[cfg(any(target_os = "macos", test))]
+mod window_frames;
 mod window_groups;
 #[cfg(any(windows, test))]
 mod window_work_area;
@@ -106,6 +108,9 @@ pub fn run() {
             .map_label(windows::state_key)
             .build(),
     );
+    // After window-state, so it rewrites the sizes window-state saved at exit.
+    #[cfg(target_os = "macos")]
+    let app = app.plugin(window_frames::plugin());
     let app = app
         // Inert until an endpoint is configured (see `commands::window::app_check_update`).
         .plugin(tauri_plugin_updater::Builder::new().build());
