@@ -906,8 +906,12 @@ pub async fn clip_paste_apply(host: &Host, window: &str, apply: ClipPasteApply) 
     host.require_trust(window)?;
     let project = host.project(window)?;
     let (result, written) = blocking(move || paste_apply_with_paths(apply)).await?;
-    // The user confirmed the overwrite: open editors show the restored content, not their unsaved buffer.
-    project.documents.reload_from_disk(&written);
+    // The user confirmed the overwrite: open editors in every project and window show the restored
+    // content, not their unsaved buffer (a stale one could save over it). Projects that do not have
+    // a path open skip it.
+    for open in host.projects() {
+        open.documents.reload_from_disk(&written);
+    }
     project.sink.emit(ide_core::IdeEvent::VcsChanged { root: project.root.clone().into() });
     Ok(result)
 }
