@@ -644,7 +644,7 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
             value={remote ?? ""}
             aria-label="Remote"
             onChange={setRemote}
-            options={remotes.map((r) => ({ value: r, label: r }))}
+            options={remotes.map((r) => ({ value: r, label: r, literal: true }))}
           />
         )}
         {head && (
