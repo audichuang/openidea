@@ -5,13 +5,14 @@ const call = vi.fn();
 const copyText = vi.fn(async (_text: string) => undefined);
 const readClipboardText = vi.fn(async () => "");
 let activePath: string | null = null;
+let openPaths: string[] = [];
 
 vi.mock("@/workbench/contributions", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/workbench/contributions")>();
   return {
     ...real,
     notifications: () => ({ notify: (n: unknown) => notify(n) }),
-    editorService: () => ({ activePath: () => activePath }),
+    editorService: () => ({ activePath: () => activePath, openPaths: () => openPaths }),
   };
 });
 
@@ -135,5 +136,40 @@ describe("ClipCode: Paste and Restore Files destination", () => {
     await vi.waitFor(() => expect(call).toHaveBeenCalled());
     expect(call).toHaveBeenCalledWith({ preview: expect.arrayContaining(["/m", "/m/other"]) });
     expect(call).not.toHaveBeenCalledWith({ preview: expect.arrayContaining(["/m/repo/src"]) });
+  });
+});
+
+describe("ClipCode: Copy to Clipboard from a non-filesystem editor", () => {
+  let unregister: () => void;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    call.mockResolvedValue({
+      text: "x",
+      mode: "files",
+      files: 1,
+      chars: 1,
+      lines: 1,
+      words: 1,
+      tokens: 1,
+      notify: false,
+    });
+    unregister = registerClipActions();
+  });
+  afterEach(() => unregister());
+
+  it("says no files selected instead of copying a virtual document path", async () => {
+    activePath = "jdt://contents/rt.jar/java.lang/String.class";
+    await executeAction("clip.copyFiles");
+    expect(call).not.toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({ group: "clipcode", level: "info", title: "No files selected." }),
+    );
+  });
+
+  it("copies only filesystem paths among the open tabs", async () => {
+    openPaths = ["/p/a.txt", "jdt://contents/String.class"];
+    await executeAction("clip.copyOpenTabs");
+    expect(call).toHaveBeenCalledWith({ source: { kind: "files", paths: ["/p/a.txt"] } });
+    openPaths = [];
   });
 });
