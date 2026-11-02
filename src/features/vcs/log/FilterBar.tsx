@@ -5,6 +5,7 @@ import { Icon, IconButton, SearchField, type MenuItem } from "@/ui";
 import clsx from "clsx";
 import { useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { BranchFilterPopup } from "../BranchFilterPopup";
+import { RepositoryFilterPopup } from "../RepositoryFilterPopup";
 import { chooseDateRange, chooseMany } from "../dialogs";
 import styles from "../GitLog.module.css";
 import { LogIdContext } from "../logContext";
@@ -117,6 +118,7 @@ export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
   const [text, setText] = useState(filters.text);
   const [branchAnchor, setBranchAnchor] = useState<HTMLElement | null>(null);
   const [menuBelow, dropdown] = useDropdownMenu();
+  const [repoAnchor, setRepoAnchor] = useState<HTMLElement | null>(null);
   // Filters that do not fit move behind a chevron, like a toolbar's overflow.
   const groupRef = useRef<HTMLSpanElement>(null);
   const [hiddenFrom, setHiddenFrom] = useState(Infinity);
@@ -303,6 +305,16 @@ export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
   };
 
   const logFilters: LogFilter[] = [
+    ...(repositories.length > 1
+      ? [
+          {
+            label: "Repository",
+            value: filters.repositories?.map(repoName).join(", ") || null,
+            onOpen: setRepoAnchor,
+            onClear: () => setLogFilters({ repositories: [] }),
+          },
+        ]
+      : []),
     {
       label: "Branch",
       value: filters.range || filters.branches.join(", ") || null,
@@ -383,6 +395,15 @@ export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
         )}
       </div>
       {dropdown}
+      {repoAnchor && (
+        <RepositoryFilterPopup
+          anchor={repoAnchor}
+          repositories={repositories}
+          selected={filters.repositories ?? []}
+          onClose={() => setRepoAnchor(null)}
+          onSelect={(repo) => setLogFilters({ repositories: toggleRepository(filters.repositories, repo) })}
+        />
+      )}
       {branchAnchor && (
         <BranchFilterPopup
           anchor={branchAnchor}
