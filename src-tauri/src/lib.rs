@@ -223,6 +223,12 @@ pub fn run() {
         #[cfg(not(target_os = "macos"))]
         let _ = &early_opens;
         if let tauri::RunEvent::Exit = event {
+            // Quitting from the Dock or the system terminates without `app_quit`, which otherwise
+            // saved these before closing any window.
+            #[cfg(target_os = "macos")]
+            if app.try_state::<WindowsState>().is_some_and(|w| !w.quitting()) {
+                window_groups::save_before_quit(app);
+            }
             if let Some(state) = app.try_state::<AppState>() {
                 state.host.clear_workspace_edit_history_on_exit();
                 state.host.shutdown_notebooks_on_exit();
