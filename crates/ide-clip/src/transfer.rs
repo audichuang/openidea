@@ -423,11 +423,15 @@ impl SourceFreshnessSnapshot {
                     }
                 }
                 SourceKind::Range { base, tip } => {
-                    for rev in [base, tip] {
+                    for (i, rev) in [base, tip].into_iter().enumerate() {
                         let key = (item.root.clone(), rev.clone());
                         if let std::collections::hash_map::Entry::Vacant(e) = frozen_commits.entry(key) {
                             let git = Git::open_with(item.root.path(), &opts)?;
-                            let oid = git.resolve_commit_with(rev, &opts)?;
+                            let oid = if i == 0 {
+                                git.resolve_range_base_with(rev, &opts)?
+                            } else {
+                                git.resolve_commit_with(rev, &opts)?
+                            };
                             e.insert(oid);
                         }
                     }
@@ -1772,13 +1776,17 @@ pub fn plan_export_with(
                 }
             }
             SourceKind::Range { base, tip } => {
-                for rev in [base, tip] {
+                for (i, rev) in [base, tip].into_iter().enumerate() {
                     let key = (item.root.clone(), rev.clone());
                     if let std::collections::hash_map::Entry::Vacant(e) = frozen_commits.entry(key) {
                         let git = gits
                             .get(&item.root)
                             .ok_or_else(|| TransferError::UnknownRoot(item.root.path().to_path_buf()))?;
-                        let oid = git.resolve_commit_with(rev, opts)?;
+                        let oid = if i == 0 {
+                            git.resolve_range_base_with(rev, opts)?
+                        } else {
+                            git.resolve_commit_with(rev, opts)?
+                        };
                         e.insert(oid);
                     }
                 }
