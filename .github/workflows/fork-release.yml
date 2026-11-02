@@ -69,8 +69,10 @@ jobs:
         with: { node-version: 22, cache: pnpm }
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: "${{ env.TARGET }}" }
+      # Why no save: a tag-scoped cache is readable only by that tag's own reruns, and 1 GB each
+      # pushes develop's CI caches out of the repo's 10 GB.
       - uses: Swatinem/rust-cache@v2
-        with: { key: "fork-${{ env.TARGET }}" }
+        with: { key: "fork-${{ env.TARGET }}", save-if: false }
       - run: pnpm install --frozen-lockfile
 
       # tauri reads the notarization key from a file path.
