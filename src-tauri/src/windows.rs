@@ -451,8 +451,8 @@ pub fn continue_quit(app: &AppHandle, closed: Option<&str>) {
 pub fn find_project_window(app: &AppHandle, root: &Path) -> Option<WebviewWindow> {
     let state = app.try_state::<AppState>()?;
     app.webview_windows().into_iter().filter(|(label, _)| auxiliary_parent(label).is_none()).find_map(|(label, w)| {
-        let project = state.project(&label).ok()?;
-        (project.root == root && !project.light).then_some(w)
+        let project = state.opened_project(&label)?;
+        (project.root == root).then_some(w)
     })
 }
 
