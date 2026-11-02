@@ -1051,7 +1051,7 @@ export function StashesPanel() {
             searchable
             value={repo}
             onChange={(root) => void selectRepo(root)}
-            options={repos.map((root) => ({ value: root, label: repoName(root) }))}
+            options={repos.map((root) => ({ value: root, label: repoName(root), literal: true }))}
           />
         )}
         <IconButton icon="refresh" title="Refresh" size="small" onClick={() => setTick((n) => n + 1)} />
