@@ -1244,7 +1244,8 @@ pub(crate) fn workspace_member_roots(root: &Path) -> Vec<PathBuf> {
 fn content_roots(settings: &ide_core::settings::Settings, root: &Path, build_cache: &Path) -> Vec<PathBuf> {
     if let Ok(Some(workspace)) = ide_workspace::workspace::Workspace::load(root) {
         if workspace.is_container(root) {
-            return workspace.projects;
+            // A member whose folder was deleted, renamed or unmounted stays in the manifest but is not content.
+        return workspace.projects.into_iter().filter(|p| p.is_dir()).collect();
         }
         let mut roots = workspace.projects.into_iter().filter(|p| !p.starts_with(root)).collect::<Vec<_>>();
         for path in extra_content_roots(settings, root, build_cache) {
