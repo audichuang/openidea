@@ -343,6 +343,19 @@ pub fn group_in_fullscreen_transition(window: &WebviewWindow) -> bool {
     })
 }
 
+/// The labels of the other windows in `window`'s tab group. Main thread only.
+pub fn tab_mates(app: &AppHandle, window: &WebviewWindow) -> Vec<String> {
+    let Some(native) = ns_window(window) else { return Vec::new() };
+    let Some(group) = (unsafe { &*native }).tabGroup() else { return Vec::new() };
+    let tabs = group.windows();
+    app.webview_windows()
+        .into_values()
+        .filter(|w| w.label() != window.label())
+        .filter(|w| ns_window(w).is_some_and(|n| tabs.iter().any(|t| std::ptr::eq(&*t, n))))
+        .map(|w| w.label().to_owned())
+        .collect()
+}
+
 /// Whether `window` is in a fullscreen Space, itself or as a tab of a fullscreen group. Main
 /// thread only.
 pub fn in_fullscreen(window: &WebviewWindow) -> bool {
