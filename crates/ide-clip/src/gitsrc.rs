@@ -1361,9 +1361,8 @@ pub fn collect_payload_with_selection<P: AsRef<Path>>(
             fallback = true;
         }
         let size = content.len();
-        // graphCopy pushes a deleted file's old body before any size check.
-        let deleted_on_graph = graph && file.change_type == Some(ChangeType::Deleted);
-        if !deleted_on_graph && size as f64 > settings.max_file_size_kb * 1024.0 {
+        // A deleted file's old body is sized like any other, as in ClipCode and graphCopy.
+        if size as f64 > settings.max_file_size_kb * 1024.0 {
             skipped_size += 1;
             files.push(PayloadFile {
                 path,
@@ -2336,15 +2335,28 @@ mod tests {
     }
 
     #[test]
-    fn payload_graph_deleted_file_skips_the_size_limit() {
+    fn payload_graph_deleted_file_obeys_the_size_limit() {
         let r = Repo::new();
         r.write("big.txt", "x".repeat(4096).as_bytes());
+        r.write("small.txt", b"s\n");
         r.commit("init");
-        r.git(&["rm", "-q", "big.txt"]);
+        r.git(&["rm", "-q", "big.txt", "small.txt"]);
         let sha = r.commit("drop");
-        let tiny = Settings { max_file_size_kb: 1.0, ..Settings::default() };
-        let got = payload(&r, GitSource::Commit(sha), &tiny);
-        assert_eq!((got.copied_file_count, got.skipped_file_size_count), (1, 0));
+        // As ClipCode and graphCopy: the old body is sized like any other, and the
+        // placeholder does not count toward the file limit.
+        let tiny =
+            Settings { max_file_size_kb: 1.0, set_max_file_count: true, file_count_limit: 1.0, ..Settings::default() };
+        for source in [GitSource::Commit(sha.clone()), GitSource::Range(format!("{sha}~1"), sha.clone())] {
+            let got = payload(&r, source.clone(), &tiny);
+            assert_eq!((got.copied_file_count, got.skipped_file_size_count), (1, 1), "{source:?}");
+            assert!(!got.file_limit_reached, "{source:?}");
+            assert!(
+                got.payload.contains("// file: [DELETED] big.txt\n// File skipped: size exceeds limit (4096 bytes)\n"),
+                "{source:?}: {}",
+                got.payload
+            );
+            assert!(!got.payload.contains("xxxx"), "{source:?}");
+        }
     }
 
     #[test]
