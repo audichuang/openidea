@@ -2256,49 +2256,64 @@ fn test_budget_oversize_skip_notices_counted_before_allocation() {
 }
 
 // ---------------------------------------------------------------------------
-// 32. Deleted old content bypasses per-file limit subject to total cap
+// 32. Deleted old content obeys the per-file limit, and the total cap
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_deleted_old_content_bypasses_per_file_limit_subject_to_total_cap() {
+fn test_deleted_old_content_obeys_per_file_limit_and_total_cap() {
     let repo = TestRepo::new("deleted-cap");
     repo.write("huge_deleted.txt", &"D".repeat(5000));
-    let _ = repo.commit("add huge");
-    repo.git(&["rm", "huge_deleted.txt"]);
+    repo.write("small_deleted.txt", "s\n");
+    let add_commit = repo.commit("add huge");
+    repo.git(&["rm", "huge_deleted.txt", "small_deleted.txt"]);
     let del_commit = repo.commit("delete huge");
 
-    let settings = Settings {
-        max_file_size_kb: 1.0, // 1 KB per-file limit
-        ..Settings::default()
+    let item = |path: &str, source: SourceKind| ExportItem {
+        root: repo.canonical_id(),
+        relative_path: path.to_string(),
+        source,
+        change_type: Some(ChangeType::Deleted),
+        gitlink: false,
     };
+    let sources = [
+        SourceKind::Commit { rev: del_commit.clone() },
+        SourceKind::Range { base: add_commit.clone(), tip: del_commit.clone() },
+    ];
+    for source in sources {
+        let selection = ExportSelection::new(
+            vec![repo.path().to_path_buf()],
+            Some(repo.path().to_path_buf()),
+            vec![item("huge_deleted.txt", source.clone()), item("small_deleted.txt", source.clone())],
+        )
+        .unwrap();
 
-    let selection = ExportSelection::new(
-        vec![repo.path().to_path_buf()],
-        Some(repo.path().to_path_buf()),
-        vec![ExportItem {
-            root: repo.canonical_id(),
-            relative_path: "huge_deleted.txt".to_string(),
-            source: SourceKind::Commit { rev: del_commit },
-            change_type: Some(ChangeType::Deleted),
-            gitlink: false,
-        }],
-    )
-    .unwrap();
+        // 1. As ClipCode: a 1 KB per-file limit turns the 5000-byte old body into a
+        //    size placeholder that does not count toward the file limit.
+        let settings =
+            Settings { max_file_size_kb: 1.0, set_max_file_count: true, file_count_limit: 1.0, ..Settings::default() };
+        let plan = plan_export(&selection, &settings, None).unwrap();
+        assert_eq!(plan.files.len(), 2, "{source:?}");
+        assert_eq!(plan.files[0].content, None, "{source:?}");
+        assert_eq!(plan.files[0].skipped_reason.as_deref(), Some("size exceeds limit (5000 bytes)"), "{source:?}");
+        assert_eq!((plan.copied_file_count, plan.skipped_file_size_count), (1, 1), "{source:?}");
+        assert!(!plan.file_limit_reached, "{source:?}");
+        assert!(
+            plan.payload
+                .contains("// file: [DELETED] huge_deleted.txt\n// File skipped: size exceeds limit (5000 bytes)\n"),
+            "{source:?}: {}",
+            plan.payload
+        );
 
-    // 1. Without total budget, deleted old content bypasses the 1 KB per-file limit (accepted contract)
-    let plan = plan_export(&selection, &settings, None).unwrap();
-    assert_eq!(plan.files.len(), 1);
-    assert!(plan.files[0].content.as_ref().unwrap().len() >= 5000);
-    assert_eq!(plan.skipped_file_size_count, 0);
-
-    // 2. But subject to NEW total budget cap: budget of 2000 bytes rejects the 5000-byte deleted content!
-    let err = plan_export(&selection, &settings, Some(2000)).unwrap_err();
-    match err {
-        TransferError::PayloadLimitExceeded { limit, actual, .. } => {
-            assert_eq!(limit, 2000);
-            assert!(actual >= 5000);
+        // 2. Within the per-file limit, the total budget still rejects it.
+        let roomy = Settings { max_file_size_kb: 10.0, ..Settings::default() };
+        let err = plan_export(&selection, &roomy, Some(2000)).unwrap_err();
+        match err {
+            TransferError::PayloadLimitExceeded { limit, actual, .. } => {
+                assert_eq!(limit, 2000);
+                assert!(actual >= 5000);
+            }
+            other => panic!("expected PayloadLimitExceeded, got: {other:?}"),
         }
-        other => panic!("expected PayloadLimitExceeded, got: {other:?}"),
     }
 }
 
