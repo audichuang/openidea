@@ -250,6 +250,7 @@ pub fn run() {
                 w.forget(window.label());
             }
             if windows::auxiliary_parent(window.label()).is_none() {
+                windows::hand_over_session(window.app_handle(), Some(window.label()));
                 windows::continue_quit(window.app_handle(), Some(window.label()));
             }
         }
