@@ -123,6 +123,13 @@ pub fn window_take_launch(window: WebviewWindow, windows: State<'_, WindowsState
     windows.take_launch(window.label())
 }
 
+/// This window is done with the launch it took: its project opened, failed to, or was cancelled.
+#[tauri::command]
+#[specta::specta]
+pub fn window_launch_settled(window: WebviewWindow, windows: State<'_, WindowsState>) {
+    windows.launch_settled(window.label());
+}
+
 #[derive(Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenProject {
