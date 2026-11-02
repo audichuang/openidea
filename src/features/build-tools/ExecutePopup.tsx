@@ -38,10 +38,12 @@ function ExecutePopup({ tool }: { tool: BuildTool }) {
     () =>
       tool === "maven"
         ? (maven?.projects ?? []).map((p) => ({ value: p.pom, label: p.displayName, detail: p.dir || "." }))
-        : (gradle ?? []).flatMap((build) =>
+        : // Gradle names projects after their folders unless settings rename them.
+          (gradle ?? []).flatMap((build) =>
             build.projects.map((p) => ({
               value: gradleProjectKey(build, p),
               label: p.name,
+              literal: true,
               detail: `${build.dir || "."} ${p.path}`,
             })),
           ),
