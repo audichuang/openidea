@@ -222,7 +222,7 @@ pub struct ExportSelection {
     /// do not reuse spelled_root (that is the root's own spelling and feeds only the File branch).
     pub filter_root: Option<PathBuf>,
     /// Roots whose files are spelled with their absolute path in the payload
-    /// (files outside the project that no repository covers).
+    /// (files under none of the project's roots, repository files included).
     pub absolute_roots: Vec<CanonicalRootId>,
     /// The opened project the payload paths are relative to (ClipCode's
     /// `ClipboardPathResolver.fromProject`), when it is not itself one of
