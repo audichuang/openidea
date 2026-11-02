@@ -223,7 +223,7 @@ export async function consumeLaunch(): Promise<void> {
     try {
       opened = await openHere(launch.project);
     } finally {
-      // Until now its window group saves this project for it; opened, the window holds it.
+      // Opened, the window holds it; otherwise its window group keeps saving it, retried next launch.
       await commands.windowLaunchSettled().catch(() => {});
     }
     if (opened) await openInEditor(files, positions);
