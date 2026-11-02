@@ -20,7 +20,12 @@ pub struct IdeError {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ErrorData {
-    Tool { tool: String, missing: bool },
+    Tool {
+        tool: String,
+        missing: bool,
+    },
+    /// A commit copy found nothing to copy: the selection changes no files.
+    NoNetChanges,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -50,6 +55,14 @@ impl IdeError {
             self.data = Some(ErrorData::Tool { tool: tool.into(), missing: false });
         }
         self
+    }
+    /// A commit copy with no net file changes (the UI shows an info notice, not a failure).
+    pub fn no_net_changes() -> Self {
+        Self {
+            kind: ErrorKind::InvalidInput,
+            message: "Selected commit introduces no net file changes. Clipboard unchanged.".into(),
+            data: Some(ErrorData::NoNetChanges),
+        }
     }
     pub fn missing_tool(tool: impl Into<String>) -> Self {
         let tool = tool.into();

@@ -61,6 +61,12 @@ pub enum ClipCopySource {
     CommitFiles { repo: PathBuf, rev: String, paths: Vec<PathBuf> },
     /// The files changed between two revisions (`base`..`tip` endpoints), at `tip`.
     Range { repo: PathBuf, base: String, tip: String, paths: Vec<PathBuf> },
+    /// The files changed between a root commit's empty base and `tip`, at `tip`
+    /// (a range whose oldest commit has no parent).
+    RootRange { repo: PathBuf, tip: String, paths: Vec<PathBuf> },
+    /// The union of the files each of `revs` (newest first) changed, each read as of
+    /// the newest listed commit that touches it (`[DELETED]` when deleted there).
+    CommitList { repo: PathBuf, revs: Vec<String>, paths: Vec<PathBuf> },
     /// Commits for replay: `selected` must be one first-parent chain ending at `tip`.
     Commits { repo: PathBuf, tip: String, selected: Vec<String> },
     /// The first-parent commits of `base`..`tip`, for replay (a pull request's commits).
@@ -269,12 +275,51 @@ pub fn copy(project: &Path, source: ClipCopySource, settings: &Settings) -> IdeR
         }
         ClipCopySource::CommitFiles { repo, rev, paths } => {
             let root = repo_root(&repo)?;
+            let no_filter = paths.is_empty();
             let (items, skipped) = git_items(&[(root.clone(), paths)], || GitSource::Commit(rev.clone()))?;
+            if items.is_empty() && no_filter {
+                return Err(IdeError::no_net_changes());
+            }
             file_copy(selection(items, Some(root))?, skipped, settings)
         }
         ClipCopySource::Range { repo, base, tip, paths } => {
             let root = repo_root(&repo)?;
+            let no_filter = paths.is_empty();
             let (items, skipped) = git_items(&[(root.clone(), paths)], || GitSource::Range(base.clone(), tip.clone()))?;
+            if items.is_empty() && no_filter {
+                return Err(IdeError::no_net_changes());
+            }
+            file_copy(selection(items, Some(root))?, skipped, settings)
+        }
+        ClipCopySource::RootRange { repo, tip, paths } => {
+            let root = repo_root(&repo)?;
+            let no_filter = paths.is_empty();
+            let empty = Git::open(&root).map_err(err)?.empty_tree_with(&opts).map_err(err)?;
+            let (items, skipped) =
+                git_items(&[(root.clone(), paths)], || GitSource::Range(empty.clone(), tip.clone()))?;
+            if items.is_empty() && no_filter {
+                return Err(IdeError::no_net_changes());
+            }
+            file_copy(selection(items, Some(root))?, skipped, settings)
+        }
+        ClipCopySource::CommitList { repo, revs, paths } => {
+            let root = repo_root(&repo)?;
+            let no_filter = paths.is_empty();
+            let mut items: Vec<ExportItem> = Vec::new();
+            let mut skipped = 0;
+            // Newest first: a path keeps the item of the newest selected commit touching it.
+            for rev in &revs {
+                let (found, s) = git_items(&[(root.clone(), paths.clone())], || GitSource::Commit(rev.clone()))?;
+                skipped += s;
+                for item in found {
+                    if !items.iter().any(|i| i.relative_path == item.relative_path) {
+                        items.push(item);
+                    }
+                }
+            }
+            if items.is_empty() && no_filter {
+                return Err(IdeError::no_net_changes());
+            }
             file_copy(selection(items, Some(root))?, skipped, settings)
         }
         ClipCopySource::Commits { repo, tip, selected } => {
@@ -948,6 +993,70 @@ mod tests {
         let commits =
             copy(&a, ClipCopySource::CommitRange { repo: a.clone(), base, tip }, &Settings::default()).unwrap();
         assert_eq!(commits.commits, 1);
+    }
+
+    fn commit_file(dir: &Path, name: &str, body: Option<&str>, msg: &str) -> String {
+        match body {
+            Some(b) => fs::write(dir.join(name), b).unwrap(),
+            None => fs::remove_file(dir.join(name)).unwrap(),
+        }
+        git(dir, &["add", "-A"]);
+        git(dir, &["commit", "-q", "-m", msg]);
+        git(dir, &["rev-parse", "HEAD"])
+    }
+
+    #[test]
+    fn a_commit_list_copies_only_the_selected_commits_files_at_the_newest_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = repo(&tmp.path().join("a"));
+        let c1 = commit_file(&a, "one.txt", Some("1\n"), "one");
+        commit_file(&a, "between.txt", Some("skipped\n"), "between");
+        let c3 = commit_file(&a, "one.txt", Some("1 changed\n"), "three");
+        commit_file(&a, "gone.txt", Some("g\n"), "add gone");
+        let c5 = commit_file(&a, "gone.txt", None, "remove gone");
+        let c6 = commit_file(&a, "six.txt", Some("6\n"), "six");
+
+        // c1, c3, c5, c6 are not one chain: `between.txt` and the "add gone" commit sit between them.
+        let out = copy(
+            &a,
+            ClipCopySource::CommitList { repo: a.clone(), revs: vec![c6, c5, c3, c1], paths: vec![] },
+            &Settings::default(),
+        )
+        .unwrap();
+        assert!(!out.text.contains("between.txt"), "{}", out.text);
+        assert!(out.text.contains("six.txt"), "{}", out.text);
+        // one.txt appears once, with the newest selected commit's content.
+        assert_eq!(out.text.matches("] one.txt").count(), 1, "{}", out.text);
+        assert!(out.text.contains("1 changed"), "{}", out.text);
+        assert!(out.text.contains("[DELETED] gone.txt"), "{}", out.text);
+        assert_eq!(out.files, 3);
+    }
+
+    #[test]
+    fn a_root_range_copies_everything_from_the_root_commit_through_the_tip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = repo(&tmp.path().join("a"));
+        let root = git(&a, &["rev-parse", "HEAD"]);
+        assert!(git(&a, &["rev-list", "--parents", "-n1", &root]).split(' ').count() == 1);
+        let tip = commit_file(&a, "two.txt", Some("2\n"), "two");
+        let out =
+            copy(&a, ClipCopySource::RootRange { repo: a.clone(), tip, paths: vec![] }, &Settings::default()).unwrap();
+        assert!(out.text.contains("README.md"), "{}", out.text);
+        assert!(out.text.contains("two.txt"), "{}", out.text);
+        assert_eq!(out.files, 2);
+    }
+
+    #[test]
+    fn a_commit_without_net_changes_is_a_typed_no_net_changes_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = repo(&tmp.path().join("a"));
+        git(&a, &["commit", "-q", "--allow-empty", "-m", "empty"]);
+        let tip = git(&a, &["rev-parse", "HEAD"]);
+        let e =
+            copy(&a, ClipCopySource::CommitFiles { repo: a.clone(), rev: tip, paths: vec![] }, &Settings::default())
+                .unwrap_err();
+        assert_eq!(e.data, Some(ide_core::error::ErrorData::NoNetChanges));
+        assert_eq!(e.message, "Selected commit introduces no net file changes. Clipboard unchanged.");
     }
 
     #[test]
