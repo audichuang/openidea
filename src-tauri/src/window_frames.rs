@@ -49,6 +49,31 @@ pub fn fallback(
     mates.into_iter().next().or_else(default)
 }
 
+/// The frame to give a window that has just been created with `live` (after window-state restored
+/// it), when its label already has `known`. window-state keeps a closed window's state in memory and
+/// updates it on close, so a label reused in the same launch (a closed project-N, settings) is
+/// restored to the frame it had when closed, the screen if it was fullscreen; the normal frame kept
+/// here wins. A window window-state zoomed or made fullscreen keeps that. Like window-state, the
+/// position is only applied when the frame is on one of `monitors`.
+pub fn reapply(
+    known: Option<Frame>,
+    live: Frame,
+    mode: Mode,
+    monitors: impl IntoIterator<Item = Frame>,
+) -> Option<Frame> {
+    let known = known.filter(|known| *known != live)?;
+    if mode.fullscreen || mode.transition || mode.minimized || mode.maximized {
+        return None;
+    }
+    let overlaps = |m: &Frame| {
+        let (left, top) = (i64::from(known.x), i64::from(known.y));
+        let (right, bottom) = (left + i64::from(known.width), top + i64::from(known.height));
+        let (m_left, m_top) = (i64::from(m.x), i64::from(m.y));
+        left < m_left + i64::from(m.width) && m_left < right && top < m_top + i64::from(m.height) && m_top < bottom
+    };
+    if monitors.into_iter().any(|m| overlaps(&m)) { Some(known) } else { Some(Frame { x: live.x, y: live.y, ..known }) }
+}
+
 /// A `width`×`height` frame centred in `area`, no larger than it.
 pub fn centred(width: u32, height: u32, area: Frame) -> Frame {
     let (width, height) = (width.min(area.width), height.min(area.height));
@@ -160,6 +185,28 @@ mod runtime {
         Some(centred(size.width, size.height, area))
     }
 
+    /// Main thread, right after window-state restored `window` (it is registered first): see
+    /// [`reapply`]. Called from window-ready, before the webview is attached, so it works on the
+    /// `Window`; the window is not in a fullscreen Space or a tab group yet.
+    fn restore(app: &AppHandle, window: &tauri::Window) {
+        let Some(known) = app.state::<Frames>().0.lock().get(key(window.label())).copied() else { return };
+        let (Ok(size), Ok(position)) = (window.inner_size(), window.outer_position()) else { return };
+        let live = Frame { x: position.x, y: position.y, width: size.width, height: size.height };
+        let mode = Mode {
+            fullscreen: window.is_fullscreen().unwrap_or(true),
+            transition: false,
+            minimized: window.is_minimized().unwrap_or(true),
+            maximized: window.is_maximized().unwrap_or(true),
+        };
+        let monitors = window.available_monitors().unwrap_or_default().into_iter().map(|m| {
+            let (position, size) = (m.position(), m.size());
+            Frame { x: position.x, y: position.y, width: size.width, height: size.height }
+        });
+        let Some(frame) = reapply(Some(known), live, mode, monitors) else { return };
+        let _ = window.set_size(tauri::PhysicalSize::new(frame.width, frame.height));
+        let _ = window.set_position(tauri::PhysicalPosition::new(frame.x, frame.y));
+    }
+
     /// After window-state has saved its file at exit (it is registered first).
     fn persist(app: &AppHandle) {
         let Some(path) = path(app) else { return };
@@ -186,6 +233,7 @@ mod runtime {
             .on_window_ready(|window| {
                 let app = window.app_handle().clone();
                 let label = window.label().to_owned();
+                restore(&app, &window);
                 window.on_window_event(move |event| match event {
                     WindowEvent::Moved(_) | WindowEvent::Resized(_) => sample(&app, &label, false),
                     WindowEvent::CloseRequested { .. } => sample(&app, &label, true),
@@ -239,6 +287,32 @@ mod tests {
         // window-state does not save the frame of a minimized or zoomed window.
         assert_eq!(fallback(Mode { minimized: true, ..Default::default() }, [mate], || Some(NORMAL)), None);
         assert_eq!(fallback(Mode { maximized: true, ..Default::default() }, [mate], || Some(NORMAL)), None);
+    }
+
+    #[test]
+    fn a_reused_label_gets_its_normal_frame_back_over_window_states_stale_one() {
+        let display = [Frame { x: 0, y: 0, width: 3024, height: 1964 }];
+        // Closed in fullscreen, reopened: window-state restored the screen frame.
+        assert_eq!(reapply(Some(NORMAL), SCREEN, Mode::default(), display), Some(NORMAL));
+        // Nothing to fix: no frame yet, or window-state restored the same one (first window of a launch).
+        assert_eq!(reapply(None, SCREEN, Mode::default(), display), None);
+        assert_eq!(reapply(Some(NORMAL), NORMAL, Mode::default(), display), None);
+        // window-state zoomed it, or it is already fullscreen / minimized / changing Space.
+        for mode in [
+            Mode { maximized: true, ..Default::default() },
+            Mode { fullscreen: true, ..Default::default() },
+            Mode { transition: true, ..Default::default() },
+            Mode { minimized: true, ..Default::default() },
+        ] {
+            assert_eq!(reapply(Some(NORMAL), SCREEN, mode, display), None);
+        }
+        // Its display is gone: the size still applies, the OS-chosen position stays.
+        let elsewhere = Frame { x: 5000, ..NORMAL };
+        assert_eq!(reapply(Some(elsewhere), SCREEN, Mode::default(), display), Some(Frame { x: 0, y: 0, ..NORMAL }));
+        assert_eq!(reapply(Some(NORMAL), SCREEN, Mode::default(), []), Some(Frame { x: 0, y: 0, ..NORMAL }));
+        // Partly on a display counts, like window-state.
+        let edge = Frame { x: 3000, ..NORMAL };
+        assert_eq!(reapply(Some(edge), SCREEN, Mode::default(), display), Some(edge));
     }
 
     #[test]
