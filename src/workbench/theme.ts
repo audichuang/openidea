@@ -160,11 +160,29 @@ export function rememberStartupTheme(root: HTMLElement = document.documentElemen
 export function syncWindowBackground() {
   rememberStartupTheme();
   if (!isTauri()) return;
+  const win = getCurrentWebviewWindow();
+  // Native chrome (macOS window tabs, title bar, menus) follows the app appearance, the OS one
+  // unless set: a light IDE theme under a dark OS got a dark tab strip.
+  win.setTheme(nativeAppearance()).catch(() => {});
   const color = windowBackgroundColor();
   if (!color) return;
-  getCurrentWebviewWindow()
-    .setBackgroundColor(color)
-    .catch(() => {});
+  win.setBackgroundColor(color).catch(() => {});
+}
+
+/**
+ * The appearance native chrome should take: the page's light / dark base, or null (follow the OS)
+ * under "Sync with OS", where they agree anyway. Forcing it there would flip
+ * `prefers-color-scheme`, which that mode reads to pick the theme. A plugin theme wins either way.
+ */
+export function nativeAppearance(root: HTMLElement = document.documentElement): "light" | "dark" | null {
+  const pluginKind = root.dataset.pluginThemeKind;
+  if (pluginKind === "light" || pluginKind === "dark") return pluginKind;
+  const override = useThemeOverride.getState().theme;
+  const appearance = useProject.getState().settings?.appearance as AppearanceLike | undefined;
+  const followsOs = override ? override === "system" : !!(appearance?.syncWithOs || appearance?.theme === "system");
+  if (followsOs) return null;
+  const base = root.dataset.theme;
+  return base === "light" || base === "dark" ? base : null;
 }
 
 export function currentTheme(): "dark" | "light" {
