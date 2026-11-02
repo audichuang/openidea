@@ -7,6 +7,10 @@ const win = vi.hoisted(() => ({
   label: "main",
   owns: false,
   listeners: new Map<string, () => void>(),
+  /** While set, `listen` registers its handler only once this settles. */
+  listenGate: null as Promise<void> | null,
+  /** Stands in for `startupProjectKnown`. */
+  known: Promise.resolve(),
 }));
 
 vi.mock("@/platform/ipc", async (orig) => {
@@ -31,6 +35,7 @@ vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     label: win.label,
     listen: async (event: string, handler: () => void) => {
+      if (win.listenGate) await win.listenGate;
       win.listeners.set(event, handler);
       return () => win.listeners.delete(event);
     },
@@ -38,7 +43,7 @@ vi.mock("@tauri-apps/api/window", () => ({
 }));
 vi.mock("@/platform/project", async (orig) => {
   const real = await orig<typeof import("@/platform/project")>();
-  return { ...real, openProject: (p: string) => openProject(p) };
+  return { ...real, openProject: (p: string) => openProject(p), startupProjectKnown: () => win.known };
 });
 
 const { lastSessionProject, reopenLastProject, trackSession, _resetSessionForTests } = await import("./session");
@@ -50,6 +55,8 @@ beforeEach(() => {
   win.label = "main";
   win.owns = false;
   win.listeners.clear();
+  win.listenGate = null;
+  win.known = Promise.resolve();
   openProject.mockReset();
   connectRemote.mockReset();
   useProject.setState({ project: null, lightEdit: false });
@@ -186,12 +193,40 @@ describe("trackSession", () => {
     localStorage.setItem("openidea.session.openProject", "/p/main");
     win.label = "window-1";
     win.owns = true;
+    let settle!: () => void;
+    win.known = new Promise((r) => (settle = r));
     const stop = trackSession();
     await flush();
-    // Nothing is written until this window's project changes.
+    // Its startup project is not known yet: it may still reopen one.
     expect(lastSessionProject()).toBe("/p/main");
+    settle();
+    await flush();
+    // Settled on welcome: the next launch shows welcome too.
+    expect(lastSessionProject()).toBeNull();
     useProject.setState({ project: project("/p/new") });
     expect(lastSessionProject()).toBe("/p/new");
+    stop();
+  });
+
+  // Main closed between the window asking whether it holds the session and its listener being
+  // registered: the one hand-over event found no listener, so the answer must come after it.
+  it.each([
+    ["its project", "/p/member"],
+    ["welcome", null],
+  ])("takes over when main closes before the hand-over listener is registered (%s)", async (_, root) => {
+    localStorage.setItem("openidea.session.openProject", "/p/main");
+    win.label = "window-1";
+    let register!: () => void;
+    win.listenGate = new Promise((r) => (register = r));
+    if (root) useProject.setState({ project: project(root) });
+    const stop = trackSession();
+    await flush();
+    // Main closes now: the backend hands the session over and emits the event, which is lost.
+    win.owns = true;
+    win.listeners.get("openidea://session-owner")?.();
+    register();
+    await flush();
+    expect(lastSessionProject()).toBe(root);
     stop();
   });
 });
