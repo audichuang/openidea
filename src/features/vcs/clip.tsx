@@ -21,6 +21,7 @@ import { logOptions } from "./logOptions";
 import { useGitLog } from "./logStore";
 import { commitRepo } from "./multiRoot";
 import { commitsArg } from "./historyActions";
+import { saveAll } from "./ops";
 import { refreshNow, useVcs } from "./store";
 import styles from "./clip.module.css";
 
@@ -158,6 +159,9 @@ export async function pasteClip(target: PasteTarget = pasteTarget()) {
     return;
   }
   if (/^From [0-9a-f]{7,64} /.test(text)) return pasteBranchSeries(text);
+  // Save dirty editors first: the preview snapshots the targets' freshness, and the blur autosave
+  // when the dialog takes focus would otherwise change them and fail Restore's revalidation.
+  await saveAll();
   const preview = await loadPreview(text, target, false);
   if (!preview) return;
   openDialog((close) => <PastePreviewDialog text={text} target={target} initial={preview} onClose={close} />);
