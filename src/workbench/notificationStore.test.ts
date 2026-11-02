@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { notify } from "./notificationStore";
+import { useProject } from "@/platform/project";
+import { NOTIFICATION_GROUPS, canSuppress, notificationPrefs, notify } from "./notificationStore";
 
 const { showSystemNotification } = vi.hoisted(() => ({
   showSystemNotification: vi.fn(async (_title: string, _body: string) => ({ status: "ok", data: null })),
@@ -74,5 +75,27 @@ describe("system toast coalescing", () => {
     notify({ level: "warning", title: "Cannot reload sbt projects" });
     vi.advanceTimersByTime(3000);
     expect(showSystemNotification.mock.calls[1]).toEqual(["Cannot reload sbt projects", "1 more notification"]);
+  });
+});
+
+describe("ClipCode notification group", () => {
+  it("is listed in Settings › Notifications under its own title", () => {
+    expect(NOTIFICATION_GROUPS).toContainEqual({ id: "clipcode", title: "ClipCode" });
+  });
+
+  it("is shown as a balloon and logged by default, as the IntelliJ plugin's group", () => {
+    useProject.setState({ settings: null });
+    expect(notificationPrefs("clipcode")).toMatchObject({ display: "balloon", log: true });
+  });
+
+  it("can be turned off without hiding Version Control notifications", () => {
+    useProject.setState({ settings: { notifications: { groups: { clipcode: { display: "none" } } } } as never });
+    try {
+      expect(canSuppress({ level: "info", group: "clipcode" })).toBe(false);
+      expect(canSuppress({ level: "info", group: "vcs" })).toBe(true);
+      expect(notificationPrefs("vcs").display).toBe("balloon");
+    } finally {
+      useProject.setState({ settings: null });
+    }
   });
 });
