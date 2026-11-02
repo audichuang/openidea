@@ -203,7 +203,7 @@ fn git_selection(project: &Path, content_roots: &[PathBuf], items: Vec<ExportIte
             roots.push(root);
         }
     }
-    ExportSelection::anchored(roots, project, content_roots, items).map_err(err)
+    ExportSelection::anchored(roots, None, project, content_roots, &[], items).map_err(err)
 }
 
 fn commit_result(export: commits::CommitExport, settings: &Settings) -> ClipCopyResult {
@@ -247,13 +247,16 @@ pub fn copy_in(
     match source {
         ClipCopySource::Files { paths } => {
             let mut skipped = 0;
-            // Files of one root plan together; several roots join one selection.
+            // Files of one root plan together; several roots join one selection,
+            // anchored on the project like the git sources.
             let mut groups: Vec<(PathBuf, Vec<PathBuf>)> = Vec::new();
-            // Roots of files that no repository covers: their headers are absolute paths.
+            // Roots of files that no project root or repository covers: their headers are absolute paths.
             let mut absolute: Vec<PathBuf> = Vec::new();
             for p in &paths {
                 let root = if p.starts_with(project) {
                     project.to_path_buf()
+                } else if let Some(r) = content_roots.iter().find(|r| p.starts_with(r)) {
+                    r.clone()
                 } else {
                     repo_root(p).unwrap_or_else(|_| {
                         let dir = if p.is_dir() { p.clone() } else { p.parent().unwrap_or(p).to_path_buf() };
@@ -286,8 +289,9 @@ pub fn copy_in(
             if parts.is_empty() {
                 return Err(IdeError::invalid("Nothing to copy"));
             }
-            let (source_root, spelled_root) =
-                (parts[primary_idx].source_root.clone(), parts[primary_idx].spelled_root.clone());
+            // The `clipcode-root` name is the project's own spelling, never another root's.
+            let source_root = groups.iter().position(|(r, _)| r == project).and_then(|i| parts[i].source_root.clone());
+            let spelled_root = parts[primary_idx].spelled_root.clone();
             let primary = parts[primary_idx].primary_root.as_ref().map(|r| r.path().to_path_buf());
             let mut roots: Vec<PathBuf> = Vec::new();
             let mut items = Vec::new();
@@ -295,7 +299,7 @@ pub fn copy_in(
                 roots.extend(part.roots.iter().map(|r| r.path().to_path_buf()));
                 items.extend(part.items);
             }
-            let sel = ExportSelection::with_absolute(roots, primary, &absolute, items)
+            let sel = ExportSelection::anchored(roots, primary, project, content_roots, &absolute, items)
                 .map_err(err)?
                 .with_source_root(source_root)
                 .with_spelled_root(spelled_root);
@@ -1213,6 +1217,51 @@ mod tests {
             .unwrap()
             .text;
         assert!(text.starts_with("// clipcode-root: W\n"), "{text}");
+    }
+
+    /// The first line and the header paths (change labels dropped) of a payload.
+    fn spelling(text: &str) -> (String, Vec<String>) {
+        let headers = text
+            .lines()
+            .filter_map(|l| l.strip_prefix("// file: "))
+            .map(|p| p.split_once("] ").filter(|_| p.starts_with('[')).map_or(p, |(_, rest)| rest).to_string())
+            .collect();
+        (text.lines().next().unwrap_or("").to_string(), headers)
+    }
+
+    #[test]
+    fn files_and_changes_spell_the_same_files_alike() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        let m = repo(&base.join("M"));
+        let ext = repo(&base.join("ext"));
+        fs::write(m.join("README.md"), "m\n").unwrap();
+        fs::write(ext.join("README.md"), "ext\n").unwrap();
+        let same = |content_roots: &[PathBuf], files: Vec<PathBuf>, repos: Vec<PathBuf>| {
+            let f = copy_in(&m, content_roots, ClipCopySource::Files { paths: files }, &Settings::default()).unwrap();
+            let changes = ClipCopySource::Changes { paths: repos, side: ClipChangeSide::Working };
+            let c = copy_in(&m, content_roots, changes, &Settings::default()).unwrap();
+            assert_eq!(spelling(&f.text), spelling(&c.text), "Files:\n{}\nChanges:\n{}", f.text, c.text);
+            spelling(&f.text)
+        };
+        // Only a file of a repository beside the project.
+        let (first, headers) = same(&[], vec![ext.join("README.md")], vec![ext.clone()]);
+        assert_eq!(first, "// clipcode-root: M");
+        assert_eq!(headers, vec!["ext/README.md"]);
+        // A project file and the external one, in either order.
+        for (files, repos) in [
+            (vec![m.join("README.md"), ext.join("README.md")], vec![m.clone(), ext.clone()]),
+            (vec![ext.join("README.md"), m.join("README.md")], vec![ext.clone(), m.clone()]),
+        ] {
+            let (first, mut headers) = same(&[], files, repos);
+            headers.sort();
+            assert_eq!(first, "// clipcode-root: M");
+            assert_eq!(headers, vec!["README.md", "ext/README.md"]);
+        }
+        // The repository as a content root of the project: no root line, labelled alike.
+        let (first, headers) = same(std::slice::from_ref(&ext), vec![ext.join("README.md")], vec![ext.clone()]);
+        assert!(!first.starts_with("// clipcode-root:"), "{first}");
+        assert_eq!(headers, vec!["ext/README.md"]);
     }
 
     #[test]
