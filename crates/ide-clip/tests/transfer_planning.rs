@@ -232,7 +232,7 @@ fn main() { println!(\"primary\"); }
 }
 
 // ---------------------------------------------------------------------------
-// 3. Ambiguous same basenames block combined export
+// 3. Ambiguous same basenames fall back to absolute headers
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -240,39 +240,30 @@ fn test_ambiguoussamebasenamesblock() {
     // Two distinct repos having the same basename "service"
     let repo1 = TestRepo::new("service");
     let repo2 = TestRepo::new("service");
+    repo1.write("file1.txt", "one");
+    repo2.write("file2.txt", "two");
 
     assert_ne!(repo1.path(), repo2.path());
 
+    let item = |repo: &TestRepo, rel: &str| ExportItem {
+        root: repo.canonical_id(),
+        relative_path: rel.to_string(),
+        source: SourceKind::File,
+        change_type: None,
+        gitlink: false,
+    };
     let selection = ExportSelection::new(
         vec![repo1.path().to_path_buf(), repo2.path().to_path_buf()],
         None,
-        vec![
-            ExportItem {
-                root: repo1.canonical_id(),
-                relative_path: "file1.txt".to_string(),
-                source: SourceKind::Working,
-                change_type: None,
-                gitlink: false,
-            },
-            ExportItem {
-                root: repo2.canonical_id(),
-                relative_path: "file2.txt".to_string(),
-                source: SourceKind::Working,
-                change_type: None,
-                gitlink: false,
-            },
-        ],
-    );
+        vec![item(&repo1, "file1.txt"), item(&repo2, "file2.txt")],
+    )
+    .expect("shared basenames no longer reject the selection");
 
-    // ExportSelection::new validates selection immediately
-    let err = selection.unwrap_err();
-    match err {
-        TransferError::AmbiguousRootBasenames { basename, roots } => {
-            assert_eq!(basename, "service");
-            assert_eq!(roots.len(), 2);
-        }
-        other => panic!("expected AmbiguousRootBasenames, got: {other:?}"),
-    }
+    let plan = plan_export(&selection, &Settings::default(), None).unwrap();
+    let abs2 = format!("{}/file2.txt", repo2.canonical_id().path().to_string_lossy().replace('\\', "/"));
+    // The first root is primary (relative header); the second shares its basename.
+    assert!(plan.payload.contains("// file: file1.txt"), "{}", plan.payload);
+    assert!(plan.payload.contains(&abs2), "expected absolute header {abs2} in:\n{}", plan.payload);
 }
 
 // ---------------------------------------------------------------------------
