@@ -8,10 +8,11 @@ use crate::{
     windows::{self, WindowsState},
 };
 use ide_core::{IdeError, IdeEvent, IdeResult};
+use ide_workspace::window_groups::{PlannedGroup, SavedGroup, WindowGroup, groups_to_save, restore_plan};
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::collections::{HashSet, VecDeque};
+use std::path::Path;
 use std::sync::atomic::Ordering;
 #[cfg(not(target_os = "macos"))]
 use std::sync::atomic::AtomicU64;
@@ -518,60 +519,84 @@ fn close_next(app: &AppHandle) {
     }
 }
 
-/// Window labels in creation order: `main`, then `project-1`, `project-2`, ….
-fn labels_in_order(app: &AppHandle) -> Vec<String> {
-    let mut labels: Vec<String> = app.webview_windows().into_keys().collect();
-    labels.sort_by_key(|l| (l != "main", l.rsplit('-').next().and_then(|n| n.parse::<u32>().ok()), l.clone()));
-    labels
+const SAVED_GROUPS: &str = "window-groups.json";
+
+fn read_saved(path: &Path) -> IdeResult<Vec<SavedGroup>> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| IdeError::invalid(e.to_string())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e.into()),
+    }
 }
 
-/// Saves the open project windows (groups and single windows) for "Reopen projects on startup".
-/// Nothing is written while quitting, so the windows open at quit are the ones reopened.
+/// The grouped windows in a fullscreen Space, by label. Read before taking the save lock: on macOS
+/// this asks the main thread, which `save_before_quit` blocks while it saves.
+fn fullscreen_members(app: &AppHandle, groups: &[WindowGroup]) -> HashSet<String> {
+    let windows: Vec<_> =
+        groups.iter().flat_map(|g| &g.members).filter_map(|label| app.get_webview_window(label)).collect();
+    #[cfg(target_os = "macos")]
+    let fullscreen = crate::macos::in_fullscreen_any_thread(app, windows.clone());
+    #[cfg(not(target_os = "macos"))]
+    let fullscreen: Vec<_> = windows.iter().map(|w| w.is_fullscreen().unwrap_or(false)).collect();
+    windows.iter().zip(fullscreen).filter(|(_, on)| *on).map(|(w, _)| w.label().to_owned()).collect()
+}
+
 pub async fn persist(app: &AppHandle) -> IdeResult<()> {
     let state = app.state::<WindowsState>();
-    let mut previous = state.groups_persist.lock().await;
+    let open = state.groups.lock().groups().to_vec();
+    let fullscreen = fullscreen_members(app, &open);
+    let _write = state.groups_persist.lock().await;
     if state.quitting() {
         return Ok(());
     }
-    let host = app.state::<AppState>();
-    let path = host.config_dir.join("window-groups.json");
-    if previous.is_none() {
-        *previous = Some(read_session(path.clone()).await);
-    }
     let groups = state.groups.lock().groups().to_vec();
-    let windows = labels_in_order(app);
-    let project_of = |label: &str| match host.project(label) {
-        Ok(p) => (!p.light).then(|| p.root.clone()),
-        // A restored window may have taken its launch but not finished opening yet.
-        Err(_) => state.pending(label).and_then(|l| l.project).map(Into::into),
-    };
-    let Some(saved) = ide_workspace::window_groups::session(&groups, &windows, project_of) else {
+    let host = app.state::<AppState>();
+    let current: Vec<_> = groups
+        .iter()
+        .filter_map(|group| {
+            let projects: Vec<_> = group
+                .members
+                .iter()
+                .filter_map(|label| {
+                    host.project(label)
+                        .ok()
+                        .map(|p| p.root.clone())
+                        .or_else(|| state.pending(label).and_then(|l| l.project).map(Into::into))
+                })
+                .collect();
+            (projects.len() == group.members.len()).then(|| SavedGroup {
+                projects,
+                selected: group.members.iter().position(|l| l == &group.selected).unwrap_or(0),
+                fullscreen: group.members.iter().any(|l| fullscreen.contains(l)),
+            })
+        })
+        .collect();
+    // A restored member may have taken its launch but not finished opening yet.
+    if current.len() != groups.len() {
         return Ok(());
-    };
+    }
+    let restored = state.groups_restore_done.load(Ordering::SeqCst)
+        || !host.global_settings.effective().general.reopen_last_project;
+    let path = host.config_dir.join(SAVED_GROUPS);
     tauri::async_runtime::spawn_blocking(move || {
-        let bytes = serde_json::to_vec(&saved).map_err(|e| IdeError::internal(e.to_string()))?;
+        let saved = if restored {
+            Vec::new()
+        } else {
+            read_saved(&path).unwrap_or_else(|e| {
+                tracing::warn!("cannot read saved window groups: {}", e.message);
+                Vec::new()
+            })
+        };
+        let groups = groups_to_save(current, saved, restored);
+        let bytes = serde_json::to_vec(&groups).map_err(|e| IdeError::internal(e.to_string()))?;
         ide_vfs::write_atomic(&path, &bytes).map(|_| ())
     })
     .await
     .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
-/// The saved session; empty when there is none or it can't be read.
-async fn read_session(path: PathBuf) -> Vec<ide_workspace::window_groups::SavedWindows> {
-    let read = tauri::async_runtime::spawn_blocking(move || match std::fs::read(&path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(e) => Err(format!("{}: {e}", path.display())),
-    })
-    .await
-    .map_err(|e| e.to_string())
-    .and_then(|r| r);
-    read.unwrap_or_else(|e| {
-        tracing::warn!("cannot read the saved windows: {e}");
-        Vec::new()
-    })
-}
-
+/// Reopens every saved window group once `main` has reopened its project: the group holding that
+/// project around `main`, every other one in new windows.
 pub async fn restore(app: &AppHandle, caller: &str) -> IdeResult<()> {
     if caller != "main" {
         return Ok(());
@@ -579,65 +604,91 @@ pub async fn restore(app: &AppHandle, caller: &str) -> IdeResult<()> {
     let state = app.state::<WindowsState>();
     let host = app.state::<AppState>();
     let project = host.project(caller)?;
-    if !project.settings.effective().general.reopen_last_project || state.groups_restored.swap(true, Ordering::SeqCst) {
+    if !project.settings.effective().general.reopen_last_project {
+        state.groups_restore_done.store(true, Ordering::SeqCst);
         return Ok(());
     }
-    let saved = {
-        let mut previous = state.groups_persist.lock().await;
-        if previous.is_none() {
-            *previous = Some(read_session(host.config_dir.join("window-groups.json")).await);
-        }
-        previous.clone().unwrap_or_default()
-    };
-    // The caller's own group first (it already shows one of its projects), then every other
-    // group and single window that was open at quit. Missing folders are skipped.
-    let order = saved
-        .iter()
-        .filter(|g| g.projects.contains(&project.root))
-        .chain(saved.iter().filter(|g| !g.projects.contains(&project.root)));
-    for group in order {
-        let mut labels = Vec::new();
-        let mut selected = None;
-        for path in &group.projects {
-            let label = if path == &project.root {
-                Some(caller.to_owned())
-            } else if path.is_dir() {
-                let window = match windows::find_project_window(app, path) {
-                    Some(w) => Ok(w),
-                    None => windows::create_restored_window(app, path.clone()),
-                };
-                match window {
-                    Ok(w) => Some(w.label().to_owned()),
-                    Err(e) => {
-                        tracing::warn!("cannot reopen {}: {e}", path.display());
-                        None
-                    }
-                }
-            } else {
-                None
-            };
-            if let Some(label) = label {
-                if group.projects.get(group.selected) == Some(path) {
-                    selected = Some(label.clone());
-                }
-                labels.push(label);
-            }
-        }
-        if labels.len() > 1 {
-            // `create_main_window` may have just started this window's fullscreen animation; tabs
-            // moved into a window during one are lost.
-            #[cfg(target_os = "macos")]
-            if let Some(window) = app.get_webview_window(caller) {
-                for _ in 0..30 {
-                    if !crate::macos::fullscreen_transition(app, &window) {
-                        break;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                }
-            }
-            let selected = selected.unwrap_or_else(|| labels[0].clone());
-            group_windows(app, labels, &selected, &selected)?;
+    if state.groups_restored.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+    let result = restore_groups(app, caller, &project.root).await;
+    state.groups_restore_done.store(true, Ordering::SeqCst);
+    // Saves made while reopening kept the groups not reopened yet; now the open ones are complete.
+    if let Err(e) = persist(app).await {
+        tracing::warn!("cannot save window groups: {}", e.message);
+    }
+    result
+}
+
+async fn restore_groups(app: &AppHandle, caller: &str, root: &Path) -> IdeResult<()> {
+    let path = app.state::<AppState>().config_dir.join(SAVED_GROUPS);
+    let saved = tauri::async_runtime::spawn_blocking(move || read_saved(&path))
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))??;
+    let plan = restore_plan(&saved, Some(root), Path::is_dir);
+    if plan.is_empty() {
+        return Ok(());
+    }
+    // `create_main_window` may have just started this window's fullscreen animation; tabs moved
+    // into a window during one are lost.
+    if let Some(window) = app.get_webview_window(caller) {
+        wait_fullscreen_transition(app, &window).await;
+    }
+    // Every group is merged before any enters fullscreen, so no tab moves during a transition.
+    let mut fullscreen = Vec::new();
+    for group in &plan {
+        match restore_group(app, caller, root, group) {
+            // `main`'s group reopens in fullscreen with `main` (`main-window-fullscreen.json`).
+            Ok(Some(selected)) if group.fullscreen && !group.main => fullscreen.push(selected),
+            Ok(_) => {}
+            Err(e) => tracing::warn!("cannot reopen a window group: {}", e.message),
         }
     }
+    for label in fullscreen {
+        let Some(window) = app.get_webview_window(&label) else { continue };
+        wait_fullscreen_transition(app, &window).await;
+        if let Err(e) = window.set_fullscreen(true) {
+            tracing::warn!("cannot reopen a window group in full screen: {e}");
+            continue;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        wait_fullscreen_transition(app, &window).await;
+    }
     Ok(())
+}
+
+/// Opens `group`'s projects (`root` in `caller`) and tabs them together; returns the shown tab.
+fn restore_group(app: &AppHandle, caller: &str, root: &Path, group: &PlannedGroup) -> IdeResult<Option<String>> {
+    let mut labels = Vec::new();
+    for path in &group.projects {
+        let label = if group.main && path == root {
+            caller.to_owned()
+        } else {
+            match windows::find_project_window(app, path) {
+                Some(w) => w,
+                None => windows::create_restored_window(app, path.clone())?,
+            }
+            .label()
+            .to_owned()
+        };
+        labels.push(label);
+    }
+    if !group.grouped() {
+        return Ok(None);
+    }
+    let anchor = if group.main { caller.to_owned() } else { labels[0].clone() };
+    let selected = labels[group.selected].clone();
+    group_windows(app, labels, &anchor, &selected)?;
+    Ok(Some(selected))
+}
+
+/// Waits (up to 3 s) for `window` to finish entering or leaving fullscreen.
+async fn wait_fullscreen_transition(_app: &AppHandle, _window: &tauri::WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    for _ in 0..30 {
+        if !crate::macos::fullscreen_transition(_app, _window) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
 }
