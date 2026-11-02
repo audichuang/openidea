@@ -208,6 +208,7 @@ pub fn run() {
                 w.forget(window.label());
             }
             if !windows::is_settings_window(window.label()) {
+                windows::hand_over_session(window.app_handle(), Some(window.label()));
                 windows::continue_quit(window.app_handle(), Some(window.label()));
             }
         }
