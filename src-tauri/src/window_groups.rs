@@ -577,22 +577,32 @@ pub async fn persist(app: &AppHandle) -> IdeResult<()> {
     }
     let restored = state.groups_restore_done.load(Ordering::SeqCst)
         || !host.global_settings.effective().general.reopen_last_project;
+    let unrestored = state.groups_unrestored.lock().clone();
     let path = host.config_dir.join(SAVED_GROUPS);
-    tauri::async_runtime::spawn_blocking(move || {
-        let saved = if restored {
-            Vec::new()
+    let written = tauri::async_runtime::spawn_blocking(move || {
+        let not_reopened = if restored {
+            unrestored
         } else {
-            read_saved(&path).unwrap_or_else(|e| {
-                tracing::warn!("cannot read saved window groups: {}", e.message);
-                Vec::new()
-            })
+            match read_saved(&path) {
+                Ok(saved) => saved,
+                // Saving now would drop the groups that could not be read.
+                Err(e) => {
+                    tracing::warn!("cannot read saved window groups: {}", e.message);
+                    return Ok(None);
+                }
+            }
         };
-        let groups = groups_to_save(current, saved, restored);
+        let groups = groups_to_save(current, not_reopened);
         let bytes = serde_json::to_vec(&groups).map_err(|e| IdeError::internal(e.to_string()))?;
-        ide_vfs::write_atomic(&path, &bytes).map(|_| ())
+        ide_vfs::write_atomic(&path, &bytes).map(|_| Some(groups))
     })
     .await
-    .map_err(|e| IdeError::internal(e.to_string()))?
+    .map_err(|e| IdeError::internal(e.to_string()))??;
+    // A failed group whose project has been opened in a group since is not kept any more.
+    if let (true, Some(written)) = (restored, written) {
+        state.groups_unrestored.lock().retain(|g| written.contains(g));
+    }
+    Ok(())
 }
 
 /// Reopens every saved window group once `main` knows its startup project: the group holding that
@@ -616,23 +626,26 @@ pub async fn restore(app: &AppHandle, caller: &str) -> IdeResult<()> {
     if state.groups_restored.swap(true, Ordering::SeqCst) {
         return Ok(());
     }
-    let result = restore_groups(app, caller, project.as_ref().map(|p| p.root.as_path())).await;
+    // Unreadable saved groups: not done, so saving leaves them on disk.
+    let failed = restore_groups(app, caller, project.as_ref().map(|p| p.root.as_path())).await?;
+    *state.groups_unrestored.lock() = failed;
     state.groups_restore_done.store(true, Ordering::SeqCst);
     // Saves made while reopening kept the groups not reopened yet; now the open ones are complete.
     if let Err(e) = persist(app).await {
         tracing::warn!("cannot save window groups: {}", e.message);
     }
-    result
+    Ok(())
 }
 
-async fn restore_groups(app: &AppHandle, caller: &str, root: Option<&Path>) -> IdeResult<()> {
+/// Returns the groups that failed to reopen.
+async fn restore_groups(app: &AppHandle, caller: &str, root: Option<&Path>) -> IdeResult<Vec<SavedGroup>> {
     let path = app.state::<AppState>().config_dir.join(SAVED_GROUPS);
     let saved = tauri::async_runtime::spawn_blocking(move || read_saved(&path))
         .await
         .map_err(|e| IdeError::internal(e.to_string()))??;
     let plan = restore_plan(&saved, root, Path::is_dir);
     if plan.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     // `create_main_window` may have just started this window's fullscreen animation; tabs moved
     // into a window during one are lost.
@@ -655,12 +668,16 @@ async fn restore_groups(app: &AppHandle, caller: &str, root: Option<&Path>) -> I
         None => false,
     };
     // Every group is merged before any enters fullscreen, so no tab moves during a transition.
-    let mut fullscreen = Vec::new();
+    let (mut fullscreen, mut failed) = (Vec::new(), Vec::new());
     for group in &plan {
         match restore_group(app, caller, root, group) {
             Ok(Some(selected)) if group.fullscreen_change(main_fullscreen) == Some(true) => fullscreen.push(selected),
             Ok(_) => {}
-            Err(e) => tracing::warn!("cannot reopen a window group: {}", e.message),
+            Err(e) => {
+                tracing::warn!("cannot reopen a window group: {}", e.message);
+                let (projects, selected, fullscreen) = (group.projects.clone(), group.selected, group.fullscreen);
+                failed.push(SavedGroup { projects, selected, fullscreen });
+            }
         }
     }
     for label in fullscreen {
@@ -673,7 +690,7 @@ async fn restore_groups(app: &AppHandle, caller: &str, root: Option<&Path>) -> I
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         wait_fullscreen_transition(app, &window).await;
     }
-    Ok(())
+    Ok(failed)
 }
 
 /// Opens `group`'s projects (`root` in `caller`) and tabs them together; returns the shown tab.
