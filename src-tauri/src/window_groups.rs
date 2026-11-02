@@ -613,6 +613,17 @@ pub async fn restore(app: &AppHandle, caller: &str) -> IdeResult<()> {
             }
         }
         if labels.len() > 1 {
+            // window-state may have just started this window's fullscreen animation; tabs moved
+            // into a window during one are lost.
+            #[cfg(target_os = "macos")]
+            if let Some(window) = app.get_webview_window(caller) {
+                for _ in 0..30 {
+                    if !crate::macos::fullscreen_transition(app, &window) {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            }
             let selected = selected.unwrap_or_else(|| labels[0].clone());
             group_windows(app, labels, &selected, &selected)?;
         }
