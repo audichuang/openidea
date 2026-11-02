@@ -8,7 +8,7 @@ import { useState } from "react";
 import type { ClipCopyResult, ClipCopySource, ClipPastePreview, ClipPasteResult, Commit } from "@/bindings";
 import { readClipboardText } from "@/platform/clipboard";
 import { tx } from "@/platform/i18n";
-import { call, commands } from "@/platform/ipc";
+import { call, commands, IpcError } from "@/platform/ipc";
 import { loadSettings, useProject } from "@/platform/project";
 import { workflowSettings, type ClipCodeSettingsValid } from "@/platform/workflowSettings";
 import { registerActions, type Action } from "@/platform/actions";
@@ -68,6 +68,11 @@ export async function copyClip(source: ClipCopySource): Promise<boolean> {
   try {
     result = await call(commands.clipCopy(source));
   } catch (e) {
+    // A commit with no net file changes is not a failure (IntelliJ: information, clipboard untouched).
+    if (e instanceof IpcError && e.data?.type === "noNetChanges") {
+      notifications().notify({ group: "clipcode", level: "info", title: e.message });
+      return false;
+    }
     notifications().notify({ group: "clipcode", level: "warning", title: "ClipCode copy failed", body: String(e) });
     return false;
   }
@@ -78,16 +83,25 @@ export async function copyClip(source: ClipCopySource): Promise<boolean> {
 
 const repoOf = (c: Commit) => commitRepo(c) ?? useVcs.getState().repo ?? useVcs.getState().root ?? "";
 
-/** Copy Full Source of commits: one commit's files, or the files changed across a contiguous selection. */
+/** True when `cs` (newest first) is one first-parent chain: each commit's first parent is the next one. */
+export function isFirstParentChain(cs: readonly Commit[]): boolean {
+  return cs.every((c, i) => i === cs.length - 1 || c.parents[0] === cs[i + 1]!.id);
+}
+
+/**
+ * Copy Full Source of commits (newest first): one commit's files; a contiguous first-parent
+ * chain as the range from the oldest commit's parent (the empty tree for a root commit); any
+ * other selection as the union of what each selected commit changed, so unselected commits
+ * in between are left out.
+ */
 export function commitFilesSource(cs: readonly Commit[], paths: string[] = []): ClipCopySource | null {
   if (!cs.length) return null;
   const repo = repoOf(cs[0]!);
-  if (cs.length === 1) return { kind: "commitFiles", repo, rev: cs[0]!.id, paths };
-  // Newest first: the range is the oldest commit's parent up to the newest.
-  const oldest = cs[cs.length - 1]!;
-  const base = oldest.parents[0];
-  if (!base) return { kind: "commitFiles", repo, rev: cs[0]!.id, paths };
-  return { kind: "range", repo, base, tip: cs[0]!.id, paths };
+  const tip = cs[0]!.id;
+  if (cs.length === 1) return { kind: "commitFiles", repo, rev: tip, paths };
+  if (!isFirstParentChain(cs)) return { kind: "commitList", repo, revs: cs.map((c) => c.id), paths };
+  const base = cs[cs.length - 1]!.parents[0];
+  return base ? { kind: "range", repo, base, tip, paths } : { kind: "rootRange", repo, tip, paths };
 }
 
 /** Copy Commits: the selection (newest first) as a replayable commit payload. */
