@@ -645,9 +645,18 @@ pub fn paste_preview_into(
             if std::fs::symlink_metadata(dest.join(&prefix)).is_ok() {
                 continue;
             }
-            let Some(repo) =
-                repos.iter().find(|r| r.file_name().is_some_and(|n| n.to_string_lossy() == prefix.as_str()))
-            else {
+            let mut named: Vec<&PathBuf> = Vec::new();
+            for r in repos.iter().filter(|r| r.file_name().is_some_and(|n| n.to_string_lossy() == prefix.as_str())) {
+                if !named.iter().any(|n| same_dir(n, r)) {
+                    named.push(r);
+                }
+            }
+            // Several repositories share the name: ambiguous like a shared root label, restored nowhere.
+            if named.len() > 1 {
+                mapping.block_prefix(prefix);
+                continue;
+            }
+            let Some(repo) = named.pop() else {
                 continue;
             };
             if same_dir(repo, dest) {
@@ -1354,6 +1363,55 @@ mod tests {
         paste_apply(ClipPasteApply { id: preview.id, ..Default::default() }).unwrap();
         assert_eq!(fs::read_to_string(lib.join("x.txt")).unwrap().trim_end(), "new");
         assert!(!w.join("lib").exists());
+    }
+
+    #[test]
+    fn a_legacy_repository_prefix_shared_by_two_repositories_restores_nowhere() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        let m = base.join("M");
+        fs::create_dir_all(&m).unwrap();
+        let (a, b) = (repo(&m.join("a/lib")), repo(&m.join("b/lib")));
+        let text = "// file: lib/x.txt\nnew\n";
+        let preview = paste_preview(&m, text, false, &[a.clone(), b.clone()], &Settings::default()).unwrap();
+        assert!(targets_of(&preview).is_empty(), "{:?}", preview.files);
+        assert_eq!(preview.files.len(), 1, "{:?}", preview.files);
+        assert_eq!(preview.files[0].action, "skip");
+        assert!(!a.join("x.txt").exists() && !b.join("x.txt").exists() && !m.join("lib").exists());
+    }
+
+    /// As ClipCode's `ClipboardPathResolver`: an unlabelled path the primary lacks
+    /// resolves to the content root that holds it; held by both, it is ambiguous.
+    #[test]
+    fn an_unlabelled_path_restores_into_the_content_root_that_holds_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        let w = base.join("W");
+        fs::create_dir_all(&w).unwrap();
+        let c = base.join("C");
+        fs::create_dir_all(c.join("src")).unwrap();
+        fs::write(c.join("src/x.ts"), "c\n").unwrap();
+        let roots = vec![c.clone()];
+        let c_file = c.join("src/x.ts").to_string_lossy().into_owned();
+        let preview_of =
+            |text: &str| paste_preview_into(&w, None, &roots, text, false, &[], &Settings::default()).unwrap();
+
+        let preview = preview_of("// file: src/x.ts\nnew\n");
+        assert_eq!(targets_of(&preview), vec![c_file.clone()], "{:?}", preview.files);
+        assert_eq!(preview.files[0].action, "overwrite");
+        paste_apply(ClipPasteApply { id: preview.id, overwrite: vec![0], ..Default::default() }).unwrap();
+        assert_eq!(fs::read_to_string(c.join("src/x.ts")).unwrap().trim_end(), "new");
+        assert!(!w.join("src").exists());
+
+        let preview = preview_of("// file: [DELETED] src/x.ts\n");
+        assert_eq!(targets_of(&preview), vec![c_file.clone()], "{:?}", preview.files);
+        assert_eq!(preview.files[0].action, "delete");
+
+        fs::create_dir_all(w.join("src")).unwrap();
+        fs::write(w.join("src/x.ts"), "w\n").unwrap();
+        let preview = preview_of("// file: src/x.ts\nnew\n");
+        assert!(targets_of(&preview).is_empty(), "{:?}", preview.files);
+        assert_eq!(preview.files[0].reason.as_deref(), Some("AMBIGUOUS_PATH"), "{:?}", preview.files);
     }
 
     /// Workspace `W` (a plain folder) with the content root `x/a`, a repository
