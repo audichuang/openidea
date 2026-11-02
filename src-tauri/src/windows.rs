@@ -102,8 +102,9 @@ pub struct WindowsState {
     pub groups_unrestored: Mutex<Vec<ide_workspace::window_groups::SavedGroup>>,
     pub groups_persist: tokio::sync::Mutex<()>,
     launches: Mutex<HashMap<String, Launch>>,
-    /// Project launches taken by a window whose frontend has not settled them yet.
-    opening: Mutex<HashMap<String, PathBuf>>,
+    /// The project each window took a launch for, until it opens a project: still opening it, or
+    /// it failed to open (or its trust prompt was cancelled) and is retried next launch.
+    launched: Mutex<HashMap<String, PathBuf>>,
     /// Most recently focused window label (menu events go there).
     last_focused: Mutex<Option<String>>,
     /// The window recording the project reopened on the next launch, see [`SessionOwner`].
@@ -122,7 +123,7 @@ impl WindowsState {
     pub fn take_launch(&self, label: &str) -> Option<Launch> {
         let launch = self.launches.lock().remove(label);
         if let Some(project) = launch.as_ref().and_then(|l| l.project.clone()) {
-            self.opening.lock().insert(label.to_owned(), project.into());
+            self.launched.lock().insert(label.to_owned(), project.into());
         }
         launch
     }
@@ -138,14 +139,28 @@ impl WindowsState {
         self.launches.lock().get(label).cloned()
     }
 
-    /// The project `label` took a launch for and is still opening.
-    pub(crate) fn opening(&self, label: &str) -> Option<PathBuf> {
-        self.opening.lock().get(label).cloned()
+    /// The project `label` took a launch for and has not opened: still opening, failed, or cancelled.
+    pub(crate) fn launched(&self, label: &str) -> Option<PathBuf> {
+        self.launched.lock().get(label).cloned()
     }
 
-    /// `label`'s frontend is done with the launch it took, its project opened or not.
-    pub fn launch_settled(&self, label: &str) {
-        self.opening.lock().remove(label);
+    /// `label`'s frontend is done with the launch it took. A project it did not open stays
+    /// launched, so the window group saves it and the next launch retries it.
+    pub fn launch_settled(&self, label: &str, opened: bool) {
+        if opened {
+            self.forget_launch(label);
+        }
+    }
+
+    /// `label` explicitly closed its project: nothing to retry.
+    pub fn forget_launch(&self, label: &str) {
+        self.launched.lock().remove(label);
+    }
+
+    /// The project saved for window-group member `label`: the one it `holds`, else the one it is
+    /// launched with (pending, opening, or failed to open).
+    pub fn saved_project(&self, label: &str, holds: Option<PathBuf>) -> Option<PathBuf> {
+        holds.or_else(|| self.pending(label).and_then(|l| l.project).map(Into::into)).or_else(|| self.launched(label))
     }
 
     pub fn focused(&self, label: &str) {
@@ -154,7 +169,7 @@ impl WindowsState {
 
     pub fn forget(&self, label: &str) {
         self.launches.lock().remove(label);
-        self.opening.lock().remove(label);
+        self.forget_launch(label);
         let mut last = self.last_focused.lock();
         if last.as_deref() == Some(label) {
             *last = None;
@@ -1382,22 +1397,28 @@ mod tests {
         assert_eq!(st.take_launch("project-1"), None);
     }
 
-    // Between taking its launch and opening the project, a window is still opening it.
+    // A taken project launch stays launched until the window opens a project: a failed or cancelled
+    // one is retried next launch with its window group.
     #[test]
-    fn a_taken_project_launch_is_opening_until_settled() {
+    fn a_taken_project_launch_stays_until_opened() {
         let st = WindowsState::default();
         st.set_launch("project-1", Launch { project: Some("/p".into()), ..Default::default() });
         st.set_launch("project-2", Launch { files: vec!["/x/a.txt".into()], ..Default::default() });
         st.take_launch("project-1");
         st.take_launch("project-2");
-        assert_eq!(st.opening("project-1"), Some(p("/p")));
-        assert_eq!(st.opening("project-2"), None);
-        st.launch_settled("project-1");
-        assert_eq!(st.opening("project-1"), None);
+        assert_eq!(st.launched("project-1"), Some(p("/p")));
+        assert_eq!(st.launched("project-2"), None);
+        st.launch_settled("project-1", false);
+        assert_eq!(st.launched("project-1"), Some(p("/p")));
+        assert_eq!(st.saved_project("project-1", None), Some(p("/p")));
+        assert_eq!(st.saved_project("project-1", Some(p("/q"))), Some(p("/q")));
+        st.launch_settled("project-1", true);
+        assert_eq!(st.launched("project-1"), None);
         st.set_launch("project-3", Launch { project: Some("/q".into()), ..Default::default() });
+        assert_eq!(st.saved_project("project-3", None), Some(p("/q")));
         st.take_launch("project-3");
         st.forget("project-3");
-        assert_eq!(st.opening("project-3"), None);
+        assert_eq!(st.launched("project-3"), None);
     }
 
     // `main` holds the session while open; once it closes the first window left takes over, and
