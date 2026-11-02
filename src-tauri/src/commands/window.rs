@@ -310,7 +310,7 @@ pub fn window_open_projects(
                 let name = c.root.trim_end_matches('/').rsplit('/').next().unwrap_or_default().to_owned();
                 return Some(OpenProject { name, root, current, remote: Some(c.target.clone()) });
             }
-            let project = state.project(&label).ok().filter(|p| !p.light)?;
+            let project = state.opened_project(&label)?;
             Some(OpenProject {
                 name: project.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                 root: project.root.clone(),
