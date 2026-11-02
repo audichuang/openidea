@@ -11,6 +11,8 @@ import styles from "./Select.module.css";
 export interface SelectOption<V extends string = string> {
   value: V;
   label: string;
+  /** Show and search `label` verbatim (branch / ref / path names), never through the translation catalog. */
+  literal?: boolean;
   icon?: IconName | (string & {});
   detail?: string;
   /** Extra text (not shown) that the search should also match. */
@@ -67,6 +69,7 @@ export function Select<V extends string = string>({
   ...aria
 }: SelectProps<V>) {
   const given = useGivenTx();
+  const text = (o: SelectOption<V>) => (o.literal ? o.label : given(o.label));
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const current = options.find((o) => !o.section && o.value === value);
@@ -81,8 +84,7 @@ export function Select<V extends string = string>({
           const q = query.trim().toLowerCase();
           const tokens = q.split(/\s+/).filter(Boolean);
           const matches = (o: SelectOption<V>) => {
-            const haystack =
-              `${given(o.label)} ${o.detail != null ? given(o.detail) : ""} ${o.keywords ?? ""}`.toLowerCase();
+            const haystack = `${text(o)} ${o.detail != null ? given(o.detail) : ""} ${o.keywords ?? ""}`.toLowerCase();
             return tokens.every((tok) => containsOrFuzzy(haystack, tok));
           };
           // Keep section headers visible as long as at least one of their
@@ -169,7 +171,7 @@ export function Select<V extends string = string>({
       const n = filtered.length;
       for (let s = prefix.length > 1 ? 0 : 1; s <= n; s++) {
         const i = (activeIndex + s) % n;
-        if (!unavailable(filtered[i]!) && given(filtered[i]!.label).toLowerCase().startsWith(prefix)) {
+        if (!unavailable(filtered[i]!) && text(filtered[i]!).toLowerCase().startsWith(prefix)) {
           setActive(i);
           break;
         }
@@ -202,7 +204,7 @@ export function Select<V extends string = string>({
           <>
             {current?.icon && <Icon name={current.icon} size={14} />}
             <span className={clsx(styles.value, !current && styles.placeholder)}>
-              {given(current?.label ?? placeholder)}
+              {current ? text(current) : given(placeholder)}
             </span>
           </>
         )}
@@ -244,7 +246,7 @@ export function Select<V extends string = string>({
               <div key={`${o.section ? "section" : "option"}:${o.value}`} className={styles.sizerRow}>
                 <span className={styles.check} />
                 {o.icon && <Icon name={o.icon} size={14} />}
-                <span>{given(o.label)}</span>
+                <span>{text(o)}</span>
                 {o.detail && <span className={styles.sizerDetail}>{given(o.detail)}</span>}
               </div>
             ))}
@@ -253,7 +255,7 @@ export function Select<V extends string = string>({
             items={filtered}
             getKey={(o) => `${o.section ? "section" : "option"}:${o.value}`}
             isSection={isSection}
-            renderSection={(o) => <span className={styles.disabled}>{given(o.label)}</span>}
+            renderSection={(o) => <span className={styles.disabled}>{text(o)}</span>}
             activeIndex={activeIndex}
             onActiveChange={(i) => {
               if (!unavailable(filtered[i]!)) setActive(i);
@@ -271,8 +273,8 @@ export function Select<V extends string = string>({
               >
                 <span className={styles.check}>{o.value === value && <Icon name="check" size={12} />}</span>
                 {o.icon && <Icon name={o.icon} size={14} />}
-                <span className={clsx(styles.optionLabel, o.detail && styles.withDetail)} title={given(o.label)}>
-                  {given(o.label)}
+                <span className={clsx(styles.optionLabel, o.detail && styles.withDetail)} title={text(o)}>
+                  {text(o)}
                 </span>
                 {o.detail && (
                   <span className={styles.detail} title={o.detail}>
