@@ -5,6 +5,7 @@ import { Icon, IconButton, SearchField, Spinner, type MenuItem } from "@/ui";
 import clsx from "clsx";
 import { useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { BranchFilterPopup } from "../BranchFilterPopup";
+import { RepositoryFilterPopup } from "../RepositoryFilterPopup";
 import { chooseDateRange, chooseMany } from "../dialogs";
 import styles from "../GitLog.module.css";
 import { LogIdContext } from "../logContext";
@@ -139,6 +140,7 @@ export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
   const pathEditorAnchor = overflowTrigger ?? pathsTrigger;
   if (!active && pathEditor) setPathEditor(null);
   const [menuBelow, dropdown] = useDropdownMenu();
+  const [repoAnchor, setRepoAnchor] = useState<HTMLElement | null>(null);
   // Filters that do not fit move behind a chevron, like a toolbar's overflow.
   const groupRef = useRef<HTMLSpanElement>(null);
   const [hiddenFrom, setHiddenFrom] = useState(Infinity);
@@ -328,6 +330,16 @@ export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
   };
 
   const logFilters: LogFilter[] = [
+    ...(repositories.length > 1
+      ? [
+          {
+            label: "Repository",
+            value: filters.repositories?.map(repoName).join(", ") || null,
+            onOpen: setRepoAnchor,
+            onClear: () => setLogFilters({ repositories: [] }),
+          },
+        ]
+      : []),
     ...(comparison
       ? []
       : [
@@ -427,6 +439,15 @@ export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
             setPathEditor(null);
             if (paths) selectPaths(paths);
           }}
+        />
+      )}
+      {repoAnchor && (
+        <RepositoryFilterPopup
+          anchor={repoAnchor}
+          repositories={repositories}
+          selected={filters.repositories ?? []}
+          onClose={() => setRepoAnchor(null)}
+          onSelect={(repo) => setLogFilters({ repositories: toggleRepository(filters.repositories, repo) })}
         />
       )}
       {branchAnchor && (
