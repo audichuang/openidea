@@ -221,6 +221,9 @@ pub struct ExportSelection {
     /// Base used to spell the path that Commit/Range items are filter-matched against;
     /// do not reuse spelled_root (that is the root's own spelling and feeds only the File branch).
     pub filter_root: Option<PathBuf>,
+    /// Roots whose files are spelled with their absolute path in the payload
+    /// (files outside the project that no repository covers).
+    pub absolute_roots: Vec<CanonicalRootId>,
 }
 
 impl ExportSelection {
@@ -250,6 +253,7 @@ impl ExportSelection {
             source_root: None,
             spelled_root: None,
             filter_root: None,
+            absolute_roots: Vec::new(),
         };
         validate_export_selection(&sel)?;
         Ok(sel)
@@ -272,6 +276,20 @@ impl ExportSelection {
         self
     }
 
+    /// Marks `roots` (a subset of the selection's roots) as spelled absolute.
+    pub fn with_absolute_roots(mut self, roots: &[PathBuf]) -> Result<Self, TransferError> {
+        let mut ids = Vec::with_capacity(roots.len());
+        for r in roots {
+            let id = CanonicalRootId::new(r)?;
+            if !self.roots.contains(&id) {
+                return Err(TransferError::UnknownRoot(id.path().to_path_buf()));
+            }
+            ids.push(id);
+        }
+        self.absolute_roots = ids;
+        Ok(self)
+    }
+
     /// A selection over the same roots with `items` replaced, carrying over
     /// the optional fields [`ExportSelection::new`] does not set
     /// (`source_root`, `spelled_root`, `filter_root`): the folder walk and
@@ -285,7 +303,13 @@ impl ExportSelection {
         )?
         .with_source_root(self.source_root.clone())
         .with_spelled_root(self.spelled_root.clone())
-        .with_filter_root(self.filter_root.clone()))
+        .with_filter_root(self.filter_root.clone())
+        .with_absolute_roots_ids(self.absolute_roots.clone()))
+    }
+
+    fn with_absolute_roots_ids(mut self, ids: Vec<CanonicalRootId>) -> Self {
+        self.absolute_roots = ids;
+        self
     }
 }
 
@@ -315,11 +339,6 @@ pub enum TransferError {
 		.root.display()
 	)]
     MixedSourceCollision { root: PathBuf, path: String, msg: String },
-    #[error(
-		"ambiguous root basenames: multiple roots share basename '{basename}': {}",
-		.roots.iter().map(|r| r.display().to_string()).collect::<Vec<_>>().join(", ")
-	)]
-    AmbiguousRootBasenames { basename: String, roots: Vec<PathBuf> },
     #[error("wire header collision: multiple items map to identical wire path '{wire_path}'")]
     WireHeaderCollision { wire_path: String },
     #[error("target collision: multiple operations target '{}': {msg}", .path.display())]
@@ -1292,6 +1311,29 @@ fn root_basename(path: &Path) -> String {
     normalized.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_string()
 }
 
+/// The path an item carries in the payload header: relative for the primary
+/// root, `<root basename>/<relative>` for another root, and the absolute path
+/// for a root marked absolute or whose basename is empty or shared with another
+/// root (ClipCode's path resolver falls back to absolute paths the same way).
+fn wire_path_of(selection: &ExportSelection, primary: Option<&CanonicalRootId>, item: &ExportItem) -> String {
+    let absolute = || {
+        let full = item.root.path().join(&item.relative_path);
+        paths::normalize_system_path(&full.to_string_lossy().replace('\\', "/"))
+    };
+    if selection.absolute_roots.contains(&item.root) {
+        return absolute();
+    }
+    if primary == Some(&item.root) {
+        return item.relative_path.clone();
+    }
+    let prefix = root_basename(item.root.path());
+    let shared = selection.roots.iter().any(|r| *r != item.root && root_basename(r.path()) == prefix);
+    if prefix.is_empty() || shared {
+        return absolute();
+    }
+    format!("{prefix}/{}", item.relative_path)
+}
+
 /// Resolves target identity across symlinks and platform case folding.
 fn canonical_target_identity(path: &Path) -> String {
     if let Ok(c) = dunce::canonicalize(path) {
@@ -1507,33 +1549,11 @@ pub fn validate_export_selection(selection: &ExportSelection) -> Result<(), Tran
         }
     }
 
-    // 3. Ambiguous root basenames check
+    // 3. Actual wire header collision check
     let primary = selection.primary_root.clone().or_else(|| selection.roots.first().cloned());
-    if selection.roots.len() > 1 {
-        let mut basename_to_roots: HashMap<String, Vec<PathBuf>> = HashMap::new();
-        for root in &selection.roots {
-            let name = root_basename(root.path());
-            if !name.is_empty() {
-                basename_to_roots.entry(name).or_default().push(root.path().to_path_buf());
-            }
-        }
-        for (name, roots) in basename_to_roots {
-            if roots.len() > 1 {
-                return Err(TransferError::AmbiguousRootBasenames { basename: name, roots });
-            }
-        }
-    }
-
-    // 4. Actual wire header collision check
     let mut seen_wire_paths = HashSet::new();
     for item in &selection.items {
-        let is_primary = primary.as_ref() == Some(&item.root);
-        let wire_path = if is_primary {
-            item.relative_path.clone()
-        } else {
-            let prefix = root_basename(item.root.path());
-            format!("{prefix}/{}", item.relative_path)
-        };
+        let wire_path = wire_path_of(selection, primary.as_ref(), item);
 
         if !seen_wire_paths.insert(wire_path.clone()) {
             return Err(TransferError::WireHeaderCollision { wire_path });
@@ -1808,7 +1828,7 @@ pub fn plan_export_with(
             .any(|item| matches!(item.source, SourceKind::Commit { .. } | SourceKind::Range { .. }));
         let mut fallback = is_graph;
 
-        let default_source_root = if selection.roots.len() == 1 {
+        let default_source_root = if selection.roots.len() == 1 && selection.absolute_roots.is_empty() {
             selection.source_root.clone().or_else(|| paths::source_root_name(&[selection.roots[0].path()]))
         } else {
             None
@@ -1853,13 +1873,8 @@ pub fn plan_export_with(
 
         for item in &selection.items {
             cancelled_err(opts, "plan-export")?;
-            let is_primary = primary.as_ref() == Some(&item.root);
-            let wire_path = if is_primary {
-                item.relative_path.clone()
-            } else {
-                let prefix = root_basename(item.root.path());
-                format!("{prefix}/{}", item.relative_path)
-            };
+            let wire_path = wire_path_of(selection, primary.as_ref(), item);
+            let is_primary = primary.as_ref() == Some(&item.root) && !selection.absolute_roots.contains(&item.root);
 
             let absolute = item.root.path().join(&item.relative_path);
 
@@ -4034,6 +4049,7 @@ mod freshness_error_tests {
             source_root: None,
             spelled_root: None,
             filter_root: None,
+            absolute_roots: Vec::new(),
         };
         let export_err = SourceFreshnessSnapshot::capture(&export_selection)
             .expect_err("export capture must fail on non-regular file");
