@@ -25,6 +25,8 @@ use tauri::{AppHandle, Emitter, Manager, Theme, WebviewWindow, WebviewWindowBuil
 
 /// Tells a window that a pending launch is waiting for it.
 pub const LAUNCH_EVENT: &str = "openidea://launch";
+/// Tells a window that it now records the project reopened on the next launch (`main` closed).
+pub const SESSION_OWNER_EVENT: &str = "openidea://session-owner";
 const MAIN: &str = "main";
 const PREFIX: &str = "project-";
 const SETTINGS_PREFIX: &str = "settings-";
@@ -104,6 +106,8 @@ pub struct WindowsState {
     opening: Mutex<HashMap<String, PathBuf>>,
     /// Most recently focused window label (menu events go there).
     last_focused: Mutex<Option<String>>,
+    /// The window recording the project reopened on the next launch, see [`SessionOwner`].
+    session_owner: Mutex<SessionOwner>,
     /// Set by Quit while windows close one by one.
     quitting: AtomicBool,
     /// Relaunch once the quit completes (after installing an update).
@@ -157,6 +161,32 @@ impl WindowsState {
         }
     }
 
+    /// Whether `label` records the project reopened on the next launch.
+    pub fn owns_session(&self, label: &str) -> bool {
+        match &*self.session_owner.lock() {
+            SessionOwner::Main => label == MAIN,
+            SessionOwner::Window(owner) => owner == label,
+            SessionOwner::Nobody => false,
+        }
+    }
+
+    /// Once the window holding the session is gone, the first of `remaining` (project windows in
+    /// label order) takes it over; returns that window, or `None` while the holder is still open.
+    pub fn hand_over_session(&self, remaining: &[String]) -> Option<String> {
+        let mut owner = self.session_owner.lock();
+        let held = match &*owner {
+            SessionOwner::Main => Some(MAIN),
+            SessionOwner::Window(label) => Some(label.as_str()),
+            SessionOwner::Nobody => None,
+        };
+        if held.is_some_and(|held| remaining.iter().any(|l| l == held)) {
+            return None;
+        }
+        let heir = remaining.first().cloned();
+        *owner = heir.clone().map_or(SessionOwner::Nobody, SessionOwner::Window);
+        heir
+    }
+
     pub fn last_focused(&self) -> Option<String> {
         self.last_focused.lock().clone()
     }
@@ -178,6 +208,32 @@ impl WindowsState {
 
     pub fn quitting(&self) -> bool {
         self.quitting.load(Ordering::SeqCst)
+    }
+}
+
+/// Who records the project reopened on the next launch: `main` while it is open (restored group
+/// members open theirs after it and must not replace it), then a window left when it closed.
+#[derive(Default)]
+enum SessionOwner {
+    #[default]
+    Main,
+    Window(String),
+    /// Every window closed; the next one opened takes over.
+    Nobody,
+}
+
+/// Hands the session to a remaining window once its holder closed (`closed`, which may still be
+/// listed while being destroyed). Not while quitting: windows close one by one, `main` first,
+/// and the project `main` held is the one to reopen.
+pub fn hand_over_session(app: &AppHandle, closed: Option<&str>) {
+    let state = app.state::<WindowsState>();
+    if state.quitting() {
+        return;
+    }
+    let remaining: Vec<_> =
+        project_window_labels(app).into_iter().filter(|label| Some(label.as_str()) != closed).collect();
+    if let Some(heir) = state.hand_over_session(&remaining) {
+        let _ = app.emit_to(&heir, SESSION_OWNER_EVENT, ());
     }
 }
 
@@ -483,6 +539,8 @@ fn create_window_for(
     }
     app.state::<WindowsState>().set_launch(&label, launch);
     let window = build_project_window(app, config)?;
+    // Opened after every window closed: it holds the session (its frontend asks on startup).
+    hand_over_session(app, None);
     #[cfg(target_os = "macos")]
     if let Some(target) = tab_target {
         crate::window_groups::join(app, target.label(), window.label())?;
@@ -1340,6 +1398,23 @@ mod tests {
         st.take_launch("project-3");
         st.forget("project-3");
         assert_eq!(st.opening("project-3"), None);
+    }
+
+    // `main` holds the session while open; once it closes the first window left takes over, and
+    // once every window closed the next one opened does.
+    #[test]
+    fn the_session_passes_from_main_to_a_remaining_window() {
+        let st = WindowsState::default();
+        assert!(st.owns_session("main") && !st.owns_session("project-1"));
+        assert_eq!(st.hand_over_session(&s(&["main", "project-1"])), None);
+        assert_eq!(st.hand_over_session(&s(&["project-1", "project-2"])).as_deref(), Some("project-1"));
+        assert!(st.owns_session("project-1") && !st.owns_session("main"));
+        assert_eq!(st.hand_over_session(&s(&["project-1", "project-3"])), None);
+        assert_eq!(st.hand_over_session(&s(&["project-2"])).as_deref(), Some("project-2"));
+        assert_eq!(st.hand_over_session(&[]), None);
+        assert!(!st.owns_session("project-2"));
+        assert_eq!(st.hand_over_session(&s(&["project-4"])).as_deref(), Some("project-4"));
+        assert!(st.owns_session("project-4"));
     }
 
     #[test]
