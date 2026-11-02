@@ -218,7 +218,8 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
         "clip.copyFiles",
         nodes.map((n) => n.path),
       ),
-    !!folder && act("clip.paste", folder),
+    // Restores under the project root, not the clicked folder (ClipCode resolves from the project).
+    !!folder && act("clip.paste"),
     { kind: "separator" },
   );
 
