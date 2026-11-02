@@ -86,7 +86,6 @@ pub fn run() {
             .with_state_flags(window_state_flags())
             // One remembered geometry shared by every project's settings window.
             .map_label(|l| if windows::is_settings_window(l) { "settings" } else { l })
-            .with_filter(windows::tracks_window_state)
             .build(),
     );
     let app = app
@@ -171,6 +170,13 @@ pub fn run() {
     .on_window_event(|window, event| match event {
         #[cfg(target_os = "linux")]
         tauri::WindowEvent::CloseRequested { .. } => linux_window_state::save_before_close(window.app_handle()),
+        // While quitting, `app_quit` recorded it before closing any window.
+        #[cfg(target_os = "macos")]
+        tauri::WindowEvent::CloseRequested { .. }
+            if window.label() == "main" && window.try_state::<WindowsState>().is_some_and(|w| !w.quitting()) =>
+        {
+            windows::save_main_fullscreen(window.app_handle())
+        }
         tauri::WindowEvent::Focused(true) => {
             application_focus::changed(window.app_handle(), true);
             if let Some(w) = window.try_state::<WindowsState>() {
@@ -232,7 +238,9 @@ pub fn run() {
 #[cfg(not(target_os = "linux"))]
 fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
     use tauri_plugin_window_state::StateFlags;
-    StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED | StateFlags::FULLSCREEN
+    let flags = StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED;
+    // macOS: `windows::save_main_fullscreen` instead.
+    if cfg!(target_os = "macos") { flags } else { flags | StateFlags::FULLSCREEN }
 }
 
 /// Routes IDE menu items to the focused window's frontend (`executeAction`).
