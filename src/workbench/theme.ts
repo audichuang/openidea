@@ -57,6 +57,11 @@ export function resolveTheme(setting: string | undefined, systemLight: boolean):
   return themeKind(resolveThemeId({ theme: setting }, systemLight));
 }
 
+/** Whether "Sync with OS" (or the session override `system`) picks the theme. */
+function followsOsTheme(override: ThemeSetting | null, a: AppearanceLike | undefined): boolean {
+  return override ? override === "system" : !!(a?.syncWithOs || a?.theme === "system");
+}
+
 const ACCENT_RE = /^#[0-9a-f]{3,8}$/i;
 
 export function useApplyTheme() {
@@ -67,6 +72,8 @@ export function useApplyTheme() {
     ? resolveThemeId({ theme: override }, systemLight)
     : resolveThemeId(appearance as AppearanceLike | undefined, systemLight);
   const accent = appearance?.accent;
+  // Native chrome follows the OS or is pinned (nativeAppearance), which can change while `id` stays put.
+  const followsOs = followsOsTheme(override, appearance as AppearanceLike | undefined);
 
   // Until settings arrive, keep the theme public/boot.js restored rather than the light default.
   const pending = !override && !appearance;
@@ -79,7 +86,7 @@ export function useApplyTheme() {
     if (custom) root.style.setProperty("--accent", accent);
     else root.style.removeProperty("--accent");
     syncWindowBackground();
-  }, [pending, id, accent]);
+  }, [pending, id, accent, followsOs]);
 }
 
 /**
@@ -179,8 +186,7 @@ export function nativeAppearance(root: HTMLElement = document.documentElement): 
   if (pluginKind === "light" || pluginKind === "dark") return pluginKind;
   const override = useThemeOverride.getState().theme;
   const appearance = useProject.getState().settings?.appearance as AppearanceLike | undefined;
-  const followsOs = override ? override === "system" : !!(appearance?.syncWithOs || appearance?.theme === "system");
-  if (followsOs) return null;
+  if (followsOsTheme(override, appearance)) return null;
   const base = root.dataset.theme;
   return base === "light" || base === "dark" ? base : null;
 }
