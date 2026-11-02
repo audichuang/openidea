@@ -209,6 +209,20 @@ describe("project view context menu", () => {
     expect(labels(contextMenuItems([node(`${ROOT}/a.py`), node(`${ROOT}/b.py`)]))).toContain("Compare Files");
   });
 
+  it("pastes ClipCode files at the project root, not the clicked folder", () => {
+    const dispose = registerActions([
+      { id: "clip.paste", title: "ClipCode: Paste and Restore Files", run: () => undefined },
+    ]);
+    try {
+      for (const nodes of [[node("/p/src", true)], [node("/p/src/a.py")]]) {
+        const item = contextMenuItems(nodes).find((i) => "action" in i && i.action === "clip.paste");
+        expect(item).toEqual({ kind: "action", action: "clip.paste", arg: undefined, label: undefined });
+      }
+    } finally {
+      dispose();
+    }
+  });
+
   it("never shows an empty submenu", () => {
     disposers.forEach((d) => d());
     disposers = [];
