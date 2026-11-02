@@ -224,6 +224,11 @@ pub struct ExportSelection {
     /// Roots whose files are spelled with their absolute path in the payload
     /// (files outside the project that no repository covers).
     pub absolute_roots: Vec<CanonicalRootId>,
+    /// The opened project the payload paths are relative to (ClipCode's
+    /// `ClipboardPathResolver.fromProject`), when it is not itself one of
+    /// `roots`: git items stay rooted at their repository for reading, but
+    /// their headers and the `clipcode-root` line describe this folder.
+    pub anchor_root: Option<CanonicalRootId>,
 }
 
 impl ExportSelection {
@@ -232,6 +237,30 @@ impl ExportSelection {
         primary_root: Option<PathBuf>,
         items: Vec<ExportItem>,
     ) -> Result<Self, TransferError> {
+        Self::build(roots, primary_root, None, items)
+    }
+
+    /// A selection whose items are spelled relative to `anchor` (the opened
+    /// project) and named after it in the `clipcode-root` line; see
+    /// [`ExportSelection::anchor_root`]. Validated once, as anchored.
+    pub fn anchored(roots: Vec<PathBuf>, anchor: &Path, items: Vec<ExportItem>) -> Result<Self, TransferError> {
+        Self::build(roots, None, Some(anchor), items)
+    }
+
+    fn build(
+        roots: Vec<PathBuf>,
+        primary_root: Option<PathBuf>,
+        anchor: Option<&Path>,
+        items: Vec<ExportItem>,
+    ) -> Result<Self, TransferError> {
+        let anchor_root = match anchor {
+            Some(a) => {
+                let id = CanonicalRootId::new(a)?;
+                id.validate()?;
+                Some(id)
+            }
+            None => None,
+        };
         let mut canonical_roots = Vec::with_capacity(roots.len());
         for r in roots {
             let id = CanonicalRootId::new(&r)?;
@@ -254,6 +283,7 @@ impl ExportSelection {
             spelled_root: None,
             filter_root: None,
             absolute_roots: Vec::new(),
+            anchor_root,
         };
         validate_export_selection(&sel)?;
         Ok(sel)
@@ -292,24 +322,15 @@ impl ExportSelection {
 
     /// A selection over the same roots with `items` replaced, carrying over
     /// the optional fields [`ExportSelection::new`] does not set
-    /// (`source_root`, `spelled_root`, `filter_root`): the folder walk and
+    /// (`source_root`, `spelled_root`, `filter_root`, `absolute_roots`,
+    /// `anchor_root`): the folder walk and
     /// the truncation-prefix rebuilds must not drop them, or a commit copy
     /// from a subfolder loses the root its relative filters match against.
+    /// Validated with all of them in place, so the wire paths checked are the ones written.
     pub fn with_items(&self, items: Vec<ExportItem>) -> Result<Self, TransferError> {
-        Ok(ExportSelection::new(
-            self.roots.iter().map(|r| r.path().to_path_buf()).collect(),
-            self.primary_root.as_ref().map(|r| r.path().to_path_buf()),
-            items,
-        )?
-        .with_source_root(self.source_root.clone())
-        .with_spelled_root(self.spelled_root.clone())
-        .with_filter_root(self.filter_root.clone())
-        .with_absolute_roots_ids(self.absolute_roots.clone()))
-    }
-
-    fn with_absolute_roots_ids(mut self, ids: Vec<CanonicalRootId>) -> Self {
-        self.absolute_roots = ids;
-        self
+        let sel = Self { items, ..self.clone() };
+        validate_export_selection(&sel)?;
+        Ok(sel)
     }
 }
 
@@ -1315,6 +1336,12 @@ fn root_basename(path: &Path) -> String {
 /// root, `<root basename>/<relative>` for another root, and the absolute path
 /// for a root marked absolute or whose basename is empty or shared with another
 /// root (ClipCode's path resolver falls back to absolute paths the same way).
+///
+/// With an anchor (the opened project) a file under it is spelled relative to
+/// it whichever repository it comes from, as ClipCode's `toClipboardPath`
+/// does. A file outside it keeps its repository's label when that repository
+/// lies outside the project too, and its absolute path when the repository
+/// contains the project (opened at a subfolder): no project root covers it.
 fn wire_path_of(selection: &ExportSelection, primary: Option<&CanonicalRootId>, item: &ExportItem) -> String {
     let absolute = || {
         let full = item.root.path().join(&item.relative_path);
@@ -1323,7 +1350,17 @@ fn wire_path_of(selection: &ExportSelection, primary: Option<&CanonicalRootId>, 
     if selection.absolute_roots.contains(&item.root) {
         return absolute();
     }
-    if primary == Some(&item.root) {
+    if let Some(anchor) = &selection.anchor_root {
+        let full = item.root.path().join(&item.relative_path);
+        if let Ok(rel) = full.strip_prefix(anchor.path()) {
+            if !rel.as_os_str().is_empty() {
+                return rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
+            }
+        }
+        if anchor.path().starts_with(item.root.path()) {
+            return absolute();
+        }
+    } else if primary == Some(&item.root) {
         return item.relative_path.clone();
     }
     let prefix = root_basename(item.root.path());
@@ -1828,7 +1865,10 @@ pub fn plan_export_with(
             .any(|item| matches!(item.source, SourceKind::Commit { .. } | SourceKind::Range { .. }));
         let mut fallback = is_graph;
 
-        let default_source_root = if selection.roots.len() == 1 && selection.absolute_roots.is_empty() {
+        // The project's name, like ClipCode's `singleRootName()` for its one project root.
+        let default_source_root = if let Some(anchor) = &selection.anchor_root {
+            selection.source_root.clone().or_else(|| paths::source_root_name(&[anchor.path()]))
+        } else if selection.roots.len() == 1 && selection.absolute_roots.is_empty() {
             selection.source_root.clone().or_else(|| paths::source_root_name(&[selection.roots[0].path()]))
         } else {
             None
@@ -4050,6 +4090,7 @@ mod freshness_error_tests {
             spelled_root: None,
             filter_root: None,
             absolute_roots: Vec::new(),
+            anchor_root: None,
         };
         let export_err = SourceFreshnessSnapshot::capture(&export_selection)
             .expect_err("export capture must fail on non-regular file");
