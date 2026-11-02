@@ -787,6 +787,11 @@ export const commands = {
 } | null>("window_take_launch"),
 	/**  This window is done with the launch it took: its project opened, failed to, or was cancelled. */
 	windowLaunchSettled: () => __TAURI_INVOKE<void>("window_launch_settled"),
+	/**
+	 *  Whether this window records the project reopened on the next launch: `main` while it is
+	 *  open, then a window left when it closed (told by `openidea://session-owner`).
+	 */
+	windowOwnsSession: () => __TAURI_INVOKE<boolean>("window_owns_session"),
 	windowCloseContext: () => __TAURI_INVOKE<CloseContext>("window_close_context"),
 	/**  Projects open in project windows, in window order (title bar project widget). */
 	windowOpenProjects: () => typedError<OpenProject[], IdeError>(__TAURI_INVOKE("window_open_projects")),
