@@ -5,6 +5,7 @@ import { HighlightedText, Icon, List, Popup, SearchField, T, firstSelectable, fu
 import { tx } from "@/platform/i18n";
 import { isFavoriteBranch, sortLocal, sortRemote } from "./branches";
 import { loadFavoriteBranches, useFavoriteBranches } from "./branchOps";
+import { isImeKey } from "@/platform/ime";
 import styles from "./GitLog.module.css";
 
 type Group = "local" | "remote";
@@ -111,6 +112,7 @@ export function BranchFilterPopup({
   };
   const onKeyDown = (e: KeyboardEvent) => {
     const row = rows[activeIndex];
+    if (isImeKey(e.nativeEvent)) return;
     if (e.key === "Enter") {
       e.preventDefault();
       activate(row);
