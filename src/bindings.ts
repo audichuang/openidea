@@ -208,10 +208,12 @@ export const commands = {
 	/**  The clipboard text for `source` (file or commit payload); the UI writes it. */
 	clipCopy: (source: ClipCopySource) => typedError<ClipCopyResult, IdeError>(__TAURI_INVOKE("clip_copy", { source })),
 	/**
-	 *  Plans pasting `text` into `dest` (default: the project root). Nothing is written;
-	 *  `repos` take the `<repo>/` prefixes of a payload copied from several repositories.
+	 *  Plans pasting `text`: files restore under `dest` (default: the project root),
+	 *  commits replay into `repo` (the selected repository; default: `dest`'s). Nothing
+	 *  is written; `repos` take the `<repo>/` prefixes of a payload copied from several
+	 *  repositories.
 	 */
-	clipPastePreview: (text: string, dest: string | null, adjustPaths: boolean, repos: string[]) => typedError<ClipPastePreview, IdeError>(__TAURI_INVOKE("clip_paste_preview", { text, dest, adjustPaths, repos })),
+	clipPastePreview: (text: string, dest: string | null, repo: string | null, adjustPaths: boolean, repos: string[]) => typedError<ClipPastePreview, IdeError>(__TAURI_INVOKE("clip_paste_preview", { text, dest, repo, adjustPaths, repos })),
 	/**  Writes the preview `apply.id` as confirmed. */
 	clipPasteApply: (apply: ClipPasteApply) => typedError<ClipPasteResult, IdeError>(__TAURI_INVOKE("clip_paste_apply", { apply })),
 	/**  ClipCode for VS Code's Copy Branch Commits: `branch` since its fork point (or `full` history) as an mbox. */
