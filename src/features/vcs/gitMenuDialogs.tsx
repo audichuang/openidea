@@ -98,7 +98,9 @@ function useBranches(): Branch[] {
 }
 
 const branchOptions = (list: readonly Branch[]): SelectOption[] =>
-  list.filter((b) => !b.name.endsWith("/HEAD")).map((b) => ({ value: b.name, label: b.name, icon: "branch" }));
+  list
+    .filter((b) => !b.name.endsWith("/HEAD"))
+    .map((b) => ({ value: b.name, label: b.name, literal: true, icon: "branch" }));
 
 /** Remote branches of `remote` without the remote prefix (`origin/main` → `main`). */
 export function remoteBranchesOf(branches: readonly Branch[], remote: string): string[] {
@@ -188,7 +190,7 @@ function PullDialog({ onClose }: { onClose: () => void }) {
             <Select
               aria-label="Remote"
               value={remote}
-              options={(remotes ?? []).map((r) => ({ value: r.name, label: r.name, detail: r.url }))}
+              options={(remotes ?? []).map((r) => ({ value: r.name, label: r.name, literal: true, detail: r.url }))}
               onChange={setRemote}
             />
             <Select
@@ -197,7 +199,7 @@ function PullDialog({ onClose }: { onClose: () => void }) {
               className={styles.grow}
               value={branch}
               placeholder="Branch"
-              options={remoteBranches.map((b) => ({ value: b, label: b, icon: "branch" }))}
+              options={remoteBranches.map((b) => ({ value: b, label: b, literal: true, icon: "branch" }))}
               onChange={setBranch}
             />
           </div>
@@ -635,7 +637,7 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
             aria-label="Repository"
             searchable
             value={repo}
-            options={repos.map((r) => ({ value: r, label: repoName(r) }))}
+            options={repos.map((r) => ({ value: r, label: repoName(r), literal: true }))}
             onChange={(r) => void selectRepo(r)}
           />
         )}
