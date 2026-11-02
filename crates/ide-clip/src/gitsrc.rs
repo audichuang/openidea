@@ -1308,10 +1308,10 @@ pub fn collect_payload_with_selection<P: AsRef<Path>>(
             continue;
         }
         let absolute = absolute.to_string_lossy().into_owned();
-        let filter_path = to_clipboard_path_from_roots(&roots, &absolute, None);
-        // graphCopy labels a single repo's files repo-relative and filters
-        // on the workspace-relative spelling; SCM uses the latter for both.
-        let path = if graph { file.path.clone() } else { filter_path.clone() };
+        // Every surface spells the header relative to the workspace (the opened
+        // project) and filters on that same path, graph copies included.
+        let path = to_clipboard_path_from_roots(&roots, &absolute, None);
+        let filter_path = path.clone();
         if settings.use_filters
             && !file_matches_filters(
                 &filter_path,
@@ -1369,14 +1369,9 @@ pub fn collect_payload_with_selection<P: AsRef<Path>>(
         post_text: settings.post_text.clone(),
         add_extra_line_between_files: settings.add_extra_line_between_files,
         files,
-        // graphCopy names the repository (`singleRepoRoot`), SCM the
-        // single workspace root.
-        source_root: if graph {
-            // `singleRepoRoot(files)` is undefined for an empty payload.
-            has_files.then(|| source_root_name(&[git.root()])).flatten()
-        } else {
-            source_root_name(&roots)
-        },
+        // The single workspace root names the base the paths are relative
+        // to; the graph surface leaves it out of an empty payload.
+        source_root: if graph && !has_files { None } else { source_root_name(&roots) },
     };
     let payload = if fallback { build_git_payload(&options) } else { build_payload(&options) };
     Ok(CopyResult {
@@ -2338,9 +2333,11 @@ mod tests {
         assert_eq!(got.files[0].path, "a.ts");
         assert!(got.payload.starts_with("// clipcode-root: src\n"));
         r.git(&["reset", "-q", "--hard"]);
-        // The graph surface stays repo-relative and names the repository,
-        // while filters still see the workspace-relative path.
+        // The graph surface is workspace-relative too: a workspace above the
+        // repository keeps the repository's folder in the path and names the
+        // workspace, and filters see that same path.
         let parent = git.root().parent().unwrap().to_path_buf();
+        let parent_name = parent.file_name().unwrap().to_string_lossy().into_owned();
         let repo = git.root().file_name().unwrap().to_string_lossy();
         let exclude = Settings {
             use_filters: true,
@@ -2355,8 +2352,9 @@ mod tests {
         };
         let commit = GitSource::Commit(sha);
         let got = collect_payload(&git, &commit, &[&parent], &exclude).unwrap();
-        assert_eq!(got.files, vec![file("src/a.ts", "a\n", New)]);
-        assert!(got.payload.starts_with(&format!("// clipcode-root: {repo}\n")));
+        assert_eq!(got.files, vec![file(&format!("{repo}/src/a.ts"), "a\n", New)]);
+        assert!(got.payload.starts_with(&format!("// clipcode-root: {parent_name}\n")), "{}", got.payload);
+        assert!(got.payload.contains(&format!("// file: [NEW] {repo}/src/a.ts\n")), "{}", got.payload);
         // A deletion still carries its pre-deletion body.
         fs::remove_file(r.path().join("top.ts")).unwrap();
         let del = r.commit("rm");
