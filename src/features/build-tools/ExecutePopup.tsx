@@ -32,7 +32,8 @@ function ExecutePopup({ tool }: { tool: BuildTool }) {
     () =>
       tool === "maven"
         ? (maven?.projects ?? []).map((p) => ({ value: p.pom, label: p.displayName, detail: p.dir || "." }))
-        : (gradle?.projects ?? []).map((p) => ({ value: p.path, label: p.name, detail: p.path })),
+        : // Gradle names projects after their folders unless settings rename them.
+          (gradle?.projects ?? []).map((p) => ({ value: p.path, label: p.name, literal: true, detail: p.path })),
     [tool, maven, gradle],
   );
   const [project, setProject] = useState<string | null>(() =>
