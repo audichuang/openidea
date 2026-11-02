@@ -65,7 +65,7 @@ pub fn sync(app: &AppHandle) {
     let labels = windows
         .iter()
         .filter_map(|w| {
-            let project = host.project(w.label()).ok().filter(|p| !p.light)?;
+            let project = host.opened_project(w.label())?;
             let tab = crate::macos::TabLabel {
                 title: ide_host::ops::project::info(&project).name,
                 tooltip: Some(project.root.to_string_lossy().into_owned()),
@@ -239,7 +239,7 @@ pub fn join(app: &AppHandle, anchor: &str, new_window: &str) -> IdeResult<()> {
 pub fn merge(app: &AppHandle, caller: &str) -> IdeResult<()> {
     let members = windows::project_window_labels(app)
         .into_iter()
-        .filter(|label| app.state::<AppState>().project(label).is_ok_and(|p| !p.light))
+        .filter(|label| app.state::<AppState>().opened_project(label).is_some())
         .collect::<Vec<_>>();
     if members.len() < 2 || !members.iter().any(|label| label == caller) {
         return Err(IdeError::invalid("Open at least two project windows to create a window group"));
@@ -404,7 +404,7 @@ pub async fn restore(app: &AppHandle, caller: &str) -> IdeResult<()> {
     }
     let state = app.state::<WindowsState>();
     let host = app.state::<AppState>();
-    let project = host.project(caller).ok();
+    let project = host.opened_project(caller);
     let reopen = match &project {
         Some(project) => project.settings.effective().general.reopen_last_project,
         None => host.global_settings.effective().general.reopen_last_project,
