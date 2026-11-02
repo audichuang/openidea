@@ -629,6 +629,11 @@ pub fn paste_preview_into(
         None
     };
     let primary = CanonicalRootId::new(dest).map_err(err)?;
+    // A repository at or under the project root is the project's own folder.
+    let project_root = primary.path().to_path_buf();
+    let in_project = |r: &Path| {
+        CanonicalRootId::new(r).map_or_else(|_| r.starts_with(dest), |id| id.path().starts_with(&project_root))
+    };
     let mut mapping = match suggestion.as_ref().filter(|_| adjust_paths) {
         Some(s) => ImportMapping::from_restore_base(s, primary),
         None => ImportMapping::with_primary(primary),
@@ -648,8 +653,14 @@ pub fn paste_preview_into(
             if std::fs::symlink_metadata(dest.join(&prefix)).is_ok() {
                 continue;
             }
+            // Only a repository outside the project: one inside is a folder the path
+            // already resolves to from the project root, as ClipCode and VS Code do.
             let mut named: Vec<&PathBuf> = Vec::new();
-            for r in repos.iter().filter(|r| r.file_name().is_some_and(|n| n.to_string_lossy() == prefix.as_str())) {
+            for r in repos
+                .iter()
+                .filter(|r| r.file_name().is_some_and(|n| n.to_string_lossy() == prefix.as_str()))
+                .filter(|r| !in_project(r))
+            {
                 if !named.iter().any(|n| same_dir(n, r)) {
                     named.push(r);
                 }
@@ -662,9 +673,6 @@ pub fn paste_preview_into(
             let Some(repo) = named.pop() else {
                 continue;
             };
-            if same_dir(repo, dest) {
-                continue;
-            }
             mapping.map_prefix(prefix, CanonicalRootId::new(repo).map_err(err)?);
             roots.push(repo.clone());
         }
@@ -1408,13 +1416,32 @@ mod tests {
         let base = std::fs::canonicalize(tmp.path()).unwrap();
         let m = base.join("M");
         fs::create_dir_all(&m).unwrap();
-        let (a, b) = (repo(&m.join("a/lib")), repo(&m.join("b/lib")));
+        let (a, b) = (repo(&base.join("a/lib")), repo(&base.join("b/lib")));
         let text = "// file: lib/x.txt\nnew\n";
         let preview = paste_preview(&m, text, false, &[a.clone(), b.clone()], &Settings::default()).unwrap();
         assert!(targets_of(&preview).is_empty(), "{:?}", preview.files);
         assert_eq!(preview.files.len(), 1, "{:?}", preview.files);
         assert_eq!(preview.files[0].action, "skip");
         assert!(!a.join("x.txt").exists() && !b.join("x.txt").exists() && !m.join("lib").exists());
+    }
+
+    /// A repository inside the project is the project's own folder, not a legacy
+    /// `<repo>/…` target: the path resolves from the project root, as in ClipCode.
+    #[test]
+    fn a_legacy_repository_prefix_never_routes_into_a_repository_inside_the_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        let p = base.join("P");
+        let inside = repo(&p.join("libs/a"));
+        let text = "// file: a/src/f.ts\nnew\n";
+        let preview = paste_preview(&p, text, false, std::slice::from_ref(&inside), &Settings::default()).unwrap();
+        assert_eq!(targets_of(&preview), vec![p.join("a/src/f.ts").to_string_lossy().into_owned()]);
+
+        // Beside a same-named repository outside the project, only the outside one counts.
+        let outside = repo(&base.join("a"));
+        let repos = [inside.clone(), outside.clone()];
+        let preview = paste_preview(&p, text, false, &repos, &Settings::default()).unwrap();
+        assert_eq!(targets_of(&preview), vec![outside.join("src/f.ts").to_string_lossy().into_owned()]);
     }
 
     /// As ClipCode's `ClipboardPathResolver`: an unlabelled path the primary lacks
