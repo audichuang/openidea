@@ -1234,7 +1234,10 @@ export function updateLogOptions(patch: Partial<LogOptions>) {
       },
     });
   else if ("linearizeMerges" in patch) useGitLog.setState({ fragments: emptyFragments() });
-  if (setLogOptions(patch)) void reloadLog();
+  if (!setLogOptions(patch)) return;
+  // Parked tabs hold commits fetched under the old options (e.g. rewritten parents): reload them on return.
+  for (const [id, view] of parked) parked.set(id, freshView(view.filters));
+  void reloadLog();
 }
 
 /** Highlight › My Commits: authored by the current user. */
