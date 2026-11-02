@@ -1717,7 +1717,6 @@ struct BlobBudget {
     max_payload_bytes: Option<usize>,
     current_total_bytes: usize,
     max_file_size_kb: f64,
-    bypass_per_file_size: bool,
 }
 
 impl BlobBudget {
@@ -1726,15 +1725,11 @@ impl BlobBudget {
     /// 整數大小判定：`size > floor(limit)` 等價於 `size > limit`。
     fn cap(&self) -> u64 {
         let per_file = (self.max_file_size_kb * 1024.0) as u64;
-        let mut cap = self.remaining_budget.map_or(u64::MAX, |b| b as u64);
-        if !self.bypass_per_file_size {
-            cap = cap.min(per_file);
-        }
-        cap
+        self.remaining_budget.map_or(u64::MAX, |b| b as u64).min(per_file)
     }
 
     fn over_cap(&self, size: u64, cap: u64, wire_path: &str) -> Result<ReadContent, TransferError> {
-        if !self.bypass_per_file_size && size as f64 > self.max_file_size_kb * 1024.0 {
+        if size as f64 > self.max_file_size_kb * 1024.0 {
             return Ok((None, Some(format!("size exceeds limit ({size} bytes)"))));
         }
         Err(TransferError::PayloadLimitExceeded {
@@ -2096,12 +2091,11 @@ pub fn plan_export_with(
 
             let remaining_budget = max_payload_bytes.map(|m| m.saturating_sub(current_total_bytes));
 
-            let blob_budget = |bypass: bool| BlobBudget {
+            let blob_budget = || BlobBudget {
                 remaining_budget,
                 max_payload_bytes,
                 current_total_bytes,
                 max_file_size_kb: settings.max_file_size_kb,
-                bypass_per_file_size: bypass,
             };
 
             let deleted = item.change_type == Some(ChangeType::Deleted);
@@ -2129,23 +2123,23 @@ pub fn plan_export_with(
                         .ok_or_else(|| TransferError::UnknownRoot(item.root.path().to_path_buf()))?;
                     let (text, reason) = if deleted {
                         // Every parent in order, like gitsrc: a merge may
-                        // delete a file only one side had. Deleted graph old
-                        // content bypasses the per-file size check.
+                        // delete a file only one side had. The old body obeys
+                        // the per-file size limit, as in ClipCode.
                         let specs =
                             parents.get(frozen_oid).into_iter().flatten().map(|p| format!("{p}:{toplevel_rel}"));
-                        let b = blob_budget(true);
+                        let b = blob_budget();
                         let cap = b.cap();
                         let content = blobs.deleted_file_content(git, specs, cap)?;
                         deleted_read(content, cap, &wire_path, &b)?
                     } else if item.gitlink {
                         let spec = format!("{frozen_oid}:{toplevel_rel}");
-                        let b = blob_budget(false);
+                        let b = blob_budget();
                         let cap = b.cap();
                         let read = blobs.read_lenient(git, &spec, cap)?;
                         gitlink_read(read, cap, &wire_path, &b, false)?
                     } else {
                         let spec = format!("{frozen_oid}:{toplevel_rel}");
-                        let b = blob_budget(false);
+                        let b = blob_budget();
                         let cap = b.cap();
                         let read = blobs.read(git, &spec, cap)?;
                         blob_content(read, &spec, cap, &wire_path, &b)?
@@ -2165,19 +2159,19 @@ pub fn plan_export_with(
                         .ok_or_else(|| TransferError::UnknownRoot(item.root.path().to_path_buf()))?;
                     let (text, reason) = if deleted {
                         let spec = format!("{frozen_base}:{toplevel_rel}");
-                        let b = blob_budget(true);
+                        let b = blob_budget();
                         let cap = b.cap();
                         let content = blobs.deleted_file_content(git, [spec], cap)?;
                         deleted_read(content, cap, &wire_path, &b)?
                     } else if item.gitlink {
                         let spec = format!("{frozen_tip}:{toplevel_rel}");
-                        let b = blob_budget(false);
+                        let b = blob_budget();
                         let cap = b.cap();
                         let read = blobs.read_lenient(git, &spec, cap)?;
                         gitlink_read(read, cap, &wire_path, &b, false)?
                     } else {
                         let spec = format!("{frozen_tip}:{toplevel_rel}");
-                        let b = blob_budget(false);
+                        let b = blob_budget();
                         let cap = b.cap();
                         let read = blobs.read(git, &spec, cap)?;
                         blob_content(read, &spec, cap, &wire_path, &b)?
@@ -2191,19 +2185,19 @@ pub fn plan_export_with(
                         .ok_or_else(|| TransferError::UnknownRoot(item.root.path().to_path_buf()))?;
                     let (text, reason) = if deleted {
                         // A staged deletion is gone from the index; HEAD has it.
-                        let b = blob_budget(false);
+                        let b = blob_budget();
                         let cap = b.cap();
                         let content = blobs.deleted_file_content(git, [format!("HEAD:{toplevel_rel}")], cap)?;
                         deleted_read(content, cap, &wire_path, &b)?
                     } else if item.gitlink {
                         let spec = staged_index_spec(toplevel_rel);
-                        let b = blob_budget(false);
+                        let b = blob_budget();
                         let cap = b.cap();
                         let read = blobs.read_lenient(git, &spec, cap)?;
                         gitlink_read(read, cap, &wire_path, &b, true)?
                     } else {
                         let spec = staged_index_spec(toplevel_rel);
-                        let b = blob_budget(false);
+                        let b = blob_budget();
                         let cap = b.cap();
                         let read = blobs.read(git, &spec, cap)?;
                         let (text, reason) = blob_content(read, &spec, cap, &wire_path, &b)?
@@ -2225,7 +2219,7 @@ pub fn plan_export_with(
                     } else {
                         format!("HEAD:{toplevel_rel}")
                     };
-                    let b = blob_budget(false);
+                    let b = blob_budget();
                     let cap = b.cap();
                     let (text, reason) = if let Some(git) = gits.get(&item.root) {
                         let content = blobs.deleted_file_content(git, [spec], cap)?;
