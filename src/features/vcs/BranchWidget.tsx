@@ -63,6 +63,7 @@ import { outgoingCount, outgoingDestination, type SyncDirection } from "./syncCo
 import styles from "./BranchWidget.module.css";
 import { tx } from "@/platform/i18n";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
+import { isImeKey } from "@/platform/ime";
 
 /** `active` until the user moves: a new filter selects the row IDEA prefers for it. */
 const PREFERRED = -1;
@@ -585,6 +586,8 @@ function BranchesPanel({ onClose, actions: baseActions, worktreeFor, root, fallb
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
+    // Keys that drive an IME candidate window (including the Enter that confirms one) are not list commands.
+    if (isImeKey(e.nativeEvent)) return;
     if (isNewBranchStroke(strokeOf(e))) {
       e.preventDefault();
       run("vcs.newBranch");
@@ -868,6 +871,8 @@ function MultiRepoPanel({
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
+    // Keys that drive an IME candidate window (including the Enter that confirms one) are not list commands.
+    if (isImeKey(e.nativeEvent)) return;
     if (isNewBranchStroke(strokeOf(e))) {
       e.preventDefault();
       onClose();
