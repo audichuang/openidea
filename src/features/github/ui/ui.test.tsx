@@ -112,6 +112,29 @@ describe("ChooserPopup", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it("ignores IME keys (keyCode 229): no highlight move, no Enter pick", () => {
+    const onChoose = vi.fn();
+    render(
+      <ChooserPopup
+        mode="single"
+        anchor={{ x: 0, y: 0 }}
+        items={users}
+        getKey={getKey}
+        present={present}
+        onChoose={onChoose}
+        onClose={vi.fn()}
+        aria-label="Author"
+      />,
+    );
+    const search = screen.getAllByLabelText("Author").find((e) => e.tagName === "INPUT")!;
+    expect(fireEvent.keyDown(search, { key: "ArrowDown", keyCode: 229 })).toBe(true);
+    fireEvent.keyDown(search, { key: "Enter", keyCode: 229 });
+    fireEvent.keyDown(search, { key: "Enter", isComposing: true });
+    expect(onChoose).not.toHaveBeenCalled();
+    fireEvent.keyDown(search, { key: "Enter" });
+    expect(onChoose).toHaveBeenCalledExactlyOnceWith(users[0]);
+  });
+
   it("toggles items and reports them on close (multi)", async () => {
     const onClose = vi.fn();
     render(
