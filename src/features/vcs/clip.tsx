@@ -120,22 +120,37 @@ export function logChangesSource(commits: readonly Commit[], changes: readonly L
 // ---------------------------------------------------------------------------
 // Paste
 
+/**
+ * Where a paste lands: files restore under the project root wherever the paste was
+ * invoked (ClipCode's PasteAndRestoreFilesAction always resolves from the project, and
+ * copies are spelled relative to it), commits replay into the selected repository.
+ */
+export interface PasteTarget {
+  dest: string | null;
+  repo: string | null;
+}
+
+export const pasteTarget = (): PasteTarget => ({
+  dest: useProject.getState().project?.root ?? null,
+  repo: currentRepoPath() || null,
+});
+
 /** ClipCode: Paste and Restore Files — previews the clipboard payload, then writes what is confirmed. */
-export async function pasteClip(dest?: string | null) {
+export async function pasteClip(target: PasteTarget = pasteTarget()) {
   const text = await readClipboardText();
   if (!text.trim()) {
     notifications().notify({ group: "clipcode", level: "info", title: "The clipboard is empty" });
     return;
   }
   if (/^From [0-9a-f]{7,64} /.test(text)) return pasteBranchSeries(text);
-  const preview = await loadPreview(text, dest ?? null, false);
+  const preview = await loadPreview(text, target, false);
   if (!preview) return;
-  openDialog((close) => <PastePreviewDialog text={text} dest={dest ?? null} initial={preview} onClose={close} />);
+  openDialog((close) => <PastePreviewDialog text={text} target={target} initial={preview} onClose={close} />);
 }
 
-async function loadPreview(text: string, dest: string | null, adjust: boolean): Promise<ClipPastePreview | null> {
+async function loadPreview(text: string, target: PasteTarget, adjust: boolean): Promise<ClipPastePreview | null> {
   try {
-    return await call(commands.clipPastePreview(text, dest, adjust, [...useVcs.getState().roots]));
+    return await call(commands.clipPastePreview(text, target.dest, target.repo, adjust, [...useVcs.getState().roots]));
   } catch (e) {
     notifications().notify({ group: "clipcode", level: "warning", title: "Nothing to paste", body: String(e) });
     return null;
@@ -167,12 +182,12 @@ const rowKey = (action: string, index: number) => `${action === "delete" ? "d" :
 
 export function PastePreviewDialog({
   text,
-  dest,
+  target,
   initial,
   onClose,
 }: {
   text: string;
-  dest: string | null;
+  target: PasteTarget;
   initial: ClipPastePreview;
   onClose: () => void;
 }) {
@@ -202,7 +217,7 @@ export function PastePreviewDialog({
     });
 
   const adjust = async (on: boolean) => {
-    const next = await loadPreview(text, dest, on);
+    const next = await loadPreview(text, target, on);
     if (!next) return;
     setPreview(next);
     setChecked(
@@ -599,11 +614,9 @@ export function registerClipActions(): () => void {
       category: "Git",
       icon: "paste",
       description: "Restore files or replay commits copied by ClipCode or snip-sync",
-      run: ({ arg }) => {
-        // The selected repository first (a workspace of several), as snip-sync pastes.
-        const dest = pathsArg(arg)[0] ?? useVcs.getState().repo ?? useProject.getState().project?.root ?? null;
-        void pasteClip(dest);
-      },
+      // Files restore under the project root wherever this is invoked (a Project view
+      // folder included), as in ClipCode; commits replay into the selected repository.
+      run: () => void pasteClip(),
     },
   ];
   const unregister = [
