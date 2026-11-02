@@ -50,6 +50,21 @@ describe("RepositoryFilterPopup", () => {
     fireEvent.keyDown(search(), { key: "Enter" });
     expect(onSelect).toHaveBeenCalledExactlyOnceWith("/w/alpha");
   });
+  it("ignores IME navigation keys (keyCode 229) so a candidate ArrowDown does not move the highlight", () => {
+    const { onSelect } = setup();
+    for (const k of ["ArrowDown", "ArrowUp", "Home", "End", "PageDown"]) {
+      const notPrevented = fireEvent.keyDown(search(), { key: k, keyCode: 229 });
+      expect(notPrevented).toBe(true);
+    }
+    fireEvent.keyDown(search(), { key: "ArrowDown", keyCode: 229 });
+    fireEvent.keyDown(search(), { key: "Enter" });
+    expect(onSelect).toHaveBeenCalledExactlyOnceWith("/w/alpha");
+  });
+  it("highlights the currently selected repository when it opens", () => {
+    const { onSelect } = setup(["/w/gamma"]);
+    fireEvent.keyDown(search(), { key: "Enter" });
+    expect(onSelect).toHaveBeenCalledExactlyOnceWith("/w/gamma");
+  });
   it("closes on Escape", () => {
     const { onClose } = setup();
     fireEvent.keyDown(search(), { key: "Escape" });
