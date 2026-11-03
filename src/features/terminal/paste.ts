@@ -1,4 +1,4 @@
-import { pasteClipboardFiles, readClipboardText, readPlainText } from "@/platform/clipboard";
+import { pasteClipboardFiles, readClipboardImage, readClipboardText, readPlainText } from "@/platform/clipboard";
 import { call, commands, type TerminalId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { notifications } from "@/workbench/contributions";
@@ -120,9 +120,9 @@ export function installTerminalPaste(host: HTMLElement, paste: (text: string) =>
 export async function pasteTerminalClipboard(paste: (text: string) => void, getTarget?: Target) {
   const target = getTarget?.();
   try {
-    // Text (and file paths) come from the backend first: the webview's own clipboard reads below
-    // make macOS WebKit ask the user to confirm with a "Paste" callout, so they run only when the
-    // clipboard holds no text, that is when it may hold an image.
+    // Text, file paths and images come from the backend: the webview's own clipboard reads below
+    // make macOS WebKit ask the user to confirm with a "Paste" callout, so they run only where the
+    // backend cannot read the image.
     const text = target?.remote
       ? await readPlainText().catch(() => "")
       : await readClipboardText(undefined, target ? (paths) => pathsText(paths, target) : undefined);
@@ -132,6 +132,12 @@ export async function pasteTerminalClipboard(paste: (text: string) => void, getT
       return;
     }
     if (!target) return;
+    // The backend reads the image too; the webview reads below only where it cannot (Linux).
+    const image = await readClipboardImage();
+    if (image !== undefined) {
+      if (image && target.current()) await pasteMedia(image, target, paste);
+      return;
+    }
     // Native paste preserves clipboard blobs where Clipboard.read() is unavailable.
     if (document.queryCommandSupported?.("paste") && document.execCommand("paste")) return;
     const images = navigator.clipboard?.read
