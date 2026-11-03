@@ -1,27 +1,54 @@
 ---
 name: fork-verify
-description: Fork supplement to the upstream `verify` skill for proving OpenIDEA changes on macOS. Use it when the `mcp__tauri__*` tools are not loaded (drives the same MCP bridge from Bash with scripts/bridge.ts), when a check needs real OS input (keyboard shortcuts, clipboard paste, hover, native menus) through lcu on a wrapped dev .app, when it touches AppKit chrome (project window tabs, fullscreen, traffic lights), or when testing fork features (Annotate colors, window groups, auto fetch, clipboard). Says which driver to pick and how to combine bridge and lcu.
+description: Fork supplement to the upstream `verify` skill for proving OpenIDEA changes on macOS. Says when the Tauri MCP tools (`mcp__tauri__*`, preferred for webview UI) are enough and when to add lcu for real OS input (keyboard shortcuts, clipboard paste, hover, native menus) on a wrapped dev .app that keeps the bridge, or native tools for AppKit chrome (project window tabs, fullscreen, traffic lights). Also has a Bash fallback (scripts/bridge.ts) when the MCP tools are not loaded, and the fork feature map (Annotate colors, window groups, auto fetch, clipboard).
 ---
 
 # Verify OpenIDEA in the real app (fork, macOS)
 
-Upstream's `verify` skill (`.agents/skills/verify`) is the base: launch and session reuse, driving through `mcp__tauri__*`, CodeMirror/xterm input quirks, `fixtures/`, evidence naming. Read it first. This skill adds what it does not cover:
+Upstream's `verify` skill (`.agents/skills/verify`) is the base: launch and session reuse, driving through `mcp__tauri__*`, CodeMirror/xterm input quirks, `fixtures/`, evidence naming. Read it first. This skill adds:
 
-- `scripts/bridge.ts`: the same bridge from Bash, for sessions without the `mcp__tauri__*` tools.
-- lcu plus `scripts/lcu-wrap.sh`, for real OS input on the dev build.
-- AppKit chrome (window tabs, fullscreen) and the fork's feature map (`features/`).
+- When to leave the webview for lcu (real OS input) or native tools (AppKit chrome), and how to run lcu and the bridge on one process (`scripts/lcu-wrap.sh`).
+- `scripts/bridge.ts`, a Bash fallback to the same bridge when `mcp__tauri__*` is not loaded (Codex, subagents, a session started before the server was added).
+- The fork's feature map (`features/`).
 
-Upstream quirks that also apply to `bridge.ts`:
+## The Tauri MCP server (`mcp__tauri__*`): first choice for webview work
+
+Upstream recommends `@hypothesi/tauri-mcp-server` (same author as the app's `tauri-plugin-mcp-bridge`). Compared on 2026-11-04 with the Annotate flow, it does everything `bridge.ts` does and more, at the same speed (most calls under 200 ms):
+
+- `webview_dom_snapshot type=accessibility`: a role tree with `ref=eN` handles, so you can act without guessing selectors.
+- `webview_interact` click / right-click / double-click / hover / scroll, by CSS, XPath, text or `ref=`. It right-clicked the gutter and clicked "Annotate with Git Blame" by text.
+- `webview_find_element`: text, classes, rect and visibility of matches.
+- `webview_wait_for`: selector, text, or IPC event.
+- `webview_screenshot`: native capture with the CSS-to-image scale printed.
+- `read_logs source=console`: the webview console.
+- `ipc_monitor` + `ipc_get_captured`: invoke calls with their arguments and results.
+- `webview_execute_js`: wrap the code in `return ...`.
+
+Setup on this Mac (done 2026-11-04; tools load in the next session):
+
+```bash
+claude mcp add tauri --scope local -- npx -y @hypothesi/tauri-mcp-server@0.13
+```
+
+Keep the server's minor version equal to the crate's (`tauri-plugin-mcp-bridge = "0.13"` in `src-tauri/Cargo.toml`). Connect with `driver_session action=start port=<pnpm dev:status port>`, and pass `windowId` (`main`, `project-N`) on every call.
+
+Its limits:
+
+- Every interaction is a synthetic DOM event (`dispatchEvent`, `isTrusted === false`, `event.detail === 0`), exactly like `bridge.ts`. It does not replace lcu for real input.
+- Each script runs under a ~5 s execution cap: `webview_wait_for timeout=8000` still failed at 5 s with "Script execution timeout". Call it again for longer waits.
+- The `text` strategy can hit hidden nodes (upstream note). Use the snapshot `ref` when text is ambiguous.
+
+Upstream quirks that apply to any synthetic driver (MCP or `bridge.ts`):
 
 - `.click()` arrives with `event.detail === 0`, and CodeMirror treats that as a line-select click. Set the caret through `document.querySelector('.cm-content').cmTile.view`.
 - Type into CodeMirror with `document.execCommand('insertText', false, text)`.
-- Background windows throttle timers. Unfocused but visible windows screenshotted fine on 2026-11-04. If a screenshot comes back black or an `execute_js` promise times out, focus the window first (`osascript` `activate`, or lcu click).
+- Background windows throttle timers. Unfocused but visible windows screenshotted fine on 2026-11-04. If a screenshot comes back black or a script times out, focus the window first (`osascript` `activate`, or an lcu click).
 
 ## Choosing the driver: bridge, lcu, or both
 
-Two drivers see different layers of the same app:
+"Bridge" below means the in-app bridge, driven by `mcp__tauri__*` (preferred) or `scripts/bridge.ts`. Two drivers see different layers of the same app:
 
-|            | **Bridge** (`scripts/bridge.ts`, tauri-plugin-mcp-bridge)                                                                      | **lcu** (`mcp__lcu__js`, see the `lcu-desktop` skill)                                                                                                        |
+|            | **Bridge** (`mcp__tauri__*` or `bridge.ts`)                                                                                    | **lcu** (`mcp__lcu__js`, see the `lcu-desktop` skill)                                                                                                        |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Builds     | Debug only (`#[cfg(debug_assertions)]` in `src-tauri/src/lib.rs`). The installed release has no bridge.                        | Any `.app`: dev wrapper, installed release, IntelliJ for side-by-side comparison.                                                                            |
 | Sees       | The webview: DOM, computed styles, app state through `import("/src/...")`, a PNG of one window, even behind other windows.     | What macOS sees: AX tree of the whole app, native menu bar, native dialogs, real screen pixels.                                                              |
@@ -84,7 +111,7 @@ Healthy: JSON with `bridges[0].port` (9223+), `app.identifier` equal to `identif
 
 ## Drive (bridge)
 
-`scripts/bridge.ts` finds this worktree's port through `dev:status` (override with `OI_BRIDGE_PORT`). Every command prints the bridge JSON; exit code 1 on failure.
+With `mcp__tauri__*` loaded, use those tools; the recipes below map one to one (`webview_execute_js`, `webview_interact`, `webview_screenshot`). Without them, `scripts/bridge.ts` finds this worktree's port through `dev:status` (override with `OI_BRIDGE_PORT`). Every command prints the bridge JSON; exit code 1 on failure.
 
 ```bash
 B=.agents/skills/fork-verify/scripts/bridge.ts
