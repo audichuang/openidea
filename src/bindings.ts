@@ -3611,6 +3611,8 @@ export type GitOperation =
 export type GitSettings = {
 	/**  Show blame after the current editor line. */
 	inlineBlame?: boolean,
+	/**  Annotate gutter background colours: `order` (by commit age) | `author` | `none`. */
+	annotateColors?: string,
 	/**  Path to the git executable; empty = auto-detect. */
 	executable?: string,
 	/**  Default of Update Project: `merge` | `rebase`. */
@@ -3621,6 +3623,9 @@ export type GitSettings = {
 	warnDetachedHead?: boolean,
 	/**  Background check for incoming commits: `auto` | `always` | `never`. */
 	incomingCheck?: string,
+	/**  Fetch every repository of the project in the background every `auto_fetch_minutes`. */
+	autoFetch?: boolean,
+	autoFetchMinutes?: number,
 	/**  Branch name globs, `;`/`,`-separated; force push to them is prohibited. */
 	protectedBranches?: string,
 	/**  Initial state of Commit Options › Sign-off Commit. */

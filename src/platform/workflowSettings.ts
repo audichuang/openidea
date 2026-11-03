@@ -8,6 +8,8 @@ import { DEFAULT_REMOTE, validateRemote, type RemoteSettings } from "./remoteSet
 
 export type UpdateMethod = "merge" | "rebase";
 export type IncomingCheck = "auto" | "always" | "never";
+/** Annotate gutter colours, IDEA's ColorMode (Order / Author / Hide). */
+export type AnnotateColors = "order" | "author" | "none";
 export type VcsConfirm = "ask" | "silently" | "never";
 export type PatchCreated = "ask" | "no" | "reveal";
 export type CursorShape = "block" | "underline" | "bar";
@@ -19,12 +21,15 @@ export interface IssueLinkValid {
 
 export interface GitSettingsValid {
   inlineBlame: boolean;
+  annotateColors: AnnotateColors;
   executable: string;
   updateMethod: UpdateMethod;
   autoUpdateOnPushRejected: boolean;
   warnCrlf: boolean;
   warnDetachedHead: boolean;
   incomingCheck: IncomingCheck;
+  autoFetch: boolean;
+  autoFetchMinutes: number;
   protectedBranches: string;
   signOff: boolean;
   warnLargeFiles: boolean;
@@ -181,6 +186,7 @@ export const WORKFLOW_LIMITS = {
   historyLimit: { min: 10, max: 100_000 },
   messageLimit: { min: 20, max: 500 },
   largeFileMb: { min: 1, max: 100_000 },
+  autoFetchMinutes: { min: 1, max: 1440 },
   bufferKb: { min: 16, max: 1_048_576 },
   tooltipDelay: { min: 0, max: 10_000 },
   terminationTimeoutMs: { min: 0, max: 600_000 },
@@ -240,12 +246,15 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     historyLimit: 1000,
     git: {
       inlineBlame: false,
+      annotateColors: "order",
       executable: "",
       updateMethod: "merge",
       autoUpdateOnPushRejected: false,
       warnCrlf: true,
       warnDetachedHead: true,
       incomingCheck: "auto",
+      autoFetch: false,
+      autoFetchMinutes: 30,
       protectedBranches: "master; main",
       signOff: false,
       warnLargeFiles: true,
@@ -382,12 +391,15 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
     historyLimit: num(v.historyLimit, d.historyLimit, L.historyLimit, true),
     git: {
       inlineBlame: bool(g.inlineBlame, d.git.inlineBlame),
+      annotateColors: oneOf(g.annotateColors, ["order", "author", "none"] as const, d.git.annotateColors),
       executable: text(g.executable, d.git.executable).trim(),
       updateMethod: oneOf(g.updateMethod, ["merge", "rebase"] as const, d.git.updateMethod),
       autoUpdateOnPushRejected: bool(g.autoUpdateOnPushRejected, d.git.autoUpdateOnPushRejected),
       warnCrlf: bool(g.warnCrlf, d.git.warnCrlf),
       warnDetachedHead: bool(g.warnDetachedHead, d.git.warnDetachedHead),
       incomingCheck: oneOf(g.incomingCheck, ["auto", "always", "never"] as const, d.git.incomingCheck),
+      autoFetch: bool(g.autoFetch, d.git.autoFetch),
+      autoFetchMinutes: num(g.autoFetchMinutes, d.git.autoFetchMinutes, L.autoFetchMinutes, true),
       protectedBranches: text(g.protectedBranches, d.git.protectedBranches),
       signOff: bool(g.signOff, d.git.signOff),
       warnLargeFiles: bool(g.warnLargeFiles, d.git.warnLargeFiles),

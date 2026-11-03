@@ -46,6 +46,8 @@ impl Default for VcsSettings {
 pub struct GitSettings {
     /// Show blame after the current editor line.
     pub inline_blame: bool,
+    /// Annotate gutter background colours: `order` (by commit age) | `author` | `none`.
+    pub annotate_colors: String,
     /// Path to the git executable; empty = auto-detect.
     pub executable: String,
     /// Default of Update Project: `merge` | `rebase`.
@@ -56,6 +58,9 @@ pub struct GitSettings {
     pub warn_detached_head: bool,
     /// Background check for incoming commits: `auto` | `always` | `never`.
     pub incoming_check: String,
+    /// Fetch every repository of the project in the background every `auto_fetch_minutes`.
+    pub auto_fetch: bool,
+    pub auto_fetch_minutes: u32,
     /// Branch name globs, `;`/`,`-separated; force push to them is prohibited.
     pub protected_branches: String,
     /// Initial state of Commit Options › Sign-off Commit.
@@ -80,12 +85,15 @@ impl Default for GitSettings {
     fn default() -> Self {
         Self {
             inline_blame: false,
+            annotate_colors: "order".into(),
             executable: String::new(),
             update_method: "merge".into(),
             auto_update_on_push_rejected: false,
             warn_crlf: true,
             warn_detached_head: true,
             incoming_check: "auto".into(),
+            auto_fetch: false,
+            auto_fetch_minutes: 30,
             protected_branches: "master; main".into(),
             sign_off: false,
             warn_large_files: true,
