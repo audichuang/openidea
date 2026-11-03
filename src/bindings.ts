@@ -4099,6 +4099,8 @@ export type GitOperation =
 export type GitSettings = {
 	/**  Show blame after the current editor line. */
 	inlineBlame?: boolean,
+	/**  Annotate gutter background colours: `order` (by commit age) | `author` | `none`. */
+	annotateColors?: string,
 	/**  Path to the git executable; empty = auto-detect. */
 	executable?: string,
 	/**  Default of Update Project: `merge` | `rebase`. */
