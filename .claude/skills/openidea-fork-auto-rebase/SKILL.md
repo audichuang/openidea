@@ -27,7 +27,8 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
 - vOLD＝`git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-fork*' fork/develop`。
 - 鎖用 `git ls-remote fork 'refs/heads/rebase/*'` 判斷。有 `rebase/vX`：
   - PR 開著、有 `<!-- auto-rebase:develop-moved <sha> -->` 留言（前一次 run 移動 develop 後、發版途中死了）→ vNEW=vX、PR=那個 PR，直接做第 6 步，發的是留言裡的 sha；vOLD 與 OLD_DEVELOP 取 PR 說明。
-  - PR 開著、有 `<!-- auto-rebase:needs-human -->` 留言（precheck 只在它過時才讓你跑到這：上游出了更新的 release，或 develop 已經在 vX）→ **收鎖**：`rebase/vX` 的 tip 不在 `fork/develop` 或 `fork/backup/*` 上就先 `git push fork "fork/rebase/vX:refs/heads/backup/rebase-vX-$RUN"`；PR 留言說明原因後 `gh pr close`，刪 fork 的 `rebase/vX` 與 `ci-base/vX`。然後重新判斷：vNEW == vOLD 就結束、不推通知；否則 NEW。
+  - PR 開著、有 `<!-- auto-rebase:approved <sha> -->` 留言、沒有 develop-moved（使用者看過 needs-human 的 PR 後核可）→ vNEW=vX、PR=那個 PR，vOLD 與 OLD_DEVELOP 取 PR 說明。先確認 `git rev-parse fork/rebase/vX` 等於留言裡的 sha，而且 Fork CI 在這個 sha 上 `Fork CI passed` 成功；任一不符就 PR 留言 `<!-- auto-rebase:needs-human -->` 說明哪裡不符，跳第 7 步。都符合就 `git checkout --detach <sha>`，從第 4 步「移動」做起（不重跑 rebase 與閘門），接著第 5、6 步。
+  - PR 開著、有 `<!-- auto-rebase:needs-human -->` 留言、沒有 approved（precheck 只在它過時才讓你跑到這：上游出了更新的 release，或 develop 已經在 vX）→ **收鎖**：`rebase/vX` 的 tip 不在 `fork/develop` 或 `fork/backup/*` 上就先 `git push fork "fork/rebase/vX:refs/heads/backup/rebase-vX-$RUN"`；PR 留言說明原因後 `gh pr close`，刪 fork 的 `rebase/vX` 與 `ci-base/vX`。然後重新判斷：vNEW == vOLD 就結束、不推通知；否則 NEW。
   - 其他（precheck 判定鎖過期：前一次 run 死了）→ 同樣先備份不在 develop／backup 上的 tip、關 PR（有的話）、刪兩條分支，當 NEW 從頭來。不續跑半途的 rebase：從頭重來比較可靠。
 - 沒有 `rebase/*` 且 vNEW == vOLD → 結束，不推通知。
 - 否則 **NEW**：`OLD_DEVELOP=$(git rev-parse fork/develop)`。
@@ -73,7 +74,9 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
 
 ## 4. 移動 develop
 
-條件全部成立才移動：模式是 CLEAN 或 MECHANICAL、第 2 步沒有 fork 造成的紅、第 3 步 CI 綠（或只剩上游也紅的 job）。
+條件全部成立才移動：模式是 CLEAN 或 MECHANICAL、第 2 步沒有 fork 造成的紅、第 3 步 CI 綠（或只剩上游也紅的 job）。從第 0 步 approved 進來的，使用者的核可取代模式條件。
+
+`git rev-parse fork/develop` 已經等於 HEAD（使用者自己移過，或前一次 run 推完還沒留言就死了）→ 不推，直接留 develop-moved 留言。否則：
 
 ```sh
 git push --force-with-lease=develop:OLD_DEVELOP fork HEAD:develop
@@ -101,6 +104,7 @@ lease 失敗（develop 在這期間合進了別的 PR）→ PR 留言說明後�
    git tag -a vNEW-fork.N <develop-moved 的 sha> -F "$MAIN/.rebase-review/notes.md"
    git push --atomic --force-with-lease=main:$old fork <sha>:refs/heads/main vNEW-fork.N
    ```
+   推完 `gh workflow list -R audichuang/openidea --all`：state 是 active、名稱不是 `Fork CI`／`Fork Release` 的，都是這次 rebase 帶進 `main` 的上游 workflow，照 FORK.md `gh workflow disable`，寫進通知。
 4. `gh run list -R audichuang/openidea --workflow fork-release.yml --branch vNEW-fork.N --json databaseId,headSha` 找 run，`gh-wait run <id>` 等完（約 50 分鐘：macOS 與 Windows 並行建置，都成功才發布、附 latest.json、更新 cask；任一平台失敗就沒有發版）。失敗看 `--log-failed`；只靠改程式才能修的失敗不在這裡修，通知裡寫原因。
 5. 發版成功 → PR 留言結果後關閉，刪 `rebase/vNEW` 與 `ci-base/vNEW`。
 
