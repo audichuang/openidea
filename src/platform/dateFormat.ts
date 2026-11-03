@@ -56,11 +56,11 @@ export function formatClock(d: Date, o: DateFormatOptions = dateFormatOptions())
   return `${h}:${pad(d.getMinutes())} ${d.getHours() < 12 ? "AM" : "PM"}`;
 }
 
-/** Date only (blame gutter, compact columns). */
+/** Date only; `short` is the locale's numeric form with a 4-digit year (`2026/9/2`), as IDEA's blame gutter shows. */
 export function formatDay(d: Date, o: DateFormatOptions = dateFormatOptions(), short = false): string {
   if (o.overrideSystem) return formatPattern(d, o.pattern);
   return short
-    ? d.toLocaleDateString(undefined, { year: "2-digit", month: "2-digit", day: "2-digit" })
+    ? d.toLocaleDateString(undefined, { year: "numeric", month: "numeric", day: "numeric" })
     : d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
