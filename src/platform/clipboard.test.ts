@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { commands } from "./ipc";
-import { pasteClipboardFiles, readClipboardText, readPlainText } from "./clipboard";
+import { pasteClipboardFiles, readClipboardText, readPlainText, writePlainText } from "./clipboard";
 
 beforeEach(() => {
   vi.stubGlobal("__TAURI_INTERNALS__", {});
@@ -96,5 +96,30 @@ describe("plain text", () => {
     native.mockClear();
     expect(await readPlainText()).toBe("webview");
     expect(native).not.toHaveBeenCalled();
+  });
+});
+
+describe("writing text", () => {
+  const webview = () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    return writeText;
+  };
+
+  it("writes natively in the app, without asking the webview", async () => {
+    const native = vi.spyOn(commands, "clipboardSetText").mockResolvedValue({ status: "ok", data: true });
+    const writeText = webview();
+    await writePlainText("payload");
+    expect(native).toHaveBeenCalledWith("payload");
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it("uses the webview where the backend cannot write, or outside the app", async () => {
+    vi.spyOn(commands, "clipboardSetText").mockResolvedValue({ status: "ok", data: false });
+    const writeText = webview();
+    await writePlainText("a");
+    vi.unstubAllGlobals();
+    await writePlainText("b");
+    expect(writeText.mock.calls).toEqual([["a"], ["b"]]);
   });
 });
