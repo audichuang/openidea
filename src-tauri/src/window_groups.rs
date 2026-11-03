@@ -1,8 +1,9 @@
 //! Desktop adapter for project tabs. Each member retains its WebView and services.
 //!
-//! Windows and Linux draw the tabs in the page and show one member window at a time. macOS uses
-//! AppKit window tabs (see `macos.rs`): the system tab bar, one shared frame and fullscreen Space,
-//! and AppKit's own tab state, which [`sync`] mirrors into [`WindowsState::groups`].
+//! The page draws the tabs on every platform. Windows and Linux show one member window at a time.
+//! macOS uses AppKit window tabs with the system tab bar hidden (see `macos.rs`): one shared frame
+//! and fullscreen Space, and AppKit's own tab state, which [`sync`] mirrors into
+//! [`WindowsState::groups`].
 use crate::{
     state::AppState,
     windows::{self, WindowsState},
@@ -70,7 +71,7 @@ fn changed(app: &AppHandle) {
 }
 
 /// macOS: mirrors AppKit's tab groups (membership, order, selected tab) into the model, after
-/// the app or the system tab bar changed them, and names each tab after its project.
+/// the app or AppKit (⌃Tab, Window menu) changed them, and names each tab after its project.
 #[cfg(target_os = "macos")]
 pub fn sync(app: &AppHandle) {
     let (Some(state), Some(host)) = (app.try_state::<WindowsState>(), app.try_state::<AppState>()) else { return };
@@ -103,7 +104,7 @@ pub fn sync(app: &AppHandle) {
 }
 
 /// macOS, main thread, before a quit closes any window: records `main`'s fullscreen state and the
-/// tab groups as AppKit has them (the system tab bar reorders tabs without telling the app).
+/// tab groups as AppKit has them.
 #[cfg(target_os = "macos")]
 pub fn save_before_quit(app: &AppHandle) {
     windows::save_main_fullscreen(app);
@@ -113,9 +114,8 @@ pub fn save_before_quit(app: &AppHandle) {
     }
 }
 
-/// macOS window resize: a group entering or leaving fullscreen moves the system tab bar from below
-/// the title bar to the top of every tab, shown or not, so tell them all; and once the size has
-/// settled, give the hidden tabs the new frame (window events: main thread).
+/// macOS window resize: tell every tab of a group entering or leaving fullscreen, shown or not;
+/// and once the size has settled, give the hidden tabs the new frame (window events: main thread).
 #[cfg(target_os = "macos")]
 pub fn resized(app: &AppHandle, label: &str) {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -276,6 +276,18 @@ pub fn frame_changed(app: &AppHandle, label: &str) {
             sync_member_frames(&app, &label);
         }
     });
+}
+
+/// Puts the tabs of `caller`'s group in `labels` order (dragging in the page's tab strip).
+pub fn reorder(app: &AppHandle, caller: &str, labels: Vec<String>) -> IdeResult<()> {
+    app.state::<WindowsState>().groups.lock().reorder(caller, labels.clone())?;
+    #[cfg(target_os = "macos")]
+    {
+        let order: Vec<_> = labels.iter().filter_map(|label| app.get_webview_window(label)).collect();
+        crate::macos::reorder_tabs(app, &order)?;
+    }
+    changed(app);
+    select(app, caller, caller)
 }
 
 pub fn select(app: &AppHandle, caller: &str, target: &str) -> IdeResult<()> {
