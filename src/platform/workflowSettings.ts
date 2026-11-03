@@ -45,6 +45,8 @@ export interface GitSettingsValid {
   /** Minutes between background checks for incoming commits. */
   incomingCheckInterval: number;
   fetchTagsMode: FetchTagsMode;
+  autoFetch: boolean;
+  autoFetchMinutes: number;
   protectedBranches: string;
   signOff: boolean;
   addCherryPickOrigin: boolean;
@@ -294,6 +296,7 @@ export const WORKFLOW_LIMITS = {
   messageLimit: { min: 20, max: 500 },
   largeFileMb: { min: 1, max: 100_000 },
   incomingCheckInterval: { min: 1, max: 1440 },
+  autoFetchMinutes: { min: 1, max: 1440 },
   bufferKb: { min: 16, max: 1_048_576 },
   tooltipDelay: { min: 0, max: 10_000 },
   terminationTimeoutMs: { min: 0, max: 600_000 },
@@ -372,6 +375,8 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       incomingCheck: "auto",
       incomingCheckInterval: 15,
       fetchTagsMode: "auto",
+      autoFetch: false,
+      autoFetchMinutes: 30,
       protectedBranches: "master; main",
       signOff: false,
       addCherryPickOrigin: true,
@@ -577,6 +582,8 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       incomingCheck: oneOf(g.incomingCheck, ["auto", "always", "check", "never"] as const, d.git.incomingCheck),
       incomingCheckInterval: num(g.incomingCheckInterval, d.git.incomingCheckInterval, L.incomingCheckInterval, true),
       fetchTagsMode: oneOf(g.fetchTagsMode, ["auto", "sync", "always", "never"] as const, d.git.fetchTagsMode),
+      autoFetch: bool(g.autoFetch, d.git.autoFetch),
+      autoFetchMinutes: num(g.autoFetchMinutes, d.git.autoFetchMinutes, L.autoFetchMinutes, true),
       protectedBranches: text(g.protectedBranches, d.git.protectedBranches),
       signOff: bool(g.signOff, d.git.signOff),
       addCherryPickOrigin: bool(g.addCherryPickOrigin, d.git.addCherryPickOrigin),
