@@ -2,7 +2,7 @@ import { commitRepo } from "./multiRoot";
 /** Create Patch… (from local changes or commits) and Apply Patch… (file or clipboard, with a preview). */
 import { useEffect, useState } from "react";
 import type { Commit, FileStatus, PatchFile, PatchSource, ShelvedChangeList } from "@/bindings";
-import { readPlainText } from "@/platform/clipboard";
+import { readPlainText, writePlainText } from "@/platform/clipboard";
 import { call, commands } from "@/platform/ipc";
 import { Button, Checkbox, Dialog, Icon, Input, List, Spinner, fileIconName, T } from "@/ui";
 import { workflowSettings } from "@/platform/workflowSettings";
@@ -124,7 +124,7 @@ function CreatePatchDialog({ origin, onClose }: { origin: PatchOrigin; onClose: 
             ? await call(commands.vcsShelfPatch(origin.entry.id, origin.path ?? null))
             : await call(commands.vcsCreatePatch(repo, source!));
         if (toFile) await call(commands.vcsWritePatch(file.trim(), patch));
-        else await navigator.clipboard.writeText(patch);
+        else await writePlainText(patch);
         return true;
       },
       { success: toFile ? `Patch saved to ${baseName(file.trim())}` : "Patch copied to the clipboard", refresh: false },
