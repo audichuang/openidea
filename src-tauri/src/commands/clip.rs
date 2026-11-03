@@ -3,8 +3,8 @@
 use crate::state::AppState;
 use ide_core::IdeResult;
 use ide_host::ops::clip::{
-    ClipBranchRestore, ClipBranchSeries, ClipCopyResult, ClipCopySource, ClipPasteApply, ClipPastePreview,
-    ClipPasteResult,
+    ClipBranchRestore, ClipBranchSeries, ClipCopyResult, ClipCopySource, ClipPasteApply, ClipPasteFileContent,
+    ClipPastePreview, ClipPasteResult,
 };
 use std::path::PathBuf;
 use tauri::{State, Window};
@@ -36,6 +36,20 @@ pub async fn clip_paste_preview(
     repos: Vec<PathBuf>,
 ) -> IdeResult<ClipPastePreview> {
     ide_host::ops::clip::clip_paste_preview(&state.host, window.label(), text, dest, repo, adjust_paths, repos).await
+}
+
+/// What the open preview `id`'s file `index` (of kind `action`) writes and what the
+/// destination holds now, for the dialog's content pane.
+#[tauri::command]
+#[specta::specta]
+pub async fn clip_paste_preview_file(
+    window: Window,
+    state: State<'_, AppState>,
+    id: u32,
+    action: String,
+    index: u32,
+) -> IdeResult<ClipPasteFileContent> {
+    ide_host::ops::clip::clip_paste_preview_file(&state.host, window.label(), id, action, index).await
 }
 
 /// Writes the preview `apply.id` as confirmed.
