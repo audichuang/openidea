@@ -26,6 +26,8 @@ const views: EditorView[] = [];
 beforeEach(() => {
   clearClipboardHistory();
   vi.stubGlobal("__TAURI_INTERNALS__", {});
+  // The webview reads the text, as on Windows; `readPlainText` covers the native read.
+  vi.spyOn(commands, "clipboardText").mockResolvedValue({ status: "ok", data: null });
   Object.defineProperty(document, "execCommand", { configurable: true, value: vi.fn(() => false) });
   Object.defineProperty(document, "queryCommandSupported", { configurable: true, value: vi.fn(() => false) });
 });
