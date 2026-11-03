@@ -140,8 +140,11 @@ export async function pasteTerminalClipboard(paste: (text: string) => void, getT
     }
     // Native paste preserves clipboard blobs where Clipboard.read() is unavailable.
     if (document.queryCommandSupported?.("paste") && document.execCommand("paste")) return;
-    const images = navigator.clipboard?.read
-      ? await navigator.clipboard.read().then(
+    // Only reached where the backend cannot read images (Linux), so the webview is the only source.
+    // oxlint-disable-next-line no-restricted-properties
+    const webClipboard = navigator.clipboard;
+    const images = webClipboard?.read
+      ? await webClipboard.read().then(
           (items) => ({ items }),
           (error: unknown) => ({ error }),
         )

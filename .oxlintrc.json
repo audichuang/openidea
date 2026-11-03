@@ -120,7 +120,15 @@
     "typescript/no-wrapper-object-types": "error",
     "typescript/prefer-as-const": "error",
     "typescript/prefer-namespace-keyword": "error",
-    "typescript/triple-slash-reference": "error"
+    "typescript/triple-slash-reference": "error",
+    "no-restricted-properties": [
+      "error",
+      {
+        "object": "navigator",
+        "property": "clipboard",
+        "message": "Use readPlainText/writePlainText/readClipboardImage from src/platform/clipboard.ts: the webview clipboard shows WebKit's Paste bubble on macOS outside a paste event."
+      }
+    ]
   },
   "overrides": [
     {
@@ -146,6 +154,12 @@
         "prefer-const": "error",
         "prefer-rest-params": "error",
         "prefer-spread": "error"
+      }
+    },
+    {
+      "files": ["src/platform/clipboard.ts", "**/*.test.ts", "**/*.test.tsx", "e2e/**"],
+      "rules": {
+        "no-restricted-properties": "off"
       }
     }
   ]
