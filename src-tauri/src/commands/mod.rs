@@ -107,7 +107,6 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         window_group::window_group_cancel_close,
         window_group::window_group_reorder,
         window_group::window_group_restore,
-        window_group::window_group_tab_bar,
         app::light_edit_open,
         app::light_edit_open_untitled,
         app::project_current,
