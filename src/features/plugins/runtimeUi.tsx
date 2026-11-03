@@ -8,6 +8,7 @@ import { create } from "zustand";
 import type { EventKind, PluginEvent, StatusItem, WorkbenchEvent } from "@/bindings";
 import { onEditorEvent } from "@/editor/api";
 import { executeAction, getAction, onActionExecuted } from "@/platform/actions";
+import { writePlainText } from "@/platform/clipboard";
 import { onIdeEvent } from "@/platform/ipc";
 import { openExternalUrl } from "@/platform/openUrl";
 import { useProject } from "@/platform/project";
@@ -264,7 +265,7 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
       void maybeEditorService()?.openFile(e.path, { selection: { line: e.line, col: e.column }, focus: true });
       return true;
     case "copyToClipboard":
-      void navigator.clipboard?.writeText(e.text);
+      void writePlainText(e.text);
       return true;
     case "openUrl":
       void openExternalUrl(e.url);
