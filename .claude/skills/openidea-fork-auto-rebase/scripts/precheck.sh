@@ -44,9 +44,16 @@ if [ -n "$lock" ]; then
   age=$(( $(date +%s) - since ))
   waiting=0
   moved=0
+  approved=-
   if [ -n "$pr" ]; then
-    marks=$(gh pr view "${pr%% *}" -R audichuang/openidea --json comments --jq '[.comments[].body] | "\([.[] | select(startswith("<!-- auto-rebase:needs-human -->"))] | length) \([.[] | select(startswith("<!-- auto-rebase:develop-moved "))] | length)"') || skip "gh pr view failed"
-    read -r waiting moved <<<"$marks"
+    marks=$(gh pr view "${pr%% *}" -R audichuang/openidea --json comments --jq '[.comments[].body] | "\([.[] | select(startswith("<!-- auto-rebase:needs-human -->"))] | length) \([.[] | select(startswith("<!-- auto-rebase:develop-moved "))] | length) \([.[] | select(startswith("<!-- auto-rebase:approved "))] | last // "- -" | split(" ")[1])"') || skip "gh pr view failed"
+    read -r waiting moved approved <<<"$marks"
+  fi
+  # Why before the obsolete check: the user may move develop onto the approved commit themselves, which makes the
+  # lock look obsolete; the run must still release it. Only an approval of the current lock tip counts.
+  if [ "$waiting" != 0 ] && [ "$moved" = 0 ] && [ "$approved" = "${lock%%[[:space:]]*}" ]; then
+    echo "approved by the user: $branch at $approved"
+    exit 0
   fi
   # Why moved first: once develop moved, a release is running (or died) whatever earlier comments say.
   if [ "$waiting" = 0 ] || [ "$moved" != 0 ]; then
