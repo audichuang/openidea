@@ -83,7 +83,8 @@ html {
   --vcs-conflict: #de6a66;
   /* annotate (git blame) gutter backgrounds, IDEA VCS_ANNOTATIONS_COLOR_1..5 (new UI): one accent
    * ramp from the newest commit to the oldest. The mix ratios reproduce IDEA Dark's
-   * 2f5194 / 2d416b / 283754 / 242d42 / 22252e over its editor background. */
+   * 2f5194 .. 22252e here and IDEA Light's a1bef7 .. f7f8fa in the light block; palette
+   * themes inherit them, so the ramp follows their own accent. */
   --vcs-annotate-1: color-mix(in srgb, var(--accent) 63%, var(--bg-editor));
   --vcs-annotate-2: color-mix(in srgb, var(--accent) 42%, var(--bg-editor));
   --vcs-annotate-3: color-mix(in srgb, var(--accent) 30%, var(--bg-editor));
@@ -427,12 +428,6 @@ html {
  * and change bars sit below WCAG AA on white (see contrast.test.ts).
  */
 :root[data-theme="light"] {
-  /* IDEA Light's a1bef7 / c9dafb / dee8fc / edf2fa / f7f8fa */
-  --vcs-annotate-1: color-mix(in srgb, var(--accent) 46%, var(--bg-editor));
-  --vcs-annotate-2: color-mix(in srgb, var(--accent) 26%, var(--bg-editor));
-  --vcs-annotate-3: color-mix(in srgb, var(--accent) 16%, var(--bg-editor));
-  --vcs-annotate-4: color-mix(in srgb, var(--accent) 9%, var(--bg-editor));
-  --vcs-annotate-5: color-mix(in srgb, var(--accent) 4%, var(--bg-editor));
   /* surfaces */
   --bg-app: #ffffff;
   --bg-elev: #f7f8f9;
@@ -488,6 +483,11 @@ html {
   --vcs-untracked: #b23247;
   --vcs-ignored: #8c4f00;
   --vcs-conflict: #de1b2e;
+  --vcs-annotate-1: color-mix(in srgb, var(--accent) 46%, var(--bg-editor));
+  --vcs-annotate-2: color-mix(in srgb, var(--accent) 26%, var(--bg-editor));
+  --vcs-annotate-3: color-mix(in srgb, var(--accent) 16%, var(--bg-editor));
+  --vcs-annotate-4: color-mix(in srgb, var(--accent) 9%, var(--bg-editor));
+  --vcs-annotate-5: color-mix(in srgb, var(--accent) 4%, var(--bg-editor));
   --gutter-modified: #88adf7;
   --gutter-added: #7fc784;
   --gutter-deleted: #767a8a;
