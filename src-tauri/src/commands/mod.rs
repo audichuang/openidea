@@ -190,6 +190,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         clipboard::clipboard_has_files,
         clipboard::clipboard_image,
         clipboard::clipboard_text,
+        clipboard::clipboard_image,
         clipboard::clipboard_set_file_list,
         fonts::system_font_families,
         doc::doc_open,
