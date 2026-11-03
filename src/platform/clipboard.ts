@@ -1,4 +1,4 @@
-import { call, commands, isTauri } from "./ipc";
+import { call, commands, IpcError, isTauri } from "./ipc";
 import { ipcPath } from "./paths";
 
 /** Native menu actions and async work can outlive WebKit's user activation. */
@@ -23,6 +23,22 @@ export async function readClipboardPlainText(): Promise<string> {
 
 type FormatFiles = (paths: string[]) => string;
 const rawPaths: FormatFiles = (paths) => paths.join("\n");
+
+/**
+ * The clipboard's image outside a paste event, read by the backend for the same reason as
+ * {@link readClipboardPlainText}; `null` when it holds none (or holds files). `undefined` where the backend
+ * cannot read it (outside Tauri, Linux): the caller reads it through the webview then.
+ */
+export async function readClipboardImage(): Promise<Blob | null | undefined> {
+  if (!isTauri()) return undefined;
+  try {
+    const image = await call(commands.clipboardImage());
+    return image && new Blob([new Uint8Array(image.data)], { type: image.mime });
+  } catch (error) {
+    if (error instanceof IpcError && error.kind === "unavailable") return undefined;
+    throw error;
+  }
+}
 
 /** WebKit exposes native file URLs as Files, hiding the pasteboard's text flavor. */
 export async function readClipboardText(
