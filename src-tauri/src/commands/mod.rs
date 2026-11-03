@@ -162,6 +162,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         clip::clip_paste_branch_series,
         clipboard::clipboard_file_list,
         clipboard::clipboard_has_files,
+        clipboard::clipboard_text,
         clipboard::clipboard_set_file_list,
         fonts::system_font_families,
         doc::doc_open,
