@@ -436,6 +436,19 @@ function InlineBlameRows() {
   );
 }
 
+function AutoFetchRow() {
+  return (
+    <ToggleNumber
+      toggleKey="vcs.git.autoFetch"
+      numberKey="vcs.git.autoFetchMinutes"
+      label="Fetch remotes automatically every"
+      unit="min"
+      {...L.autoFetchMinutes}
+      hint="All repositories of the project, quietly in the background."
+    />
+  );
+}
+
 function PushDialogRows() {
   const [show] = useSetting<boolean>("vcs.git.showPushDialog");
   return (
@@ -1112,6 +1125,12 @@ export const VCS_PAGES: PageSpec[] = [
             label: "Fetch tags",
             keywords: ["Auto", "Sync", "Always", "Never", "prune"],
             component: () => <SettingSelect k="vcs.git.fetchTagsMode" label="Fetch tags" options={FETCH_TAGS} />,
+          },
+          {
+            kind: "custom",
+            label: "Fetch remotes automatically every",
+            keywords: ["auto fetch", "periodic", "interval", "minutes"],
+            component: AutoFetchRow,
           },
         ],
       },
