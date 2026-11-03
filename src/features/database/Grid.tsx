@@ -3,6 +3,7 @@
  * cell selection (click, ⇧-click, arrows, ⌘A), copy as TSV / CSV, `<null>`
  * rendering, sortable headers and in-place editing (table editor).
  */
+import { writePlainText } from "@/platform/clipboard";
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import clsx from "clsx";
@@ -157,7 +158,7 @@ export function Grid(props: GridProps) {
     const rows = selectedRows().map((r) => cols.map((c) => value(r, c)));
     const head = header ? cols.map((c) => columns[c]!.name) : null;
     const text = format === "tsv" ? toTsv(head, rows) : toCsv(head, rows);
-    void navigator.clipboard?.writeText(text);
+    void writePlainText(text);
   };
 
   const commit = () => {

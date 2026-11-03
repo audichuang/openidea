@@ -1,3 +1,4 @@
+import { writePlainText } from "@/platform/clipboard";
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import { branchesByRepo, commitKey, commitRepo, graphCommit, type RepoCommit } from "./multiRoot";
 /** Git tool window: Log (graph, filters, commit details) and Console tabs. */
@@ -895,7 +896,7 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
       : true);
   return [
     { kind: "action", action: "vcs.log.copyRevision", arg: c },
-    { label: "Copy Commit Message", run: () => void navigator.clipboard?.writeText(c.message) },
+    { label: "Copy Commit Message", run: () => void writePlainText(c.message) },
     { kind: "action", action: "clip.copyCommitFiles", arg: c },
     { kind: "action", action: "clip.copyCommits", arg: c },
     { kind: "action", action: "vcs.log.createPatch", arg: c },
@@ -1501,7 +1502,7 @@ function CommitMessage({ commit, compact = false }: { commit: Commit; compact?: 
           type="button"
           className={clsx(styles.linkButton, styles.hash)}
           title={tx("Copy revision number")}
-          onClick={() => void navigator.clipboard?.writeText(commit.id)}
+          onClick={() => void writePlainText(commit.id)}
         >
           {commit.shortId}
         </button>{" "}
