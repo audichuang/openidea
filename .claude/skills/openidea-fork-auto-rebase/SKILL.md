@@ -101,7 +101,7 @@ lease 失敗（develop 在這期間合進了別的 PR）→ PR 留言說明後�
    git tag -a vNEW-fork.N <develop-moved 的 sha> -F "$MAIN/.rebase-review/notes.md"
    git push --atomic --force-with-lease=main:$old fork <sha>:refs/heads/main vNEW-fork.N
    ```
-4. `gh run list -R audichuang/openidea --workflow fork-release.yml --branch vNEW-fork.N --json databaseId,headSha` 找 run，`gh-wait run <id>` 等完（約 50 分鐘：建置、簽章、公證、發布、更新 cask）。失敗看 `--log-failed`；只靠改程式才能修的失敗不在這裡修，通知裡寫原因。
+4. `gh run list -R audichuang/openidea --workflow fork-release.yml --branch vNEW-fork.N --json databaseId,headSha` 找 run，`gh-wait run <id>` 等完（約 50 分鐘：macOS 與 Windows 並行建置，都成功才發布、附 latest.json、更新 cask；任一平台失敗就沒有發版）。失敗看 `--log-failed`；只靠改程式才能修的失敗不在這裡修，通知裡寫原因。
 5. 發版成功 → PR 留言結果後關閉，刪 `rebase/vNEW` 與 `ci-base/vNEW`。
 
 ## 7. Bark 通知（有做事就推）
@@ -128,7 +128,7 @@ PY
 body 約 1,000 字內：vOLD → vNEW、模式、衝突各一句、本機閘門與 CI 結果（重跑過的 job、上游也紅的 job）、PR 連結、develop 有沒有移動（沒有就寫原因）、發版結果（tag、release 連結）、對 develop 開著的 PR、第 0 步沒刪的 worktree。發版成功時最後一行固定寫：
 
 ```
-兩台都要自己升級：brew upgrade --cask openidea-fork（Mac mini 與 macbookpro，先關掉 app）
+Mac 與 Windows 的 app 下次啟動會提示更新（內建 updater），按下更新即可
 ```
 
 最後在對話裡印出和 Bark 一樣的內容。
@@ -137,4 +137,4 @@ body 約 1,000 字內：vOLD → vNEW、模式、衝突各一句、本機閘門�
 
 - 不 push `origin`、不對上游開 PR。`main` 與 tag 只在第 6 步動；`develop` 只在第 4 步那一次 lease 推送動。
 - 不刪 `backup/*`；不動 `~/Project/openidea` 主 checkout；暫時 worktree 只用 `../ar-$RUN-*`，用完刪。
-- 不在本機編 Rust（Mac mini 磁碟），不跑 `brew upgrade`、不開 app。
+- 不在本機編 Rust（Mac mini 磁碟），不安裝或更新 app、不開 app。
