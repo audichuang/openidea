@@ -48,6 +48,8 @@ export function editCommand(command: "undo" | "redo" | "cut" | "copy" | "paste" 
         return;
       }
     }
+    // Only checks that some clipboard exists; readPlainText reads through the backend first.
+    // oxlint-disable-next-line no-restricted-properties
     if (command === "paste" && navigator.clipboard) {
       void readPlainText().then((text) => document.execCommand("insertText", false, text));
       return;
