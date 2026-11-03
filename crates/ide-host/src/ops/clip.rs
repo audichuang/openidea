@@ -723,6 +723,59 @@ pub fn paste_preview_into(
     })
 }
 
+/// One file of the open paste preview, for the dialog's content pane: what the
+/// paste writes and what the destination holds now.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipPasteFileContent {
+    /// The content the paste writes (`create` and `overwrite`).
+    pub incoming: Option<String>,
+    /// The destination's text now (`overwrite` and `delete`).
+    pub current: Option<String>,
+    /// Why `current` is missing although the file exists: binary, too large, unreadable.
+    pub note: Option<String>,
+}
+
+/// Larger destination files are not shown: the pane is a preview, not an editor.
+const PREVIEW_FILE_MAX: u64 = 2 * 1024 * 1024;
+
+/// The content pane of the preview `id`'s file `index` of kind `action` (as in
+/// [`ClipPasteFile`]). Reads without consuming the preview, which Apply still needs.
+pub fn paste_preview_file(id: u32, action: &str, index: u32) -> IdeResult<ClipPasteFileContent> {
+    let i = index as usize;
+    let (incoming, existing) = {
+        let guard = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(Pending::Files(plan)) = guard.as_ref().and_then(|m| m.get(&id)) else {
+            return Err(IdeError::invalid("The paste preview is gone; paste again"));
+        };
+        let restore = plan.restore_plan();
+        match action {
+            "create" | "overwrite" => {
+                let op = restore.create_operations.get(i).ok_or_else(|| IdeError::invalid("No such file"))?;
+                (Some(op.content.clone()), op.existed.then(|| op.absolute_path.clone()))
+            }
+            "delete" => {
+                let op = restore.delete_operations.get(i).ok_or_else(|| IdeError::invalid("No such file"))?;
+                (None, Some(op.absolute_path.clone()))
+            }
+            _ => return Ok(ClipPasteFileContent::default()),
+        }
+    };
+    let (current, note) = match existing {
+        None => (None, None),
+        Some(path) => match std::fs::metadata(&path) {
+            Ok(meta) if meta.len() > PREVIEW_FILE_MAX => (None, Some("The file is too large to preview".to_string())),
+            Ok(_) => match std::fs::read(&path).map(String::from_utf8) {
+                Ok(Ok(text)) => (Some(text), None),
+                Ok(Err(_)) => (None, Some("The file is binary".to_string())),
+                Err(error) => (None, Some(error.to_string())),
+            },
+            Err(error) => (None, Some(error.to_string())),
+        },
+    };
+    Ok(ClipPasteFileContent { incoming, current, note })
+}
+
 /// Writes the preview `req.id` as confirmed. Refuses when the destination changed since.
 pub fn paste_apply(req: ClipPasteApply) -> IdeResult<ClipPasteResult> {
     paste_apply_with_paths(req).map(|(result, _)| result)
@@ -959,6 +1012,17 @@ pub async fn clip_paste_apply(host: &Host, window: &str, apply: ClipPasteApply) 
     Ok(result)
 }
 
+pub async fn clip_paste_preview_file(
+    host: &Host,
+    window: &str,
+    id: u32,
+    action: String,
+    index: u32,
+) -> IdeResult<ClipPasteFileContent> {
+    host.project(window)?;
+    blocking(move || paste_preview_file(id, &action, index)).await
+}
+
 pub async fn clip_copy_branch_series(
     host: &Host,
     window: &str,
@@ -1007,6 +1071,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
             c.arg("repos")?,
         )
         .await
+    });
+    d.add("clip_paste_preview_file", |c| async move {
+        clip_paste_preview_file(&c.host, &c.window, c.arg("id")?, c.arg("action")?, c.arg("index")?).await
     });
     d.add("clip_paste_apply", |c| async move { clip_paste_apply(&c.host, &c.window, c.arg("apply")?).await });
 }
