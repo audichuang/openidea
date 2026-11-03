@@ -12,7 +12,7 @@
 //! macOS keeps one `public.file-url` item per file on the general
 //! `NSPasteboard`; `NSURL` reads and writes them, so Finder's copies paste here
 //! and ours paste in Finder.
-//! On macOS, [`files`], [`has_files`], [`text`], [`set_text`] and [`set_files`] must run on the main
+//! On macOS, [`files`], [`has_files`], [`text`], [`set_text`], [`image`] and [`set_files`] must run on the main
 //! thread: AppKit and WebKit also access the general pasteboard there, and its
 //! mutable type cache cannot be protected by a mutex in this crate.
 //!
@@ -51,6 +51,61 @@ pub fn has_files() -> bool {
 /// wired up (Linux): the webview reads it then.
 pub fn text() -> Option<String> {
     imp::text()
+}
+
+/// An image on the clipboard, encoded as `mime`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Image {
+    pub mime: &'static str,
+    pub data: Vec<u8>,
+}
+
+/// The clipboard's image, read natively for the same reason as [`text`]: a
+/// menu paste reading it through the webview (`navigator.clipboard.read()`,
+/// `execCommand("paste")`) makes WebKit ask the user to confirm. macOS gives
+/// PNG, converting TIFF (what Preview and many apps copy) to PNG; Windows
+/// gives its registered `PNG` format, else `CF_DIB` as a BMP file. `Some(None)`
+/// when it holds no image, or a file list (the caller pastes the files).
+/// `None` when the clipboard stays busy or the platform is not wired up
+/// (Linux): the webview reads it then.
+pub fn image() -> Option<Option<Image>> {
+    imp::image()
+}
+
+/// A BMP file for a `CF_DIB` block: the `BITMAPFILEHEADER` it lacks, whose
+/// pixel offset follows the info header, its colour masks and colour table.
+/// `None` when the block is too short to hold what its header declares.
+pub fn dib_to_bmp(dib: &[u8]) -> Option<Vec<u8>> {
+    const BI_BITFIELDS: u32 = 3;
+    let u16_at = |i: usize| Some(u16::from_le_bytes(dib.get(i..i + 2)?.try_into().ok()?));
+    let u32_at = |i: usize| Some(u32::from_le_bytes(dib.get(i..i + 4)?.try_into().ok()?));
+    let header = u32_at(0)? as usize;
+    if header < 40 || dib.len() < header {
+        return None;
+    }
+    let bits = u16_at(14)?;
+    let used = u32_at(32)? as usize;
+    // A BITMAPINFOHEADER keeps its three masks after itself; later headers hold them.
+    let masks = if header == 40 && u32_at(16)? == BI_BITFIELDS { 12 } else { 0 };
+    let colors = if used > 0 {
+        used * 4
+    } else if bits <= 8 {
+        (1usize << bits) * 4
+    } else {
+        0
+    };
+    let offset = 14 + header + masks + colors;
+    let size = 14 + dib.len();
+    if offset > size {
+        return None;
+    }
+    let mut bmp = Vec::with_capacity(size);
+    bmp.extend_from_slice(b"BM");
+    bmp.extend_from_slice(&u32::try_from(size).ok()?.to_le_bytes());
+    bmp.extend_from_slice(&[0; 4]);
+    bmp.extend_from_slice(&u32::try_from(offset).ok()?.to_le_bytes());
+    bmp.extend_from_slice(dib);
+    Some(bmp)
 }
 
 /// Replaces the clipboard with `paths`. True only when the file list was
@@ -162,8 +217,12 @@ mod imp {
     const OPEN_ATTEMPTS: usize = 10;
     const OPEN_RETRY: Duration = Duration::from_millis(20);
 
+    /// `CF_DIB`: a device-independent bitmap without its file header.
+    const CF_DIB: u32 = 8;
+
     #[link(name = "user32")]
     unsafe extern "system" {
+        fn RegisterClipboardFormatW(name: *const u16) -> u32;
         fn OpenClipboard(owner: Handle) -> i32;
         fn CloseClipboard() -> i32;
         fn EmptyClipboard() -> i32;
@@ -285,6 +344,48 @@ mod imp {
         }
     }
 
+    /// A copy of the clipboard's `format` block. Must run with the clipboard open.
+    fn global_bytes(format: u32) -> Option<Vec<u8>> {
+        // SAFETY: as in `files`; `GlobalSize` bounds the bytes read and the
+        // block stays owned by the clipboard.
+        unsafe {
+            let memory = GetClipboardData(format);
+            if memory.is_null() {
+                return None;
+            }
+            let data = GlobalLock(memory) as *const u8;
+            if data.is_null() {
+                return None;
+            }
+            let bytes = std::slice::from_raw_parts(data, GlobalSize(memory)).to_vec();
+            GlobalUnlock(memory);
+            Some(bytes)
+        }
+    }
+
+    pub fn image() -> Option<Option<super::Image>> {
+        if has_files() {
+            return Some(None);
+        }
+        let name: Vec<u16> = "PNG".encode_utf16().chain([0]).collect();
+        let png = unsafe { RegisterClipboardFormatW(name.as_ptr()) };
+        if !open() {
+            return None;
+        }
+        // Snipping Tool, browsers and Office also put a PNG; plain bitmaps only a DIB.
+        let image = if png != 0 && (unsafe { IsClipboardFormatAvailable(png) }) != 0 {
+            global_bytes(png).map(|data| super::Image { mime: "image/png", data })
+        } else if (unsafe { IsClipboardFormatAvailable(CF_DIB) }) != 0 {
+            global_bytes(CF_DIB)
+                .and_then(|dib| super::dib_to_bmp(&dib))
+                .map(|data| super::Image { mime: "image/bmp", data })
+        } else {
+            None
+        };
+        unsafe { CloseClipboard() };
+        Some(image)
+    }
+
     pub fn set_text(text: &str, owner: usize) -> std::io::Result<()> {
         let (memory, _) = global_text(text);
         if memory.is_null() {
@@ -365,8 +466,9 @@ mod imp {
     use objc2::runtime::{AnyClass, AnyObject, ProtocolObject};
     use objc2::{ClassType, MainThreadMarker};
     use objc2_app_kit::{
-        NSPasteboard, NSPasteboardReadingOptionKey, NSPasteboardTypeString, NSPasteboardURLReadingFileURLsOnlyKey,
-        NSPasteboardWriting,
+        NSBitmapImageFileType, NSBitmapImageRep, NSBitmapImageRepPropertyKey, NSPasteboard,
+        NSPasteboardReadingOptionKey, NSPasteboardTypePNG, NSPasteboardTypeString, NSPasteboardTypeTIFF,
+        NSPasteboardURLReadingFileURLsOnlyKey, NSPasteboardWriting,
     };
     use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSString, NSURL};
     use std::path::PathBuf;
@@ -428,6 +530,32 @@ mod imp {
                 // Finder ends a folder's URL in `/`; the project view names it without.
                 .map(|path| path.components().collect())
                 .collect())
+        })
+    }
+
+    pub fn image() -> Option<Option<super::Image>> {
+        if has_files() {
+            return Some(None);
+        }
+        debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
+        autoreleasepool(|_| {
+            let board = NSPasteboard::generalPasteboard();
+            // SAFETY: the types are AppKit constants, valid for the process' lifetime.
+            if let Some(png) = board.dataForType(unsafe { NSPasteboardTypePNG }) {
+                return Some(Some(super::Image { mime: "image/png", data: png.to_vec() }));
+            }
+            let Some(tiff) = board.dataForType(unsafe { NSPasteboardTypeTIFF }) else {
+                return Some(None);
+            };
+            let properties = NSDictionary::<NSBitmapImageRepPropertyKey, AnyObject>::new();
+            // SAFETY: the properties dictionary is empty, so its values have no type to violate.
+            let png = NSBitmapImageRep::imageRepWithData(&tiff).and_then(|rep| unsafe {
+                rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &properties)
+            });
+            Some(Some(match png {
+                Some(png) => super::Image { mime: "image/png", data: png.to_vec() },
+                None => super::Image { mime: "image/tiff", data: tiff.to_vec() },
+            }))
         })
     }
 
@@ -502,6 +630,10 @@ mod imp {
     pub fn set_files(_paths: &[PathBuf]) -> bool {
         false
     }
+
+    pub fn image() -> Option<Option<super::Image>> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -567,5 +699,51 @@ mod tests {
         bytes[16] = 0; // fWide: the list is single-byte
         bytes.extend_from_slice(b"C:\\a\\b.txt\0C:\\c\0\0");
         assert_eq!(decode(&bytes), paths(&["C:\\a\\b.txt", "C:\\c"]));
+    }
+
+    /// A `BITMAPINFOHEADER` of `header` bytes for a 1x1 bitmap, then `pixels`.
+    fn dib(header: u32, bits: u16, compression: u32, used: u32, extra: usize) -> Vec<u8> {
+        let mut dib = vec![0; header as usize];
+        dib[0..4].copy_from_slice(&header.to_le_bytes());
+        dib[4..8].copy_from_slice(&1i32.to_le_bytes());
+        dib[8..12].copy_from_slice(&1i32.to_le_bytes());
+        dib[12..14].copy_from_slice(&1u16.to_le_bytes());
+        dib[14..16].copy_from_slice(&bits.to_le_bytes());
+        dib[16..20].copy_from_slice(&compression.to_le_bytes());
+        dib[32..36].copy_from_slice(&used.to_le_bytes());
+        dib.extend(std::iter::repeat_n(0xAB, extra));
+        dib
+    }
+
+    fn offset(bmp: &[u8]) -> u32 {
+        u32::from_le_bytes(bmp[10..14].try_into().unwrap())
+    }
+
+    #[test]
+    fn a_true_colour_dib_gets_a_file_header_pointing_past_the_info_header() {
+        let block = dib(40, 32, 0, 0, 4);
+        let bmp = dib_to_bmp(&block).unwrap();
+        assert_eq!(&bmp[0..2], b"BM");
+        assert_eq!(u32::from_le_bytes(bmp[2..6].try_into().unwrap()) as usize, 14 + block.len());
+        assert_eq!(offset(&bmp), 14 + 40);
+        assert_eq!(&bmp[14..], &block[..]);
+    }
+
+    #[test]
+    fn the_pixel_offset_skips_bitfield_masks_and_the_colour_table() {
+        assert_eq!(offset(&dib_to_bmp(&dib(40, 32, 3, 0, 16)).unwrap()), 14 + 40 + 12);
+        assert_eq!(offset(&dib_to_bmp(&dib(40, 8, 0, 0, 1024 + 4)).unwrap()), 14 + 40 + 256 * 4);
+        assert_eq!(offset(&dib_to_bmp(&dib(40, 8, 0, 2, 8 + 4)).unwrap()), 14 + 40 + 2 * 4);
+        // A BITMAPV5HEADER holds its masks itself.
+        assert_eq!(offset(&dib_to_bmp(&dib(124, 32, 3, 0, 4)).unwrap()), 14 + 124);
+    }
+
+    #[test]
+    fn a_block_shorter_than_its_header_is_not_a_bitmap() {
+        assert_eq!(dib_to_bmp(&[]), None);
+        assert_eq!(dib_to_bmp(&dib(40, 32, 0, 0, 0)[..30]), None);
+        // A 12-byte BITMAPCOREHEADER is not what CF_DIB holds.
+        let core: Vec<u8> = 12u32.to_le_bytes().into_iter().chain([0; 36]).collect();
+        assert_eq!(dib_to_bmp(&core), None);
     }
 }
