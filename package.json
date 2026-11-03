@@ -33,7 +33,7 @@
     "release:prepare": "node scripts/release-prepare.ts"
   },
   "simple-git-hooks": {
-    "pre-commit": "pnpm lint-staged"
+    "pre-commit": "PATH=\"$HOME/.cargo/bin:$PATH\" pnpm lint-staged"
   },
   "lint-staged": {
     "*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}": "oxlint --fix --no-error-on-unmatched-pattern",
