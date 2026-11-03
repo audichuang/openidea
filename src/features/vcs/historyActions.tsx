@@ -1,3 +1,4 @@
+import { writePlainText } from "@/platform/clipboard";
 import { commitKey, commitRepo } from "./multiRoot";
 /**
  * Actions for operations in progress, Git Log commits, change lists, the shelf
@@ -252,7 +253,7 @@ export function registerHistoryActions(): () => void {
       icon: "copy",
       when: VCS,
       keyWhen: IN_GIT_LOG,
-      run: withCommits((cs) => navigator.clipboard?.writeText(cs.map((c) => c.id).join(" "))),
+      run: withCommits((cs) => writePlainText(cs.map((c) => c.id).join(" "))),
     },
     {
       id: "vcs.log.createPatch",
