@@ -9,7 +9,7 @@
 
 Settings → Version Control → Git → "Auto fetch" toggle and minutes field (`src/features/settings/pages/vcs.tsx`).
 
-## Driving it with the bridge
+## Driving it with Tauri MCP
 
 1. Fixture: a bare remote plus a clone opened in the app; push a new commit to the remote from another clone.
 2. Turn the setting on through Settings (or `settingsSet("global", "vcs.git.autoFetch", "true")` and `autoFetchMinutes` 1 for a short run).
