@@ -148,8 +148,12 @@ jobs:
           workspace-copy: true
       - uses: pnpm/action-setup@v4
         with: { version: 11 }
+      # Why no pnpm cache on Windows: pnpm installs on the Dev Drive, so the store setup-node
+      # recorded on C: never exists and its post step fails the job.
       - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: pnpm }
+        with:
+          node-version: 22
+          cache: ${{ runner.os != 'Windows' && 'pnpm' || '' }}
       - uses: dtolnay/rust-toolchain@stable
         with: { components: clippy }
       - uses: Swatinem/rust-cache@v2
