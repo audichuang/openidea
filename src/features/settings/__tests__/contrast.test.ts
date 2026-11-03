@@ -121,9 +121,11 @@ describe("theme tokens", () => {
 /**
  * Tokens the palette themes (Solarized, One) take from their light / dark base
  * on purpose: colours the user assigns (project and data source colours), the
- * platform's caption close button, and the tint strength.
+ * platform's caption close button, the tint strength, and the Annotate ramp
+ * (mixed from the theme's own accent).
  */
-const INHERITED_FROM_BASE = /^--(project-color-|db-color-|caption-close-|fg-caption-close-|tint-strength$)/;
+const INHERITED_FROM_BASE =
+  /^--(project-color-|db-color-|caption-close-|fg-caption-close-|tint-strength$|vcs-annotate-)/;
 
 describe("palette themes", () => {
   const ISLANDS = ["light", "dark", "dark-hc"];
