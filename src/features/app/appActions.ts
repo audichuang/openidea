@@ -2,6 +2,7 @@ import { redo, undo } from "@codemirror/commands";
 import { EditorView } from "@codemirror/view";
 import type { Action } from "@/platform/actions";
 import { t } from "@/platform/i18n";
+import { readPlainText } from "@/platform/clipboard";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
 import { showAbout } from "./AboutDialog";
@@ -47,8 +48,8 @@ export function editCommand(command: "undo" | "redo" | "cut" | "copy" | "paste" 
         return;
       }
     }
-    if (command === "paste" && navigator.clipboard?.readText) {
-      void navigator.clipboard.readText().then((text) => document.execCommand("insertText", false, text));
+    if (command === "paste" && navigator.clipboard) {
+      void readPlainText().then((text) => document.execCommand("insertText", false, text));
       return;
     }
     document.execCommand(command);

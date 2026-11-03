@@ -12,7 +12,7 @@
 //! macOS keeps one `public.file-url` item per file on the general
 //! `NSPasteboard`; `NSURL` reads and writes them, so Finder's copies paste here
 //! and ours paste in Finder.
-//! On macOS, [`files`], [`has_files`] and [`set_files`] must run on the main
+//! On macOS, [`files`], [`has_files`], [`text`] and [`set_files`] must run on the main
 //! thread: AppKit and WebKit also access the general pasteboard there, and its
 //! mutable type cache cannot be protected by a mutex in this crate.
 //!
@@ -33,6 +33,18 @@ pub fn files() -> std::io::Result<Vec<PathBuf>> {
 /// Whether the clipboard holds a file list, without reading it.
 pub fn has_files() -> bool {
     imp::has_files()
+}
+
+/// The clipboard's plain text, read natively: in the macOS webview,
+/// `navigator.clipboard.readText()` outside a paste event makes WebKit ask the
+/// user to confirm with a "Paste" callout, and reads nothing when it is
+/// dismissed. Windows reads `CF_UNICODETEXT` the same way, so both apps
+/// behave alike. On macOS it is empty while the clipboard holds a file list
+/// (Finder adds the file name as text), as WebKit's own read is, so the caller
+/// reads [`files`]. `None` when the clipboard stays busy or the platform is not
+/// wired up (Linux): the webview reads it then.
+pub fn text() -> Option<String> {
+    imp::text()
 }
 
 /// Replaces the clipboard with `paths`. True only when the file list was
@@ -116,7 +128,8 @@ mod imp {
 
     /// `CF_HDROP`, the clipboard format holding a file list.
     const CF_HDROP: u32 = 15;
-    /// `CF_UNICODETEXT`, so an editor paste of copied files inserts the paths.
+    /// `CF_UNICODETEXT`: plain text, and the paths written with a file list so
+    /// an editor paste of copied files inserts them.
     const CF_UNICODETEXT: u32 = 13;
 
     /// An `HGLOBAL` or a `HANDLE`: both are opaque pointers here.
@@ -161,6 +174,38 @@ mod imp {
 
     pub fn has_files() -> bool {
         (unsafe { IsClipboardFormatAvailable(CF_HDROP) }) != 0
+    }
+
+    pub fn text() -> Option<String> {
+        // Still busy after the retries: the webview's read is the fallback.
+        if !open() {
+            return None;
+        }
+        let text = if (unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT) }) == 0 {
+            Some(String::new())
+        } else {
+            let memory = unsafe { GetClipboardData(CF_UNICODETEXT) };
+            if memory.is_null() {
+                None
+            } else {
+                // SAFETY: as in `files`; the text is UTF-16 up to its NUL,
+                // and `GlobalSize` bounds the units read.
+                unsafe {
+                    let data = GlobalLock(memory) as *const u16;
+                    if data.is_null() {
+                        None
+                    } else {
+                        let units = std::slice::from_raw_parts(data, GlobalSize(memory) / 2);
+                        let end = units.iter().position(|&u| u == 0).unwrap_or(units.len());
+                        let text = String::from_utf16_lossy(&units[..end]);
+                        GlobalUnlock(memory);
+                        Some(text)
+                    }
+                }
+            }
+        };
+        unsafe { CloseClipboard() };
+        text
     }
 
     pub fn files() -> std::io::Result<Vec<PathBuf>> {
@@ -303,6 +348,19 @@ mod imp {
         })
     }
 
+    pub fn text() -> Option<String> {
+        if has_files() {
+            return Some(String::new());
+        }
+        debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
+        autoreleasepool(|_| {
+            let board = NSPasteboard::generalPasteboard();
+            // SAFETY: the type is an AppKit constant, valid for the process' lifetime.
+            let text = board.stringForType(unsafe { NSPasteboardTypeString });
+            Some(text.map(|t| t.to_string()).unwrap_or_default())
+        })
+    }
+
     pub fn files() -> std::io::Result<Vec<PathBuf>> {
         read_file_urls(|board, classes, options| {
             // SAFETY: as in `has_files`; every object read for `NSURL` is one.
@@ -357,6 +415,10 @@ mod imp {
 
     pub fn has_files() -> bool {
         false
+    }
+
+    pub fn text() -> Option<String> {
+        None
     }
 
     pub fn files() -> std::io::Result<Vec<PathBuf>> {
