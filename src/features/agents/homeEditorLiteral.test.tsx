@@ -34,6 +34,14 @@ const claude: AgentProvider = {
   installed: true,
   config: [],
   source: { kind: "builtin" },
+  program: "npx",
+  args: [],
+  defaultProgram: "npx",
+  defaultArgs: [],
+  loginHint: null,
+  commandOverridden: false,
+  commandEditable: true,
+  commandReadOnlyReason: null,
   commands: [],
 };
 const branch = (name: string) => ({ name, remote: false, current: name === "dev" }) as Branch;
