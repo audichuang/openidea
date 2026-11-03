@@ -47,6 +47,8 @@ pub struct GitSettings {
     /// Show blame after the current editor line.
     pub inline_blame: bool,
     pub show_branch_in_project_view: bool,
+    /// Annotate gutter background colours: `order` (by commit age) | `author` | `none`.
+    pub annotate_colors: String,
     /// Path to the git executable; empty = auto-detect.
     pub executable: String,
     /// Default of Update Project: `merge` | `rebase`.
@@ -82,6 +84,7 @@ impl Default for GitSettings {
         Self {
             inline_blame: false,
             show_branch_in_project_view: false,
+            annotate_colors: "order".into(),
             executable: String::new(),
             update_method: "merge".into(),
             auto_update_on_push_rejected: false,
