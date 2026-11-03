@@ -1,4 +1,5 @@
 /** Problems tool window: "File" (current editor) and "Project Errors" tabs. */
+import { writePlainText } from "@/platform/clipboard";
 import { useCallback, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { create } from "zustand";
 import clsx from "clsx";
@@ -266,7 +267,7 @@ export function ProblemsView() {
   const target = (n: Node | null) =>
     n?.kind === "diag" ? { path: n.path, d: n.d } : n?.items[0] ? { path: n.path, d: n.items[0] } : null;
   const copy = (n: Node | null) => {
-    if (n?.kind === "diag") void navigator.clipboard?.writeText(problemText(n.d));
+    if (n?.kind === "diag") void writePlainText(problemText(n.d));
   };
   const onKeyDownCapture = (e: KeyboardEvent<HTMLDivElement>) => {
     const t = target(lead);

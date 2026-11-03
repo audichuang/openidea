@@ -4,7 +4,7 @@ import type { EditorView } from "@codemirror/view";
 import { structure } from "@/editor/structure";
 import { offsetToPos, posToOffset } from "@/editor/lsp/positions";
 import { caretAnchor, openPopup } from "@/editor/lsp/popupStore";
-import { readPlainText } from "@/platform/clipboard";
+import { readPlainText, writePlainText } from "@/platform/clipboard";
 import { executeAction } from "@/platform/actions";
 import { clipboardHistory, isLinewiseClipboardText, recordClipboard } from "./clipboardHistory";
 import { openPasteHistory } from "./view/PasteHistoryDialog";
@@ -29,7 +29,7 @@ export function pasteFromHistory(view: EditorView) {
   }
   openPasteHistory(view, (text, linewise) => {
     recordClipboard(text, linewise);
-    void navigator.clipboard?.writeText(text).catch(() => {});
+    void writePlainText(text).catch(() => {});
     pasteText(view, text);
   });
 }
