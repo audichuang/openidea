@@ -143,6 +143,8 @@ pub struct GitSettings {
     pub show_branch_in_project_view: bool,
     /// Branch operations from the branches popup act on every repository of the project.
     pub sync_branch_operations: bool,
+    /// Annotate gutter background colours: `order` (by commit age) | `author` | `none`.
+    pub annotate_colors: String,
     /// Path to the git executable; empty = auto-detect.
     pub executable: String,
     /// Clone all submodules along with the root repository.
@@ -197,6 +199,7 @@ impl Default for GitSettings {
             inline_blame_clickable: true,
             show_branch_in_project_view: false,
             sync_branch_operations: true,
+            annotate_colors: "order".into(),
             executable: String::new(),
             clone_submodules: true,
             update_method: "merge".into(),
