@@ -1,4 +1,5 @@
 /** Lazy variables tree (scopes, locals, watches, evaluation results). */
+import { writePlainText } from "@/platform/clipboard";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { call, commands, type DebugSessionId, type Variable } from "@/platform/ipc";
@@ -279,8 +280,8 @@ export function VariablesView({
       );
     if (node.kind === "watch") items.push({ label: "Remove Watch", icon: "minus", run: () => removeWatch(node.name) });
     if (node.kind !== "scope") {
-      items.push({ label: "Copy Value", icon: "copy", run: () => void navigator.clipboard?.writeText(node.value) });
-      items.push({ label: "Copy Name", run: () => void navigator.clipboard?.writeText(node.name) });
+      items.push({ label: "Copy Value", icon: "copy", run: () => void writePlainText(node.value) });
+      items.push({ label: "Copy Name", run: () => void writePlainText(node.name) });
       if (node.kind === "var" && node.evaluateName)
         items.push({ label: "Add to Watches", icon: "eye", run: () => addWatch(node.evaluateName!) });
       if (canWatch(node))

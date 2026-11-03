@@ -3,6 +3,7 @@
  * status, navigation history, autosave. The React views and actions talk to
  * this singleton; other features use the EditorService and editor/api.
  */
+import { writePlainText } from "@/platform/clipboard";
 import { pasteEditorClipboard } from "./cm/clipboard";
 import { EditorSelection } from "@codemirror/state";
 import { create } from "zustand";
@@ -684,7 +685,7 @@ export class EditorController implements SlotHost {
       {
         label: "Copy / Paste Special",
         submenu: [
-          { label: "Copy Path", run: () => void navigator.clipboard?.writeText(slot.model.path) },
+          { label: "Copy Path", run: () => void writePlainText(slot.model.path) },
           { kind: "action", action: "code.pasteFromHistory" },
         ],
       },
@@ -747,7 +748,7 @@ export class EditorController implements SlotHost {
       ...(slot.model.virtual
         ? ([
             { kind: "separator" },
-            { label: "Copy Reference", run: () => void navigator.clipboard?.writeText(slot.model.path) },
+            { label: "Copy Reference", run: () => void writePlainText(slot.model.path) },
           ] as MenuItem[])
         : ([
             { kind: "separator" },
