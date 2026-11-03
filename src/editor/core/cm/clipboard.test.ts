@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { commands } from "@/platform/ipc";
@@ -7,12 +7,22 @@ import { clipboardDocumentPath, clipboardFilesExtension, pasteEditorClipboard } 
 import { markdownImages } from "./markdownImages";
 
 vi.mock("@/platform/remote", () => ({ isRemoteWindow: vi.fn(() => false) }));
+const notify = vi.hoisted(() => vi.fn());
+vi.mock("@/workbench/contributions", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/workbench/contributions")>()),
+  notifications: () => ({ notify }),
+}));
 
 const views: EditorView[] = [];
 beforeEach(() => {
   vi.stubGlobal("__TAURI_INTERNALS__", {});
   // The webview reads the text, as on Windows; `readPlainText` covers the native read.
   vi.spyOn(commands, "clipboardText").mockResolvedValue({ status: "ok", data: null });
+  // The webview reads images, as on Linux; the native read is covered separately.
+  vi.spyOn(commands, "clipboardImage").mockResolvedValue({
+    status: "error",
+    error: { kind: "unavailable", message: "not wired up" },
+  });
   Object.defineProperty(document, "execCommand", { configurable: true, value: vi.fn(() => false) });
   Object.defineProperty(document, "queryCommandSupported", { configurable: true, value: vi.fn(() => false) });
 });
@@ -205,4 +215,64 @@ it("does not insert into a read-only editor", async () => {
   await pasteEditorClipboard(view);
   expect(view.state.doc.toString()).toBe("");
   expect(list).not.toHaveBeenCalled();
+});
+
+describe("menu paste with the backend reading the image", () => {
+  function markdownView() {
+    vi.stubGlobal(
+      "Worker",
+      class {
+        onmessage?: (e: { data: { data: number[] } }) => void;
+        terminate() {}
+        postMessage() {
+          queueMicrotask(() => this.onmessage?.({ data: { data: [137, 80, 78, 71] } }));
+        }
+      },
+    );
+    const view = new EditorView({
+      extensions: [
+        clipboardDocumentPath.of("/p/a.md"),
+        clipboardFilesExtension,
+        markdownImages({ path: "/p/a.md", folder: "assets", pattern: "image-{timestamp}" }),
+      ],
+      parent: document.body,
+    });
+    views.push(view);
+    vi.mocked(document.queryCommandSupported).mockReturnValue(true);
+    return view;
+  }
+
+  it("saves and links the image without the webview's own paste", async () => {
+    vi.spyOn(commands, "clipboardImage").mockResolvedValue({
+      status: "ok",
+      data: { mime: "image/png", data: [137, 80, 78, 71] },
+    });
+    const create = vi.spyOn(commands, "fsCreateFileBytes").mockResolvedValue({ status: "ok", data: null });
+    const view = markdownView();
+    await pasteEditorClipboard(view);
+    await vi.waitFor(() => expect(view.state.doc.toString()).toMatch(/^!\[\]\(assets\/image-\d{8}-\d{6}\.png\)$/));
+    expect(create.mock.calls[0]![1]).toEqual([137, 80, 78, 71]);
+    expect(document.execCommand).not.toHaveBeenCalled();
+  });
+
+  it("pastes the text when the clipboard holds no image", async () => {
+    vi.spyOn(commands, "clipboardImage").mockResolvedValue({ status: "ok", data: null });
+    vi.spyOn(commands, "clipboardText").mockResolvedValue({ status: "ok", data: "plain" });
+    const view = markdownView();
+    await pasteEditorClipboard(view);
+    await vi.waitFor(() => expect(view.state.doc.toString()).toBe("plain"));
+    expect(document.execCommand).not.toHaveBeenCalled();
+  });
+
+  it("reports an image the backend refuses instead of pasting through the webview", async () => {
+    vi.spyOn(commands, "clipboardImage").mockResolvedValue({
+      status: "error",
+      error: { kind: "invalidInput", message: "Clipboard image is too large to paste (limit 20 MB)" },
+    });
+    const view = markdownView();
+    await pasteEditorClipboard(view);
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ level: "error", title: "Cannot insert image" }));
+    expect(view.state.doc.toString()).toBe("");
+    expect(document.execCommand).not.toHaveBeenCalled();
+  });
 });

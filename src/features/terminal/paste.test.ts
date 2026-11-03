@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Terminal } from "@xterm/xterm";
 import { commands } from "@/platform/ipc";
 import { installTerminalPaste, pasteTerminalClipboard, type TerminalPasteTarget } from "./paste";
@@ -10,6 +10,11 @@ beforeEach(() => {
   vi.stubGlobal("__TAURI_INTERNALS__", {});
   // The webview reads the text, as on Windows; `readPlainText` covers the native read.
   vi.spyOn(commands, "clipboardText").mockResolvedValue({ status: "ok", data: null });
+  // The webview reads images, as on Linux; the native read is covered separately.
+  vi.spyOn(commands, "clipboardImage").mockResolvedValue({
+    status: "error",
+    error: { kind: "unavailable", message: "not wired up" },
+  });
   vi.spyOn(commands, "clipboardFileList").mockResolvedValue({ status: "ok", data: [] });
   notify.mockClear();
 });
@@ -542,4 +547,52 @@ it("pastes menu text without the webview's own clipboard reads, which macOS conf
   expect(read).not.toHaveBeenCalled();
   expect(readText).not.toHaveBeenCalled();
   expect(exec).not.toHaveBeenCalled();
+});
+
+describe("menu paste with the backend reading the image", () => {
+  function webviewReads() {
+    const read = vi.fn(async () => []);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { readText: async () => "", read } });
+    Object.defineProperty(document, "execCommand", { configurable: true, value: vi.fn(() => false) });
+    Object.defineProperty(document, "queryCommandSupported", { configurable: true, value: vi.fn(() => true) });
+    return read;
+  }
+
+  it.each([
+    ["local", localTarget, "'/tmp/image.png'"],
+    ["remote", remoteTarget, "'/tmp/image.png'"],
+  ])("stores the image for a %s terminal without the webview's reads", async (_, target, expected) => {
+    const read = webviewReads();
+    vi.spyOn(commands, "clipboardImage").mockResolvedValue({ status: "ok", data: { mime: "image/png", data: [1, 2] } });
+    const store = vi.spyOn(commands, "termStoreImage").mockResolvedValue({ status: "ok", data: "/tmp/image.png" });
+    const paste = vi.fn();
+    await pasteTerminalClipboard(paste, () => target());
+    expect(store).toHaveBeenCalledWith(42, [1, 2], "image/png");
+    expect(paste).toHaveBeenCalledExactlyOnceWith(expected);
+    expect(read).not.toHaveBeenCalled();
+    expect(document.execCommand).not.toHaveBeenCalled();
+  });
+
+  it("pastes nothing and reports nothing when the clipboard is empty", async () => {
+    const read = webviewReads();
+    vi.spyOn(commands, "clipboardImage").mockResolvedValue({ status: "ok", data: null });
+    const paste = vi.fn();
+    await pasteTerminalClipboard(paste, () => localTarget());
+    expect(paste).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
+    expect(document.execCommand).not.toHaveBeenCalled();
+  });
+
+  it("reports an image the backend refuses", async () => {
+    webviewReads();
+    vi.spyOn(commands, "clipboardImage").mockResolvedValue({
+      status: "error",
+      error: { kind: "invalidInput", message: "Clipboard image is too large to paste (limit 20 MB)" },
+    });
+    const paste = vi.fn();
+    await pasteTerminalClipboard(paste, () => localTarget());
+    expect(paste).not.toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ level: "error" }));
+  });
 });
