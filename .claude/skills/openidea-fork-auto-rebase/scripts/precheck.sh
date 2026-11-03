@@ -46,7 +46,7 @@ if [ -n "$lock" ]; then
   moved=0
   approved=-
   if [ -n "$pr" ]; then
-    marks=$(gh pr view "${pr%% *}" -R audichuang/openidea --json comments --jq '[.comments[].body] | "\([.[] | select(startswith("<!-- auto-rebase:needs-human -->"))] | length) \([.[] | select(startswith("<!-- auto-rebase:develop-moved "))] | length) \([.[] | select(startswith("<!-- auto-rebase:approved "))] | last // "- -" | split(" ")[1])"') || skip "gh pr view failed"
+    marks=$(gh pr view "${pr%% *}" -R audichuang/openidea --json comments --jq '[.comments[].body] | "\([.[] | select(startswith("<!-- auto-rebase:needs-human -->"))] | length) \([.[] | select(startswith("<!-- auto-rebase:develop-moved "))] | length) \([.[] | select(startswith("<!-- auto-rebase:approved "))] | last // "" | split(" ")[2] // "-")"') || skip "gh pr view failed"
     read -r waiting moved approved <<<"$marks"
   fi
   # Why before the obsolete check: the user may move develop onto the approved commit themselves, which makes the
