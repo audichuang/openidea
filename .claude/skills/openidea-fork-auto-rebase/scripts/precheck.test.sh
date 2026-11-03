@@ -6,7 +6,7 @@ precheck="$(cd "$(dirname "$0")" && pwd)/precheck.sh"
 iso_ago() { node -e 'console.log(new Date(Date.now() - process.argv[1] * 3600e3).toISOString().replace(/\.\d+Z$/, "Z"))' "$1"; }
 failed=0
 
-# check <label> <want exit> <want alert 0|1> <newest> <base> <held lock|""> <"needs-human moved" counts> [age h] [fail] [stamp age h]
+# check <label> <want exit> <want alert 0|1> <newest> <base> <held lock|""> <"needs-human moved [approved sha]" marks> [age h] [fail] [stamp age h]
 check() {
   local label=$1 want=$2 want_alert=$3 newest=$4 base=$5 held=$6 marks=$7 age=${8:-1} fail=${9:-} stamp=${10:-}
   local t
@@ -61,4 +61,9 @@ check "gh down, first hour"             1 0 v0.1.36 v0.1.35 ""      ""    1 fail
 check "gh down 2 h"                     1 0 v0.1.36 v0.1.35 ""      ""    1 fail 2
 check "gh down 7 h"                     1 1 v0.1.36 v0.1.35 ""      ""    1 fail 7
 check "odd release tag"                 1 0 nightly-1 v0.1.35 ""    ""
+check "approved lock tip"               0 0 v0.1.35 v0.1.34 v0.1.35 "1 0 abc"
+check "approved, develop already moved" 0 0 v0.1.35 v0.1.35 v0.1.35 "1 0 abc"
+check "approved an older tip"           1 0 v0.1.35 v0.1.34 v0.1.35 "1 0 def"
+check "approved, then develop-moved"    1 0 v0.1.35 v0.1.35 v0.1.35 "1 1 abc" 1
+check "approved, released run died"     0 0 v0.1.35 v0.1.35 v0.1.35 "1 1 abc" 8
 exit "$failed"
