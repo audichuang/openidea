@@ -1,6 +1,6 @@
 # OpenIDEA feature map
 
-One file per user-facing feature: what it is, how a user reaches it, how to drive it, what proves it. Driver names refer to `../SKILL.md` (MCP = `mcp__tauri__*`; lcu = `mcp__lcu__js` on the `lcu-wrap.sh` app; native = screencapture/osascript/cliclick).
+One file per user-facing feature: what it is, how a user reaches it, how to drive it, what proves it. Driver names refer to `../SKILL.md` (MCP = `mcp__tauri__*`; native = osascript/cliclick/screencapture for real input and AppKit).
 
 | Feature                                                       | File                                     | Driver       |
 | ------------------------------------------------------------- | ---------------------------------------- | ------------ |
