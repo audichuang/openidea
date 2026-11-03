@@ -24,7 +24,9 @@ pub async fn clipboard_write_text(app: AppHandle, window: WebviewWindow, text: S
 
 /// The clipboard's plain text, read natively as [`clipboard_write_text`] writes it: a Paste
 /// from a menu has no paste event, and WebKitGTK gives `navigator.clipboard.readText()` no
-/// text there (#3041). None on Windows, where the WebView's clipboard is used.
+/// text there (#3041), and WebKit on macOS asks the user to confirm a paste the app started
+/// itself (menu, command, shortcut) with a "Paste" callout. None on Windows, where the WebView's
+/// clipboard is used.
 #[tauri::command]
 #[specta::specta]
 pub async fn clipboard_text(app: AppHandle) -> IdeResult<Option<String>> {
