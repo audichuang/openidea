@@ -24,6 +24,15 @@ pub async fn clipboard_text(app: AppHandle) -> IdeResult<Option<String>> {
     with_clipboard(app, || Ok(ide_clipboard::text())).await
 }
 
+/// Replaces the clipboard with `text` natively, so a copy that first waits for
+/// the backend does not depend on the webview's user-gesture rules; false where
+/// the webview should write it (`ide_clipboard::set_text`).
+#[tauri::command]
+#[specta::specta]
+pub async fn clipboard_set_text(app: AppHandle, text: String) -> IdeResult<bool> {
+    with_clipboard(app, move || Ok(ide_clipboard::set_text(&text))).await
+}
+
 /// Whether the clipboard holds files: cheap, for the Paste item's enabled state.
 #[tauri::command]
 #[specta::specta]
