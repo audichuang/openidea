@@ -1,4 +1,5 @@
 /** Editor actions (ids from keymaps/intellij-macos.ts). */
+import { writePlainText } from "@/platform/clipboard";
 import { EditorSelection, type EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { indentSelection, moveLineDown, moveLineUp, toggleBlockComment } from "@codemirror/commands";
@@ -490,7 +491,10 @@ function copyReference(view: EditorView, slot: EditorSlot) {
     void executeAction("editor.showHint", { text: tx`Copied reference: ${text}` });
   };
   try {
-    void copyReferenceToClipboard(reference).then(copied).catch(failed);
+    // The backend writes the clipboard (fork); with no ClipboardItem it takes the plain text.
+    void copyReferenceToClipboard(reference, { writeText: writePlainText } as unknown as Clipboard, null)
+      .then(copied)
+      .catch(failed);
   } catch (error) {
     failed(error);
   }
@@ -1034,7 +1038,7 @@ export function registerEditorActions(): () => void {
       keyWhen: "editorFocus || !toolWindowFocus",
       run: () => {
         const p = ctrl.activePath();
-        if (p) void navigator.clipboard?.writeText(p);
+        if (p) void writePlainText(p);
       },
     },
     {
