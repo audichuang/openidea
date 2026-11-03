@@ -185,6 +185,11 @@ export const commands = {
 	 *  repositories.
 	 */
 	clipPastePreview: (text: string, dest: string | null, repo: string | null, adjustPaths: boolean, repos: string[]) => typedError<ClipPastePreview, IdeError>(__TAURI_INVOKE("clip_paste_preview", { text, dest, repo, adjustPaths, repos })),
+	/**
+	 *  What the open preview `id`'s file `index` (of kind `action`) writes and what the
+	 *  destination holds now, for the dialog's content pane.
+	 */
+	clipPastePreviewFile: (id: number, action: string, index: number) => typedError<ClipPasteFileContent, IdeError>(__TAURI_INVOKE("clip_paste_preview_file", { id, action, index })),
 	/**  Writes the preview `apply.id` as confirmed. */
 	clipPasteApply: (apply: ClipPasteApply) => typedError<ClipPasteResult, IdeError>(__TAURI_INVOKE("clip_paste_apply", { apply })),
 	/**  ClipCode for VS Code's Copy Branch Commits: `branch` since its fork point (or `full` history) as an mbox. */
@@ -1963,6 +1968,19 @@ export type ClipPasteFile = {
 	action: string,
 	/**  Why it is skipped (`skip` only). */
 	reason: string | null,
+};
+
+/**
+ *  One file of the open paste preview, for the dialog's content pane: what the
+ *  paste writes and what the destination holds now.
+ */
+export type ClipPasteFileContent = {
+	/**  The content the paste writes (`create` and `overwrite`). */
+	incoming: string | null,
+	/**  The destination's text now (`overwrite` and `delete`). */
+	current: string | null,
+	/**  Why `current` is missing although the file exists: binary, too large, unreadable. */
+	note: string | null,
 };
 
 export type ClipPastePreview = {
