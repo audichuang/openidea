@@ -1,46 +1,65 @@
 ---
 name: fork-verify
-description: Fork supplement to the upstream `verify` skill for proving OpenIDEA changes on macOS. Splits the work between the Tauri MCP tools (`mcp__tauri__*`, for everything inside the webview) and lcu (real OS keyboard/mouse, native menus and dialogs, the installed release, IntelliJ comparison), plus native tools for AppKit chrome (project window tabs, fullscreen, traffic lights). Covers running both drivers on one process with scripts/lcu-wrap.sh, Tauri MCP pitfalls on this app, and the fork feature map (Annotate colors, window groups, auto fetch, clipboard paste).
+description: Fork supplement to the upstream `verify` skill for proving OpenIDEA changes on macOS. Tauri MCP (`mcp__tauri__*`) drives and asserts everything inside the webview; real OS input that synthetic events cannot reach (⌘V and other native-menu shortcuts, real clicks, hover, drags, native menus and dialogs) goes through osascript and cliclick against the same `pnpm dev:app` process, with screencapture for pixels and AppKit chrome (project window tabs, fullscreen). lcu is not needed for the dev build. Lists Tauri MCP pitfalls on this app and the fork feature map (Annotate colors, window groups, auto fetch, clipboard paste).
 ---
 
 # Verify OpenIDEA in the real app (fork, macOS)
 
-Upstream's `verify` skill (`.agents/skills/verify`) is the base: launch and session reuse, `mcp__tauri__*` basics, CodeMirror/xterm input quirks, `fixtures/`, evidence naming. Read it first. This skill adds the split between Tauri MCP and lcu, how to run them on one process, what broke on this app, and the fork's feature map (`features/`).
+Upstream's `verify` skill (`.agents/skills/verify`) is the base: launch and session reuse, `mcp__tauri__*` basics, CodeMirror/xterm input quirks, `fixtures/`, evidence naming. Read it first. This skill adds when synthetic Tauri MCP input is not enough and how to send real OS input instead, what broke on this app, and the fork's feature map (`features/`).
 
-## The split: Tauri MCP inside the webview, lcu for the OS
+## The split: Tauri MCP for the webview, osascript/cliclick for real OS input
 
 ```text
-            ┌──────────── OpenIDEA debug process ────────────┐
- Tauri MCP ─┤ webview: DOM, CSS, app state, webview menus,   │
- (synthetic)│ dialogs, editor text, window screenshots       │
-            ├────────────────────────────────────────────────┤
- lcu ───────┤ macOS: real keys/mouse, native menu bar,       │
- (real OS)  │ native dialogs, AX tree, focus, clipboard      │
-            ├────────────────────────────────────────────────┤
- osascript/ │ AppKit chrome: window tab group, fullscreen    │
- cliclick/  │ frames, traffic lights, drags                  │
- screencap. │                                                │
-            └────────────────────────────────────────────────┘
+            ┌───────── one `pnpm dev:app` process ─────────┐
+ Tauri MCP ─┤ webview: DOM, CSS, app state, webview menus, │
+ (synthetic)│ dialogs, editor text, window screenshots     │
+            ├──────────────────────────────────────────────┤
+ osascript ─┤ macOS: real keystrokes, native menu bar and  │
+ cliclick   │ dialogs, window focus, real clicks and drags │
+            ├──────────────────────────────────────────────┤
+ screencap. │ pixels: AppKit chrome, permission bubbles    │
+            └──────────────────────────────────────────────┘
 ```
 
-|        | **Tauri MCP** (`mcp__tauri__*`)                                                                                                                                       | **lcu** (`mcp__lcu__js`, see `lcu-desktop`)                                                                              |
-| ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| Builds | Debug only: the app's `tauri-plugin-mcp-bridge` is `#[cfg(debug_assertions)]` in `src-tauri/src/lib.rs`.                                                              | Any `.app`: dev wrapper, installed release, IntelliJ.                                                                    |
-| Sees   | Webview DOM as a role tree with `ref=eN` handles, computed styles, rects, console logs, one window's pixels (returned inline, even when the window is behind others). | The whole app as macOS sees it: AX tree, native menu bar and dialogs, real screen pixels.                                |
-| Input  | Synthetic DOM events (`isTrusted === false`, `event.detail === 0`). No mouse movement, no AppKit, no OS focus.                                                        | Real keyboard and mouse through macOS.                                                                                   |
-| Setup  | `pnpm dev:app` + `driver_session start port=<dev:status port>`.                                                                                                       | `scripts/lcu-wrap.sh up` (a signed .app around the debug binary). Owns the screen, keyboard and clipboard while it runs. |
-| Cost   | Fast (most calls < 200 ms), scoped snapshots are small.                                                                                                               | `getApp` dumps thousands of tokens; slower per step.                                                                     |
+Tauri MCP events are synthetic (`isTrusted === false`, `event.detail === 0`) and never pass through AppKit. That is enough when a webview handler is the code under test, and not enough when the path starts in AppKit. Measured 2026-11-04 on the same editor:
 
-**Rule: Tauri MCP sets up and asserts; whatever the user physically does goes through lcu when the code path depends on a real OS event.**
+| Test                                                                                   | Result                                                                                                              |
+| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Tauri MCP `webview_keyboard press v modifiers=[Meta]` with a sentinel on the clipboard | Nothing pasted. ⌘V is the native Edit → Paste menu item (`src-tauri/src/menu.rs`), which a DOM event never reaches. |
+| `osascript` `keystroke "v" using command down` to the `pnpm dev:app` process           | Sentinel pasted, no WebKit "Paste" bubble (`screencapture`).                                                        |
+| `cliclick c:x,y` on a project tab, coordinates from Tauri MCP                          | Real click switched the focused window (`pnpm dev:status`).                                                         |
 
-| Situation                                                                                                      | Use                                                                                                      |
-| -------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| Webview menus, dialogs, settings pages, colors, layout, editor content                                         | Tauri MCP only. A synthetic click runs the same handler as a user click. (Annotate, 2026-11-04.)         |
-| Shortcuts routed through the native menu (⌘V, ⌃⌘F), clipboard reads, hover-only controls, drag and drop, focus | Tauri MCP opens the fixture → lcu presses / clicks → Tauri MCP reads the result. (⌘V paste, 2026-11-04.) |
-| Window tab group, fullscreen frames, traffic lights, Window menu                                               | `osascript` + `cliclick` + `screencapture`. Tauri MCP may still read the tab row DOM the app draws.      |
-| Installed release build, or side-by-side with IntelliJ                                                         | lcu only (no bridge in release).                                                                         |
+| Situation                                                                             | Use                                                                                                 |
+| ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Webview menus, dialogs, settings pages, colors, layout, editor content                | Tauri MCP only. A synthetic click runs the same handler as a user click.                            |
+| Native-menu shortcuts (⌘V, ⌘C, ⌘Z, ⌃⌘F), native menu items, clipboard reads, OS focus | Tauri MCP sets up → `osascript` sends the key or clicks the menu item → Tauri MCP reads the result. |
+| Real mouse: hover-only controls, drag and drop, anything that checks `isTrusted`      | `cliclick` at screen coordinates computed from Tauri MCP rects (below).                             |
+| Window tab group, fullscreen frames, traffic lights                                   | `osascript` frames + `screencapture`; Tauri MCP reads the tab row DOM the app draws.                |
 
-Do not drive webview widgets by lcu coordinates when Tauri MCP can address them by `ref`, text or selector. Do not accept a Tauri MCP click as proof for anything in the second row.
+Do not accept a Tauri MCP event as proof for rows 2–3.
+
+**lcu is not needed for the dev build.** It reaches a debug process only through a hand-made `.app` wrapper (signing, its own Vite), and everything it added here, osascript and cliclick do on the plain `pnpm dev:app` process. Reach for lcu only outside this skill's scope: the installed release (no bridge) or a side-by-side IntelliJ check, and even there osascript + screencapture usually suffice.
+
+### Real input recipes
+
+```bash
+P=$(pgrep -f "^$(git rev-parse --show-toplevel)/target/debug/openidea" | head -1)   # this worktree's dev process
+# keystroke into the app (focus the right window first, see below)
+osascript -e "tell application \"System Events\"" -e "set frontmost of (first process whose unix id is $P) to true" -e "delay 0.5" -e "keystroke \"v\" using command down" -e "end tell"
+# native menu: list items, then `click menu item "<name>" of menu "<menu>" of menu bar 1` (click form not run yet)
+osascript -e "tell application \"System Events\" to tell (first process whose unix id is $P) to get name of menu items of menu \"Window\" of menu bar 1"
+# window frames (screen points)
+osascript -e "tell application \"System Events\" to tell (first process whose unix id is $P) to get {name, position, size} of windows"
+# real click / drag / move (screen points)
+cliclick c:X,Y          # click
+cliclick dd:X1,Y1 dm:X2,Y2 du:X2,Y2   # drag
+cliclick m:X,Y          # hover
+```
+
+- **Bring the target window forward first**: `manage_window action=focus windowId=project-N`. A window in a tab group, or on another Space (fullscreen), is invisible to System Events until then; only the selected tab of a group is an AX window.
+- **Coordinates**: screen point = window origin (from `osascript ... position`) + the element's CSS rect center (from `webview_find_element` or `getBoundingClientRect`). The webview fills the window (the toolbar is web content), so no title-bar offset. Verified with the window at (0,0) in fullscreen; recheck the offset once in windowed mode.
+- Before a paste test, put a fresh sentinel on the clipboard (`printf 'SENTINEL-%s' $RANDOM | pbcopy`) and read the result through Tauri MCP. Copying inside OpenIDEA hides clipboard bugs.
+- `osascript`/`cliclick` drive the real screen: say so to the user first, and don't touch other apps' dialogs (e.g. a "claude wants to control Codex Computer Use" prompt): leave them for the user.
 
 ## Tauri MCP on this app
 
@@ -67,6 +86,8 @@ Pitfalls found on 2026-11-04:
 - **`ipc_monitor` captures nothing here.** It hooks `window.__TAURI__.core`, but the app calls the backend through the `@tauri-apps/api/core` `invoke` module (`src/bindings.ts`). Check backend effects on disk or in the UI instead.
 - **`ipc_execute_command` / bridge invoke** only reach plugin commands; app commands answer "Unsupported Tauri command". Call the generated bindings from `webview_execute_js` (recipe below).
 - **`webview_keyboard type` fails on CodeMirror** ("HTMLInputElement.value setter"). Use `webview_execute_js`: focus `.cm-content`, then `document.execCommand('insertText', false, text)`.
+- **`manage_window action=list` can miss windows** (it listed 3 of 6, including a new project window). `pnpm dev:status` / `ipc_get_backend_state` has the full list.
+- **`webview_dom_snapshot` can fail with "aria-api library not loaded"** in a window whose bridge script was not (re)injected. Fall back to `webview_find_element` or `webview_execute_js` in that window.
 - **`webview_wait_for` stops at ~5 s** whatever `timeout` says ("Script execution timeout"). Call it again for longer waits.
 - Synthetic clicks have `event.detail === 0`; CodeMirror treats them as line-select clicks. Set the caret through `document.querySelector('.cm-content').cmTile.view`.
 - `strategy=text` can hit a hidden node (upstream note); prefer the snapshot `ref`.
@@ -83,29 +104,6 @@ Recipes (dev build only, since Vite serves `/src/...`):
 - **Webview context menus** (gutter, project tree, tabs): `webview_interact action=right-click` on the element, then `action=click strategy=text selector=<item label>`.
 
 Prefer the user's real path for the behavior under test (click the menu item, not the store setter); internal imports are for setup.
-
-## Running Tauri MCP and lcu on one process
-
-The dev identifier is single-instance (`tauri_plugin_single_instance` in `lib.rs`): either `pnpm dev:app` runs or the lcu wrapper runs, never both. The wrapper carries the same debug binary, so the bridge, Tauri MCP and lcu all reach one process (verified 2026-11-04).
-
-```bash
-# 1. build once; stop it after `pnpm dev:status` shows a bridge (it owns the single instance)
-PATH="$HOME/.cargo/bin:$PATH" CARGO_PROFILE_DEV_DEBUG=0 pnpm dev:app > /tmp/oi-dev.log 2>&1   # background
-# 2. relaunch as a signed .app with its own vite (reads identifier/devUrl from the log)
-.agents/skills/fork-verify/scripts/lcu-wrap.sh up /tmp/oi-dev.log      # prints the .app path
-pnpm -s dev:status                                                     # bridge answers again
-```
-
-Then `driver_session start` for Tauri MCP and `globalThis.app = await cua.getApp('<printed .app path>')` for lcu. Finish with `lcu-wrap.sh down` (quits the wrapper app, stops its vite by port, deletes the wrapper). After a Rust rebuild, `down` and `up` again: the wrapper holds a copy of the old binary.
-
-Proven flow (⌘V paste): Tauri MCP opens the fixture and trusts it → Bash `printf 'SENTINEL-%s' $RANDOM | pbcopy` → lcu `app.click(<"Editor for <path>" text area id>)`, `app.pressKey('cmd+v')` → Tauri MCP reads `.cm-content` text and finds the sentinel → `screencapture -x` shows no WebKit "Paste" bubble.
-
-lcu notes from these runs:
-
-- `pressKey` rejected `cmd+end` and `cmd+down` (`keyNotFound`); check key names with `cua.rewriteDocumentation()`.
-- Webview widgets have AX names (`tab group Project windows`, `text entry area ... Editor for <path>`), so lcu can click them by id.
-- `drag` returns `noWindowsAvailable` on this app; use `cliclick`. Fullscreen screenshots can be stale; use `screencapture -x`.
-- A macOS consent dialog from another app (e.g. "claude wants to control Codex Computer Use") can appear on top; leave it for the user.
 
 ## Launch
 
@@ -128,8 +126,8 @@ PATH="$HOME/.cargo/bin:$PATH" CARGO_PROFILE_DEV_DEBUG=0 pnpm dev:app > /tmp/oi-d
 ## Native AppKit
 
 - Window frames: `osascript -e 'tell application "System Events" to tell (first process whose unix id is <pid>) to get {position, size} of windows'`. Fullscreen should equal the screen (minus the notch safe area on notched displays).
-- Pixels: `screencapture -x /tmp/oi-verify/evidence/x.png`. Drags: `cliclick dd:x,y dm:x,y du:x,y` in screen points.
-- `scripts/lcu-wrap.sh` already handles what failed by hand: plain `cargo build` binaries lack `devUrl` (blank window), an unsigned copy fails with POSIX 162, a wrapper under `/tmp` made `getApp` hang, stopping tauri dev also stops its vite.
+- Pixels: `screencapture -x /tmp/oi-verify/evidence/x.png` (lcu captures of a fullscreen window were stale or offset). Drags: `cliclick dd:x,y dm:x,y du:x,y` in screen points.
+- Run against the `pnpm dev:app` process itself. A plain `cargo build` binary lacks `devUrl` (blank window), and copying the binary into a `.app` needs `codesign --force --sign -` (else POSIX 162) plus your own Vite; past wrappers cost more time than they saved.
 - AppKit view trees: lldb attach hangs (Developer mode off). Temporarily `eprintln!` `_subtreeDescription` behind an env var; remove before committing.
 - Private-API behavior (e.g. `_setTabBarAccessoryViewController:`) can only be judged live: AppKit re-applies state on its run loop. Recheck after a resize, a tab switch, entering and leaving fullscreen.
 - When something looks broken, `git stash` and check the baseline before blaming your change.
@@ -146,7 +144,7 @@ Put proof in `/tmp/oi-verify/evidence/<task>/` (cleanup never deletes it):
 ## Cleanup
 
 1. Restore settings you changed through the same bindings call.
-2. Stop the `pnpm dev:app` you started (its background task or pid; never `pkill openidea`, the installed app has the same name), or `scripts/lcu-wrap.sh down` if you used the wrapper.
+2. Stop the `pnpm dev:app` you started (its background task or pid; never `pkill openidea`, the installed app has the same name).
 3. `rm -rf /tmp/oi-verify/repo*`; keep `/tmp/oi-verify/evidence`.
 4. `cargo clean` in `src-tauri` (`target/` grows past 6 GB).
 
