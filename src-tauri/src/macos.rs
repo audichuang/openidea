@@ -4,9 +4,11 @@ use crate::windows::{Launch, WindowsState};
 use ide_core::{IdeError, IdeResult};
 use ide_workspace::window_groups::{TabbingPreference, WindowGroup, should_group_new_project};
 use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
-use objc2::{MainThreadMarker, Message, rc::Retained, runtime::ProtocolObject};
-use objc2_app_kit::{NSWindow, NSWindowOrderingMode, NSWindowStyleMask, NSWindowUserTabbingPreference};
-use objc2_foundation::{NSNotification, NSNotificationCenter, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
+use objc2::{
+    ClassType, MainThreadMarker, MainThreadOnly, Message, msg_send, rc::Retained, runtime::ProtocolObject, sel,
+};
+use objc2_app_kit::{NSView, NSWindow, NSWindowOrderingMode, NSWindowStyleMask, NSWindowUserTabbingPreference};
+use objc2_foundation::{NSNotification, NSNotificationCenter, NSObjectProtocol, NSRect, NSString};
 use tauri::{AppHandle, Manager, WebviewWindow};
 
 fn tabbing_preference(app: &AppHandle) -> IdeResult<TabbingPreference> {
@@ -53,7 +55,7 @@ pub fn new_project_tab_target(app: &AppHandle, launch: &Launch) -> IdeResult<Opt
 
 // Project window groups are AppKit tab groups: one frame and one fullscreen Space for every
 // member, so switching tabs never leaves fullscreen and never animates between Spaces. AppKit
-// owns membership, order and the selected tab (its tab bar can also change them); the shared
+// owns membership, order and the selected tab (⌃Tab can also change them); the shared
 // `WindowGroups` model mirrors it through `native_groups`.
 
 /// Runs `f` on the AppKit main thread and returns its result.
@@ -78,6 +80,64 @@ fn ns_window(window: &WebviewWindow) -> Option<*const NSWindow> {
 /// AppKit's automatic tabbing (which would also tab settings and LightEdit windows).
 pub fn init_window_tabbing(mtm: MainThreadMarker) {
     NSWindow::setAllowsAutomaticWindowTabbing(false, mtm);
+}
+
+type SetAccessory = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject);
+
+/// NSWindow's own `_setTabBarAccessoryViewController:`, called with the hidden stand-in.
+static SET_TAB_BAR: std::sync::OnceLock<Option<SetAccessory>> = std::sync::OnceLock::new();
+
+/// Keeps AppKit's tab groups (one frame and one fullscreen Space per group) without its tab bar:
+/// the page draws the tabs below the toolbar instead, in the same place windowed and in
+/// fullscreen, as IntelliJ does. AppKit puts the tab bar in the title bar, and in fullscreen in a
+/// separate window at the very top of the screen, above the page's toolbar.
+///
+/// AppKit installs the tab bar (again) whenever a group shows it, so like JBR (IntelliJ's
+/// runtime, `AWTWindow.m`) this overrides the private setter on tao's window class and hands
+/// AppKit an empty hidden accessory instead. Call before the first window joins a group.
+fn hide_system_tab_bars() {
+    SET_TAB_BAR.get_or_init(|| {
+        let sel = sel!(_setTabBarAccessoryViewController:);
+        let (Some(tao), Some(method)) = (AnyClass::get(c"TaoWindow"), NSWindow::class().instance_method(sel)) else {
+            tracing::warn!("cannot hide the system tab bar: TaoWindow or {sel:?} not found");
+            return None;
+        };
+        // SAFETY: the setter takes one object argument and returns void (its type encoding,
+        // passed on, says so), matching `SetAccessory`.
+        let original: SetAccessory = unsafe { std::mem::transmute(method.implementation()) };
+        let replacement: SetAccessory = set_hidden_tab_bar;
+        let added = unsafe {
+            objc2::ffi::class_addMethod(
+                (tao as *const AnyClass).cast_mut(),
+                sel,
+                std::mem::transmute::<SetAccessory, objc2::runtime::Imp>(replacement),
+                objc2::ffi::method_getTypeEncoding(method),
+            )
+        };
+        if !added.as_bool() {
+            tracing::warn!("cannot hide the system tab bar: TaoWindow already defines {sel:?}");
+            return None;
+        }
+        Some(original)
+    });
+}
+
+unsafe extern "C-unwind" fn set_hidden_tab_bar(this: *mut AnyObject, sel: Sel, _tab_bar: *mut AnyObject) {
+    let Some(Some(original)) = SET_TAB_BAR.get() else { return };
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    let Some(class) = AnyClass::get(c"NSTitlebarAccessoryViewController") else {
+        return unsafe { original(this, sel, _tab_bar) };
+    };
+    // An empty view, hidden without animation (JBR's stand-in).
+    let controller: Retained<AnyObject> = unsafe { msg_send![class, new] };
+    let view = NSView::initWithFrame(NSView::alloc(mtm), NSRect::ZERO);
+    unsafe {
+        let _: () = msg_send![&*controller, setView: &*view];
+        if msg_send![&*controller, respondsToSelector: sel!(_setHidden:animated:)] {
+            let _: () = msg_send![&*controller, _setHidden: true, animated: false];
+        }
+        original(this, sel, Retained::as_ptr(&controller).cast_mut());
+    }
 }
 
 /// Makes `order` (which contains `anchor`) tabs of `anchor`'s group in that order around `anchor`,
@@ -118,6 +178,7 @@ pub fn add_tabs(
 
 /// Tabs `order` around `anchor` and selects `select`. Main thread only.
 fn arrange(anchor: &WebviewWindow, order: &[WebviewWindow], select: &WebviewWindow) {
+    hide_system_tab_bars();
     let Some(anchor_ns) = ns_window(anchor).map(|n| unsafe { (*n).retain() }) else { return };
     let at = order.iter().position(|w| w.label() == anchor.label()).unwrap_or(0);
     let (before, after) = order.split_at(at.min(order.len()));
@@ -175,6 +236,25 @@ pub fn select_tab(app: &AppHandle, window: &WebviewWindow) -> IdeResult<()> {
     })
 }
 
+/// Puts the tabs of `order[0]`'s group in `order` (the page's tab strip reorders by dragging).
+pub fn reorder_tabs(app: &AppHandle, order: &[WebviewWindow]) -> IdeResult<()> {
+    let order = order.to_vec();
+    on_main(app, move |_| unsafe {
+        let natives: Vec<Retained<NSWindow>> =
+            order.iter().filter_map(|w| ns_window(w).map(|n| (*n).retain())).collect();
+        let Some(group) = natives.first().and_then(|w| w.tabGroup()) else { return };
+        for (index, native) in natives.iter().enumerate() {
+            let windows = group.windows();
+            let in_place = windows.count() > index && std::ptr::eq(&*windows.objectAtIndex(index), &**native);
+            if in_place || !same_group(native, &natives[0]) {
+                continue;
+            }
+            group.removeWindow(native);
+            group.insertWindow_atIndex(native, index as isize);
+        }
+    })
+}
+
 /// "Move Tab to New Window".
 pub fn move_tab_to_new_window(app: &AppHandle, window: &WebviewWindow) -> IdeResult<()> {
     let window = window.clone();
@@ -227,25 +307,6 @@ pub fn native_groups(
     })
 }
 
-/// The system tab bar `window` shows over its page: height in points (0 without one), and whether
-/// it sits at the very top (fullscreen hides the title bar) rather than below the title bar. Read
-/// from the group's selected tab, which is laid out and alone carries the fullscreen style, so a
-/// tab not shown yet is already set up for when it is.
-pub fn tab_bar(app: &AppHandle, window: &WebviewWindow) -> IdeResult<(f64, bool)> {
-    let window = window.clone();
-    on_main(app, move |mtm| unsafe {
-        let Some(native) = ns_window(&window) else { return (0.0, false) };
-        let Some(group) = (*native).tabGroup().filter(|g| g.isTabBarVisible()) else { return (0.0, false) };
-        let shown = group.selectedWindow().unwrap_or_else(|| (*native).retain());
-        let top = shown.frame().size.height - shown.contentLayoutRect().size.height;
-        if shown.styleMask().contains(NSWindowStyleMask::FullScreen) {
-            (top.max(0.0), true)
-        } else {
-            ((top - titlebar_height(&shown, mtm)).max(0.0), false)
-        }
-    })
-}
-
 /// Gives `window`'s hidden tabs the shown tab's frame. AppKit only resizes a tab when it is
 /// selected, so after a resize (or entering or leaving fullscreen) each tab's page would lay
 /// itself out again on its first showing, a few frames with the old layout. Main thread only.
@@ -253,6 +314,19 @@ pub fn match_tab_frames(window: &WebviewWindow) {
     let Some(native) = ns_window(window) else { return };
     let Some(group) = (unsafe { &*native }).tabGroup() else { return };
     let Some(shown) = group.selectedWindow() else { return };
+    // A tab that joins a fullscreen group gets the Space's frame from AppKit, then is resized
+    // back to the size it had as a window: it would sit in the middle of the Space, and the
+    // hidden tabs would be given that frame too. AppKit's fullscreen frame spans the screen but
+    // leaves out a notch at the top, hence the width test and the safe area.
+    if shown.styleMask().contains(NSWindowStyleMask::FullScreen)
+        && !in_fullscreen_transition(&shown)
+        && let Some(screen) = shown.screen()
+        && shown.frame().size.width < screen.frame().size.width
+    {
+        let mut full = screen.frame();
+        full.size.height -= screen.safeAreaInsets().top;
+        shown.setFrame_display(full, true);
+    }
     let frame = shown.frame();
     for tab in group.windows().iter() {
         if !std::ptr::eq(&*tab, &*shown) && tab.frame() != frame {
@@ -367,13 +441,6 @@ pub fn in_fullscreen(window: &WebviewWindow) -> bool {
 pub fn in_fullscreen_any_thread(app: &AppHandle, windows: Vec<WebviewWindow>) -> Vec<bool> {
     let count = windows.len();
     on_main(app, move |_| windows.iter().map(in_fullscreen).collect()).unwrap_or_else(|_| vec![false; count])
-}
-
-/// The standard title bar height for `window`'s style, without a tab bar.
-pub unsafe fn titlebar_height(window: &NSWindow, mtm: MainThreadMarker) -> f64 {
-    let content = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(100.0, 100.0));
-    let style = window.styleMask() & !NSWindowStyleMask::FullSizeContentView & !NSWindowStyleMask::FullScreen;
-    NSWindow::frameRectForContentRect_styleMask(content, style, mtm).size.height - 100.0
 }
 
 type ShouldTerminate = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject) -> usize;
