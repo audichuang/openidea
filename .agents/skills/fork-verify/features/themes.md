@@ -8,12 +8,10 @@ Light, dark, dark high contrast, and color themes (solarized, one-light/dark, im
 
 Settings → Appearance → Theme; also Quick Switch Scheme.
 
-## Driving it with the bridge
+## Driving it with Tauri MCP
 
-```bash
-node $B js 'import("/src/bindings.ts").then(m => m.commands.settingsSet("global", "appearance.theme", JSON.stringify("dark"))).then(r => r.status)' <label>
-node $B js 'document.documentElement.dataset.theme' <label>
-```
+- Set: `webview_execute_js` with `import("/src/bindings.ts").then(m => m.commands.settingsSet("global", "appearance.theme", JSON.stringify("dark"))).then(r => r.status)`.
+- Read: `webview_execute_js` with `document.documentElement.dataset.theme`.
 
 Proof: `data-theme` changes in every open window, and `getComputedStyle` of the element under test resolves to the token for that theme. Screenshot each theme the change affects.
 
