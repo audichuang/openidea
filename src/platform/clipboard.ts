@@ -14,6 +14,17 @@ export async function readPlainText(): Promise<string> {
   return native ?? (await navigator.clipboard?.readText()) ?? "";
 }
 
+/**
+ * Puts `text` on the clipboard. The backend writes it where it can, so a copy that first awaits
+ * the backend (ClipCode) or runs from a menu does not depend on the webview's user-gesture rules;
+ * elsewhere the webview writes it. Rejects when nothing was written.
+ */
+export async function writePlainText(text: string): Promise<void> {
+  if (isTauri() && (await call(commands.clipboardSetText(text)))) return;
+  if (!navigator.clipboard?.writeText) throw new Error("The clipboard cannot be written");
+  await navigator.clipboard.writeText(text);
+}
+
 /** WebKit exposes native file URLs as Files, hiding the pasteboard's text flavor. */
 export async function readClipboardText(
   transfer?: DataTransfer | null,

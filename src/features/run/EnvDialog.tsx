@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import clsx from "clsx";
-import { readPlainText } from "@/platform/clipboard";
+import { readPlainText, writePlainText } from "@/platform/clipboard";
 import { commands, isTauri, type RunConfig } from "@/platform/ipc";
 import { useTx, useTxTemplate } from "@/platform/i18n";
 import { Checkbox, Dialog, IconButton, Input, T } from "@/ui";
@@ -43,7 +43,7 @@ export function pasteRows(rows: readonly EnvRow[], text: string): EnvRow[] {
 
 async function writeClipboard(text: string) {
   try {
-    await navigator.clipboard.writeText(text);
+    await writePlainText(text);
   } catch {
     /* clipboard unavailable */
   }
