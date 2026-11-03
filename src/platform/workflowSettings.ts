@@ -9,6 +9,8 @@ import { DEFAULT_REMOTE, validateRemote, type RemoteSettings } from "./remoteSet
 export type UpdateMethod = "merge" | "rebase";
 export type IncomingCheck = "auto" | "always" | "never";
 export type BuildToolWindowWhen = "always" | "onError" | "never";
+/** Annotate gutter colours, IDEA's ColorMode (Order / Author / Hide). */
+export type AnnotateColors = "order" | "author" | "none";
 export type VcsConfirm = "ask" | "silently" | "never";
 export type PatchCreated = "ask" | "no" | "reveal";
 export type CursorShape = "block" | "underline" | "bar";
@@ -23,6 +25,7 @@ export interface GitSettingsValid {
   inlineBlameClickable: boolean;
   showBranchInProjectView: boolean;
   syncBranchOperations: boolean;
+  annotateColors: AnnotateColors;
   executable: string;
   updateMethod: UpdateMethod;
   autoUpdateOnPushRejected: boolean;
@@ -339,6 +342,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       inlineBlameClickable: true,
       showBranchInProjectView: false,
       syncBranchOperations: true,
+      annotateColors: "order",
       executable: "",
       updateMethod: "merge",
       autoUpdateOnPushRejected: false,
@@ -529,6 +533,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       inlineBlameClickable: bool(g.inlineBlameClickable, d.git.inlineBlameClickable),
       showBranchInProjectView: bool(g.showBranchInProjectView, d.git.showBranchInProjectView),
       syncBranchOperations: bool(g.syncBranchOperations, d.git.syncBranchOperations),
+      annotateColors: oneOf(g.annotateColors, ["order", "author", "none"] as const, d.git.annotateColors),
       executable: text(g.executable, d.git.executable).trim(),
       updateMethod: oneOf(g.updateMethod, ["merge", "rebase"] as const, d.git.updateMethod),
       autoUpdateOnPushRejected: bool(g.autoUpdateOnPushRejected, d.git.autoUpdateOnPushRejected),

@@ -98,6 +98,7 @@ export const CLIENT_SETTINGS_KEYS = [
   "vcs.git.inlineBlame",
   "vcs.git.inlineBlameClickable",
   "vcs.git.showBranchInProjectView",
+  "vcs.git.annotateColors",
   "vcs.git.showPushDialog",
   "vcs.git.pushDialogOnlyProtected",
   "vcs.git.combineStashAndShelf",
