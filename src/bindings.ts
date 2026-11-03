@@ -232,6 +232,12 @@ export const commands = {
 	 */
 	clipboardText: () => typedError<string | null, IdeError>(__TAURI_INVOKE("clipboard_text")),
 	/**
+	 *  Replaces the clipboard with `text` natively, so a copy that first waits for
+	 *  the backend does not depend on the webview's user-gesture rules; false where
+	 *  the webview should write it (`ide_clipboard::set_text`).
+	 */
+	clipboardSetText: (text: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("clipboard_set_text", { text })),
+	/**
 	 *  Replaces the clipboard with `paths`, so Explorer can paste them. Best-effort:
 	 *  false when the clipboard stayed busy; the caller keeps working either way.
 	 */
