@@ -29,6 +29,8 @@ export interface GitSettingsValid {
   warnCrlf: boolean;
   warnDetachedHead: boolean;
   incomingCheck: IncomingCheck;
+  autoFetch: boolean;
+  autoFetchMinutes: number;
   protectedBranches: string;
   signOff: boolean;
   warnLargeFiles: boolean;
@@ -197,6 +199,7 @@ export const WORKFLOW_LIMITS = {
   historyLimit: { min: 10, max: 100_000 },
   messageLimit: { min: 20, max: 500 },
   largeFileMb: { min: 1, max: 100_000 },
+  autoFetchMinutes: { min: 1, max: 1440 },
   bufferKb: { min: 16, max: 1_048_576 },
   tooltipDelay: { min: 0, max: 10_000 },
   terminationTimeoutMs: { min: 0, max: 600_000 },
@@ -264,6 +267,8 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       warnCrlf: true,
       warnDetachedHead: true,
       incomingCheck: "auto",
+      autoFetch: false,
+      autoFetchMinutes: 30,
       protectedBranches: "master; main",
       signOff: false,
       warnLargeFiles: true,
@@ -417,6 +422,8 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       warnCrlf: bool(g.warnCrlf, d.git.warnCrlf),
       warnDetachedHead: bool(g.warnDetachedHead, d.git.warnDetachedHead),
       incomingCheck: oneOf(g.incomingCheck, ["auto", "always", "never"] as const, d.git.incomingCheck),
+      autoFetch: bool(g.autoFetch, d.git.autoFetch),
+      autoFetchMinutes: num(g.autoFetchMinutes, d.git.autoFetchMinutes, L.autoFetchMinutes, true),
       protectedBranches: text(g.protectedBranches, d.git.protectedBranches),
       signOff: bool(g.signOff, d.git.signOff),
       warnLargeFiles: bool(g.warnLargeFiles, d.git.warnLargeFiles),
