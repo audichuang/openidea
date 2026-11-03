@@ -1,4 +1,4 @@
-import { call, commands, isTauri } from "./ipc";
+import { call, commands, IpcError, isTauri } from "./ipc";
 import { ipcPath } from "./paths";
 
 type FormatFiles = (paths: string[]) => string;
@@ -23,6 +23,22 @@ export async function writePlainText(text: string): Promise<void> {
   if (isTauri() && (await call(commands.clipboardSetText(text)))) return;
   if (!navigator.clipboard?.writeText) throw new Error("The clipboard cannot be written");
   await navigator.clipboard.writeText(text);
+}
+
+/**
+ * The clipboard's image outside a paste event, read by the backend for the same reason as
+ * {@link readPlainText}; `null` when it holds none (or holds files). `undefined` where the backend
+ * cannot read it (outside Tauri, Linux): the caller reads it through the webview then.
+ */
+export async function readClipboardImage(): Promise<Blob | null | undefined> {
+  if (!isTauri()) return undefined;
+  try {
+    const image = await call(commands.clipboardImage());
+    return image && new Blob([new Uint8Array(image.data)], { type: image.mime });
+  } catch (error) {
+    if (error instanceof IpcError && error.kind === "unavailable") return undefined;
+    throw error;
+  }
 }
 
 /** WebKit exposes native file URLs as Files, hiding the pasteboard's text flavor. */
