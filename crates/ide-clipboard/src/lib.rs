@@ -12,7 +12,7 @@
 //! macOS keeps one `public.file-url` item per file on the general
 //! `NSPasteboard`; `NSURL` reads and writes them, so Finder's copies paste here
 //! and ours paste in Finder.
-//! On macOS, [`files`], [`has_files`] and [`set_files`] must run on the main
+//! On macOS, [`files`], [`has_files`], [`text`] and [`set_files`] must run on the main
 //! thread: AppKit and WebKit also access the general pasteboard there, and its
 //! mutable type cache cannot be protected by a mutex in this crate.
 //!
@@ -33,6 +33,16 @@ pub fn files() -> std::io::Result<Vec<PathBuf>> {
 /// Whether the clipboard holds a file list, without reading it.
 pub fn has_files() -> bool {
     imp::has_files()
+}
+
+/// The clipboard's plain text, read natively: in the macOS webview,
+/// `navigator.clipboard.readText()` outside a paste event makes WebKit ask the
+/// user to confirm with a "Paste" callout, and reads nothing when it is
+/// dismissed. Empty while the clipboard holds a file list (Finder adds the
+/// file name as text), as WebKit's own read is, so the caller reads [`files`].
+/// `None` where it is not wired up (Windows, others): the webview reads it.
+pub fn text() -> Option<String> {
+    imp::text()
 }
 
 /// Replaces the clipboard with `paths`. True only when the file list was
@@ -178,6 +188,10 @@ mod imp {
         (unsafe { IsClipboardFormatAvailable(CF_HDROP) }) != 0
     }
 
+    pub fn text() -> Option<String> {
+        None
+    }
+
     pub fn files() -> std::io::Result<Vec<PathBuf>> {
         if !open() {
             return Err(std::io::Error::last_os_error());
@@ -320,6 +334,19 @@ mod imp {
         })
     }
 
+    pub fn text() -> Option<String> {
+        if has_files() {
+            return Some(String::new());
+        }
+        debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
+        autoreleasepool(|_| {
+            let board = NSPasteboard::generalPasteboard();
+            // SAFETY: the type is an AppKit constant, valid for the process' lifetime.
+            let text = board.stringForType(unsafe { NSPasteboardTypeString });
+            Some(text.map(|t| t.to_string()).unwrap_or_default())
+        })
+    }
+
     pub fn files() -> std::io::Result<Vec<PathBuf>> {
         read_file_urls(|board, classes, options| {
             // SAFETY: as in `has_files`; every object read for `NSURL` is one.
@@ -372,6 +399,10 @@ mod imp {
 
     pub fn has_files() -> bool {
         false
+    }
+
+    pub fn text() -> Option<String> {
+        None
     }
 
     pub fn files() -> std::io::Result<Vec<PathBuf>> {

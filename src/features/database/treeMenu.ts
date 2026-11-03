@@ -1,5 +1,6 @@
 /** Menus of the Database tool window, laid out like IDEA's (New ▸, Copy/Paste ▸, SQL Scripts ▸ …). */
 import type { MenuItem } from "@/ui";
+import { readPlainText } from "@/platform/clipboard";
 import { notifications } from "@/workbench/contributions";
 import { fileSourceName, parseSourceUrl } from "./model";
 import { VENDORS, vendorPreset } from "./vendors";
@@ -48,7 +49,7 @@ function dataSourceItems(): MenuItem[] {
 async function sourceFromClipboard() {
   let text = "";
   try {
-    text = (await navigator.clipboard?.readText()) ?? "";
+    text = await readPlainText();
   } catch {
     // Unreadable clipboard: reported below like an unknown one.
   }

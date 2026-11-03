@@ -4,6 +4,7 @@ import type { EditorView } from "@codemirror/view";
 import { structure } from "@/editor/structure";
 import { offsetToPos, posToOffset } from "@/editor/lsp/positions";
 import { caretAnchor, openPopup } from "@/editor/lsp/popupStore";
+import { readPlainText } from "@/platform/clipboard";
 import { executeAction } from "@/platform/actions";
 import { clipboardHistory, isLinewiseClipboardText, recordClipboard } from "./clipboardHistory";
 import { openPasteHistory } from "./view/PasteHistoryDialog";
@@ -102,7 +103,7 @@ export async function pasteAsPlainText(view: EditorView) {
   if (view.state.readOnly) return;
   let text: string;
   try {
-    text = (await navigator.clipboard?.readText()) ?? "";
+    text = await readPlainText();
   } catch {
     hint("Cannot read the clipboard");
     return;
