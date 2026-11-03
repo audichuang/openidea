@@ -81,7 +81,6 @@ export function Workbench() {
         {project ? (
           <>
             {/* Distraction Free Mode keeps the bar for the traffic lights and window dragging only. */}
-            <WindowGroupTabs top />
             <TitleBar bare={distractionFree} />
             <WindowGroupTabs hidePageTabs={distractionFree} />
             {[...banners.values()].map(({ id, component: Banner }) => (
