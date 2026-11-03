@@ -27,13 +27,14 @@ pub fn set_text(text: &str, owner: usize) -> std::io::Result<()> {
     imp::set_text(text, owner)
 }
 
-/// The clipboard's plain text, read natively. macOS only (main thread); Linux reads it
-/// asynchronously through GTK in the app, Windows through the WebView. In the macOS webview,
-/// `navigator.clipboard.readText()` outside a paste event makes WebKit ask the user to confirm
-/// with a "Paste" callout, so this is never None there: empty when the clipboard holds no text,
-/// and empty while it holds a file list (Finder adds the file name as text), as WebKit's own
-/// read is, so the caller reads [`files`].
-#[cfg(target_os = "macos")]
+/// The clipboard's plain text, read natively. macOS (main thread) and Windows (`CF_UNICODETEXT`,
+/// so both apps paste alike); Linux reads it asynchronously through GTK in the app. In the macOS
+/// webview, `navigator.clipboard.readText()` outside a paste event makes WebKit ask the user to
+/// confirm with a "Paste" callout, so macOS never returns None: empty when the clipboard holds no
+/// text, and empty while it holds a file list (Finder adds the file name as text), as WebKit's own
+/// read is, so the caller reads [`files`]. None on Windows when the clipboard stays busy: the
+/// webview reads it then.
+#[cfg(any(target_os = "macos", windows))]
 pub fn text() -> Option<String> {
     imp::text()
 }
@@ -148,7 +149,8 @@ mod imp {
 
     /// `CF_HDROP`, the clipboard format holding a file list.
     const CF_HDROP: u32 = 15;
-    /// `CF_UNICODETEXT`, so an editor paste of copied files inserts the paths.
+    /// `CF_UNICODETEXT`: plain text, and the paths written with a file list so
+    /// an editor paste of copied files inserts them.
     const CF_UNICODETEXT: u32 = 13;
 
     /// An `HGLOBAL` or a `HANDLE`: both are opaque pointers here.
@@ -197,6 +199,38 @@ mod imp {
 
     pub fn has_files() -> bool {
         (unsafe { IsClipboardFormatAvailable(CF_HDROP) }) != 0
+    }
+
+    pub fn text() -> Option<String> {
+        // Still busy after the retries: the webview's read is the fallback.
+        if !open() {
+            return None;
+        }
+        let text = if (unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT) }) == 0 {
+            Some(String::new())
+        } else {
+            let memory = unsafe { GetClipboardData(CF_UNICODETEXT) };
+            if memory.is_null() {
+                None
+            } else {
+                // SAFETY: as in `files`; the text is UTF-16 up to its NUL,
+                // and `GlobalSize` bounds the units read.
+                unsafe {
+                    let data = GlobalLock(memory) as *const u16;
+                    if data.is_null() {
+                        None
+                    } else {
+                        let units = std::slice::from_raw_parts(data, GlobalSize(memory) / 2);
+                        let end = units.iter().position(|&u| u == 0).unwrap_or(units.len());
+                        let text = String::from_utf16_lossy(&units[..end]);
+                        GlobalUnlock(memory);
+                        Some(text)
+                    }
+                }
+            }
+        };
+        unsafe { CloseClipboard() };
+        text
     }
 
     pub fn files() -> std::io::Result<Vec<PathBuf>> {
