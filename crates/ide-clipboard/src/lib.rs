@@ -38,9 +38,11 @@ pub fn has_files() -> bool {
 /// The clipboard's plain text, read natively: in the macOS webview,
 /// `navigator.clipboard.readText()` outside a paste event makes WebKit ask the
 /// user to confirm with a "Paste" callout, and reads nothing when it is
-/// dismissed. Empty while the clipboard holds a file list (Finder adds the
-/// file name as text), as WebKit's own read is, so the caller reads [`files`].
-/// `None` where it is not wired up (Windows, others): the webview reads it.
+/// dismissed. Windows reads `CF_UNICODETEXT` the same way, so both apps
+/// behave alike. On macOS it is empty while the clipboard holds a file list
+/// (Finder adds the file name as text), as WebKit's own read is, so the caller
+/// reads [`files`]. `None` when the clipboard stays busy or the platform is not
+/// wired up (Linux): the webview reads it then.
 pub fn text() -> Option<String> {
     imp::text()
 }
@@ -141,7 +143,8 @@ mod imp {
 
     /// `CF_HDROP`, the clipboard format holding a file list.
     const CF_HDROP: u32 = 15;
-    /// `CF_UNICODETEXT`, so an editor paste of copied files inserts the paths.
+    /// `CF_UNICODETEXT`: plain text, and the paths written with a file list so
+    /// an editor paste of copied files inserts them.
     const CF_UNICODETEXT: u32 = 13;
 
     /// An `HGLOBAL` or a `HANDLE`: both are opaque pointers here.
@@ -189,7 +192,35 @@ mod imp {
     }
 
     pub fn text() -> Option<String> {
-        None
+        // Still busy after the retries: the webview's read is the fallback.
+        if !open() {
+            return None;
+        }
+        let text = if (unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT) }) == 0 {
+            Some(String::new())
+        } else {
+            let memory = unsafe { GetClipboardData(CF_UNICODETEXT) };
+            if memory.is_null() {
+                None
+            } else {
+                // SAFETY: as in `files`; the text is UTF-16 up to its NUL,
+                // and `GlobalSize` bounds the units read.
+                unsafe {
+                    let data = GlobalLock(memory) as *const u16;
+                    if data.is_null() {
+                        None
+                    } else {
+                        let units = std::slice::from_raw_parts(data, GlobalSize(memory) / 2);
+                        let end = units.iter().position(|&u| u == 0).unwrap_or(units.len());
+                        let text = String::from_utf16_lossy(&units[..end]);
+                        GlobalUnlock(memory);
+                        Some(text)
+                    }
+                }
+            }
+        };
+        unsafe { CloseClipboard() };
+        text
     }
 
     pub fn files() -> std::io::Result<Vec<PathBuf>> {
