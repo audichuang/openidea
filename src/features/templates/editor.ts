@@ -29,6 +29,7 @@ import {
 } from "@codemirror/state";
 import { EditorView, keymap, type Command } from "@codemirror/view";
 import { executeAction, getAction } from "@/platform/actions";
+import { readPlainText } from "@/platform/clipboard";
 import { useProject } from "@/platform/project";
 import { whenSynced, type EditorDocContext } from "@/editor/api";
 import { structure, type StructuralRanges } from "@/editor/structure";
@@ -81,7 +82,7 @@ function userName(): string {
 
 async function readClipboard(): Promise<string> {
   try {
-    return (await navigator.clipboard?.readText()) ?? "";
+    return await readPlainText();
   } catch {
     return "";
   }
