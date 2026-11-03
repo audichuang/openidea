@@ -98,6 +98,9 @@ pub struct GitSettings {
     pub incoming_check: String,
     /// Minutes between background checks for incoming commits.
     pub incoming_check_interval: u32,
+    /// Fetch every repository of the project in the background every `auto_fetch_minutes`.
+    pub auto_fetch: bool,
+    pub auto_fetch_minutes: u32,
     /// Branch name globs, `;`/`,`-separated; force push to them is prohibited.
     pub protected_branches: String,
     /// Initial state of Commit Options › Sign-off Commit.
@@ -136,6 +139,8 @@ impl Default for GitSettings {
             warn_detached_head: true,
             incoming_check: "auto".into(),
             incoming_check_interval: 15,
+            auto_fetch: false,
+            auto_fetch_minutes: 30,
             protected_branches: "master; main".into(),
             sign_off: false,
             warn_large_files: true,
