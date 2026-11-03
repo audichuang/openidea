@@ -25,8 +25,8 @@ pub async fn clipboard_write_text(app: AppHandle, window: WebviewWindow, text: S
 /// The clipboard's plain text, read natively as [`clipboard_write_text`] writes it: a Paste
 /// from a menu has no paste event, and WebKitGTK gives `navigator.clipboard.readText()` no
 /// text there (#3041), and WebKit on macOS asks the user to confirm a paste the app started
-/// itself (menu, command, shortcut) with a "Paste" callout. None on Windows, where the WebView's
-/// clipboard is used.
+/// itself (menu, command, shortcut) with a "Paste" callout. Windows reads `CF_UNICODETEXT`
+/// too; None there when the clipboard stays busy, and the WebView reads it.
 #[tauri::command]
 #[specta::specta]
 pub async fn clipboard_text(app: AppHandle) -> IdeResult<Option<String>> {
@@ -44,11 +44,11 @@ pub async fn clipboard_text(app: AppHandle) -> IdeResult<Option<String>> {
         .map_err(|error| IdeError::internal(format!("Cannot dispatch clipboard access to the main thread: {error}")))?;
         Ok(rx.await.ok().flatten())
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         with_clipboard(app, || Ok(ide_clipboard::text())).await
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         let _ = app;
         Ok(None)
