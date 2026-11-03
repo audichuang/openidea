@@ -24,7 +24,7 @@ Personal fork of OpenIDEA (`audichuang/openidea`, remote `fork`; upstream `l0ng-
 
 - Fork features must work on macOS, Windows and Linux, and a ClipCode payload copied on one OS must paste correctly on another (the user copies on the Mac and pastes on a Windows machine, and back). Paths inside a payload are always `/`-spelled; each OS converts at the edge. `crates/ide-clip/fixtures/clipboard-contract.json` is the shared contract and passes on all three CI jobs.
 - The ClipCode format is shared with the IntelliJ, VS Code and Orca implementations. A fix that would change the format is a four-repo change: stop and take it to the user, never change it here alone.
-- Releases ship only the macOS arm64 DMG. A Windows build is the next item, not yet in scope.
+- Releases ship the macOS arm64 app and the Windows x64 installer.
 
 ## Merge gate
 
@@ -66,6 +66,8 @@ Anything else is MANUAL: keep the fork's behaviour, adopt upstream's new structu
   git tag -a vX.Y.Z-fork.N <sha> -F notes.md && git push --atomic --force-with-lease=main:$old fork <sha>:refs/heads/main vX.Y.Z-fork.N
   ```
 
-- The tag push runs `.github/workflows/fork-release.yml`: it refuses a tag that is not fork `main` or whose commit is not on `develop` (a commit an earlier published release shipped is let through, for a rerun or a rollback), builds a Developer ID signed, notarized arm64 DMG (about 50 minutes), publishes the GitHub Release and bumps `Casks/openidea-fork.rb` in `audichuang/homebrew-tap` with the `TAP_DEPLOY_KEY` deploy key (backed up in 1Password, Agent vault). Re-running the workflow on the same tag replaces the DMG and notes.
-- Installing is the user's: `brew upgrade --cask openidea-fork` on each machine, with the app closed. The fork's built-in updater is off.
+- The tag push runs `.github/workflows/fork-release.yml`: it refuses a tag that is not fork `main` or whose commit is not on `develop` (a commit an earlier published release shipped is let through, for a rerun or a rollback), then builds the macOS arm64 app (Developer ID signed and notarized, about 50 minutes) and the Windows x64 NSIS installer in parallel. Only when both succeed does it publish the GitHub Release with both, the updater's `latest.json`, and bump `Casks/openidea-fork.rb` in `audichuang/homebrew-tap` with the `TAP_DEPLOY_KEY` deploy key. A Windows failure blocks the release like a macOS one: both platforms are in daily use. Re-running the workflow on the same tag replaces the assets and notes.
+- Both builds carry the tag's version (`X.Y.Z-fork.N`, shown in About) and point the built-in updater at this fork's `latest.json` with the fork's own key (`TAURI_SIGNING_PRIVATE_KEY` and its password, backed up in 1Password, Agent vault; the public key is in the workflow), so the app updates itself to fork releases, never to upstream's. Windows ships NSIS only: MSI rejects a pre-release version. The Windows installer has no Authenticode signature, so a browser-downloaded installer meets SmartScreen once ("More info → Run anyway"); updates the app downloads itself carry no download mark and install without it.
+- To try a workflow change without releasing, push a `fork-release-dryrun-<anything>` tag: it builds both platforms and uploads them as workflow artifacts, nothing else. Delete the tag afterwards.
+- Installing: macOS `brew install --cask audichuang/tap/openidea-fork` once; the cask says `auto_updates true`, so later updates come from the app and `brew upgrade` leaves it alone. Windows: run `openidea-fork-windows-x64-setup.exe` from the release once; it replaces an official OpenIDEA install and shares its settings, like the Mac build.
 - Pushed tags and `backup/*` branches keep released commits reachable after a rebase rewrites `develop`.
