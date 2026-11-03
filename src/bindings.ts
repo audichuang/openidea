@@ -3963,6 +3963,9 @@ export type GitSettings = {
 	warnDetachedHead?: boolean,
 	/**  Background check for incoming commits: `auto` | `always` | `never`. */
 	incomingCheck?: string,
+	/**  Fetch every repository of the project in the background every `auto_fetch_minutes`. */
+	autoFetch?: boolean,
+	autoFetchMinutes?: number,
 	/**  Branch name globs, `;`/`,`-separated; force push to them is prohibited. */
 	protectedBranches?: string,
 	/**  Initial state of Commit Options › Sign-off Commit. */
