@@ -4,6 +4,7 @@
  * Before launch list.
  */
 import { parseJavaArgs } from "@/platform/javaLaunch";
+import { writePlainText } from "@/platform/clipboard";
 import { useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import clsx from "clsx";
 import type { BeforeLaunchTask, RunConfig } from "@/platform/ipc";
@@ -709,8 +710,7 @@ function OutputField({ label, text }: { label: string; text: string }) {
   const tx = useTx();
   const [copied, setCopied] = useState(false);
   const copy = () => {
-    void navigator.clipboard
-      ?.writeText(text)
+    void writePlainText(text)
       .then(() => setCopied(true))
       .catch(() => undefined);
   };
