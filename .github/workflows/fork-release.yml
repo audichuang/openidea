@@ -1,13 +1,15 @@
 name: Fork Release
 
-# Fork-only (audichuang/openidea): a `v*-fork.*` tag builds a Developer ID signed and
-# notarized macOS arm64 app, publishes it as a GitHub Release (notes = the annotated
-# tag's message) and bumps the Homebrew cask `audichuang/tap/openidea-fork`. The
-# updater is switched off in this build, so the app never replaces itself with an
-# upstream release. Release rules: FORK.md.
+# Fork-only (audichuang/openidea). A `v*-fork.*` tag builds the macOS arm64 app (Developer ID
+# signed, notarized) and the Windows x64 NSIS installer in parallel; only when both succeed it
+# publishes one GitHub Release (notes = the annotated tag's message) with both, the updater's
+# latest.json, and bumps the Homebrew cask `audichuang/tap/openidea-fork`. Both builds point the
+# built-in updater at this fork's releases with the fork's own key, so the app updates itself to
+# fork releases and never to upstream ones. A `fork-release-dryrun-*` tag builds both and uploads
+# them as workflow artifacts only. Release rules: FORK.md.
 on:
   push:
-    tags: ["v*-fork.*"]
+    tags: ["v*-fork.*", "fork-release-dryrun-*"]
 
 permissions:
   contents: write
@@ -19,18 +21,22 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   TAG: ${{ github.ref_name }}
-  TARGET: aarch64-apple-darwin
+  DRY_RUN: ${{ startsWith(github.ref_name, 'fork-release-dryrun-') }}
+  # The fork's updater public key (private half: TAURI_SIGNING_PRIVATE_KEY, 1Password Agent vault).
+  UPDATER_PUBKEY: dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDUwNDM5OUEzMjQwRDFFRkYKUldUL0hnMGtvNWxEVUlhQmIzRUo3NkIxRzhyR1kzRlRPM25uM3E3UzVWSm4zQ3pYaXlCTDJKdFgK
+  UPDATER_ENDPOINT: https://github.com/audichuang/openidea/releases/latest/download/latest.json
 
 jobs:
-  release:
+  guard:
     if: github.repository == 'audichuang/openidea'
-    runs-on: macos-latest
-    timeout-minutes: 120
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with: { persist-credentials: false }
-
       - name: Check the tag sits on main and on develop
+        if: env.DRY_RUN != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -52,31 +58,58 @@ jobs:
               echo "::notice::$GITHUB_SHA is not on develop; $shipped already shipped it."
               ;;
           esac
-
       - name: Check the release secrets
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
           TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
-          for name in APPLE_CERTIFICATE APPLE_API_KEY_P8 TAP_DEPLOY_KEY; do
+          for name in APPLE_CERTIFICATE APPLE_API_KEY_P8 TAP_DEPLOY_KEY TAURI_SIGNING_PRIVATE_KEY; do
             [ -n "${!name}" ] || { echo "::error::$name secret is not set"; exit 1; }
           done
+      - id: version
+        run: |
+          # The app's version is the tag's, so the updater and the About dialog tell fork builds apart.
+          if [ "$DRY_RUN" = true ]; then
+            version="$(jq -r .version src-tauri/tauri.conf.json)-fork.0"
+          else
+            version="${TAG#v}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
+  build:
+    name: Build (${{ matrix.name }})
+    needs: guard
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macOS arm64, os: macos-latest, target: aarch64-apple-darwin, bundles: "app,dmg" }
+          - { name: Windows x64, os: windows-latest, target: x86_64-pc-windows-msvc, bundles: nsis }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    env:
+      TARGET: ${{ matrix.target }}
+      VERSION: ${{ needs.guard.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
       - uses: pnpm/action-setup@v4
         with: { version: 11 }
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm }
       - uses: dtolnay/rust-toolchain@stable
-        with: { targets: "${{ env.TARGET }}" }
+        with: { targets: "${{ matrix.target }}" }
       # Why no save: a tag-scoped cache is readable only by that tag's own reruns, and 1 GB each
       # pushes develop's CI caches out of the repo's 10 GB.
       - uses: Swatinem/rust-cache@v2
-        with: { key: "fork-${{ env.TARGET }}", save-if: false }
+        with: { key: "fork-${{ matrix.target }}", save-if: false }
       - run: pnpm install --frozen-lockfile
 
       # tauri reads the notarization key from a file path.
       - name: Stage the notarization API key
+        if: runner.os == 'macOS'
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
         run: |
@@ -85,19 +118,22 @@ jobs:
           chmod 600 "$key"
           echo "APPLE_API_KEY_PATH=$key" >> "$GITHUB_ENV"
 
-      # No updater endpoint: "Check for Updates…" is hidden and no updater artifacts
-      # (which would need the upstream signing key) are built.
-      - name: Build, sign and notarize
+      - name: Build
+        shell: bash
         env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_API_ISSUER: ${{ runner.os == 'macOS' && secrets.APPLE_API_ISSUER || '' }}
+          APPLE_API_KEY: ${{ runner.os == 'macOS' && secrets.APPLE_API_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          pnpm tauri build --target "$TARGET" --bundles app,dmg \
-            --config '{"bundle":{"createUpdaterArtifacts":false},"plugins":{"updater":{"endpoints":[]}}}'
+          config=$(jq -cn --arg v "$VERSION" --arg k "$UPDATER_PUBKEY" --arg e "$UPDATER_ENDPOINT" \
+            '{version: $v, bundle: {createUpdaterArtifacts: true}, plugins: {updater: {pubkey: $k, endpoints: [$e]}}}')
+          pnpm tauri build --target "$TARGET" --bundles "${{ matrix.bundles }}" --config "$config"
 
       - name: Verify the signature and notarization
+        if: runner.os == 'macOS'
         run: |
           app="target/$TARGET/release/bundle/macos/OpenIDEA.app"
           info=$(codesign --display --verbose=2 "$app" 2>&1)
@@ -106,37 +142,88 @@ jobs:
           codesign --verify --deep --strict "$app"
           xcrun stapler validate "$app"
           spctl --assess --type execute --verbose=2 "$app"
+          actual=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Contents/Info.plist")
+          [ "$actual" = "$VERSION" ] || { echo "::error::app version $actual is not $VERSION"; exit 1; }
 
-      - name: Publish the GitHub Release
-        id: publish
-        env:
-          GH_TOKEN: ${{ github.token }}
+      # Stable asset names: the cask and latest.json point at them.
+      - name: Stage the assets
+        shell: bash
         run: |
-          dmg="$RUNNER_TEMP/openidea-fork-macos-arm64.dmg"
-          cp target/$TARGET/release/bundle/dmg/*.dmg "$dmg"
-          sha=$(shasum -a 256 "$dmg" | cut -d' ' -f1)
+          out="$RUNNER_TEMP/assets"; mkdir -p "$out"
+          b="target/$TARGET/release/bundle"
+          if [ "$RUNNER_OS" = macOS ]; then
+            cp $b/dmg/*.dmg "$out/openidea-fork-macos-arm64.dmg"
+            cp $b/macos/OpenIDEA.app.tar.gz "$out/openidea-fork-macos-arm64.app.tar.gz"
+            cp $b/macos/OpenIDEA.app.tar.gz.sig "$out/openidea-fork-macos-arm64.app.tar.gz.sig"
+          else
+            exe=$(ls $b/nsis/*-setup.exe)
+            case "$exe" in *"$VERSION"*) ;; *) echo "::error::installer $exe is not version $VERSION"; exit 1 ;; esac
+            cp "$exe" "$out/openidea-fork-windows-x64-setup.exe"
+            cp "$exe.sig" "$out/openidea-fork-windows-x64-setup.exe.sig"
+          fi
+          ls -l "$out"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: assets-${{ matrix.target }}
+          path: ${{ runner.temp }}/assets/
+          retention-days: ${{ env.DRY_RUN == 'true' && 3 || 7 }}
+
+      - name: Remove the API key
+        if: always() && runner.os == 'macOS'
+        run: rm -f "$RUNNER_TEMP/AuthKey.p8"
+
+  publish:
+    needs: [guard, build]
+    if: ${{ !startsWith(github.ref_name, 'fork-release-dryrun-') }}
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.guard.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: actions/download-artifact@v4
+        with: { pattern: "assets-*", merge-multiple: true, path: assets }
+
+      - name: Write the notes and latest.json
+        id: notes
+        run: |
           # Why fetch: the checkout leaves the tag lightweight; the notes are the annotated tag's message.
           git fetch --depth=1 --force origin "refs/tags/$TAG:refs/tags/$TAG"
           notes=$(git for-each-ref "refs/tags/$TAG" --format='%(contents)' | sed '/-----BEGIN PGP SIGNATURE-----/,$d')
-          [ -n "$notes" ] || notes="OpenIDEA fork ${TAG#v}"
-          printf '%s\n\nSHA-256: `%s`\n' "$notes" "$sha" > "$RUNNER_TEMP/notes.md"
-          cat "$RUNNER_TEMP/notes.md"
+          [ -n "$notes" ] || notes="OpenIDEA fork $VERSION"
+          mac=$(sha256sum assets/openidea-fork-macos-arm64.dmg | cut -d' ' -f1)
+          win=$(sha256sum assets/openidea-fork-windows-x64-setup.exe | cut -d' ' -f1)
+          {
+            printf '%s\n\n' "$notes"
+            printf 'SHA-256\n- macOS arm64 dmg: `%s`\n- Windows x64 setup.exe: `%s`\n' "$mac" "$win"
+          } > notes.md
+          cat notes.md
+          echo "mac_sha256=$mac" >> "$GITHUB_OUTPUT"
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
+          jq -n --arg v "$VERSION" --arg n "$notes" --arg d "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg ms "$(cat assets/openidea-fork-macos-arm64.app.tar.gz.sig)" --arg mu "$url/openidea-fork-macos-arm64.app.tar.gz" \
+            --arg ws "$(cat assets/openidea-fork-windows-x64-setup.exe.sig)" --arg wu "$url/openidea-fork-windows-x64-setup.exe" \
+            '{version: $v, notes: $n, pub_date: $d, platforms: {
+              "darwin-aarch64": {signature: $ms, url: $mu}, "darwin-aarch64-app": {signature: $ms, url: $mu},
+              "windows-x86_64": {signature: $ws, url: $wu}, "windows-x86_64-nsis": {signature: $ws, url: $wu}}}' > assets/latest.json
+          cat assets/latest.json
+
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
           if gh release view "$TAG" > /dev/null 2>&1; then
-            gh release upload "$TAG" "$dmg" --clobber
-            gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes.md" --latest
+            gh release upload "$TAG" assets/* --clobber
+            gh release edit "$TAG" --notes-file notes.md --latest
           else
-            gh release create "$TAG" --verify-tag --latest --title "OpenIDEA fork ${TAG#v}" \
-              --notes-file "$RUNNER_TEMP/notes.md" "$dmg"
+            gh release create "$TAG" --verify-tag --latest --title "OpenIDEA fork $VERSION" --notes-file notes.md assets/*
           fi
-          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
-          echo "::notice::sha256 $sha"
 
       - name: Bump the Homebrew cask
         env:
           TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
-          SHA256: ${{ steps.publish.outputs.sha256 }}
+          SHA256: ${{ steps.notes.outputs.mac_sha256 }}
         run: |
-          version="${TAG#v}"
           key="$RUNNER_TEMP/tap_key"
           printf '%s\n' "$TAP_DEPLOY_KEY" > "$key"
           chmod 600 "$key"
@@ -148,11 +235,11 @@ jobs:
           git config user.email "openidea-fork-release@users.noreply.github.com"
           # Why a loop: other fork releases (orca-fork, codexbar) push to the same tap.
           for _ in 1 2 3; do
-            sed -E -i '' -e "s/^( *version )\"[^\"]*\"/\1\"$version\"/" -e "s/^( *sha256 )\"[0-9a-f]*\"/\1\"$SHA256\"/" Casks/openidea-fork.rb
-            grep -q "version \"$version\"" Casks/openidea-fork.rb && grep -q "sha256 \"$SHA256\"" Casks/openidea-fork.rb ||
+            sed -E -i -e "s/^( *version )\"[^\"]*\"/\1\"$VERSION\"/" -e "s/^( *sha256 )\"[0-9a-f]*\"/\1\"$SHA256\"/" Casks/openidea-fork.rb
+            grep -q "version \"$VERSION\"" Casks/openidea-fork.rb && grep -q "sha256 \"$SHA256\"" Casks/openidea-fork.rb ||
               { echo "::error::cask has no version/sha256 line to bump"; exit 1; }
-            git diff --quiet && { echo "cask already at $version"; break; }
-            git commit -qam "openidea-fork $version"
+            git diff --quiet && { echo "cask already at $VERSION"; break; }
+            git commit -qam "openidea-fork $VERSION"
             git push -q origin HEAD:main && break
             git fetch -q --depth=1 origin main && git reset -q --hard origin/main
           done
@@ -163,4 +250,4 @@ jobs:
 
       - name: Remove the keys
         if: always()
-        run: rm -f "$RUNNER_TEMP/AuthKey.p8" "$RUNNER_TEMP/tap_key"
+        run: rm -f "$RUNNER_TEMP/tap_key"
