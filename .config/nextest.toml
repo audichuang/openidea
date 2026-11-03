@@ -1,0 +1,13 @@
+# `cargo nextest run --profile ubuntu-remote` skips the tests that fail on the
+# ubuntu build host for environment reasons, not code: the ide-plugin host tests
+# need the sample plugins' wasm, and these ide-sdk tests need Go and a JDK on PATH.
+# CI uses the default profile and runs everything.
+[profile.ubuntu-remote]
+default-filter = """
+not (
+  binary_id(ide-plugin::host)
+  | (package(ide-sdk) & test(=tests::go_modules_configure_gopls_in_place_and_commands_with_explicit_run_overrides))
+  | (package(ide-sdk) & test(=tests::go_constraints_change_only_protocol_settings))
+  | (package(ide-sdk) & test(=tests::project_jdk_and_maven_settings))
+)
+"""
