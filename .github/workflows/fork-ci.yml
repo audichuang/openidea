@@ -231,11 +231,17 @@ jobs:
       - run: pnpm lint
       - run: pnpm format:check
       - run: pnpm knip
+      - run: pnpm build
 
   frontend-test:
-    name: Frontend tests and build
+    name: Frontend tests (${{ matrix.shard }}/3)
     needs: scope
     if: needs.scope.outputs.web == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        # Why: vitest is 6 of the frontend's 7 minutes; Linux runners are plentiful.
+        shard: [1, 2, 3]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -244,13 +250,16 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
-      - run: pnpm test
-      - run: pnpm build
+      - run: pnpm test --shard=${{ matrix.shard }}/3
 
   e2e:
-    name: E2E
+    name: E2E (${{ matrix.shard }}/2)
     needs: scope
     if: needs.scope.outputs.web == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     runs-on: ubuntu-24.04
     # Keep the tag in step with @playwright/test (same as ci.yml).
     container: mcr.microsoft.com/playwright:v1.64.1-noble
@@ -261,13 +270,13 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
-      - run: pnpm e2e
+      - run: pnpm e2e --shard=${{ matrix.shard }}/2
         env:
           HOME: /root
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.shard }}
           path: playwright-report/
           retention-days: 7
 
