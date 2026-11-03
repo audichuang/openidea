@@ -9,6 +9,8 @@ failed=0
 # check <label> <want exit> <want alert 0|1> <newest> <base> <held lock|""> <"needs-human moved [approved sha]" marks> [age h] [fail] [stamp age h]
 check() {
   local label=$1 want=$2 want_alert=$3 newest=$4 base=$5 held=$6 marks=$7 age=${8:-1} fail=${9:-} stamp=${10:-}
+  # COMMENTS: PR comments JSON; when set, the fake gh runs precheck's real --jq filter on it instead of echoing marks.
+  local comments=${COMMENTS:-}
   local t
   t=$(mktemp -d)
   mkdir -p "$t/Project/openidea" "$t/bin" "$t/.config/fork-automation" "$t/.cache/fork-automation"
@@ -27,7 +29,11 @@ case "\$*" in
   *releases/latest*) echo $newest ;;
   *commits/*) echo $(iso_ago "$age") ;;
   *"pr list"*) echo "7 $(iso_ago "$age")" ;;
-  *"pr view"*) echo "$marks" ;;
+  *"pr view"*)
+    if [ -n '$comments' ]; then
+      while [ \$# -gt 0 ]; do [ "\$1" = --jq ] && { jq -r "\$2" <<<'$comments'; exit; }; shift; done
+    fi
+    echo "$marks" ;;
 esac
 EOF
   chmod +x "$t/bin/"* "$t/.config/fork-automation/precheck-alert.sh"
@@ -66,4 +72,10 @@ check "approved, develop already moved" 0 0 v0.1.35 v0.1.35 v0.1.35 "1 0 abc"
 check "approved an older tip"           1 0 v0.1.35 v0.1.34 v0.1.35 "1 0 def"
 check "approved, then develop-moved"    1 0 v0.1.35 v0.1.35 v0.1.35 "1 1 abc" 1
 check "approved, released run died"     0 0 v0.1.35 v0.1.35 v0.1.35 "1 1 abc" 8
+COMMENTS='{"comments":[{"body":"<!-- auto-rebase:needs-human -->\\nlook"},{"body":"<!-- auto-rebase:approved abc -->\\nok"}]}' \
+  check "real filter: approved tip"     0 0 v0.1.35 v0.1.34 v0.1.35 ""
+COMMENTS='{"comments":[{"body":"<!-- auto-rebase:needs-human -->"},{"body":"<!-- auto-rebase:approved def -->"}]}' \
+  check "real filter: approved old tip" 1 0 v0.1.35 v0.1.34 v0.1.35 ""
+COMMENTS='{"comments":[{"body":"<!-- auto-rebase:needs-human -->"}]}' \
+  check "real filter: not approved"     1 0 v0.1.35 v0.1.34 v0.1.35 ""
 exit "$failed"
