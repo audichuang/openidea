@@ -12,7 +12,7 @@
 //! macOS keeps one `public.file-url` item per file on the general
 //! `NSPasteboard`; `NSURL` reads and writes them, so Finder's copies paste here
 //! and ours paste in Finder.
-//! On macOS, [`files`], [`has_files`], [`text`] and [`set_files`] must run on the main
+//! On macOS, [`files`], [`has_files`], [`text`], [`set_text`] and [`set_files`] must run on the main
 //! thread: AppKit and WebKit also access the general pasteboard there, and its
 //! mutable type cache cannot be protected by a mutex in this crate.
 //!
@@ -45,6 +45,15 @@ pub fn has_files() -> bool {
 /// wired up (Linux): the webview reads it then.
 pub fn text() -> Option<String> {
     imp::text()
+}
+
+/// Replaces the clipboard with `text`, natively for the same reason as
+/// [`text`]: the webview's `writeText()` needs a user gesture, and a copy that
+/// first waits for the backend (ClipCode) may have lost it. False when the
+/// clipboard stayed busy or the platform is not wired up (Linux): the caller
+/// then writes through the webview.
+pub fn set_text(text: &str) -> bool {
+    imp::set_text(text)
 }
 
 /// Replaces the clipboard with `paths`. True only when the file list was
@@ -260,6 +269,32 @@ mod imp {
         }
     }
 
+    pub fn set_text(text: &str) -> bool {
+        // SAFETY: the block is handed to the clipboard or freed when it was
+        // not taken, as in `set_files`.
+        unsafe {
+            let (memory, _) = global_text(text);
+            if memory.is_null() {
+                return false;
+            }
+            if !open() {
+                GlobalFree(memory);
+                return false;
+            }
+            if EmptyClipboard() == 0 {
+                CloseClipboard();
+                GlobalFree(memory);
+                return false;
+            }
+            let taken = !SetClipboardData(CF_UNICODETEXT, memory).is_null();
+            if !taken {
+                GlobalFree(memory);
+            }
+            CloseClipboard();
+            taken
+        }
+    }
+
     pub fn set_files(paths: &[PathBuf]) -> bool {
         let bytes = encode(paths);
         if bytes.len() <= HEADER {
@@ -381,6 +416,16 @@ mod imp {
         })
     }
 
+    pub fn set_text(text: &str) -> bool {
+        debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
+        autoreleasepool(|_| {
+            let board = NSPasteboard::generalPasteboard();
+            board.clearContents();
+            // SAFETY: the type is an AppKit constant, valid for the process' lifetime.
+            board.setString_forType(&NSString::from_str(text), unsafe { NSPasteboardTypeString })
+        })
+    }
+
     pub fn set_files(paths: &[PathBuf]) -> bool {
         debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
         autoreleasepool(|_| {
@@ -426,6 +471,10 @@ mod imp {
     }
 
     pub fn set_files(_paths: &[PathBuf]) -> bool {
+        false
+    }
+
+    pub fn set_text(_text: &str) -> bool {
         false
     }
 }
