@@ -13,7 +13,8 @@ on:
 
 concurrency:
   group: fork-ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Why PRs only: a develop run saves the caches every PR restores; cancelling it wastes them.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -37,10 +38,11 @@ jobs:
         with: { fetch-depth: 0 }
       - id: scope
         env:
-          BASE: ${{ github.event.pull_request.base.sha }}
+          # A PR compares with its base; a develop push with the commit it moved develop from.
+          BASE: ${{ github.event.pull_request.base.sha || (github.ref == 'refs/heads/develop' && github.event.before) || '' }}
         run: |
-          # Pushes (develop, rebase/**) and manual runs check everything.
-          if [ -z "$BASE" ]; then
+          # rebase/** pushes, manual runs and a develop push without a usable parent check everything.
+          if [ -z "$BASE" ] || [ "$BASE" = 0000000000000000000000000000000000000000 ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
             echo "rust=true" >> "$GITHUB_OUTPUT"; echo "web=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
           rust=false web=false
