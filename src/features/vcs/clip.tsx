@@ -4,15 +4,23 @@
  * restore, and pastes such text back after a preview. The payload is built and
  * applied by the backend (`ide-clip`); this module owns the clipboard and the UI.
  */
-import { useState } from "react";
-import type { ClipCopyResult, ClipCopySource, ClipPastePreview, ClipPasteResult, Commit } from "@/bindings";
+import { useMemo, useState } from "react";
+import clsx from "clsx";
+import type {
+  ClipCopyResult,
+  ClipCopySource,
+  ClipPasteFile,
+  ClipPastePreview,
+  ClipPasteResult,
+  Commit,
+} from "@/bindings";
 import { readClipboardText } from "@/platform/clipboard";
 import { tx } from "@/platform/i18n";
 import { call, commands, IpcError } from "@/platform/ipc";
 import { loadSettings, useProject } from "@/platform/project";
 import { workflowSettings, type ClipCodeSettingsValid } from "@/platform/workflowSettings";
 import { registerActions, type Action } from "@/platform/actions";
-import { Checkbox, Dialog, T } from "@/ui";
+import { Checkbox, Dialog, Icon, T, Tree } from "@/ui";
 import { copyText } from "@/ui/selectableText";
 import { editorService, notifications, registerMenuGroup } from "@/workbench/contributions";
 import { confirmDialog, openDialog, promptText } from "./dialogs";
@@ -23,6 +31,8 @@ import { commitRepo } from "./multiRoot";
 import { commitsArg } from "./historyActions";
 import { saveAll } from "./ops";
 import { refreshNow, useVcs } from "./store";
+import { ClipPastePane } from "./ClipPastePane";
+import { buildPasteTree, fileKey, filesUnder, rowKey, type PasteNode } from "./clipPasteTree";
 import styles from "./clip.module.css";
 
 const grouped = (n: number) => n.toLocaleString("en-US");
@@ -196,8 +206,49 @@ const ACTION_LABEL: Record<string, string> = {
   skip: "Skip",
 };
 
-/** Keys of file rows: their action kind's index list (creates and overwrites share one). */
-const rowKey = (action: string, index: number) => `${action === "delete" ? "d" : "c"}${index}`;
+function CheckMark({
+  checked,
+  indeterminate,
+  disabled,
+  label,
+  onToggle,
+}: {
+  checked: boolean;
+  indeterminate: boolean;
+  disabled: boolean;
+  label: string;
+  onToggle: () => void;
+}) {
+  return (
+    <span
+      role="checkbox"
+      aria-checked={indeterminate ? "mixed" : checked}
+      aria-disabled={disabled}
+      aria-label={label}
+      className={clsx(styles.check, (checked || indeterminate) && styles.checkOn)}
+      onMouseDown={(e) => {
+        // Toggling does not move the selection, as in the commit tree.
+        if (e.button !== 0) return;
+        e.stopPropagation();
+        e.preventDefault();
+        if (!disabled) onToggle();
+      }}
+      onDoubleClick={(e) => e.stopPropagation()}
+    >
+      {indeterminate ? <Icon name="minus" size={10} /> : checked ? <Icon name="check" size={10} /> : null}
+    </span>
+  );
+}
+
+/** Folders open, and the first file to restore selected, so the pane shows something at once. */
+function initialSelection(files: readonly ClipPasteFile[]): string | null {
+  const first = files.find((f) => f.action !== "skip") ?? files[0];
+  return first ? fileKey(first) : null;
+}
+
+function folderKeys(nodes: readonly PasteNode[]): string[] {
+  return nodes.flatMap((n) => (n.children ? [n.key, ...folderKeys(n.children)] : []));
+}
 
 export function PastePreviewDialog({
   text,
@@ -222,23 +273,30 @@ export function PastePreviewDialog({
   );
   const [allowOverwrite, setAllowOverwrite] = useState(false);
   const [busy, setBusy] = useState(false);
+  const tree = useMemo(() => buildPasteTree(preview.files), [preview.files]);
+  const [selectedKey, setSelectedKey] = useState(() => initialSelection(initial.files));
+  const selectedFile = preview.files.find((f) => fileKey(f) === selectedKey) ?? null;
+  const toggleFiles = (files: readonly ClipPasteFile[]) =>
+    setChecked((s) => {
+      const keys = files.filter((f) => f.action !== "skip").map((f) => rowKey(f.action, f.index));
+      const on = !keys.every((k) => s.has(k));
+      const next = new Set(s);
+      for (const k of keys) {
+        if (on) next.add(k);
+        else next.delete(k);
+      }
+      return next;
+    });
   const commits = preview.mode === "commits";
   const overwriteKeys = preview.files.filter((f) => f.action === "overwrite").map((f) => rowKey(f.action, f.index));
   const overwriteCount = overwriteKeys.length;
   const existing = preview.commits.reduce((n, c) => n + c.files.filter((f) => f.overwrites).length, 0);
 
-  const toggle = (key: string) =>
-    setChecked((s) => {
-      const next = new Set(s);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-
   const adjust = async (on: boolean) => {
     const next = await loadPreview(text, target, on);
     if (!next) return;
     setPreview(next);
+    setSelectedKey(initialSelection(next.files));
     setChecked(
       new Set(
         next.files.filter((f) => f.action === "create" || f.action === "delete").map((f) => rowKey(f.action, f.index)),
@@ -280,7 +338,7 @@ export function PastePreviewDialog({
       open
       title={commits ? "Paste Commits" : "Paste and Restore Files"}
       onClose={onClose}
-      width={720}
+      width={commits ? 720 : 960}
       resizable="both"
       buttons={[
         {
@@ -329,7 +387,7 @@ export function PastePreviewDialog({
         )
       }
     >
-      <div className={styles.body}>
+      <div className={clsx(styles.body, !commits && styles.bodyTall)}>
         <div className={styles.destination}>
           <T>Destination:</T> <span className={styles.path}>{preview.destination}</span>
         </div>
@@ -358,25 +416,49 @@ export function PastePreviewDialog({
             ))}
           </div>
         ) : (
-          <div className={styles.list} role="list" aria-label={tx("Files")}>
-            {preview.files.map((f) => {
-              const key = rowKey(f.action, f.index);
-              const skip = f.action === "skip";
-              return (
-                <div key={`${f.action}${f.index}`} className={styles.row} role="listitem">
-                  <Checkbox
-                    checked={!skip && checked.has(key)}
-                    disabled={skip}
-                    onChange={() => toggle(key)}
-                    label={f.path}
-                  />
-                  <span className={styles.badge} data-action={f.action}>
-                    {tx(ACTION_LABEL[f.action] ?? f.action)}
-                  </span>
-                  {f.reason && <span className={styles.note}>{f.reason}</span>}
-                </div>
-              );
-            })}
+          <div className={styles.split}>
+            <div className={styles.treePane}>
+              <Tree<PasteNode>
+                roots={tree}
+                getKey={(n) => n.key}
+                getLabel={(n) => n.name}
+                getChildren={(n) => n.children}
+                isExpandable={(n) => !!n.children}
+                defaultExpanded={folderKeys(tree)}
+                selected={new Set(selectedKey ? [selectedKey] : [])}
+                onSelectionChange={(_, lead) => {
+                  if (lead?.file) setSelectedKey(lead.key);
+                }}
+                aria-label={tx("Files")}
+                renderNode={(n) => {
+                  const files = filesUnder(n);
+                  const keys = files.filter((f) => f.action !== "skip").map((f) => rowKey(f.action, f.index));
+                  const on = keys.filter((k) => checked.has(k)).length;
+                  return (
+                    <span className={styles.nodeRow}>
+                      <CheckMark
+                        checked={keys.length > 0 && on === keys.length}
+                        indeterminate={on > 0 && on < keys.length}
+                        disabled={keys.length === 0}
+                        label={n.file ? tx`Restore ${n.file.path}` : tx`Restore the files in ${n.name}`}
+                        onToggle={() => toggleFiles(files)}
+                      />
+                      <span className={styles.nodeName} data-action={n.file?.action} title={n.file?.path}>
+                        {n.name}
+                      </span>
+                      {n.file ? (
+                        <span className={styles.badge} data-action={n.file.action}>
+                          {tx(ACTION_LABEL[n.file.action] ?? n.file.action)}
+                        </span>
+                      ) : (
+                        <span className={styles.count}>{files.length}</span>
+                      )}
+                    </span>
+                  );
+                }}
+              />
+            </div>
+            <ClipPastePane previewId={preview.id} file={selectedFile} />
           </div>
         )}
       </div>

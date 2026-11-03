@@ -189,6 +189,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         fs::fs_open_with_system,
         clip::clip_copy,
         clip::clip_paste_preview,
+        clip::clip_paste_preview_file,
         clip::clip_paste_apply,
         clip::clip_copy_branch_series,
         clip::clip_paste_branch_series,
