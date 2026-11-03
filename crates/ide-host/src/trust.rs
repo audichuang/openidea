@@ -251,6 +251,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "clipboard_set_file_list"
             | "clipboard_write_text"
             | "clipboard_text"
+            | "clipboard_image"
             | "jdk_download_vendors"
             | "jdk_download_releases"
             | "jdk_download_location"
