@@ -1,16 +1,9 @@
 import { create } from "zustand";
-import { call, commands, isTauri, onIdeEvent, type SystemTabBar, type WindowTab } from "./ipc";
+import { call, commands, isTauri, onIdeEvent, type WindowTab } from "./ipc";
 import { startupProjectKnown, useProject } from "./project";
 import { setContext } from "./context";
-import { usePlatform } from "./platformInfo";
 
-const NO_TAB_BAR: SystemTabBar = { height: 0, top: false };
-
-/** `systemTabBar`: macOS shows the group in its own tab bar over the page. */
-export const useWindowGroup = create<{ tabs: WindowTab[]; systemTabBar: SystemTabBar }>(() => ({
-  tabs: [],
-  systemTabBar: NO_TAB_BAR,
-}));
+export const useWindowGroup = create<{ tabs: WindowTab[] }>(() => ({ tabs: [] }));
 
 export function reorderedTabs(tabs: readonly WindowTab[], source: string, target: string): string[] {
   const labels = tabs.map((tab) => tab.label);
@@ -24,11 +17,7 @@ export function reorderedTabs(tabs: readonly WindowTab[], source: string, target
 export async function refreshWindowGroup() {
   if (!isTauri()) return;
   const tabs = await call(commands.windowGroupCurrent());
-  const systemTabBar =
-    usePlatform.getState().os === "macos" && tabs.length > 1
-      ? ((await call(commands.windowGroupTabBar())) ?? NO_TAB_BAR)
-      : NO_TAB_BAR;
-  useWindowGroup.setState({ tabs, systemTabBar });
+  useWindowGroup.setState({ tabs });
   setContext("windowGrouped", tabs.length > 1);
 }
 
@@ -37,7 +26,7 @@ export async function selectWindowTab(label: string) {
 }
 
 export async function cycleWindowTab(forward: boolean) {
-  // macOS: the system tab bar may have reordered the tabs since the last refresh.
+  // macOS: AppKit may have changed the group since the last refresh.
   await refreshWindowGroup();
   const tabs = useWindowGroup.getState().tabs;
   if (tabs.length < 2) return;
