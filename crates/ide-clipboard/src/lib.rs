@@ -12,7 +12,7 @@
 //! macOS keeps one `public.file-url` item per file on the general
 //! `NSPasteboard`; `NSURL` reads and writes them, so Finder's copies paste here
 //! and ours paste in Finder.
-//! On macOS, [`files`], [`has_files`] and [`set_files`] must run on the main
+//! On macOS, [`files`], [`has_files`], [`text`] and [`set_files`] must run on the main
 //! thread: AppKit and WebKit also access the general pasteboard there, and its
 //! mutable type cache cannot be protected by a mutex in this crate.
 //!
@@ -27,8 +27,12 @@ pub fn set_text(text: &str, owner: usize) -> std::io::Result<()> {
     imp::set_text(text, owner)
 }
 
-/// The clipboard's plain text, None when it holds none. macOS only (main thread);
-/// Linux reads it asynchronously through GTK in the app, Windows through the WebView.
+/// The clipboard's plain text, read natively. macOS only (main thread); Linux reads it
+/// asynchronously through GTK in the app, Windows through the WebView. In the macOS webview,
+/// `navigator.clipboard.readText()` outside a paste event makes WebKit ask the user to confirm
+/// with a "Paste" callout, so this is never None there: empty when the clipboard holds no text,
+/// and empty while it holds a file list (Finder adds the file name as text), as WebKit's own
+/// read is, so the caller reads [`files`].
 #[cfg(target_os = "macos")]
 pub fn text() -> Option<String> {
     imp::text()
@@ -360,6 +364,19 @@ mod imp {
         })
     }
 
+    pub fn text() -> Option<String> {
+        if has_files() {
+            return Some(String::new());
+        }
+        debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
+        autoreleasepool(|_| {
+            let board = NSPasteboard::generalPasteboard();
+            // SAFETY: the type is an AppKit constant, valid for the process' lifetime.
+            let text = board.stringForType(unsafe { NSPasteboardTypeString });
+            Some(text.map(|t| t.to_string()).unwrap_or_default())
+        })
+    }
+
     pub fn files() -> std::io::Result<Vec<PathBuf>> {
         read_file_urls(|board, classes, options| {
             // SAFETY: as in `has_files`; every object read for `NSURL` is one.
@@ -377,14 +394,6 @@ mod imp {
                 // Finder ends a folder's URL in `/`; the project view names it without.
                 .map(|path| path.components().collect())
                 .collect())
-        })
-    }
-
-    pub fn text() -> Option<String> {
-        debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
-        autoreleasepool(|_| {
-            // SAFETY: the type is an AppKit constant, valid for the process' lifetime.
-            NSPasteboard::generalPasteboard().stringForType(unsafe { NSPasteboardTypeString }).map(|s| s.to_string())
         })
     }
 
