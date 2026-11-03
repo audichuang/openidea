@@ -187,7 +187,7 @@ pub fn run() {
             if let Some(w) = window.try_state::<WindowsState>() {
                 w.focused(window.label());
             }
-            // The system tab bar (click, drag out, ⌃Tab) selects and moves tabs without the app.
+            // AppKit (⌃Tab, Window menu) selects tabs without the app.
             #[cfg(target_os = "macos")]
             window_groups::sync(window.app_handle());
         }

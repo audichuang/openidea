@@ -60,6 +60,27 @@
   outline-offset: -2px;
   border-radius: var(--radius-small);
 }
-.systemBar {
-  flex: none;
+/* macOS, as IntelliJ: the tabs share the row, title centred, close button on hover. */
+.mac .item {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 80px;
+}
+.mac .tab {
+  justify-content: center;
+  height: 28px;
+}
+.mac .selected,
+.mac .selected:hover {
+  background: var(--bg-island);
+  box-shadow: none;
+}
+.mac .close {
+  position: absolute;
+  left: 4px;
+  opacity: 0;
+}
+.mac .item:hover .close,
+.mac .close:focus-visible {
+  opacity: 1;
 }
