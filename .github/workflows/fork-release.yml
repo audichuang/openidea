@@ -1,9 +1,10 @@
 name: Fork Release
 
 # Fork-only (audichuang/openidea): a `v*-fork.*` tag builds a Developer ID signed and
-# notarized macOS arm64 app and publishes it as a GitHub Release; the Homebrew cask
-# `audichuang/tap/openidea-fork` installs it. The updater is switched off in this
-# build, so the app never replaces itself with an upstream release.
+# notarized macOS arm64 app, publishes it as a GitHub Release (notes = the annotated
+# tag's message) and bumps the Homebrew cask `audichuang/tap/openidea-fork`. The
+# updater is switched off in this build, so the app never replaces itself with an
+# upstream release. Release rules: FORK.md.
 on:
   push:
     tags: ["v*-fork.*"]
@@ -27,24 +28,58 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+
+      - name: Check the tag sits on main and on develop
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Why: FORK.md moves main and pushes the tag together; a tag off main is a mistake.
+          main_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
+          test "$main_sha" = "$GITHUB_SHA" || { echo "::error::$TAG ($GITHUB_SHA) is not fork main ($main_sha)."; exit 1; }
+          # Why: Fork CI gates develop; a commit develop never had shipped untested. A rebase rewrites
+          # develop, so a commit an earlier published fork release shipped is let through (rerun, rollback).
+          status=$(gh api "repos/$GITHUB_REPOSITORY/compare/develop...$GITHUB_SHA" --jq .status)
+          case "$status" in
+            identical|behind) ;;
+            *)
+              shipped=""
+              for t in $(git ls-remote --tags origin 'refs/tags/v*-fork.*' |
+                awk -v sha="$GITHUB_SHA" '$1 == sha { sub("refs/tags/", "", $2); sub(/\^\{\}$/, "", $2); print $2 }' | sort -u); do
+                if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$t" > /dev/null 2>&1; then shipped=$t; break; fi
+              done
+              [ -n "$shipped" ] || { echo "::error::$TAG ($GITHUB_SHA) is not on develop ($status) and no published fork release shipped it."; exit 1; }
+              echo "::notice::$GITHUB_SHA is not on develop; $shipped already shipped it."
+              ;;
+          esac
+
+      - name: Check the release secrets
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
+        run: |
+          for name in APPLE_CERTIFICATE APPLE_API_KEY_P8 TAP_DEPLOY_KEY; do
+            [ -n "${!name}" ] || { echo "::error::$name secret is not set"; exit 1; }
+          done
+
       - uses: pnpm/action-setup@v4
         with: { version: 11 }
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm }
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: "${{ env.TARGET }}" }
+      # Why no save: a tag-scoped cache is readable only by that tag's own reruns, and 1 GB each
+      # pushes develop's CI caches out of the repo's 10 GB.
       - uses: Swatinem/rust-cache@v2
-        with: { key: "fork-${{ env.TARGET }}" }
+        with: { key: "fork-${{ env.TARGET }}", save-if: false }
       - run: pnpm install --frozen-lockfile
 
       # tauri reads the notarization key from a file path.
       - name: Stage the notarization API key
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
         run: |
-          [ -n "$APPLE_CERTIFICATE" ] || { echo "::error::APPLE_CERTIFICATE secret is not set"; exit 1; }
-          [ -n "$APPLE_API_KEY_P8" ] || { echo "::error::APPLE_API_KEY_P8 secret is not set"; exit 1; }
           key="$RUNNER_TEMP/AuthKey.p8"
           printf '%s\n' "$APPLE_API_KEY_P8" > "$key"
           chmod 600 "$key"
@@ -73,21 +108,59 @@ jobs:
           spctl --assess --type execute --verbose=2 "$app"
 
       - name: Publish the GitHub Release
+        id: publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           dmg="$RUNNER_TEMP/openidea-fork-macos-arm64.dmg"
           cp target/$TARGET/release/bundle/dmg/*.dmg "$dmg"
           sha=$(shasum -a 256 "$dmg" | cut -d' ' -f1)
-          printf 'OpenIDEA fork %s\n\nSHA-256: `%s`\n' "${TAG#v}" "$sha" > "$RUNNER_TEMP/notes.md"
+          # Why fetch: the checkout leaves the tag lightweight; the notes are the annotated tag's message.
+          git fetch --depth=1 --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          notes=$(git for-each-ref "refs/tags/$TAG" --format='%(contents)' | sed '/-----BEGIN PGP SIGNATURE-----/,$d')
+          [ -n "$notes" ] || notes="OpenIDEA fork ${TAG#v}"
+          printf '%s\n\nSHA-256: `%s`\n' "$notes" "$sha" > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
           if gh release view "$TAG" > /dev/null 2>&1; then
             gh release upload "$TAG" "$dmg" --clobber
+            gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes.md" --latest
           else
             gh release create "$TAG" --verify-tag --latest --title "OpenIDEA fork ${TAG#v}" \
               --notes-file "$RUNNER_TEMP/notes.md" "$dmg"
           fi
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
           echo "::notice::sha256 $sha"
 
-      - name: Remove the API key
+      - name: Bump the Homebrew cask
+        env:
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
+          SHA256: ${{ steps.publish.outputs.sha256 }}
+        run: |
+          version="${TAG#v}"
+          key="$RUNNER_TEMP/tap_key"
+          printf '%s\n' "$TAP_DEPLOY_KEY" > "$key"
+          chmod 600 "$key"
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+          tap="$RUNNER_TEMP/tap"
+          git clone -q --depth=1 git@github.com:audichuang/homebrew-tap.git "$tap"
+          cd "$tap"
+          git config user.name "openidea-fork-release"
+          git config user.email "openidea-fork-release@users.noreply.github.com"
+          # Why a loop: other fork releases (orca-fork, codexbar) push to the same tap.
+          for _ in 1 2 3; do
+            sed -E -i '' -e "s/^( *version )\"[^\"]*\"/\1\"$version\"/" -e "s/^( *sha256 )\"[0-9a-f]*\"/\1\"$SHA256\"/" Casks/openidea-fork.rb
+            grep -q "version \"$version\"" Casks/openidea-fork.rb && grep -q "sha256 \"$SHA256\"" Casks/openidea-fork.rb ||
+              { echo "::error::cask has no version/sha256 line to bump"; exit 1; }
+            git diff --quiet && { echo "cask already at $version"; break; }
+            git commit -qam "openidea-fork $version"
+            git push -q origin HEAD:main && break
+            git fetch -q --depth=1 origin main && git reset -q --hard origin/main
+          done
+          git fetch -q --depth=1 origin main
+          git show origin/main:Casks/openidea-fork.rb | grep -q "sha256 \"$SHA256\"" ||
+            { echo "::error::could not push the cask bump"; exit 1; }
+          git log -1 --oneline origin/main
+
+      - name: Remove the keys
         if: always()
-        run: rm -f "$RUNNER_TEMP/AuthKey.p8"
+        run: rm -f "$RUNNER_TEMP/AuthKey.p8" "$RUNNER_TEMP/tap_key"
