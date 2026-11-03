@@ -121,11 +121,12 @@ describe("theme tokens", () => {
 /**
  * Tokens the palette themes (Solarized, One) take from their light / dark base
  * on purpose: colours the user assigns (project and data source colours), the
- * platform's caption close and macOS window buttons, the tint strength, and
- * the selection foreground, whose base default preserves syntax colours.
+ * platform's caption close button, the tint strength, the selection foreground,
+ * whose base default preserves syntax colours, and the Annotate ramp (mixed from
+ * the theme's own accent).
  */
 const INHERITED_FROM_BASE =
-  /^--(project-color-|db-color-|caption-close-|fg-caption-close-|mac-window-|tint-strength$|fg-editor-selection$)/;
+  /^--(project-color-|db-color-|caption-close-|fg-caption-close-|tint-strength$|fg-editor-selection$|vcs-annotate-)/;
 
 describe("palette themes", () => {
   const ISLANDS = ["light", "dark", "dark-hc"];
