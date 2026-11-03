@@ -8,6 +8,8 @@ vi.mock("@/workbench/contributions", () => ({ notifications: () => ({ notify }) 
 
 beforeEach(() => {
   vi.stubGlobal("__TAURI_INTERNALS__", {});
+  // The webview reads the text, as on Windows; `readPlainText` covers the native read.
+  vi.spyOn(commands, "clipboardText").mockResolvedValue({ status: "ok", data: null });
   vi.spyOn(commands, "clipboardFileList").mockResolvedValue({ status: "ok", data: [] });
   notify.mockClear();
 });
