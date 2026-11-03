@@ -13,8 +13,9 @@ on:
 
 concurrency:
   group: fork-ci-${{ github.ref }}
-  # Why PRs only: a develop run saves the caches every PR restores; cancelling it wastes them.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Why not develop: a develop run saves the caches every PR restores; cancelling it wastes them.
+  # PRs and rebase/** heads cancel their superseded run.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/develop' }}
 
 env:
   CARGO_TERM_COLOR: always
