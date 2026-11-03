@@ -7,6 +7,7 @@
 import { useState } from "react";
 import { create } from "zustand";
 import { registerActions } from "@/platform/actions";
+import { readPlainText } from "@/platform/clipboard";
 import { useProject } from "@/platform/project";
 import { registerOverlay, toolWindowService } from "@/workbench/contributions";
 import { Dialog, T } from "@/ui";
@@ -83,7 +84,7 @@ export function closeStackTrace(id: string) {
 async function openDialog() {
   let clip = "";
   try {
-    clip = (await navigator.clipboard?.readText()) ?? "";
+    clip = await readPlainText();
   } catch {
     // clipboard unavailable or denied: start empty
   }

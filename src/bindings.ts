@@ -210,6 +210,12 @@ export const commands = {
 	/**  Whether the clipboard holds files: cheap, for the Paste item's enabled state. */
 	clipboardHasFiles: () => __TAURI_INVOKE<boolean>("clipboard_has_files"),
 	/**
+	 *  The clipboard's text, read natively so WebKit does not ask the user to confirm
+	 *  a paste the app started itself (menu, command, shortcut); `None` where the
+	 *  webview should read it (`ide_clipboard::text`).
+	 */
+	clipboardText: () => typedError<string | null, IdeError>(__TAURI_INVOKE("clipboard_text")),
+	/**
 	 *  Replaces the clipboard with `paths`, so Explorer can paste them. Best-effort:
 	 *  false when the clipboard stayed busy; the caller keeps working either way.
 	 */
