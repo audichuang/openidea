@@ -4,6 +4,7 @@
  */
 import { activeEditor } from "@/editor/api";
 import { registerActions } from "@/platform/actions";
+import { readPlainText } from "@/platform/clipboard";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { isRemoteWindow } from "@/platform/remote";
 import { maybeEditorService, notifications, projectViewSelection } from "@/workbench/contributions";
@@ -285,7 +286,7 @@ export function registerCompareActions(): () => void {
         if (!path) return info("Open or select a file to compare with the clipboard");
         let clipboard: string;
         try {
-          clipboard = (await navigator.clipboard?.readText()) ?? "";
+          clipboard = await readPlainText();
         } catch {
           return info("The clipboard could not be read");
         }

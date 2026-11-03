@@ -3,6 +3,7 @@ import { EditorView } from "@codemirror/view";
 import type { Action } from "@/platform/actions";
 import { revealInFileManager } from "@/platform/fileManager";
 import { t } from "@/platform/i18n";
+import { readPlainText } from "@/platform/clipboard";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { maybeEditorService, notifications, runUndoHandlers } from "@/workbench/contributions";
 import { showAbout } from "./AboutDialog";
@@ -48,8 +49,8 @@ export function editCommand(command: "undo" | "redo" | "cut" | "copy" | "paste" 
       }
       if (focused instanceof Element && runUndoHandlers(command, focused)) return;
     }
-    if (command === "paste" && navigator.clipboard?.readText) {
-      void navigator.clipboard.readText().then((text) => document.execCommand("insertText", false, text));
+    if (command === "paste" && navigator.clipboard) {
+      void readPlainText().then((text) => document.execCommand("insertText", false, text));
       return;
     }
     document.execCommand(command);

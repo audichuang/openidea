@@ -1,4 +1,4 @@
-import { pasteClipboardFiles, readClipboardText } from "@/platform/clipboard";
+import { pasteClipboardFiles, readClipboardText, readPlainText } from "@/platform/clipboard";
 import { call, commands, type TerminalId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { notifications } from "@/workbench/contributions";
@@ -130,7 +130,7 @@ export async function pasteTerminalClipboard(paste: (text: string) => void, getT
           )
         : null;
     const text = target?.remote
-      ? ((await navigator.clipboard?.readText().catch(() => "")) ?? "")
+      ? await readPlainText().catch(() => "")
       : await readClipboardText(undefined, target ? (paths) => pathsText(paths, target) : undefined);
     if (target && !target.current()) return;
     if (text) {
