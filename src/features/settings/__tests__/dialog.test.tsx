@@ -7,6 +7,10 @@ const settingsSet = vi.fn();
 const settingsGet = vi.fn();
 const settingsGetGlobal = vi.fn();
 
+// The window's theme sync reaches for the native window once isTauri() is true.
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ setTheme: async () => {}, setBackgroundColor: async () => {} }),
+}));
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
   return {
