@@ -1,3 +1,4 @@
+import { writePlainText } from "@/platform/clipboard";
 import { useFilePresentation } from "@/platform/filePresentation";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import clsx from "clsx";
@@ -322,7 +323,7 @@ function SearchEverywhereDialog() {
     if (row.kind === "action") return assignShortcut(row.id);
     const anchor = listRef.current?.querySelector('[data-lead="true"]') ?? inputRef.current;
     if (!anchor) return;
-    const copy = (text: string) => void navigator.clipboard?.writeText(text).catch(() => {});
+    const copy = (text: string) => void writePlainText(text).catch(() => {});
     const items: MenuItem[] =
       row.kind === "setting"
         ? [{ label: "Open Settings Page", run: () => activate(row) }]

@@ -2,6 +2,7 @@
  * File operations behind the project view's actions: new / rename / delete,
  * internal copy-cut-paste, drag & drop moves and OS file imports.
  */
+import { writePlainText } from "@/platform/clipboard";
 import { createElement, Fragment } from "react";
 import { askUsagesDetected, fileUsages, viewUsages } from "@/editor/refactor";
 import { executeAction, getAction } from "@/platform/actions";
@@ -483,7 +484,7 @@ export function copySelection(cut: boolean) {
   const remote = isRemoteWindow();
   const osWrite = (async () => {
     if (!remote) return osClipboard().setFiles(paths);
-    await navigator.clipboard.writeText(paths.join("\n"));
+    await writePlainText(paths.join("\n"));
     return true;
   })().catch(() => false);
   setClipboard({ paths, cut, remote, osWrite });
@@ -729,7 +730,7 @@ export async function copyPaths(kind: PathKind, nodes: ProjectNode[] = selectedN
   const text = pathsFor(kind, nodes).join("\n");
   if (!text) return;
   try {
-    await navigator.clipboard.writeText(text);
+    await writePlainText(text);
   } catch (e) {
     fail("Cannot access the clipboard", e);
   }

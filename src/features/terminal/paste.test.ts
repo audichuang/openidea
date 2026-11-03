@@ -527,3 +527,19 @@ it("recovers quoted local file paths when clipboard text permission is denied", 
   expect(paste).toHaveBeenCalledExactlyOnceWith("'C:\\a b\\image.png'");
   expect(notify).not.toHaveBeenCalled();
 });
+
+it("pastes menu text without the webview's own clipboard reads, which macOS confirms with a callout", async () => {
+  vi.spyOn(commands, "clipboardText").mockResolvedValue({ status: "ok", data: "echo hi" });
+  const read = vi.fn(async () => []);
+  const readText = vi.fn(async () => "");
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { read, readText } });
+  const exec = vi.fn(() => true);
+  Object.defineProperty(document, "execCommand", { configurable: true, value: exec });
+  Object.defineProperty(document, "queryCommandSupported", { configurable: true, value: () => true });
+  const paste = vi.fn();
+  await pasteTerminalClipboard(paste, () => remoteTarget());
+  expect(paste).toHaveBeenCalledWith("echo hi");
+  expect(read).not.toHaveBeenCalled();
+  expect(readText).not.toHaveBeenCalled();
+  expect(exec).not.toHaveBeenCalled();
+});
