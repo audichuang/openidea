@@ -9,8 +9,9 @@ export async function writeClipboardText(text: string): Promise<void> {
 
 /**
  * The clipboard's plain text, read natively where the backend can (macOS, Linux), else
- * through the WebView. A Paste from a menu has no paste event to read, and WebKitGTK's
- * `navigator.clipboard.readText()` gives no text there. Rejects when the WebView refuses.
+ * through the WebView. A Paste from a menu has no paste event to read, WebKitGTK's
+ * `navigator.clipboard.readText()` gives no text there, and the macOS WebView makes the user
+ * confirm such a read with a "Paste" callout. Rejects when the WebView refuses.
  */
 export async function readClipboardPlainText(): Promise<string> {
   if (isTauri()) {
