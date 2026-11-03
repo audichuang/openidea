@@ -137,12 +137,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
+          # Why threads: macOS stays one job (scarce runners), and its tests are mostly waits on
+          # git subprocesses and timeouts, so oversubscribing its 3 cores overlaps the waits.
+          - { os: macos-latest, threads: "6" }
           - os: ubuntu-22.04
-          # Why two: Windows runs ~1300 test-seconds on 4 cores (5.5 min after a 4 min build), and
+          # Why three: Windows runs ~1300 test-seconds on 4 cores after a 4 min build, and
           # Windows runners are plentiful, unlike macOS.
-          - { os: windows-latest, partition: "1/2" }
-          - { os: windows-latest, partition: "2/2" }
+          - { os: windows-latest, partition: "1/3" }
+          - { os: windows-latest, partition: "2/3" }
+          - { os: windows-latest, partition: "3/3" }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -185,7 +188,7 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       # Test fixtures write LF files; keep Git from converting them on checkout.
       - run: git config --global core.autocrlf false
-      - run: cargo nextest run --workspace --no-fail-fast ${{ matrix.partition && format('--partition count:{0}', matrix.partition) || '' }}
+      - run: cargo nextest run --workspace --no-fail-fast ${{ matrix.partition && format('--partition count:{0}', matrix.partition) || '' }} ${{ matrix.threads && format('--test-threads {0}', matrix.threads) || '' }}
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
       # nextest ran export_bindings, which rewrites src/bindings.ts.
       - name: Bindings are up to date
