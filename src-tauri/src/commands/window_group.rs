@@ -1,5 +1,5 @@
+use crate::window_groups as groups;
 use crate::windows::WorkbenchWindows;
-use crate::{window_groups as groups, windows::WindowsState};
 
 use ide_command::desktop_command;
 use ide_core::{IdeError, IdeResult};
@@ -9,7 +9,7 @@ use tauri::{Manager, Window};
 #[tauri::command]
 #[specta::specta]
 pub fn window_group_current(window: Window) -> IdeResult<Vec<groups::WindowTab>> {
-    // Reordering in the system tab bar doesn't tell the app.
+    // AppKit (⌃Tab, Window menu) changes the selected tab without telling the app.
     #[cfg(target_os = "macos")]
     groups::sync(window.app_handle());
     Ok(groups::current(window.app_handle(), window.label()))
@@ -83,8 +83,7 @@ pub fn window_group_cancel_close(window: Window) {
 #[tauri::command]
 #[specta::specta]
 pub async fn window_group_reorder(window: Window, labels: Vec<String>) -> IdeResult<()> {
-    window.state::<WindowsState>().groups.lock().reorder(window.label(), labels)?;
-    groups::select(window.app_handle(), window.label(), window.label())?;
+    groups::reorder(window.app_handle(), window.label(), labels)?;
     groups::persist(window.app_handle()).await
 }
 
@@ -97,31 +96,6 @@ pub async fn window_group_restore(window: Window) -> IdeResult<()> {
     #[cfg(target_os = "macos")]
     groups::sync(window.app_handle());
     Ok(())
-}
-
-/// The system tab bar over this window's page (macOS window tabs).
-#[derive(serde::Serialize, specta::Type)]
-#[serde(rename_all = "camelCase")]
-pub struct SystemTabBar {
-    /// In points; 0 without a tab bar.
-    pub height: f64,
-    /// At the top of the window (fullscreen) instead of below the title bar.
-    pub top: bool,
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn window_group_tab_bar(window: WebviewWindow) -> IdeResult<SystemTabBar> {
-    #[cfg(target_os = "macos")]
-    {
-        let (height, top) = crate::macos::tab_bar(window.app_handle(), &window)?;
-        Ok(SystemTabBar { height, top })
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = window;
-        Ok(SystemTabBar { height: 0.0, top: false })
-    }
 }
 
 ide_command::desktop_domain!(
