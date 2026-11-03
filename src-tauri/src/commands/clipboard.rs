@@ -2,9 +2,7 @@
 
 #[cfg(not(target_os = "macos"))]
 use crate::commands::doc::blocking;
-#[cfg(target_os = "macos")]
-use ide_core::IdeError;
-use ide_core::IdeResult;
+use ide_core::{IdeError, IdeResult};
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 
@@ -31,6 +29,35 @@ pub async fn clipboard_text(app: AppHandle) -> IdeResult<Option<String>> {
 #[specta::specta]
 pub async fn clipboard_set_text(app: AppHandle, text: String) -> IdeResult<bool> {
     with_clipboard(app, move || Ok(ide_clipboard::set_text(&text))).await
+}
+
+/// An image read from the clipboard, encoded as `mime`.
+#[derive(serde::Serialize, specta::Type)]
+pub struct ClipboardImage {
+    pub mime: String,
+    pub data: Vec<u8>,
+}
+
+/// The paste limit for terminal and Markdown images, checked before the bytes
+/// cross the IPC boundary as a JSON array.
+const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+
+/// The clipboard's image, read natively so WebKit does not ask the user to
+/// confirm a paste the app started from a menu; `None` when it holds none.
+/// `unavailable` where the webview should read it (`ide_clipboard::image`).
+#[tauri::command]
+#[specta::specta]
+pub async fn clipboard_image(app: AppHandle) -> IdeResult<Option<ClipboardImage>> {
+    let image = with_clipboard(app, || Ok(ide_clipboard::image())).await?;
+    let Some(image) = image else {
+        return Err(IdeError::unavailable("The clipboard image cannot be read natively here"));
+    };
+    match image {
+        Some(image) if image.data.len() > MAX_IMAGE_BYTES => {
+            Err(IdeError::invalid("Clipboard image is too large to paste (limit 20 MB)"))
+        }
+        image => Ok(image.map(|image| ClipboardImage { mime: image.mime.to_owned(), data: image.data })),
+    }
 }
 
 /// Whether the clipboard holds files: cheap, for the Paste item's enabled state.
