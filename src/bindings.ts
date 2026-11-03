@@ -257,6 +257,15 @@ export const commands = {
 	 */
 	clipboardImage: () => typedError<string | null, IdeError>(__TAURI_INVOKE("clipboard_image")),
 	/**
+	 *  The clipboard's image, read natively so WebKit does not ask the user to
+	 *  confirm a paste the app started from a menu; `None` when it holds none.
+	 *  `unavailable` where the webview should read it (`ide_clipboard::image`).
+	 */
+	clipboardImage: () => typedError<{
+	mime: string,
+	data: number[],
+} | null, IdeError>(__TAURI_INVOKE("clipboard_image")),
+	/**
 	 *  Replaces the clipboard with `paths`, so Explorer can paste them. Best-effort:
 	 *  false when the clipboard stayed busy; the caller keeps working either way.
 	 */
@@ -2545,6 +2554,12 @@ export type ClearCachesResult = {
 export type CliInstallation = {
 	path: IpcPath,
 	pathDirectory: IpcPath | null,
+};
+
+/**  An image read from the clipboard, encoded as `mime`. */
+export type ClipboardImage = {
+	mime: string,
+	data: number[],
 };
 
 export type CloseContext = {

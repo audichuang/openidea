@@ -50,6 +50,7 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
         "clipboard_set_file_list",
         "clipboard_write_text",
         "clipboard_text",
+        "clipboard_image",
         "jdk_download_vendors",
         "jdk_download_releases",
         "jdk_download_location",
