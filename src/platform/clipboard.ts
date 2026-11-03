@@ -4,14 +4,22 @@ import { ipcPath } from "./paths";
 type FormatFiles = (paths: string[]) => string;
 const rawPaths: FormatFiles = (paths) => paths.join("\n");
 
+/**
+ * The clipboard's text outside a paste event (menus, commands, shortcuts). The macOS webview makes
+ * the user confirm such a read with a "Paste" callout and reads nothing when it is dismissed, so
+ * the backend reads it where it can; elsewhere the webview does. Rejects like `readText()`.
+ */
+export async function readPlainText(): Promise<string> {
+  const native = isTauri() ? await call(commands.clipboardText()) : null;
+  return native ?? (await navigator.clipboard?.readText()) ?? "";
+}
+
 /** WebKit exposes native file URLs as Files, hiding the pasteboard's text flavor. */
 export async function readClipboardText(
   transfer?: DataTransfer | null,
   formatFiles: FormatFiles = rawPaths,
 ): Promise<string> {
-  const text = transfer
-    ? transfer.getData("text/plain")
-    : ((await navigator.clipboard?.readText().catch(() => "")) ?? "");
+  const text = transfer ? transfer.getData("text/plain") : await readPlainText().catch(() => "");
   if ((text && formatFiles === rawPaths) || (transfer && !hasClipboardFiles(transfer)) || !isTauri()) return text;
   let paths: string[];
   try {

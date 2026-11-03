@@ -15,6 +15,15 @@ pub async fn clipboard_file_list(app: AppHandle) -> IdeResult<Vec<String>> {
     with_clipboard(app, || Ok(ide_clipboard::files()?.iter().map(|p| slash(p)).collect())).await
 }
 
+/// The clipboard's text, read natively so WebKit does not ask the user to confirm
+/// a paste the app started itself (menu, command, shortcut); `None` where the
+/// webview should read it (`ide_clipboard::text`).
+#[tauri::command]
+#[specta::specta]
+pub async fn clipboard_text(app: AppHandle) -> IdeResult<Option<String>> {
+    with_clipboard(app, || Ok(ide_clipboard::text())).await
+}
+
 /// Whether the clipboard holds files: cheap, for the Paste item's enabled state.
 #[tauri::command]
 #[specta::specta]
