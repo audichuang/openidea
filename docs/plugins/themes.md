@@ -329,7 +329,7 @@ a token.
 
 <!-- BEGIN GENERATED TOKEN REFERENCE: pnpm gen:theme-docs -->
 
-252 themeable tokens: 125 in the UI theme file, 127 in the editor colour scheme file.
+257 themeable tokens: 130 in the UI theme file, 127 in the editor colour scheme file.
 
 ### Surfaces (UI theme)
 
@@ -406,6 +406,11 @@ a token.
 | `--vcs-untracked` | `#e88f89` | `#b23247` |
 | `--vcs-ignored` | `#d69a6b` | `#8c4f00` |
 | `--vcs-conflict` | `#de6a66` | `#de1b2e` |
+| `--vcs-annotate-1` | `color-mix(in srgb, var(--accent) 63%, var(--bg-editor))` | `color-mix(in srgb, var(--accent) 46%, var(--bg-editor))` |
+| `--vcs-annotate-2` | `color-mix(in srgb, var(--accent) 42%, var(--bg-editor))` | `color-mix(in srgb, var(--accent) 26%, var(--bg-editor))` |
+| `--vcs-annotate-3` | `color-mix(in srgb, var(--accent) 30%, var(--bg-editor))` | `color-mix(in srgb, var(--accent) 16%, var(--bg-editor))` |
+| `--vcs-annotate-4` | `color-mix(in srgb, var(--accent) 20%, var(--bg-editor))` | `color-mix(in srgb, var(--accent) 9%, var(--bg-editor))` |
+| `--vcs-annotate-5` | `color-mix(in srgb, var(--accent) 10%, var(--bg-editor))` | `color-mix(in srgb, var(--accent) 4%, var(--bg-editor))` |
 | `--gutter-modified` | `#375fad` | `#88adf7` |
 | `--gutter-added` | `#549159` | `#7fc784` |
 | `--gutter-deleted` | `#868a91` | `#767a8a` |
