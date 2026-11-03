@@ -1,9 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { executeAction } from "@/platform/actions";
-import type { Settings } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
-import { useProject } from "@/platform/project";
 import { useWindowGroup } from "@/platform/windowGroups";
 import { useContextMenuStore } from "@/ui/Menu";
 import { WindowGroupTabs } from "./WindowGroupTabs";
@@ -68,35 +66,21 @@ it("offers closing the other tabs and those on either side of the clicked tab", 
   expect(menuFor("Docs")("Close Tabs to the Right").disabled).toBe(true);
 });
 
-describe("macOS system tab bar", () => {
+describe("macOS", () => {
   const saved = usePlatform.getState();
-  afterEach(() => {
-    usePlatform.setState(saved);
-    useProject.setState({ settings: null });
-    useWindowGroup.setState({ systemTabBar: { height: 0, top: false } });
+  afterEach(() => usePlatform.setState(saved));
+
+  it("draws the tabs itself below the toolbar, the system tab bar being hidden", () => {
+    usePlatform.setState({ os: "macos", overlayTitleBar: true, framelessTitleBar: false });
+    render(<WindowGroupTabs />);
+    expect(screen.getByRole("tab", { name: "Frontend" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Close Backend" }));
+    expect(executeAction).toHaveBeenLastCalledWith("window.closeTab", "project-1");
   });
 
-  const space = (container: HTMLElement) => container.querySelector<HTMLElement>("[data-window-group='system']");
-
-  it("keeps room for it instead of drawing tabs, on the side the system draws it", () => {
+  it("hides them in Distraction Free Mode", () => {
     usePlatform.setState({ os: "macos", overlayTitleBar: true, framelessTitleBar: false });
-    useProject.setState({ settings: { appearance: { zoom: 125 } } as Settings });
-    useWindowGroup.setState({ systemTabBar: { height: 40, top: false } });
-    const below = render(<WindowGroupTabs hidePageTabs />);
+    render(<WindowGroupTabs hidePageTabs />);
     expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
-    // Native points over page zoom; Distraction Free keeps the room: the system bar stays.
-    expect(space(below.container)?.style.height).toBe("32px");
-    expect(space(render(<WindowGroupTabs top />).container)).toBeNull();
-    below.unmount();
-
-    useWindowGroup.setState({ systemTabBar: { height: 40, top: true } });
-    expect(space(render(<WindowGroupTabs />).container)).toBeNull();
-    expect(space(render(<WindowGroupTabs top />).container)?.style.height).toBe("32px");
-  });
-
-  it("leaves no room without a tab bar", () => {
-    usePlatform.setState({ os: "macos", overlayTitleBar: true, framelessTitleBar: false });
-    const { container } = render(<WindowGroupTabs />);
-    expect(space(container)).toBeNull();
   });
 });
