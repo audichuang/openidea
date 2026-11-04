@@ -124,7 +124,9 @@ pub fn window_cycle(app: AppHandle, window: WebviewWindow, forward: bool) {
 #[tauri::command]
 #[specta::specta]
 pub fn window_toggle_fullscreen(window: WebviewWindow) -> IdeResult<bool> {
-    crate::window_groups::toggle_fullscreen(&window)
+    let on = !window.is_fullscreen().map_err(|e| IdeError::internal(e.to_string()))?;
+    window.set_fullscreen(on).map_err(|e| IdeError::internal(e.to_string()))?;
+    Ok(on)
 }
 
 /// Flash (`true`) or stop flashing (`false`) this window's taskbar button, like IDEA when a
