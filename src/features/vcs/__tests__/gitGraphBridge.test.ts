@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Branch, Commit } from "@/bindings";
 import type { MenuItem } from "@/ui";
 
+const upstream = { name: null as string | null, outgoing: [] as string[] };
+
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
   return {
@@ -14,7 +16,16 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     commands: {
       ...real.commands,
       vcsTags: () => Promise.resolve({ status: "ok", data: [] }),
-      vcsLog: () => Promise.resolve({ status: "ok", data: [] }),
+      vcsLog: (_repo: string, q: { range?: string | null }) =>
+        Promise.resolve({
+          status: "ok",
+          data: q.range === "@{u}..HEAD" ? upstream.outgoing.map((id) => ({ id, parents: [], refs: [] })) : [],
+        }),
+      vcsBranchInfo: () =>
+        Promise.resolve({
+          status: "ok",
+          data: { head: "main", headCommit: "a", upstream: upstream.name, ahead: 0, behind: 0, operation: null },
+        }),
       vcsConfigGet: () => Promise.resolve({ status: "ok", data: null }),
     },
   };
@@ -55,9 +66,16 @@ const actionIds = (items: MenuItem[]) => items.flatMap((i) => (i.kind === "actio
 const labels = (items: MenuItem[]) =>
   items.flatMap((i) => (i.kind === "separator" || i.kind === "header" || i.kind === "action" ? [] : [i.label]));
 
+const disabledOf = (items: MenuItem[], id: string) => {
+  const item = items.find((i) => i.kind === "action" && i.action === id);
+  return item?.kind === "action" ? !!item.disabled : false;
+};
+
 let dispose: () => void;
 
 beforeEach(() => {
+  upstream.name = null;
+  upstream.outgoing = [];
   dispose = activate();
   useVcs.setState({
     available: true,
@@ -149,6 +167,31 @@ describe("git graph bridge", () => {
       expect(ids).toContain(id);
     expect(ids).not.toContain("vcs.log.goToParent");
     expect(ids).not.toContain("vcs.log.goToChild");
+  });
+
+  it("disables history rewrites on commits already on the upstream", async () => {
+    const local = commit("l".repeat(40), ["p".repeat(40)]);
+    const pushed = commit("p".repeat(40), []);
+    upstream.name = "origin/main";
+    upstream.outgoing = [local.id];
+    const state = (items: MenuItem[], id: string) => disabledOf(items, id);
+    const onPushed = await bridge().commitMenu(pushed, [pushed]);
+    for (const id of ["vcs.log.dropCommit", "vcs.log.fixup", "vcs.log.editMessage", "vcs.log.interactiveRebase"])
+      expect(state(onPushed, id)).toBe(true);
+    expect(state(onPushed, "vcs.log.pushUpToHere")).toBe(true);
+    const onLocal = await bridge().commitMenu(local, [local]);
+    expect(state(onLocal, "vcs.log.dropCommit")).toBe(false);
+    expect(state(onLocal, "vcs.log.pushUpToHere")).toBe(false);
+    const both = await bridge().commitMenu(local, [local, pushed]);
+    expect(state(both, "vcs.log.squashCommits")).toBe(true);
+  });
+
+  it("allows rewrites and push-up-to-here without an upstream", async () => {
+    const c = commit("c".repeat(40), []);
+    const items = await bridge().commitMenu(c, [c]);
+    const state = (id: string) => disabledOf(items, id);
+    expect(state("vcs.log.dropCommit")).toBe(false);
+    expect(state("vcs.log.pushUpToHere")).toBe(false);
   });
 
   it("offers the multi-commit operations for a selection", async () => {
