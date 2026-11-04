@@ -74,8 +74,6 @@ enum FrameHost {
     /// Wayland does not let clients place top-level windows.
     #[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
     Wayland,
-    /// macOS simple fullscreen already covers the screen; rewriting the frame would shrink it.
-    SimpleFullscreen,
     /// Native fullscreen owns a Space. A different frame is transferred, not assigned.
     NativeFullscreen,
 }
@@ -93,7 +91,7 @@ enum FrameWrite {
 /// flags are not a substitute: `show` presents the current rectangle, and a later move is visible.
 fn frame_write(host: FrameHost, from: OuterFrame, to: OuterFrame) -> FrameWrite {
     match host {
-        FrameHost::Wayland | FrameHost::SimpleFullscreen => FrameWrite::Leave,
+        FrameHost::Wayland => FrameWrite::Leave,
         FrameHost::NativeFullscreen if from == to => FrameWrite::Leave,
         FrameHost::NativeFullscreen => FrameWrite::TransferFullscreen,
         FrameHost::Desktop if from == to => FrameWrite::Leave,
@@ -109,9 +107,6 @@ fn outer_frame(window: &WebviewWindow) -> IdeResult<OuterFrame> {
 }
 
 fn frame_host(from: &WebviewWindow) -> IdeResult<FrameHost> {
-    if simple_fullscreen(from.label()) {
-        return Ok(FrameHost::SimpleFullscreen);
-    }
     #[cfg(target_os = "linux")]
     if crate::linux_window_state::is_wayland() {
         return Ok(FrameHost::Wayland);
@@ -146,7 +141,7 @@ fn place_on_monitor(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
 /// rectangle appears and then jumps. The frame is written synchronously instead.
 fn copy_frame(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
     let host = frame_host(from)?;
-    if matches!(host, FrameHost::Wayland | FrameHost::SimpleFullscreen) {
+    if matches!(host, FrameHost::Wayland) {
         return Ok(());
     }
     // Tauri's physical rectangles round through the scale factor. On macOS the AppKit frame is
@@ -232,7 +227,7 @@ fn sync_member_frames(app: &AppHandle, selected: &str) {
         return;
     }
     let Some(from) = app.get_webview_window(selected) else { return };
-    if from.is_fullscreen().unwrap_or(false) || from.is_minimized().unwrap_or(false) || simple_fullscreen(selected) {
+    if from.is_fullscreen().unwrap_or(false) || from.is_minimized().unwrap_or(false) {
         return;
     }
     for member in group.members.iter().filter(|member| member.as_str() != selected) {
@@ -268,61 +263,12 @@ pub fn frame_changed(app: &AppHandle, label: &str) {
     });
 }
 
-fn simple_fullscreen(label: &str) -> bool {
-    #[cfg(target_os = "macos")]
-    return crate::macos::is_simple_fullscreen(label);
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = label;
-        false
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn set_simple_fullscreen(window: &WebviewWindow, on: bool) -> IdeResult<()> {
-    crate::macos::set_simple_fullscreen(window, on).map_err(|e| IdeError::internal(e.to_string()))
-}
-
-/// Fullscreen for `window`. On macOS a grouped window uses simple fullscreen, for every member
-/// at once: the group stays in one Space and each member keeps the screen's size, so switching
-/// projects is only showing one window and hiding the others.
-pub fn toggle_fullscreen(window: &WebviewWindow) -> IdeResult<bool> {
-    let err = |e: tauri::Error| IdeError::internal(e.to_string());
-    #[cfg(target_os = "macos")]
-    {
-        let simple = simple_fullscreen(window.label());
-        let app = window.app_handle();
-        let members = app.state::<WindowsState>().groups.lock().group(window.label()).map(|g| g.members.clone());
-        if simple || (members.is_some() && !window.is_fullscreen().map_err(err)?) {
-            set_simple_fullscreen(window, !simple)?;
-            for member in members.iter().flatten().filter(|m| *m != window.label()) {
-                if let Some(other) = app.get_webview_window(member)
-                    && simple_fullscreen(member) == simple
-                {
-                    set_simple_fullscreen(&other, !simple)?;
-                }
-            }
-            return Ok(!simple);
-        }
-    }
-    let on = !window.is_fullscreen().map_err(err)?;
-    window.set_fullscreen(on).map_err(err)?;
-    Ok(on)
-}
-
 pub fn select(app: &AppHandle, caller: &str, target: &str) -> IdeResult<()> {
     let to = app.get_webview_window(target).ok_or_else(|| IdeError::not_found("Window closed"))?;
     let state = app.state::<WindowsState>();
     let previous = state.groups.lock().select(caller, target)?;
-    // In a fullscreen group the target already covers the screen, or does so before it is shown.
-    let simple = previous.selected != target && simple_fullscreen(&previous.selected);
     let result = (|| {
-        #[cfg(target_os = "macos")]
-        if simple && !simple_fullscreen(target) {
-            set_simple_fullscreen(&to, true)?;
-        }
-        if !simple
-            && previous.selected != target
+        if previous.selected != target
             && let Some(from) = app.get_webview_window(&previous.selected)
         {
             show_at_frame(&from, &to)?;
@@ -387,10 +333,6 @@ pub fn merge(app: &AppHandle, caller: &str) -> IdeResult<()> {
     // Native fullscreen puts each window in a separate Space; leave it before grouping.
     for label in &members {
         if let Some(window) = app.get_webview_window(label) {
-            #[cfg(target_os = "macos")]
-            if label != caller && simple_fullscreen(label) {
-                set_simple_fullscreen(&window, false)?;
-            }
             window.set_fullscreen(false).map_err(|e| IdeError::internal(e.to_string()))?;
         }
     }
@@ -402,21 +344,10 @@ pub fn detach(app: &AppHandle, caller: &str) -> IdeResult<()> {
     let state = app.state::<WindowsState>();
     let next = state.groups.lock().detach(caller);
     if let Some(next) = next {
-        // The tab that stays keeps the fullscreen; the detached window opens beside it.
-        #[cfg(target_os = "macos")]
-        let simple = simple_fullscreen(caller);
         if let Some(window) = app.get_webview_window(&next) {
-            #[cfg(target_os = "macos")]
-            if simple && !simple_fullscreen(&next) {
-                set_simple_fullscreen(&window, true)?;
-            }
             window.show().map_err(|e| IdeError::internal(e.to_string()))?;
         }
         if let Some(window) = app.get_webview_window(caller) {
-            #[cfg(target_os = "macos")]
-            if simple {
-                set_simple_fullscreen(&window, false)?;
-            }
             if let Ok(position) = window.outer_position() {
                 let _ = window.set_position(tauri::PhysicalPosition::new(position.x + 32, position.y + 32));
             }
@@ -429,15 +360,9 @@ pub fn detach(app: &AppHandle, caller: &str) -> IdeResult<()> {
 
 pub fn destroyed(app: &AppHandle, caller: &str) {
     let Some(state) = app.try_state::<WindowsState>() else { return };
-    #[cfg(target_os = "macos")]
-    let simple = crate::macos::forget_simple_fullscreen(app, caller);
     let next = state.groups.lock().detach(caller);
     if !state.quitting() {
         if let Some(window) = next.and_then(|label| app.get_webview_window(&label)) {
-            #[cfg(target_os = "macos")]
-            if simple && !simple_fullscreen(window.label()) {
-                let _ = set_simple_fullscreen(&window, true);
-            }
             windows::focus(&window);
         }
         let app = app.clone();
@@ -664,13 +589,6 @@ mod tests {
         let from = frame(0, 25, 1728, 1055);
         let to = frame(0, 25, 1512, 900);
         assert_eq!(frame_write(FrameHost::Desktop, from, to), FrameWrite::Assign(from));
-    }
-
-    #[test]
-    fn simple_fullscreen_does_not_copy_a_frame() {
-        let from = frame(0, 0, 1728, 1117);
-        let to = frame(100, 80, 1200, 800);
-        assert_eq!(frame_write(FrameHost::SimpleFullscreen, from, to), FrameWrite::Leave);
     }
 
     #[test]
