@@ -5,7 +5,7 @@ description: Entry point for proving any OpenIDEA change in the running app in t
 
 # Verify OpenIDEA in the real app (fork, macOS)
 
-Upstream's `verify` skill (`.agents/skills/verify`) is the base: launch and session reuse, `mcp__tauri__*` basics, CodeMirror/xterm input quirks, `fixtures/`, evidence naming. Read it first. This skill adds when synthetic Tauri MCP input is not enough and how to send real OS input instead, what broke on this app, and the fork's feature map (`features/`).
+Upstream's `verify` skill (`.agents/skills/verify`) is the base: launch and session reuse, `mcp__tauri__*` basics, CodeMirror/xterm input quirks, `fixtures/`, evidence naming. Read it first. Where the two differ, this skill wins (scratch paths, targeting, evidence, cleanup). It adds when synthetic Tauri MCP input is not enough and how to send real OS input instead, what broke on this app, and the fork's feature map (`features/`).
 
 ## Verify a change, in order
 
@@ -23,7 +23,7 @@ Before reporting PASS, check:
 - A `screencapture` was checked for a WebKit permission bubble or an unexpected dialog; Tauri MCP screenshots never show them.
 - The running binary was built after the last Rust change.
 - Light and dark themes were covered for anything colored.
-- Settings are restored, the app you started is stopped, build output is cleaned per Cleanup step 4. Dialogs from other apps were left for the user.
+- Settings are restored, the app you started is stopped, build output is handled per Cleanup step 4. Dialogs from other apps were left for the user.
 
 The pitfalls behind these rules are listed in "Tauri MCP on this app"; read them before the first call.
 
@@ -97,7 +97,7 @@ Keep the minor version equal to the crate (`tauri-plugin-mcp-bridge = "0.13"` in
 Workflow:
 
 1. `driver_session action=start port=<pnpm dev:status port>`.
-2. `manage_window action=list` → labels `main`, `project-N`. Pass `windowId` on every call.
+2. Window labels (`main`, `project-N`) come from `pnpm dev:status`; `manage_window action=list` can miss windows. Pass `windowId` on every call.
 3. Find: `webview_dom_snapshot type=accessibility selector=<scope>` (scope it, e.g. `[role=dialog]`; a whole window is large), then act on `ref=eN`.
 4. Act: `webview_interact` click / right-click / double-click / hover / scroll by `ref`, CSS, or `strategy=text`.
 5. Assert: `webview_find_element` with `properties=["background-color", ...]` returns text, classes, rect, visibility and computed styles in one call. `webview_screenshot` returns the image inline (`maxWidth` keeps it small) and prints the CSS-to-image scale.
@@ -105,7 +105,7 @@ Workflow:
 
 Pitfalls found on 2026-11-04:
 
-- **`read_logs source=system` kills the server.** It runs `log show --last 1m` for the whole Mac with no process filter, and the connection closed. Use `source=console` for the webview; read `pnpm dev:app`'s log file (`/tmp/oi-dev.log`) for Rust.
+- **`read_logs source=system` kills the server.** It runs `log show --last 1m` for the whole Mac with no process filter, and the connection closed. Use `source=console` for the webview; read `pnpm dev:app`'s log file (`$S/dev.log`) for Rust.
 - **`ipc_monitor` captures nothing here.** It hooks `window.__TAURI__.core`, but the app calls the backend through the `@tauri-apps/api/core` `invoke` module (`src/bindings.ts`). Check backend effects on disk or in the UI instead.
 - **`ipc_execute_command` / bridge invoke** only reach plugin commands; app commands answer "Unsupported Tauri command". Call the generated bindings from `webview_execute_js` (recipe below).
 - **`webview_keyboard type` fails on CodeMirror** ("HTMLInputElement.value setter"). Use `webview_execute_js`: focus `.cm-content`, then `document.execCommand('insertText', false, text)`.
@@ -113,43 +113,44 @@ Pitfalls found on 2026-11-04:
 - **`webview_dom_snapshot` can fail with "aria-api library not loaded"** in a window whose bridge script was not (re)injected. Fall back to `webview_find_element` or `webview_execute_js` in that window.
 - **`webview_wait_for` stops at ~5 s** whatever `timeout` says ("Script execution timeout"). Call it again for longer waits.
 - Synthetic clicks have `event.detail === 0`; CodeMirror treats them as line-select clicks. Set the caret through `document.querySelector('.cm-content').cmTile.view`.
-- `strategy=text` can hit a hidden node (upstream note); prefer the snapshot `ref`.
-- Background windows throttle timers. Unfocused visible windows screenshotted fine; if a capture is black or a script times out, `manage_window action=focus`.
+- `strategy=text` can hit a hidden node; prefer the snapshot `ref`. For coordinates use the scale `webview_screenshot` prints, not upstream's fixed ×0.9.
+- Background windows throttle timers: `manage_window action=focus` before timing-sensitive steps (debounced LSP/VCS refreshes, `setTimeout` in scripts). Unfocused visible windows screenshot fine; focus if a capture is black.
 
 Recipes (dev build only, since Vite serves `/src/...`):
 
 - **Open a fixture project + file** (setup; the user path is Welcome → Open, a native dialog):
-  `webview_execute_js windowId=main script=import("/src/features/app/windows.ts").then(m => m.openProjectInWindow("/tmp/oi-verify/repo", true, ["/tmp/oi-verify/repo/app.txt"])).then(() => "ok")`.
+  `webview_execute_js windowId=main script=import("/src/features/app/windows.ts").then(m => m.openProjectInWindow("<S>/repo", true, ["<S>/repo/app.txt"])).then(() => "ok")`.
   A new `project-N` shows **"Trust and Open Project?"** for a path not trusted before: snapshot `[role=dialog]`, click the `Trust Project` ref. A path trusted in an earlier run opens without it (the dev data dir persists).
 - **Settings** through the same call the Settings page makes:
   `import("/src/bindings.ts").then(m => m.commands.settingsSet("global", "appearance.theme", JSON.stringify("dark"))).then(r => r.status)`.
-  Keys live in `src/platform/clientSettings.ts` / `workflowSettings.ts`. Restore them afterwards.
-- **Webview context menus** (gutter, project tree, tabs): `webview_interact action=right-click` on the element, then `action=click strategy=text selector=<item label>`.
+  Keys and defaults live in `src/features/settings/model/schema.ts` (appearance, general, files …) and `src/platform/workflowSettings.ts` (`vcs.*`). Restore them afterwards.
+- **Webview context menus** (gutter, project tree, tabs): `webview_interact action=right-click` on the element, then snapshot `[role=menu]` and click the item's `ref`.
 
 Prefer the user's real path for the behavior under test (click the menu item, not the store setter); internal imports are for setup.
 
 ## Launch
 
-From the repo (or worktree) root:
+From the repo (or worktree) root. `S` is this worktree's scratch directory, so parallel worktrees never share a log, fixture or evidence:
 
 ```bash
-PATH="$HOME/.cargo/bin:$PATH" CARGO_PROFILE_DEV_DEBUG=0 pnpm dev:app > /tmp/oi-dev.log 2>&1   # run_in_background
+S=/tmp/oi-verify/$(basename "$(git rev-parse --show-toplevel)"); mkdir -p "$S"
+PATH="$HOME/.cargo/bin:$PATH" CARGO_PROFILE_DEV_DEBUG=0 pnpm dev:app > "$S/dev.log" 2>&1   # run_in_background
 ```
 
 - The agent shell lacks `~/.cargo/bin`; without it the build dies at `cargo metadata`.
-- First build takes ~5–10 min. Wait in the background with `until pnpm -s dev:status >/dev/null 2>&1 || grep -q "^error" /tmp/oi-dev.log; do sleep 5; done` (the log's `Running` line carries color codes, so a plain grep for it can miss).
+- First build takes ~5–10 min. Wait in the background with `until pnpm -s dev:status >/dev/null 2>&1 || grep -q "^error" "$S/dev.log"; do sleep 5; done` (the log's `Running` line carries color codes, so a plain grep for it can miss).
 - Per-worktree identity `ai.l0ng.openidea.dev.w<hash>` with its own data dir `~/Library/Application Support/<identifier>/`; the installed OpenIDEA and its settings are untouched.
 - Vite hot-reloads frontend edits. Rust edits rebuild and restart the app, closing the windows you set up.
 - The Mac mini is short on disk: build locally only to touch the UI; Rust tests/clippy go through `rust-remote`.
 
 ## Doctor
 
-`pnpm -s dev:status`: healthy is JSON with `bridges[0].port` (9223+) whose `app.identifier` equals `identifier`. Exit 1 "No MCP bridge found" = still compiling, crashed (`/tmp/oi-dev.log`), or not running. `driver_session action=status` shows what Tauri MCP is connected to.
+`pnpm -s dev:status`: healthy is JSON with `bridges[0].port` (9223+) whose `app.identifier` equals `identifier`. Exit 1 "No MCP bridge found" = still compiling, crashed (`$S/dev.log`), or not running. `driver_session action=status` shows what Tauri MCP is connected to.
 
 ## Native AppKit
 
 - Window frames: `osascript -e 'tell application "System Events" to tell (first process whose unix id is <pid>) to get {position, size} of windows'`. Fullscreen should equal the screen (minus the notch safe area on notched displays).
-- Pixels: `screencapture -x /tmp/oi-verify/evidence/x.png`. Drags: `cliclick dd:x,y dm:x,y du:x,y` in screen points.
+- Pixels: `screencapture -x "$S/evidence/<task>/after-1.png"`. Drags: `cliclick dd:x,y dm:x,y du:x,y` in screen points.
 - Run against the `pnpm dev:app` process itself. A plain `cargo build` binary lacks `devUrl` (blank window), and copying the binary into a `.app` needs `codesign --force --sign -` (else POSIX 162) plus your own Vite; past wrappers cost more time than they saved.
 - AppKit view trees: lldb attach hangs (Developer mode off). Temporarily `eprintln!` `_subtreeDescription` behind an env var; remove before committing.
 - Private-API behavior (e.g. `_setTabBarAccessoryViewController:`) can only be judged live: AppKit re-applies state on its run loop. Recheck after a resize, a tab switch, entering and leaving fullscreen.
@@ -157,7 +158,7 @@ PATH="$HOME/.cargo/bin:$PATH" CARGO_PROFILE_DEV_DEBUG=0 pnpm dev:app > /tmp/oi-d
 
 ## Evidence
 
-Put proof in `/tmp/oi-verify/evidence/<task>/` (cleanup never deletes it):
+Put proof in `$S/evidence/<task>/` (cleanup never deletes it), named as upstream says (`before.png`, `after.png`, `after-N.png`). The baseline for `before.png` is `fork/develop` or the change stashed, not fork `main` (the last release):
 
 - Before/after screenshots plus the numbers that matter (computed colors, frames, text) as `.json`/`.txt`. Save a Tauri MCP screenshot with `filePath` when it must outlive the session.
 - Cover every entry the feature map lists for the feature, and light and dark themes for anything colored.
@@ -168,7 +169,7 @@ Put proof in `/tmp/oi-verify/evidence/<task>/` (cleanup never deletes it):
 
 1. Restore settings you changed through the same bindings call.
 2. Stop the `pnpm dev:app` you started (its background task or pid; never `pkill openidea`, the installed app has the same name).
-3. `rm -rf /tmp/oi-verify/repo*`; keep `/tmp/oi-verify/evidence`.
+3. `rm -rf "$S"/repo* "$S"/tabs`; keep `$S/evidence`.
 4. Free this worktree's build output. If `PATH="$HOME/.cargo/bin:$PATH" cargo -V` mentions `huacnlee` (the Mac mini), only `rm -rf ./target` if you need the space: that cargo keeps the real build output for every worktree of the repo under `~/.cargo/targets/` and trims it itself, and its `cargo clean` deletes that shared directory without a lock, breaking builds running in other worktrees. With a stock cargo, `cargo clean` in `src-tauri` (`target/` grows past 6 GB).
 
 ## Feature map
