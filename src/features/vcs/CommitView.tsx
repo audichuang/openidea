@@ -1001,6 +1001,8 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
             disabled={rollbackPaths?.length === 0}
             size="small"
           />
+          {/* IDEA's Commit view: Show Diff after Rollback. */}
+          {mode !== "dialog" && <IconButton icon="diff" action="vcs.showDiff" size="small" />}
           {mode === "local" && <IconButton icon="changelist" action="vcs.changelist.new" size="small" />}
           {mode !== "dialog" && <IconButton icon="shelve" action="vcs.shelveSilently" size="small" />}
           {mode !== "dialog" && staging && (
