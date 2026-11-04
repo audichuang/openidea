@@ -22,21 +22,21 @@ export function openPolicy(): "ask" | OpenMode {
 export async function chooseProjectWindow(name: string, allowAttach = true): Promise<OpenMode | null> {
   const { project, lightEdit } = useProject.getState();
   if (!project && !lightEdit) return "same";
+  // Attach and New Tab need a local project here and a local project to open: workspaces and
+  // saved tab groups hold local paths only.
   const canAttach = allowAttach && !!project && !isRemoteWindow();
-  // Project tabs group project windows; a LightEdit window opens the project in a new one.
-  const canTab = !!project || isRemoteWindow();
   const policy = openPolicy();
-  const mode = (policy === "attach" && !canAttach) || (policy === "tab" && !canTab) ? "ask" : policy;
+  const mode = (policy === "attach" && !canAttach) || (policy === "tab" && !canAttach) ? "ask" : policy;
   if (mode !== "ask") return mode;
   const r = await ask({
     title: t("app.window.askTitle"),
-    width: canAttach ? 720 : canTab ? 600 : undefined,
+    width: canAttach ? 720 : undefined,
     body: t("app.window.askBody", { name }),
     buttons: [
       { id: "cancel", label: t("common.cancel") },
       ...(canAttach ? [{ id: "attach", label: t("app.window.askAttach") }] : []),
       { id: "new", label: t("app.window.askNew") },
-      ...(canTab ? [{ id: "tab", label: t("app.window.askTab") }] : []),
+      ...(canAttach ? [{ id: "tab", label: t("app.window.askTab") }] : []),
       { id: "same", label: t("app.window.askThis"), primary: true },
     ],
     checkbox: t("app.window.askRemember"),
@@ -67,10 +67,8 @@ export async function openRemoteProject(
   if ((await call(commands.windowOpenRemote(target, path, false))).kind === "focused") return true;
   const mode = await chooseProjectWindow(path.replace(/\/+$/, "").split("/").pop() || path, false);
   if (!mode) return false;
-  if (mode === "new" || mode === "tab") {
-    await call(
-      mode === "tab" ? commands.windowOpenRemoteTab(target, path) : commands.windowOpenRemote(target, path, true),
-    );
+  if (mode === "new") {
+    await call(commands.windowOpenRemote(target, path, true));
     return true;
   }
   if (!(await confirmLeaveProject())) return false;
