@@ -732,11 +732,11 @@ pub fn create_restored_window(app: &AppHandle, project: PathBuf) -> IdeResult<We
     create_window_with(app, Some(project), Vec::new(), Tabbing::Never)
 }
 
-/// The project window a "New tab" open from window `caller` joins: its own (a settings window's
+/// The project window a "New tab" open from window `caller` joins: its own (an auxiliary window's
 /// parent), when it holds a local project (groups save local paths only); otherwise the project
 /// opens in a plain window.
 fn tab_anchor(app: &AppHandle, caller: &str) -> Option<WebviewWindow> {
-    let label = settings_parent(caller).unwrap_or(caller);
+    let label = auxiliary_parent(caller).unwrap_or(caller);
     app.state::<AppState>().opened_project(label).is_some().then(|| app.get_webview_window(label)).flatten()
 }
 
