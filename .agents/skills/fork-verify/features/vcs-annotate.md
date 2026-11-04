@@ -11,6 +11,7 @@
 - Right-click the editor line-number gutter → "Annotate with Git Blame".
 - Right-click a file in the Project tree → "Annotate with Git Blame" (`src/features/project-tree/contextMenu.ts`; exact submenu not yet driven).
 - VCS actions / Search Everywhere: "Annotate with Git Blame".
+- Click the author code vision hint above a declaration (the `user` icon lens, on by default via `codeVisionAuthor`; `src/editor/lsp/codeLens.ts`): toggles annotations for that file.
 
 ## Driving it with Tauri MCP
 
