@@ -37,6 +37,9 @@ CLAUDE.local.md
 .claude/skills/*
 !.claude/skills/verify
 !.claude/skills/issue-fix
+# Fork-only skills (see FORK.md).
+!.claude/skills/fork-verify
+!.claude/skills/openidea-fork-auto-rebase
 
 # Local reference screenshots
 pycharm-screenshots/
