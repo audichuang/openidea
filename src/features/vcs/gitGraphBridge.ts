@@ -26,6 +26,16 @@ export function retargetClipItems(items: MenuItem[], commits: GraphCommit[]): Me
   );
 }
 
+/** Go to Child / Parent move the Git Log's own selection; the graph links parents in its details. */
+const LOG_NAVIGATION = new Set(["vcs.log.goToChild", "vcs.log.goToParent"]);
+
+export function withoutLogNavigation(items: MenuItem[]): MenuItem[] {
+  return items.filter((i) => i.kind !== "action" || !LOG_NAVIGATION.has(i.action));
+}
+
+/** Matches no branch name (git refuses NUL in ref names). */
+const NO_REMOTES: ReadonlySet<string> = new Set(["\0"]);
+
 export function createGitGraphBridge(): GitGraphBridge {
   return {
     state() {
@@ -51,14 +61,17 @@ export function createGitGraphBridge(): GitGraphBridge {
     },
     laneColor,
     refLabels(refs, remoteBranches) {
-      return refLabels(refs, { compact: false, tagNames: true }, remoteBranches).map((l) => ({
+      // An empty set makes `refLabels` guess remotes from a `/` in the name (`feature/x`);
+      // the graph always knows the repository's remote branches, so never let it guess.
+      const remotes = remoteBranches.size ? remoteBranches : NO_REMOTES;
+      return refLabels(refs, { compact: false, tagNames: true }, remotes).map((l) => ({
         kind: l.kind,
         name: l.kind === "head" ? "HEAD" : l.title,
       }));
     },
     async commitMenu(commit, selection) {
       const { commitMenu } = await import("./GitLog");
-      return commitMenu(commit, selection);
+      return withoutLogNavigation(commitMenu(commit, selection));
     },
     async branchMenu(branch, repo) {
       const { branchMenu, inRepo } = await import("./branchMenu");
