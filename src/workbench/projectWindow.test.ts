@@ -40,7 +40,7 @@ it("does not attach without a project or when opening a remote project", async (
   });
   vi.mocked(ask).mockResolvedValue({ button: "cancel", checked: false });
   expect(await chooseProjectWindow("remote", false)).toBeNull();
-  expect(vi.mocked(ask).mock.calls[0]![0].buttons.map((b) => b.id)).not.toContain("attach");
+  expect(vi.mocked(ask).mock.calls[0]![0].buttons.map((b) => b.id)).toEqual(["cancel", "new", "same"]);
   useProject.setState({ project: null });
   expect(await chooseProjectWindow("B")).toBe("same");
 });
