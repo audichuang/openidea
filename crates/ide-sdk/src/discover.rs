@@ -737,7 +737,7 @@ mod maven_path_tests {
         assert_eq!(launch_path(&home).unwrap(), home);
         assert_eq!(launch_path(&launcher).unwrap(), launcher);
         assert_eq!(maven_home(&home, true), Some(home.clone()));
-        assert_eq!(maven_version(&home).as_deref(), Some("3.9.16"));
+        assert_eq!(maven_sdk(home.clone(), "path").version.as_deref(), Some("3.9.16"));
         let jdk = drive.root.join("jdk");
         std::fs::create_dir_all(jdk.join("bin")).unwrap();
         std::fs::write(jdk.join("bin/java.exe"), "").unwrap();
@@ -761,7 +761,7 @@ mod maven_path_tests {
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
         let launcher = launch_path(&drive.root.join("shims/mvn.cmd")).unwrap();
         assert_eq!(launcher, dunce::canonicalize(real.path().join("bin/mvn.cmd")).unwrap());
-        let home = launcher.parent().and_then(Path::parent).and_then(maven_home).unwrap();
+        let home = launcher.parent().and_then(Path::parent).and_then(|h| maven_home(h, true)).unwrap();
         assert_eq!(home, dunce::canonicalize(real.path()).unwrap());
     }
 }
