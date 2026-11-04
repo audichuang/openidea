@@ -6,6 +6,9 @@ This overrides the upstream guidance below (Issues & PRs, Parallel worktrees, `i
 branches from `fork/develop`, not `origin/main`, and pass `-R audichuang/openidea` to every `gh issue`
 and `gh pr` command, with PRs into `develop`. Never open an issue or PR on `l0ng-ai/openidea`.
 
+Where the machine's own agent rules say how to handle Cargo build output (for example a cargo that shares
+it across worktrees), follow them instead of the Cargo output-directory and cleanup advice in Parallel worktrees.
+
 Prove runtime behaviour with the `fork-verify` skill, which loads upstream `verify` as its base. A Tauri MCP
 event is not proof for ⌘V or other native-menu shortcuts, native menus, real clicks, hover, drags or
 AppKit chrome: those need the real OS input fork-verify describes.
