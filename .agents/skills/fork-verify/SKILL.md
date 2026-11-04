@@ -1,11 +1,31 @@
 ---
 name: fork-verify
-description: Fork supplement to the upstream `verify` skill for proving OpenIDEA changes on macOS. Tauri MCP (`mcp__tauri__*`) drives and asserts everything inside the webview; real OS input that synthetic events cannot reach (⌘V and other native-menu shortcuts, real clicks, hover, drags, native menus and dialogs) goes through osascript and cliclick against the same `pnpm dev:app` process, with screencapture for pixels and AppKit chrome (project window tabs, fullscreen). lcu is not needed for the dev build. Lists Tauri MCP pitfalls on this app and the fork feature map (Annotate colors, window groups, auto fetch, clipboard paste).
+description: Entry point for proving any OpenIDEA change in the running app in this fork (macOS); start here instead of the upstream `verify` skill, which it loads as its base. Tauri MCP (`mcp__tauri__*`) drives and asserts everything inside the webview; real OS input that synthetic events cannot reach (⌘V and other native-menu shortcuts, real clicks, hover, drags, native menus and dialogs) goes through osascript and cliclick against the same `pnpm dev:app` process, with screencapture for pixels and AppKit chrome (project window tabs, fullscreen). lcu is not needed for the dev build. Lists Tauri MCP pitfalls on this app and the fork feature map (Annotate colors, window groups, auto fetch, clipboard paste).
 ---
 
 # Verify OpenIDEA in the real app (fork, macOS)
 
 Upstream's `verify` skill (`.agents/skills/verify`) is the base: launch and session reuse, `mcp__tauri__*` basics, CodeMirror/xterm input quirks, `fixtures/`, evidence naming. Read it first. This skill adds when synthetic Tauri MCP input is not enough and how to send real OS input instead, what broke on this app, and the fork's feature map (`features/`).
+
+## Verify a change, in order
+
+1. **Pick a path for every case before launching.** List what the change touches and look each item up in the split table below. Webview-only cases use Tauri MCP; anything that starts in AppKit (native-menu shortcuts, native menus, real mouse, window chrome) uses real OS input. A case with no path is unverified, not passed.
+2. **Launch and connect** (Launch, Doctor): `pnpm dev:app` with `~/.cargo/bin` on `PATH`, wait for `pnpm dev:status`, then `driver_session start` on the reported port. Take window labels from `pnpm dev:status`, not `manage_window list`, and pass `appIdentifier` and `windowId` on every call. Reuse a running app only if it was built after your last Rust change.
+3. **Set up through Tauri MCP.** The app reopens the last projects on launch; open your own fixture with the `openProjectInWindow` recipe, trust it, and note any setting you change so you can restore it.
+4. **Act like a user.** For AppKit cases, `manage_window focus` the window, then send osascript or cliclick to this worktree's pid. Clipboard cases start with a fresh `pbcopy` sentinel from outside the app.
+5. **Assert on the result, not the action.** "Pressed key" or "Clicked" from a Tauri MCP tool proves nothing: read the document text, DOM or files through Tauri MCP. For system-level results (permission bubbles, dialogs, AppKit chrome) take `screencapture -x` and look at it.
+6. **Record and clean up** (Evidence, Cleanup).
+
+Before reporting PASS, check:
+
+- Every AppKit-path case was driven with osascript or cliclick. A Tauri MCP ⌘V reports success and pastes nothing.
+- Clipboard proof used a sentinel copied from outside OpenIDEA.
+- A `screencapture` was checked for a WebKit permission bubble or an unexpected dialog; Tauri MCP screenshots never show them.
+- The running binary was built after the last Rust change.
+- Light and dark themes were covered for anything colored.
+- Settings are restored, the app you started is stopped, `cargo clean` is done. Dialogs from other apps were left for the user.
+
+The pitfalls behind these rules are listed in "Tauri MCP on this app"; read them before the first call.
 
 ## The split: Tauri MCP for the webview, osascript/cliclick for real OS input
 
@@ -28,6 +48,9 @@ Tauri MCP events are synthetic (`isTrusted === false`, `event.detail === 0`) and
 | Tauri MCP `webview_keyboard press v modifiers=[Meta]` with a sentinel on the clipboard | Nothing pasted. ⌘V is the native Edit → Paste menu item (`src-tauri/src/menu.rs`), which a DOM event never reaches. |
 | `osascript` `keystroke "v" using command down` to the `pnpm dev:app` process           | Sentinel pasted, no WebKit "Paste" bubble (`screencapture`).                                                        |
 | `cliclick c:x,y` on a project tab, coordinates from Tauri MCP                          | Real click switched the focused window (`pnpm dev:status`).                                                         |
+| Tauri MCP click vs `cliclick c:x,y` on the same Project tree row                       | MCP: `isTrusted` false, `detail` 0, no `pointerdown`. cliclick: `isTrusted` true, `detail` 1, `pointerdown` fired.  |
+| Tauri MCP `webview_screenshot` vs `screencapture -x`                                   | MCP shows the webview only; system dialogs, notifications and the menu bar appear only in `screencapture`.          |
+| lcu `getApp` with the dev bundle id or the binary path                                 | `Invalid app`: lcu cannot attach to the plain `pnpm dev:app` process.                                               |
 
 | Situation                                                                             | Use                                                                                                 |
 | ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
@@ -46,7 +69,7 @@ Do not accept a Tauri MCP event as proof for rows 2–3.
 P=$(pgrep -f "^$(git rev-parse --show-toplevel)/target/debug/openidea" | head -1)   # this worktree's dev process
 # keystroke into the app (focus the right window first, see below)
 osascript -e "tell application \"System Events\"" -e "set frontmost of (first process whose unix id is $P) to true" -e "delay 0.5" -e "keystroke \"v\" using command down" -e "end tell"
-# native menu: list items, then `click menu item "<name>" of menu "<menu>" of menu bar 1` (click form not run yet)
+# native menu: list items, then `click menu item "<name>" of menu "<menu>" of menu bar 1` (verified: Edit → Paste pasted a sentinel)
 osascript -e "tell application \"System Events\" to tell (first process whose unix id is $P) to get name of menu items of menu \"Window\" of menu bar 1"
 # window frames (screen points)
 osascript -e "tell application \"System Events\" to tell (first process whose unix id is $P) to get {name, position, size} of windows"

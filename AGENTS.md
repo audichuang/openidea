@@ -6,6 +6,10 @@ This overrides the upstream guidance below (Issues & PRs, Parallel worktrees, `i
 branches from `fork/develop`, not `origin/main`, and pass `-R audichuang/openidea` to every `gh issue`
 and `gh pr` command, with PRs into `develop`. Never open an issue or PR on `l0ng-ai/openidea`.
 
+Prove runtime behaviour with the `fork-verify` skill, which loads upstream `verify` as its base. A Tauri MCP
+event is not proof for ⌘V or other native-menu shortcuts, native menus, real clicks, hover, drags or
+AppKit chrome: those need the real OS input fork-verify describes.
+
 # OpenIDEA — contributor guide
 
 Rust + Tauri 2 desktop IDE with full-featured, multi-language code intelligence.
