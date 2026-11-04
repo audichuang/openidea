@@ -1,4 +1,7 @@
 {
+  "Cannot delete": "无法删除",
+  "Delete \"{name}\"? Items are moved to the Trash.": "删除“{name}”？项目将移到废纸篓。",
+  "Delete {count} files? Items are moved to the Trash.": "删除 {count} 个文件？项目将移到废纸篓。",
   "Edit {name}": "编辑 {name}",
   "Whitespace-only changes": "仅空白字符更改",
   " · Whitespace-only changes": " · 仅空白字符更改",
