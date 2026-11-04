@@ -27,7 +27,8 @@ pub async fn window_open_project(
 }
 
 /// [`window_open_project`] into a new tab of this window's group ("Open project in: New tab");
-/// a plain new window when this window has no project.
+/// a plain new window when this window has no local project. Remote projects don't join tab
+/// groups: a group saves and restores local project paths only.
 #[tauri::command]
 #[specta::specta]
 pub async fn window_open_project_tab(
@@ -76,20 +77,7 @@ pub async fn window_open_remote(
     path: String,
     new_window: bool,
 ) -> IdeResult<OpenOutcome> {
-    let open_in = if new_window { OpenIn::NewWindow } else { OpenIn::Current };
-    windows::open_remote_window(&app, &target, &path, open_in)
-}
-
-/// [`window_open_remote`] into a new tab of this window's group.
-#[tauri::command]
-#[specta::specta]
-pub async fn window_open_remote_tab(
-    app: AppHandle,
-    window: WebviewWindow,
-    target: crate::remote_dev::RemoteTarget,
-    path: String,
-) -> IdeResult<OpenOutcome> {
-    windows::open_remote_window(&app, &target, &path, OpenIn::NewTab { caller: window.label() })
+    windows::open_remote_window(&app, &target, &path, new_window)
 }
 
 /// Opens an empty (welcome) window; returns its label.
