@@ -1015,6 +1015,21 @@ pub fn is_maven_project(root: &Path) -> bool {
     !top_level_poms(root).is_empty()
 }
 
+/// Whether `command` is the Maven Daemon (`mvnd`, `mvnd.cmd`, `C:\…\bin\mvnd.exe`).
+pub fn is_mvnd(command: &str) -> bool {
+    let name = command.rsplit(['/', '\\']).next().unwrap_or(command);
+    let stem = name.split_once('.').map_or(name, |(stem, _)| stem);
+    stem.eq_ignore_ascii_case("mvnd")
+}
+
+/// Options before the goals of a run whose log is parsed (sync's dependency trees,
+/// Build Project's compiler messages). The Maven Daemon builds modules in parallel and
+/// interleaves their lines, each prefixed with `[module]`; `-T1` keeps the serial log
+/// `mvn` writes. The daemon's warm JVM still makes it faster than `mvn`.
+pub(crate) fn parsed_log_options(command: &str) -> &'static [&'static str] {
+    if is_mvnd(command) { &["-T1"] } else { &[] }
+}
+
 /// The `mvnw` nearest to `dir`, looking up to `root`.
 fn wrapper(root: &Path, dir: &Path) -> String {
     let name = if cfg!(windows) { "mvnw.cmd" } else { "mvnw" };

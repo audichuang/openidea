@@ -51,6 +51,8 @@ describe("coverageSupports", () => {
     expect(coverageSupports(cfg("go", ["test", "./..."]))).toBe(true);
     expect(coverageSupports(cfg("go", ["run", "."]))).toBe(false);
     expect(coverageSupports(cfg("./mvnw", ["test", "-Dtest=A"]))).toBe(true);
+    expect(coverageSupports(cfg("C:\\mvnd\\bin\\mvnd.exe", ["test"]))).toBe(true);
+    expect(coverageSupports(cfg("/opt/mvnd/bin/mvnd", ["package"]))).toBe(false);
     expect(coverageSupports(cfg("gradlew.bat", [":app:test"]))).toBe(true);
     expect(coverageSupports(cfg("mvn", ["package"]))).toBe(false);
     expect(coverageSupports(cfg("pnpm", ["run", "test"], { isTest: true }))).toBe(true);

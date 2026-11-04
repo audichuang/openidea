@@ -1873,7 +1873,7 @@
   "Runs Maven with -o": "使用 -o 运行 Maven",
   "Runs Optimize Imports when the file has no errors, unless it would change the caret line.": "文件没有错误时运行“优化导入”，除非这会更改光标所在行。",
   "Runs npm scripts and Node-based language servers (vtsls, eslint, pyright…).": "运行 npm 脚本和基于 Node 的语言服务器（vtsls、eslint、pyright…）。",
-  "Runs sync, builds and Maven run configurations. A chosen home is used instead of the project's mvnw.": "用于同步、构建和 Maven 运行配置。选定后将代替项目的 mvnw。",
+  "Runs sync, builds and Maven run configurations. A chosen home is used instead of the project's mvnw; a Maven Daemon (mvnd) home runs mvnd.": "用于同步、构建和 Maven 运行配置。选定后将代替项目的 mvnw；选择 Maven Daemon (mvnd) 主目录时使用 mvnd。",
   "Runs the language server's Organize Imports action.": "运行语言服务器的“整理导入”操作。",
   "Runs the language server's formatter before an explicit save (Actions on Save).": "在显式保存前运行语言服务器的格式化程序（保存时操作）。",
   "Search history": "搜索历史",
