@@ -13,10 +13,16 @@ import {
 } from "@/workbench/gitGraphBridge";
 import { computeGraph, emptyGraphState, laneColor, type GraphState } from "./graph";
 import { openDiff, withChain } from "./diffInput";
+import { repositoryPath } from "./repositoryPaths";
 import { toLogChanges } from "./logChanges";
 import { refLabels } from "./logOptions";
-import { useVcs } from "./store";
+import { focusRepo, useVcs } from "./store";
+import { mergeIntoCurrent, rebaseOnto } from "./branchOps";
+import { applyStash, dropStash, showUnstashDialog } from "./changeOps";
+import { runOp } from "./ops";
+import { confirmDialog, promptText } from "./dialogs";
 import { call, commands } from "@/platform/ipc";
+import { getAction } from "@/platform/actions";
 
 /** The Git Log changes menu's ClipCode entry reads the log's selection; point it at the graph's. */
 export function retargetClipItems(items: MenuItem[], commits: GraphCommit[]): MenuItem[] {
@@ -90,6 +96,16 @@ export function applyPushGuard(
   });
 }
 
+/**
+ * `inRepo` turns action entries into plain ones labelled with the action id when they carry
+ * no label; give them the action's title first so the menu reads "ClipCode: …", not an id.
+ */
+export function withActionLabels(items: MenuItem[]): MenuItem[] {
+  return items.map((i) =>
+    i.kind === "action" && !i.label ? { ...i, label: getAction(i.action)?.title ?? i.action } : i,
+  );
+}
+
 /** Matches no branch name (git refuses NUL in ref names). */
 const NO_REMOTES: ReadonlySet<string> = new Set(["\0"]);
 
@@ -134,11 +150,11 @@ export function createGitGraphBridge(): GitGraphBridge {
     async branchMenu(branch, repo) {
       const { branchMenu, inRepo } = await import("./branchMenu");
       const current = useVcs.getState().heads[repo]?.head ?? null;
-      return inRepo(repo, branchMenu(branch, current));
+      return inRepo(repo, withActionLabels(branchMenu(branch, current)));
     },
     async tagMenu(tag, repo) {
       const { tagMenu, inRepo } = await import("./branchMenu");
-      return inRepo(repo, tagMenu(tag));
+      return inRepo(repo, withActionLabels(tagMenu(tag)));
     },
     async filesMenu(commit, files) {
       const { changesMenu } = await import("./GitLog");
@@ -148,6 +164,39 @@ export function createGitGraphBridge(): GitGraphBridge {
       const diffs = toLogChanges(files, commit, commit.repo).map((c) => c.diff);
       if (!diffs[index]) return;
       await openDiff(withChain(diffs, index), preview ? { preview: true, focus: false } : {});
+    },
+    async openRevisionFile(repo, rev, path) {
+      await openDiff({
+        path: repositoryPath(repo, path),
+        left: { type: "rev", rev, label: rev.slice(0, 8) },
+        right: { type: "worktree" },
+      });
+    },
+    stashMenu(index, message, repo) {
+      return [
+        { label: "Apply", run: () => void applyStash(index, false, repo) },
+        { label: "Pop", run: () => void applyStash(index, true, repo) },
+        { label: "Unstash…", run: () => showUnstashDialog(index, repo) },
+        { kind: "separator" },
+        { label: "Drop", danger: true, icon: "trash", run: () => void dropStash(index, message, repo) },
+      ];
+    },
+    async mergeIntoCurrent(branch, repo) {
+      await focusRepo(repo);
+      await mergeIntoCurrent(branch);
+    },
+    async rebaseCurrentOnto(branch, repo) {
+      await focusRepo(repo);
+      await rebaseOnto(branch);
+    },
+    runOp(title, fn, success) {
+      return runOp(title, fn, { success });
+    },
+    confirm(opts) {
+      return confirmDialog(opts);
+    },
+    async prompt(opts) {
+      return (await promptText(opts))?.value ?? null;
     },
   };
 }

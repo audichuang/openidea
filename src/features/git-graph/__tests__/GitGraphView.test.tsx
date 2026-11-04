@@ -15,6 +15,9 @@ const vcsLog = vi.fn();
 const vcsBranches = vi.fn();
 const vcsTags = vi.fn();
 const vcsCommitFiles = vi.fn();
+const graphStashes = vi.fn();
+const graphWorkingState = vi.fn();
+const popStash = vi.fn();
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
   return {
@@ -25,6 +28,13 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       vcsBranches: (repo: string) => vcsBranches(repo),
       vcsTags: (repo: string) => vcsTags(repo),
       vcsCommitFiles: (repo: string, id: string) => vcsCommitFiles(repo, id),
+      vcsRemotes: () => Promise.resolve({ status: "ok", data: [] }),
+      graphStashes: (repo: string) => graphStashes(repo),
+      graphWorkingState: (repo: string) => graphWorkingState(repo),
+      graphAuthorStats: () =>
+        Promise.resolve({ status: "ok", data: [{ name: "Ann", email: "ann@example.com", commits: 3 }] }),
+      graphBisectState: () =>
+        Promise.resolve({ status: "ok", data: { active: false, current: null, culprit: null, output: "" } }),
     },
   };
 });
@@ -93,6 +103,13 @@ const bridge = {
   tagMenu: vi.fn(async () => [{ label: "Tag Item" }] as MenuItem[]),
   filesMenu: vi.fn(async () => [{ label: "File Item" }] as MenuItem[]),
   openDiff: vi.fn(async () => {}),
+  openRevisionFile: vi.fn(async () => {}),
+  stashMenu: vi.fn(() => [{ label: "Apply" }, { label: "Pop", run: popStash }] as MenuItem[]),
+  mergeIntoCurrent: vi.fn(async () => {}),
+  rebaseCurrentOnto: vi.fn(async () => {}),
+  runOp: <T,>(_title: string, fn: () => Promise<T>): Promise<T | undefined> => fn(),
+  confirm: vi.fn(async () => true),
+  prompt: vi.fn(async () => null),
 } satisfies GitGraphBridge;
 
 let withdraw: () => void;
@@ -117,6 +134,8 @@ beforeEach(() => {
   );
   vcsTags.mockImplementation(() => ok(["v1"]));
   vcsCommitFiles.mockImplementation(() => ok([{ path: "src/app.ts", kind: "modified", oldPath: null }]));
+  graphStashes.mockImplementation(() => ok([]));
+  graphWorkingState.mockImplementation(() => ok({ staged: 0, unstaged: 0, untracked: 0, conflicted: 0 }));
   withdraw = provideGitGraphBridge(bridge);
   useGraphView.setState(initialGraphView());
 });
@@ -229,6 +248,46 @@ describe("Git Graph view", () => {
     await waitFor(() => expect(vcsLog).toHaveBeenCalledTimes(2));
     // The old graph stays while the new one loads.
     expect(screen.getByText("subject a")).toBeTruthy();
+  });
+});
+
+describe("Git Graph pseudo rows and panels", () => {
+  it("shows uncommitted changes above HEAD and opens its menu", async () => {
+    graphWorkingState.mockImplementation(() => ok({ staged: 1, unstaged: 2, untracked: 0, conflicted: 0 }));
+    render(<GitGraphEditor />);
+    await screen.findByText("Uncommitted Changes");
+    const row = document.querySelector<HTMLElement>('[data-entry="*working*"]')!;
+    expect(row.textContent).toContain("(3)");
+    fireEvent.click(row);
+    expect(await screen.findByText("Staged")).toBeTruthy();
+    fireEvent.contextMenu(row);
+    await waitFor(() =>
+      expect(showContextMenu).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.arrayContaining([expect.objectContaining({ kind: "action", action: "vcs.commit" })]),
+      ),
+    );
+  });
+
+  it("shows a stash above its base with apply and pop", async () => {
+    graphStashes.mockImplementation(() =>
+      ok([{ index: 0, id: "s".padEnd(40, "0"), base: "b".padEnd(40, "0"), message: "On main: wip", timeMs: 1 }]),
+    );
+    render(<GitGraphEditor />);
+    await screen.findByText("On main: wip");
+    const rows = within(screen.getByRole("grid", { name: "Commits" })).getAllByRole("row");
+    expect(rows.map((r) => r.textContent).findIndex((t) => t?.includes("On main: wip"))).toBe(1);
+    fireEvent.click(rowOf("On main: wip"));
+    fireEvent.click(await screen.findByRole("button", { name: "Pop" }));
+    expect(bridge.stashMenu).toHaveBeenCalledWith(0, "On main: wip", REPO);
+    expect(popStash).toHaveBeenCalled();
+  });
+
+  it("switches the bottom pane to statistics", async () => {
+    render(<GitGraphEditor />);
+    await screen.findByText("subject a");
+    fireEvent.click(screen.getByRole("tab", { name: "Statistics" }));
+    expect(await screen.findByText("Commits: 3, authors: 1")).toBeTruthy();
   });
 });
 
