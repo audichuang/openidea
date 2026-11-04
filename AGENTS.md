@@ -8,7 +8,8 @@ and `gh pr` command, with PRs into `develop`. Never open an issue or PR on `l0ng
 
 Where the machine's own agent rules say where to run Cargo or how to handle its build output, follow them
 instead of the Commands, Before opening a PR and Parallel worktrees advice below. On the Mac mini, Cargo checks
-and tests go to the ubuntu host through `rust-remote` (see `FORK.md`). If `PATH="$HOME/.cargo/bin:$PATH" cargo -V`
+and tests go to the ubuntu host through `rust-remote` (see `FORK.md`); that includes `pnpm gen:bindings`, which
+becomes `rust-remote --pull src/bindings.ts test -p openidea --test export_bindings`. If `PATH="$HOME/.cargo/bin:$PATH" cargo -V`
 mentions `huacnlee`, never run `cargo clean`: that cargo deletes the build directory every worktree of this
 repo shares, without a lock, and breaks builds running in other worktrees. Delete only `./target` instead.
 
