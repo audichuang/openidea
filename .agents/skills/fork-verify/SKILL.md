@@ -23,7 +23,7 @@ Before reporting PASS, check:
 - A `screencapture` was checked for a WebKit permission bubble or an unexpected dialog; Tauri MCP screenshots never show them.
 - The running binary was built after the last Rust change.
 - Light and dark themes were covered for anything colored.
-- Settings are restored, the app you started is stopped, `cargo clean` is done. Dialogs from other apps were left for the user.
+- Settings are restored, the app you started is stopped, build output is cleaned per Cleanup step 4. Dialogs from other apps were left for the user.
 
 The pitfalls behind these rules are listed in "Tauri MCP on this app"; read them before the first call.
 
@@ -169,7 +169,7 @@ Put proof in `/tmp/oi-verify/evidence/<task>/` (cleanup never deletes it):
 1. Restore settings you changed through the same bindings call.
 2. Stop the `pnpm dev:app` you started (its background task or pid; never `pkill openidea`, the installed app has the same name).
 3. `rm -rf /tmp/oi-verify/repo*`; keep `/tmp/oi-verify/evidence`.
-4. `cargo clean` in `src-tauri` (`target/` grows past 6 GB).
+4. `cargo clean` in `src-tauri` (`target/` grows past 6 GB). Skip this when `cargo -V` mentions `huacnlee`: that cargo shares build output across worktrees under `~/.cargo/targets/` and trims it itself, so cleaning only forces the next build to start cold.
 
 ## Feature map
 
