@@ -203,7 +203,7 @@ impl Repo {
         };
         let mut state = self.graph_bisect_state()?;
         state.output = out.stdout_str().trim().to_string();
-        state.culprit = first_bad_commit(&state.output);
+        state.culprit = state.culprit.or_else(|| first_bad_commit(&state.output));
         Ok(state)
     }
 
@@ -213,6 +213,10 @@ impl Repo {
         let log = run(root, &["rev-parse", "--git-path", "BISECT_LOG"], None)?.stdout_str();
         let log = root.join(log.trim());
         let active = log.is_file();
+        // git records the verdict in the log (`# first bad commit: [<sha>] subject`); its
+        // stdout wording changed across versions, the log line has not.
+        let culprit =
+            if active { std::fs::read_to_string(&log).ok().and_then(|text| first_bad_in_log(&text)) } else { None };
         let current = if active {
             run_raw(root, &["rev-parse", "HEAD"], None)?.stdout_str().trim().to_string()
         } else {
@@ -221,7 +225,7 @@ impl Repo {
         Ok(GraphBisectState {
             active,
             current: (!current.is_empty()).then_some(current),
-            culprit: None,
+            culprit,
             output: String::new(),
         })
     }
@@ -313,6 +317,14 @@ fn parse_ls_tree(text: &str) -> Vec<GraphTreeEntry> {
         .collect()
 }
 
+/// `# first bad commit: [<sha>] subject` in `BISECT_LOG`.
+fn first_bad_in_log(log: &str) -> Option<String> {
+    log.lines().rev().find_map(|l| {
+        let rest = l.strip_prefix("# first bad commit: [")?;
+        Some(rest.split(']').next()?.trim().to_string())
+    })
+}
+
 /// `<sha> is the first bad commit` in git's bisect output.
 fn first_bad_commit(output: &str) -> Option<String> {
     output.lines().find_map(|l| l.strip_suffix(" is the first bad commit").map(|id| id.trim().to_string()))
@@ -356,6 +368,13 @@ mod tests {
     fn finds_the_first_bad_commit() {
         assert_eq!(first_bad_commit("abc123 is the first bad commit\ncommit abc123\n"), Some("abc123".to_string()));
         assert_eq!(first_bad_commit("Bisecting: 1 revision left"), None);
+    }
+
+    #[test]
+    fn finds_the_first_bad_commit_in_the_log() {
+        let log = "git bisect start 'b' 'g'\n# bad: [abc] x\ngit bisect bad abc\n# first bad commit: [abc123] bug\n";
+        assert_eq!(first_bad_in_log(log), Some("abc123".to_string()));
+        assert_eq!(first_bad_in_log("git bisect start\n"), None);
     }
 
     #[test]
