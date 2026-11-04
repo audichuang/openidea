@@ -10,7 +10,13 @@ export interface GraphViewState {
   selection: { repo: string | null; ids: string[] };
   query: string;
   matchIndex: number;
+  /** The bottom pane's tab. */
+  panel: GraphPanel;
+  /** Revision the File Tree tab lists; null: the selected commit. */
+  treeRev: string | null;
 }
+
+export type GraphPanel = "details" | "tree" | "reflog" | "stats";
 
 export const initialGraphView = (): GraphViewState => ({
   repo: null,
@@ -19,6 +25,8 @@ export const initialGraphView = (): GraphViewState => ({
   selection: { repo: null, ids: [] },
   query: "",
   matchIndex: 0,
+  panel: "details",
+  treeRev: null,
 });
 
 export const useGraphView = create<GraphViewState>(initialGraphView);

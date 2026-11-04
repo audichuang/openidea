@@ -5,7 +5,8 @@
  */
 import { registerActions } from "@/platform/actions";
 import { lazyComponent } from "@/ui";
-import { editorService, registerEditorKind, type EditorInput } from "@/workbench/contributions";
+import { editorService, registerEditorKind, registerTitleItem, type EditorInput } from "@/workbench/contributions";
+import { GitGraphTitleItem } from "./TitleItem";
 
 export const GIT_GRAPH_KIND = "gitGraph";
 
@@ -21,6 +22,13 @@ export function activate(): () => void {
       title: () => "Git Graph",
       icon: () => "branch",
       restorable: true,
+    }),
+    registerTitleItem({
+      id: "gitGraph.open",
+      title: "Git Graph",
+      align: "right",
+      priority: -2,
+      component: GitGraphTitleItem,
     }),
     registerActions([
       {
