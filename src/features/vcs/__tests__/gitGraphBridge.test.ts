@@ -34,6 +34,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 import { gitGraphBridge, type GraphCommit } from "@/workbench/gitGraphBridge";
 import { activate, retargetClipItems } from "../gitGraphBridge";
 import { useVcs } from "../store";
+import { registerActions } from "@/platform/actions";
 
 const REPO = "/repo";
 
@@ -209,6 +210,22 @@ describe("git graph bridge", () => {
     expect(text).toMatch(/Merge 'feature' into 'main'/);
     expect(text).toMatch(/Rebase 'main' onto 'feature'/);
     expect(text).toContain("Delete");
+  });
+
+  it("labels every branch entry with a title, never an action id", async () => {
+    const off = registerActions([
+      { id: "clip.copyBranchSeries", title: "ClipCode: Copy Branch Commits", run: () => {} },
+      { id: "clip.copyBranchSeriesFull", title: "ClipCode: Copy Branch Commits (Entire History)", run: () => {} },
+    ]);
+    const items = await bridge().branchMenu(branch("feature"), REPO);
+    const text = labels(items);
+    expect(text).toContain("ClipCode: Copy Branch Commits");
+    expect(text.some((l) => /^[a-z]+\.[a-zA-Z.]+$/.test(l))).toBe(false);
+    off();
+  });
+
+  it("offers apply, pop, unstash and drop for a stash", () => {
+    expect(labels(bridge().stashMenu(0, "wip", REPO))).toEqual(["Apply", "Pop", "Unstash…", "Drop"]);
   });
 
   it("offers checkout and new branch for a tag", async () => {
