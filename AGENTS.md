@@ -11,7 +11,8 @@ This overrides the upstream guidance below (Issues & PRs, Parallel worktrees) an
 - Pass `-R audichuang/openidea` to every `gh issue` and `gh pr` command. Upstream `l0ng-ai/openidea` is read
   only: `gh issue view <n> -R l0ng-ai/openidea` is fine, opening issues or PRs there is not. Refer to an upstream
   issue as `l0ng-ai/openidea#<n>` with no closing keyword; `Closes #<n>` would close the fork's own #<n>.
-- PRs go into `develop`. Once Fork CI is green, merge your own PR (`FORK.md` Red lines; auto-merge is off).
+- PRs go into `develop`. Merge only when the user said to merge that work, after Fork CI is green; otherwise leave
+  the PR open (`FORK.md` Red lines; auto-merge is off).
 - The fork has no `planned` or `needs-decision` labels: ask the user about an unclear product call instead.
 
 Where the machine's own agent rules say where to run Cargo or how to handle its build output, follow them
