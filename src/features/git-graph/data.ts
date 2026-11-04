@@ -1,14 +1,8 @@
 /** Loading the graph: pages of commits of the chosen branches, laid out as they arrive. */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import type { Branch } from "@/bindings";
+import type { Branch, GraphStash, GraphWorkingState } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
-import {
-  gitGraphBridge,
-  type GitGraphRepoState,
-  type GraphCommit,
-  type GraphLaneRow,
-  type GraphLayoutState,
-} from "@/workbench/gitGraphBridge";
+import { gitGraphBridge, type GitGraphRepoState, type GraphCommit } from "@/workbench/gitGraphBridge";
 
 export const PAGE = 300;
 
@@ -23,9 +17,7 @@ interface Loaded {
   /** Repository and filters this state belongs to. */
   key: string;
   commits: GraphCommit[];
-  rows: GraphLaneRow[];
   branches: Branch[];
-  layout: GraphLayoutState | undefined;
   loading: boolean;
   done: boolean;
   error: string | null;
@@ -33,10 +25,7 @@ interface Loaded {
 
 export interface GraphData {
   commits: GraphCommit[];
-  rows: GraphLaneRow[];
   branches: Branch[];
-  /** Widest row of the loaded commits, in lanes. */
-  width: number;
   loading: boolean;
   done: boolean;
   error: string | null;
@@ -79,9 +68,7 @@ export function logBranches(filters: GraphFilters, branches: readonly Branch[]):
 const emptyLoaded = (key: string): Loaded => ({
   key,
   commits: [],
-  rows: [],
   branches: [],
-  layout: undefined,
   loading: true,
   done: false,
   error: null,
@@ -120,12 +107,9 @@ export function useGraphData(repo: string | null, filters: GraphFilters, version
         );
         if (latest.current !== loadingState) return;
         const tagged = page.map((c): GraphCommit => ({ ...c, repo }));
-        const laid = gitGraphBridge()?.layout(tagged, skip ? base.layout : undefined);
         const next: Loaded = {
           ...base,
           commits: skip ? [...base.commits, ...tagged] : tagged,
-          rows: skip ? [...base.rows, ...(laid?.rows ?? [])] : (laid?.rows ?? []),
-          layout: laid?.state,
           loading: false,
           done: page.length < PAGE,
           error: null,
@@ -188,9 +172,7 @@ export function useGraphData(repo: string | null, filters: GraphFilters, version
   const current = repo && loaded.key === key ? loaded : emptyLoaded(key);
   return {
     commits: current.commits,
-    rows: current.rows,
     branches: current.branches,
-    width: current.rows.reduce((m, r) => Math.max(m, r.width), 1),
     loading: !!repo && current.loading,
     done: !repo || current.done,
     error: current.error,
@@ -200,11 +182,12 @@ export function useGraphData(repo: string | null, filters: GraphFilters, version
 }
 
 /** Indexes of commits matching `query` (subject, message, author, email or hash prefix). */
-export function findMatches(commits: readonly GraphCommit[], query: string): number[] {
+export function findMatches(commits: readonly (GraphCommit | null)[], query: string): number[] {
   const q = query.trim().toLowerCase();
   if (!q) return [];
   const out: number[] = [];
   commits.forEach((c, i) => {
+    if (!c) return;
     if (
       c.id.startsWith(q) ||
       c.message.toLowerCase().includes(q) ||
@@ -214,4 +197,30 @@ export function findMatches(commits: readonly GraphCommit[], query: string): num
       out.push(i);
   });
   return out;
+}
+
+export interface GraphExtras {
+  stashes: GraphStash[];
+  working: GraphWorkingState | null;
+}
+
+const NO_EXTRAS: GraphExtras = { stashes: [], working: null };
+
+/** Stashes and the working tree's changes; refreshed on every vcs refresh (both are cheap). */
+export function useGraphExtras(repo: string | null, version: number): GraphExtras {
+  const [extras, setExtras] = useState<{ repo: string | null; value: GraphExtras }>({ repo: null, value: NO_EXTRAS });
+  useEffect(() => {
+    if (!repo) return;
+    let live = true;
+    void Promise.all([
+      call(commands.graphStashes(repo)).catch((): GraphStash[] => []),
+      call(commands.graphWorkingState(repo)).catch(() => null),
+    ]).then(([stashes, working]) => {
+      if (live) setExtras({ repo, value: { stashes, working } });
+    });
+    return () => {
+      live = false;
+    };
+  }, [repo, version]);
+  return extras.repo === repo ? extras.value : NO_EXTRAS;
 }
