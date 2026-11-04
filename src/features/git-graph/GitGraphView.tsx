@@ -24,27 +24,27 @@ import { gitGraphBridge, type GraphCommit, type GraphLaneRow, type GraphRefLabel
 import { findMatches, useGraphData, useRepoState, type GraphFilters } from "./data";
 import { GraphCell, LANE } from "./GraphCell";
 import styles from "./GitGraph.module.css";
+import { useGraphView } from "./viewState";
 
 export const ROW = 24;
 
 export function GitGraphEditor() {
   const repoState = useRepoState();
-  const [repo, setRepo] = useState<string | null>(null);
-  const activeRepo = repo && repoState.roots.includes(repo) ? repo : (repoState.repo ?? repoState.roots[0] ?? null);
-  const [branchFilter, setBranchFilter] = useState<string[]>([]);
-  const [showRemotes, setShowRemotes] = useState(true);
+  const view = useGraphView();
+  const set = useGraphView.setState;
+  const activeRepo =
+    view.repo && repoState.roots.includes(view.repo) ? view.repo : (repoState.repo ?? repoState.roots[0] ?? null);
+  const setRepo = (repo: string) => set({ repo });
+  const { branchFilter, showRemotes, query, matchIndex } = view;
+  const setBranchFilter = (branchFilter: string[]) => set({ branchFilter });
+  const setShowRemotes = (showRemotes: boolean) => set({ showRemotes });
   const filters = useMemo<GraphFilters>(() => ({ branches: branchFilter, showRemotes }), [branchFilter, showRemotes]);
   const data = useGraphData(activeRepo, filters, repoState.version);
-  const [selection, setSelection] = useState<{ repo: string | null; ids: string[] }>({ repo: null, ids: [] });
-  const selected = selection.repo === activeRepo ? selection.ids : [];
-  const setSelected = (ids: string[]) => setSelection({ repo: activeRepo, ids });
-  const [query, setQueryText] = useState("");
+  const selected = view.selection.repo === activeRepo ? view.selection.ids : [];
+  const setSelected = (ids: string[]) => set({ selection: { repo: activeRepo, ids } });
   const matches = useMemo(() => findMatches(data.commits, query), [data.commits, query]);
-  const [matchIndex, setMatchIndex] = useState(0);
-  const setQuery = (q: string) => {
-    setQueryText(q);
-    setMatchIndex(0);
-  };
+  const setMatchIndex = (matchIndex: number) => set({ matchIndex });
+  const setQuery = (q: string) => set({ query: q, matchIndex: 0 });
   const head = activeRepo ? (repoState.heads[activeRepo] ?? null) : null;
   const remoteBranches = useMemo(
     () => new Set(data.branches.filter((b) => b.remote).map((b) => b.name)),
@@ -503,10 +503,7 @@ function RefPills(p: {
           onClick={(e) => void open(e, l)}
           onContextMenu={(e) => void open(e, l)}
         >
-          <Icon
-            name={l.kind === "tag" ? "tag" : l.kind === "remote" ? "branch-label" : "current-branch-label"}
-            size={12}
-          />
+          <Icon name={l.kind === "tag" ? "tag" : l.kind === "head" ? "current-branch" : "branch"} size={12} />
           <span>{l.name}</span>
         </button>
       ))}
