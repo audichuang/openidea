@@ -1,21 +1,33 @@
 # Agent notes (fork)
 
-This is a personal fork. Before rebasing onto upstream, merging into `develop`, or releasing, read `FORK.md`: branch model, merge gate, platform scope, conflict rules and the release flow.
+This is a personal fork. Read `FORK.md` before changing a fork feature or anything ClipCode touches (platform
+scope: macOS, Windows and Linux; a ClipCode format change goes to the user), and before rebasing, merging into
+`develop`, or releasing.
 
-This overrides the upstream guidance below (Issues & PRs, Parallel worktrees, `issue-fix`): cut work
-branches from `fork/develop`, not `origin/main`, and pass `-R audichuang/openidea` to every `gh issue`
-and `gh pr` command, with PRs into `develop`. Never open an issue or PR on `l0ng-ai/openidea`.
+This overrides the upstream guidance below (Issues & PRs, Parallel worktrees) and the `issue-fix` skill:
+
+- Cut work branches from `fork/develop`, not `origin/main`, and not with the `rebase/` or `ci-base/` prefix.
+  After a rebase moved `develop`, update a branch with `git rebase --onto` as `FORK.md` describes.
+- Pass `-R audichuang/openidea` to every `gh issue` and `gh pr` command. Upstream `l0ng-ai/openidea` is read
+  only: `gh issue view <n> -R l0ng-ai/openidea` is fine, opening issues or PRs there is not. Refer to an upstream
+  issue as `l0ng-ai/openidea#<n>` with no closing keyword; `Closes #<n>` would close the fork's own #<n>.
+- PRs go into `develop`. Once Fork CI is green, merge your own PR (`FORK.md` Red lines; auto-merge is off).
+- The fork has no `planned` or `needs-decision` labels: ask the user about an unclear product call instead.
 
 Where the machine's own agent rules say where to run Cargo or how to handle its build output, follow them
-instead of the Commands, Before opening a PR and Parallel worktrees advice below. On the Mac mini, Cargo checks
-and tests go to the ubuntu host through `rust-remote` (see `FORK.md`); that includes `pnpm gen:bindings`, which
-becomes `rust-remote --pull src/bindings.ts test -p openidea --test export_bindings`. If `PATH="$HOME/.cargo/bin:$PATH" cargo -V`
-mentions `huacnlee`, never run `cargo clean`: that cargo deletes the build directory every worktree of this
-repo shares, without a lock, and breaks builds running in other worktrees. Delete only `./target` instead.
+instead of any Cargo advice below or in a skill. On the Mac mini, Cargo builds, checks and tests go to the
+ubuntu host through `rust-remote`; nextest runs as `rust-remote nextest run --workspace --profile ubuntu-remote`
+(the profile skips tests that fail there for environment reasons), and `pnpm gen:bindings` becomes
+`rust-remote --pull src/bindings.ts test -p openidea --test export_bindings`. `cargo fmt --all` rewrites files
+and `rust-remote` brings no sources back, so run it locally; only `fmt --all --check` goes remote.
+If `PATH="$HOME/.cargo/bin:$PATH" cargo -V` mentions `huacnlee`, never run `cargo clean`: that cargo deletes the
+build directory every worktree of this repo shares, without a lock, and breaks builds running in other
+worktrees. Delete only `./target` instead.
 
-Prove runtime behaviour with the `fork-verify` skill, which loads upstream `verify` as its base. A Tauri MCP
-event is not proof for ⌘V or other native-menu shortcuts, native menus, real clicks, hover, drags or
-AppKit chrome: those need the real OS input fork-verify describes.
+Prove runtime behaviour with the `fork-verify` skill wherever this file or a skill says `verify` or `/verify`;
+it loads upstream `verify` as its base. A Tauri MCP event is not proof for ⌘V or other native-menu shortcuts,
+native menus, real clicks, hover, drags or AppKit chrome: those need the real OS input fork-verify describes
+(osascript/cliclick on the dev process), which replaces the Computer Use fallback in the GUI-verification rule below.
 
 # OpenIDEA — contributor guide
 
