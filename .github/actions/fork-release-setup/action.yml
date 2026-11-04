@@ -1,0 +1,60 @@
+name: Fork release build setup
+description: >-
+  Toolchains, the Rust dependency cache and node_modules for a fork release build. The cache-warming
+  job and the release build both use this, so their rust-cache keys (job-free shared key, same
+  CARGO_*/RUST* env, same CARGO_HOME) match and a tag build restores what develop saved.
+inputs:
+  target:
+    description: Rust target triple.
+    required: true
+  save-cache:
+    description: Whether to save the Rust cache (only the develop warm job does).
+    default: "false"
+runs:
+  using: composite
+  steps:
+    # Why: NTFS plus Defender scanning is the slowest part of a Windows Rust build. Measured on the
+    # thin-LTO release build (one run each): stock 45 min, Defender off 30.5, Defender off plus a
+    # trusted ReFS Dev Drive holding the workspace, cargo and rustup 27.2; rust-lld on top was
+    # slower (41.9), so link.exe stays. Later steps run in $WORK: the Dev Drive copy on Windows,
+    # the checkout elsewhere.
+    - name: Disable Defender real-time scanning (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: Set-MpPreference -DisableRealtimeMonitoring $true
+    - name: Dev Drive (Windows)
+      if: runner.os == 'Windows'
+      uses: samypr100/setup-dev-drive@v4
+      with:
+        drive-size: 60GB
+        workspace-copy: true
+        trusted-dev-drive: true
+        env-mapping: |
+          CARGO_HOME,{{ DEV_DRIVE }}/.cargo
+          RUSTUP_HOME,{{ DEV_DRIVE }}/.rustup
+    - name: Pick the work directory
+      shell: bash
+      run: echo "WORK=${DEV_DRIVE_WORKSPACE:-$GITHUB_WORKSPACE}" >> "$GITHUB_ENV"
+    - uses: pnpm/action-setup@v4
+      with: { version: 11 }
+    # Why no pnpm cache on Windows: pnpm installs on the Dev Drive, so the store setup-node
+    # recorded on C: never exists and its post step fails the job.
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 22
+        cache: ${{ runner.os != 'Windows' && 'pnpm' || '' }}
+    - uses: dtolnay/rust-toolchain@stable
+      with: { targets: "${{ inputs.target }}" }
+    # Dependencies only (rust-cache drops workspace crates). Saved by develop, restored by tags:
+    # a tag run can read caches saved on the default branch.
+    - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: fork-release-${{ inputs.target }}
+        workspaces: ${{ env.WORK }}
+        save-if: ${{ inputs.save-cache }}
+        # The deps are the point; a failing final link must not discard them.
+        cache-on-failure: true
+    - name: pnpm install
+      shell: bash
+      working-directory: ${{ env.WORK }}
+      run: pnpm install --frozen-lockfile
