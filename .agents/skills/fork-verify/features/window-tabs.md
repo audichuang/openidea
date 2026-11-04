@@ -2,14 +2,14 @@
 
 ## Sub-features
 
-- Projects opened "in the same window" join a native NSWindow tab group; OpenIDEA hides AppKit's tab bar and draws its own tab row **below the main toolbar** (IntelliJ layout) in both windowed and fullscreen mode (`src-tauri/src/macos.rs`, `src/workbench/WindowGroupTabs.tsx`).
+- Projects opened with **New Tab** (Open project dialog button, or "Open project in: New tab") join the current window's group on every platform; the macOS "Prefer tabs" system preference is not consulted. On macOS a group is a native NSWindow tab group; OpenIDEA hides AppKit's tab bar and draws its own tab row **below the main toolbar** (IntelliJ layout) in both windowed and fullscreen mode (`src-tauri/src/macos.rs`, `src/workbench/WindowGroupTabs.tsx`).
 - Switch tab, close on hover, drag to reorder, "Move Tab to New Window".
 - Tab context menu: Close Tab, Close Other Tabs, Close Tabs to the Left/Right (upstream v0.1.35, `close_tabs` in `src-tauri/src/window_groups.rs`). Tabs close one at a time, each project showing its own unsaved-changes prompt in turn; Cancel stops the rest of the batch, Don't Save continues; the right-clicked tab ends selected. Left/Right are disabled on the first/last tab.
 - Joining a group while it is fullscreen: the new tab must fill the screen (minus the notch safe area).
 
 ## How to get to it (user POV)
 
-Open two project windows (Open → "New Window" in the "Open project" dialog), then **Window → Merge All Project Windows** (native menu bar; drive it with osascript `click menu item "Merge All Project Windows" of menu "Window" of menu bar 1`). Switch tabs by clicking or ⌥⌘PageDown/PageUp; drag to reorder; tab close button; **Move Tab to New Window**. Fullscreen with the green traffic light or ⌃⌘F. Groups restore on restart when "Reopen last project" is on (`docs/workspaces-and-window-groups.md`).
+With a project open, open another and pick **New Tab** in the "Open project" dialog (`openProjectWithPolicy` from `src/features/app/windows.ts`; the dialog's buttons are webview DOM). Or open two project windows ("New Window"), then **Window → Merge All Project Windows** (native menu bar; drive it with osascript `click menu item "Merge All Project Windows" of menu "Window" of menu bar 1`). Switch tabs by clicking or ⌥⌘PageDown/PageUp; drag to reorder; tab close button; **Move Tab to New Window**. Fullscreen with the green traffic light or ⌃⌘F. Groups restore on restart when "Reopen last project" is on (`docs/workspaces-and-window-groups.md`).
 
 ## Driving it with native tools (+ Tauri MCP for the tab row DOM)
 
