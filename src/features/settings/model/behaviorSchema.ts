@@ -10,7 +10,7 @@ import { ZOOM_LIMITS } from "@/platform/zoom";
 import { validateIconThemeOptionsMap } from "@/platform/iconThemeOptions";
 
 export type Antialiasing = "subpixel" | "greyscale" | "none";
-export type OpenProjectIn = "ask" | "new" | "same" | "attach";
+export type OpenProjectIn = "ask" | "new" | "tab" | "same" | "attach";
 export type NotificationDisplay = "balloon" | "sticky" | "none";
 /** Themes selectable as "preferred" when syncing with the OS. */
 export type ConcreteTheme = ThemeChoiceId;
@@ -159,7 +159,7 @@ export function validateGeneralExtras(raw: unknown): GeneralExtras {
   const d = DEFAULT_GENERAL_EXTRAS;
   const df = obj(g.dateFormat);
   return {
-    openProjectIn: oneOf(g.openProjectIn, ["ask", "new", "same", "attach"] as const, d.openProjectIn),
+    openProjectIn: oneOf(g.openProjectIn, ["ask", "new", "tab", "same", "attach"] as const, d.openProjectIn),
     defaultProjectDirectory: typeof g.defaultProjectDirectory === "string" ? g.defaultProjectDirectory : "",
     saveOnIdle: bool(g.saveOnIdle, d.saveOnIdle),
     idleSeconds: int(g.idleSeconds, d.idleSeconds, IDLE_LIMITS),
