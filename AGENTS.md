@@ -6,8 +6,11 @@ This overrides the upstream guidance below (Issues & PRs, Parallel worktrees, `i
 branches from `fork/develop`, not `origin/main`, and pass `-R audichuang/openidea` to every `gh issue`
 and `gh pr` command, with PRs into `develop`. Never open an issue or PR on `l0ng-ai/openidea`.
 
-Where the machine's own agent rules say how to handle Cargo build output (for example a cargo that shares
-it across worktrees), follow them instead of the Cargo output-directory and cleanup advice in Parallel worktrees.
+Where the machine's own agent rules say where to run Cargo or how to handle its build output, follow them
+instead of the Commands, Before opening a PR and Parallel worktrees advice below. On the Mac mini, Cargo checks
+and tests go to the ubuntu host through `rust-remote` (see `FORK.md`). If `PATH="$HOME/.cargo/bin:$PATH" cargo -V`
+mentions `huacnlee`, never run `cargo clean`: that cargo deletes the build directory every worktree of this
+repo shares, without a lock, and breaks builds running in other worktrees. Delete only `./target` instead.
 
 Prove runtime behaviour with the `fork-verify` skill, which loads upstream `verify` as its base. A Tauri MCP
 event is not proof for ⌘V or other native-menu shortcuts, native menus, real clicks, hover, drags or
