@@ -4,6 +4,7 @@ import type { FileStatus, PartialCommitFile, Stash } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { Checkbox, Dialog, Icon, Input, T, fileIconName } from "@/ui";
 import { notifications } from "@/workbench/contributions";
+import { notifyFileOperation } from "@/platform/fileOps";
 import { commitRepos, groupOf, planCommit, renamedFromPath } from "./changes";
 import { useChangelists, withListDefaults } from "./changelists";
 import { runCommitChecks } from "./commitChecks";
@@ -301,6 +302,46 @@ export async function addToVcs(paths: readonly string[]) {
   await runOp(`Add ${targets.length} file${targets.length === 1 ? "" : "s"} to Git`, () =>
     call(commands.vcsStage(targets.map(stripSlash))),
   );
+}
+
+/**
+ * What IDEA's Delete in the Commit view removes from disk: the selected paths that still
+ * exist (a deleted file has nothing left), without the ones inside another selected folder.
+ */
+export function deleteTargets(paths: readonly string[], status: readonly FileStatus[]): string[] {
+  const gone = new Set(status.filter((f) => effectiveKind(f) === "deleted").map((f) => stripSlash(f.path)));
+  const all = [...new Set(paths.map(stripSlash))].filter((p) => p && !gone.has(p));
+  return all.filter((p) => !all.some((q) => q !== p && p.startsWith(`${q}/`)));
+}
+
+/** Moves the selected files to the Trash, after a confirmation (unversioned ones, typically). */
+export async function deleteLocalFiles(paths: readonly string[]) {
+  const targets = deleteTargets(paths, useVcs.getState().status);
+  if (!targets.length) return;
+  const name = baseName(targets[0]!);
+  const count = targets.length;
+  const ok = await confirmDialog({
+    title: "Delete",
+    message:
+      count === 1
+        ? tx`Delete "${name}"? Items are moved to the Trash.`
+        : tx`Delete ${count} files? Items are moved to the Trash.`,
+    okLabel: "Delete",
+    danger: true,
+  });
+  if (!ok) return;
+  const errors: string[] = [];
+  for (const p of targets) {
+    try {
+      await call(commands.fsDelete(p));
+    } catch (e) {
+      errors.push(`${baseName(p)}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  notifyFileOperation({ kind: "deleted", paths: targets });
+  if (errors.length)
+    notifications().notify({ group: "vcs", level: "error", title: "Cannot delete", body: errors.join("\n") });
+  await refreshNow();
 }
 
 /** Stash Changes dialog: message, Keep index (staged changes stay), include untracked files. */
