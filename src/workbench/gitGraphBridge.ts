@@ -73,6 +73,23 @@ export interface GitGraphBridge {
   filesMenu(commit: GraphCommit, files: ChangedFile[]): Promise<MenuItem[]>;
   /** Opens the diff of `files[index]` with the others chained (F7 moves along). */
   openDiff(commit: GraphCommit, files: ChangedFile[], index: number, preview?: boolean): Promise<void>;
+  /** `path` (repository-relative) at `rev` compared with the working file. */
+  openRevisionFile(repo: string, rev: string, path: string): Promise<void>;
+  /** Unstash Changes entries for `stash@{index}` of `repo` (apply, pop, the dialog, drop). */
+  stashMenu(index: number, message: string, repo: string): MenuItem[];
+  /** Merges `branch` into `repo`'s current branch, with the vcs feature's conflict handling. */
+  mergeIntoCurrent(branch: string, repo: string): Promise<void>;
+  /** Rebases `repo`'s current branch onto `branch` (a branch, tag or commit id). */
+  rebaseCurrentOnto(branch: string, repo: string): Promise<void>;
+  /**
+   * Runs a git operation with the vcs feature's console log, notifications and refresh
+   * afterwards; resolves to undefined when it failed (already reported).
+   */
+  runOp<T>(title: string, fn: () => Promise<T>, success?: string): Promise<T | undefined>;
+  /** The vcs feature's confirmation dialog. */
+  confirm(opts: { title: string; message: string; okLabel?: string; danger?: boolean }): Promise<boolean>;
+  /** The vcs feature's one-field prompt; null when cancelled. */
+  prompt(opts: { title: string; label: string; initial?: string; okLabel?: string }): Promise<string | null>;
 }
 
 let bridge: GitGraphBridge | null = null;
