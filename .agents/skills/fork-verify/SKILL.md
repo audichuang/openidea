@@ -137,6 +137,8 @@ S=/tmp/oi-verify/$(basename "$(git rev-parse --show-toplevel)"); mkdir -p "$S"
 PATH="$HOME/.cargo/bin:$PATH" CARGO_PROFILE_DEV_DEBUG=0 pnpm dev:app > "$S/dev.log" 2>&1   # run_in_background
 ```
 
+Shell state does not carry over between Bash calls: start every call that uses `$S` (fixture scripts in `features/` included) with the same `S=…` line, and `mkdir -p "$S/evidence/<task>"` before the first `screencapture`.
+
 - The agent shell lacks `~/.cargo/bin`; without it the build dies at `cargo metadata`.
 - First build takes ~5–10 min. Wait in the background with `until pnpm -s dev:status >/dev/null 2>&1 || grep -q "^error" "$S/dev.log"; do sleep 5; done` (the log's `Running` line carries color codes, so a plain grep for it can miss).
 - Per-worktree identity `ai.l0ng.openidea.dev.w<hash>` with its own data dir `~/Library/Application Support/<identifier>/`; the installed OpenIDEA and its settings are untouched.
