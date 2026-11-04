@@ -409,6 +409,7 @@ function ToolWindowsGrid() {
 
 const OPEN_IN: Array<{ value: OpenProjectIn; label: string }> = [
   { value: "new", label: "New window" },
+  { value: "tab", label: "New tab" },
   { value: "same", label: "Current window" },
   { value: "ask", label: "Ask" },
 ];

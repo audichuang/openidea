@@ -3,29 +3,6 @@ use ide_core::{IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Platform adapters supply the system's tab preference and active project state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TabbingPreference {
-    Always,
-    InFullScreen,
-    Manually,
-}
-
-pub fn should_group_new_project(
-    preference: TabbingPreference,
-    fullscreen: bool,
-    active_project: bool,
-    light_edit: bool,
-) -> bool {
-    active_project
-        && !light_edit
-        && match preference {
-            TabbingPreference::Always => true,
-            TabbingPreference::InFullScreen => fullscreen,
-            TabbingPreference::Manually => false,
-        }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowGroup {
     pub members: Vec<String>,
@@ -215,28 +192,6 @@ mod tests {
     use super::*;
     fn members(values: &[&str]) -> Vec<String> {
         values.iter().map(|s| (*s).into()).collect()
-    }
-
-    #[test]
-    fn new_project_grouping_follows_system_preference_and_excludes_light_edit() {
-        for preference in [TabbingPreference::Always, TabbingPreference::InFullScreen, TabbingPreference::Manually] {
-            for fullscreen in [false, true] {
-                for active_project in [false, true] {
-                    for light_edit in [false, true] {
-                        let expected = matches!(
-                            (preference, fullscreen, active_project, light_edit),
-                            (TabbingPreference::Always, _, true, false)
-                                | (TabbingPreference::InFullScreen, true, true, false)
-                        );
-                        assert_eq!(
-                            should_group_new_project(preference, fullscreen, active_project, light_edit),
-                            expected,
-                            "{preference:?}, fullscreen={fullscreen}, active={active_project}, light={light_edit}"
-                        );
-                    }
-                }
-            }
-        }
     }
 
     #[test]
