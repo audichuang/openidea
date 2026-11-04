@@ -19,6 +19,7 @@ pub mod doc;
 pub mod docker;
 pub mod file_dialog;
 pub mod fonts;
+pub mod fork_graph;
 pub mod fs;
 pub mod github;
 pub mod hotkeys;
