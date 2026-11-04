@@ -358,3 +358,153 @@
 .kind_renamed {
   color: var(--accent);
 }
+
+/* pseudo rows, drops */
+.pseudo .subject {
+  font-style: italic;
+  color: var(--fg-secondary);
+}
+.dropTarget {
+  outline: 1px dashed var(--accent);
+  outline-offset: -1px;
+}
+.refStash {
+  --ref-color: var(--syn-number);
+  cursor: default;
+}
+.dim {
+  color: var(--fg-subtle);
+}
+
+/* bottom pane */
+.bottom {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-top: 1px solid var(--border);
+}
+.bottom .details {
+  border-top: none;
+}
+.paneTabs {
+  display: flex;
+  gap: 2px;
+  padding: 2px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.paneTab {
+  height: var(--h-control-small);
+  padding: 0 10px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--fg-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+.paneTab:hover {
+  background: var(--bg-toolbar-hover);
+}
+.paneTabActive {
+  color: var(--fg);
+  background: var(--bg-toolbar-selected);
+}
+.paneBody {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.paneBody > * {
+  flex: 1;
+  min-height: 0;
+}
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+/* tables (reflog, statistics, file tree) */
+.table {
+  overflow: auto;
+  padding: 4px 0;
+}
+.tableHeader {
+  padding: 4px 12px;
+  color: var(--fg-subtle);
+}
+.tableRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: var(--h-list-row);
+  padding: 0 12px;
+  white-space: nowrap;
+  cursor: default;
+  outline: none;
+}
+.tableRow:hover,
+.tableRow:focus {
+  background: var(--bg-tree-hover);
+}
+.grow {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.statName {
+  flex: none;
+  width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.statBar {
+  flex: 1;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--bg-progress-track);
+  overflow: hidden;
+}
+.statFill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+.statCount {
+  flex: none;
+  width: 48px;
+  text-align: right;
+  font-family: var(--font-mono);
+}
+.treePanel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.treeBar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* bisect */
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border-feedback-warning);
+  background: var(--bg-feedback-warning);
+}
+.bannerDone {
+  border-bottom-color: var(--border-feedback-success);
+  background: var(--bg-feedback-success);
+}
