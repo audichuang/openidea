@@ -765,7 +765,8 @@ export const commands = {
 	windowOpenProject: (path: string, newWindow: boolean, files: string[]) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_project", { path, newWindow, files })),
 	/**
 	 *  [`window_open_project`] into a new tab of this window's group ("Open project in: New tab");
-	 *  a plain new window when this window has no project.
+	 *  a plain new window when this window has no local project. Remote projects don't join tab
+	 *  groups: a group saves and restores local project paths only.
 	 */
 	windowOpenProjectTab: (path: string, files: string[]) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_project_tab", { path, files })),
 	/**
@@ -786,8 +787,6 @@ export const commands = {
 	 *  `ssh_config` (Remote Development); a new window connects itself.
 	 */
 	windowOpenRemote: (sshConfig: string, path: string, newWindow: boolean) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_remote", { sshConfig, path, newWindow })),
-	/**  [`window_open_remote`] into a new tab of this window's group. */
-	windowOpenRemoteTab: (sshConfig: string, path: string) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_remote_tab", { sshConfig, path })),
 	/**  Opens an empty (welcome) window; returns its label. */
 	windowNew: () => typedError<string, IdeError>(__TAURI_INVOKE("window_new")),
 	/**
