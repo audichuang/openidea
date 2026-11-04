@@ -55,7 +55,7 @@ import { pushAfterCommit } from "./commitUi";
 import { stashTabOf, stashTabs, type ContentTab } from "./gitTabs";
 import { diffInput, openDiff, withChain, workingDiffData } from "./diffInput";
 import { DiffEditor } from "./DiffEditor";
-import { KIND_COLOR, KIND_LABEL, fileCount, formatTime, stashLabel, stripSlash } from "./model";
+import { KIND_COLOR, KIND_LABEL, effectiveKind, fileCount, formatTime, stashLabel, stripSlash } from "./model";
 import { call, commands } from "@/platform/ipc";
 import type { FileStatus } from "@/bindings";
 import { OperationBanner } from "./operations";
@@ -258,6 +258,13 @@ function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuItem[] {
   if (conflicted.length) items.push({ kind: "action", action: "vcs.resolveConflicts", label: "Resolve Conflicts…" });
   items.push(
     { kind: "action", action: "vcs.rollback", arg: paths, label: "Rollback…" },
+    {
+      kind: "action",
+      action: "vcs.delete",
+      arg: paths,
+      // A deleted file has nothing left on disk to remove.
+      disabled: !files.some((f) => effectiveKind(f) !== "deleted"),
+    },
     ...(untracked.length
       ? [{ kind: "action" as const, action: "vcs.addToVcs", arg: untracked.map((f) => f.path) }]
       : []),
@@ -563,11 +570,17 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
             e.stopPropagation();
             toggle(selectedNodes());
           } else if ((e.key === "Delete" || e.key === "Backspace") && !e.metaKey) {
-            const group = selectedNodes().find((x) => x.type === "group" && x.changelist);
+            const nodes = selectedNodes();
+            const group = nodes.find((x) => x.type === "group" && x.changelist);
+            const paths = filesOf(nodes.filter((x) => x.type !== "group" || !x.changelist)).map((f) => f.path);
             if (group?.changelist) {
               e.preventDefault();
               e.stopPropagation();
               void executeAction("vcs.changelist.delete", group.changelist);
+            } else if (paths.length) {
+              e.preventDefault();
+              e.stopPropagation();
+              void executeAction("vcs.delete", paths);
             }
           } else if (e.key === "F4") {
             const n = selectedNodes().find((x) => x.type === "file");
