@@ -27,18 +27,7 @@ function useRepoExtras(repo: string | null, version: number) {
     void Promise.all([
       call(commands.vcsRemotes(repo)).catch((): Remote[] => []),
       call(commands.graphBisectState(repo)).catch(() => null),
-    ]).then(
-      ([remotes, bisect]) =>
-        live &&
-        setValue((v) => ({
-          repo,
-          remotes,
-          bisect:
-            bisect && v.repo === repo && v.bisect?.culprit && bisect.active
-              ? { ...bisect, culprit: v.bisect.culprit }
-              : bisect,
-        })),
-    );
+    ]).then(([remotes, bisect]) => live && setValue({ repo, remotes, bisect }));
     return () => {
       live = false;
     };
