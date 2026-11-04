@@ -711,7 +711,17 @@ pub fn create_main_window(app: &AppHandle) -> IdeResult<WebviewWindow> {
 
 /// Creates a new project window; `project` is opened by its frontend on load.
 pub fn create_window(app: &AppHandle, project: Option<PathBuf>) -> IdeResult<WebviewWindow> {
-    create_window_with(app, project, Vec::new(), false)
+    create_window_with(app, project, Vec::new(), Tabbing::Never)
+}
+
+/// Whether a new window becomes a project tab. Only the user's choice ("Open project in: New
+/// tab") groups it, on every platform; the macOS system tab preference does not.
+#[derive(Clone, Copy)]
+enum Tabbing<'a> {
+    /// A plain window (restoring a saved group sets membership itself).
+    Never,
+    /// A tab of this window's group.
+    Into(&'a str),
 }
 
 /// [`create_window`] that also opens `files` (without `project`: in LightEdit).
@@ -719,27 +729,39 @@ fn create_window_with(
     app: &AppHandle,
     project: Option<PathBuf>,
     files: Vec<PathBuf>,
-    restoring: bool,
+    tabbing: Tabbing,
 ) -> IdeResult<WebviewWindow> {
     let title = project.as_deref().or(files.first().map(PathBuf::as_path)).and_then(Path::file_name);
     let title = title.map(|n| n.to_string_lossy().into_owned());
     let files = files.into_iter().map(Into::into).collect();
-    create_window_for(app, title, Launch { project: project.map(Into::into), files, ..Default::default() }, restoring)
+    create_window_for(app, title, Launch { project: project.map(Into::into), files, ..Default::default() }, tabbing)
 }
 
 /// Restoring a saved group preserves its membership and selected tab.
 pub fn create_restored_window(app: &AppHandle, project: PathBuf) -> IdeResult<WebviewWindow> {
-    create_window_with(app, Some(project), Vec::new(), true)
+    create_window_with(app, Some(project), Vec::new(), Tabbing::Never)
+}
+
+/// The project window a "New tab" open from window `caller` joins: its own (a settings window's
+/// parent), when it holds a project; otherwise the project opens in a plain window.
+fn tab_anchor(app: &AppHandle, caller: &str) -> Option<WebviewWindow> {
+    let label = auxiliary_parent(caller).unwrap_or(caller);
+    let host = app.state::<AppState>();
+    (host.opened_project(label).is_some() || host.remote_dev.get(label).is_some())
+        .then(|| app.get_webview_window(label))
+        .flatten()
 }
 
 fn create_window_for(
     app: &AppHandle,
     title: Option<String>,
     launch: Launch,
-    _restoring: bool,
+    tabbing: Tabbing,
 ) -> IdeResult<WebviewWindow> {
-    #[cfg(target_os = "macos")]
-    let tab_target = if _restoring { None } else { crate::macos::new_project_tab_target(app, &launch)? };
+    let tab_target = match tabbing {
+        Tabbing::Into(caller) => tab_anchor(app, caller),
+        Tabbing::Never => None,
+    };
     let windows = app.webview_windows();
     let label = next_label(windows.keys().map(String::as_str));
     let mut config = window_config(app)?;
@@ -761,7 +783,6 @@ fn create_window_for(
     let window = build_project_window(app, config)?;
     // Opened after every window closed: it holds the session (its frontend asks on startup).
     hand_over_session(app, None);
-    #[cfg(target_os = "macos")]
     if let Some(target) = tab_target {
         crate::window_groups::join(app, target.label(), window.label())?;
         return Ok(window);
@@ -779,7 +800,7 @@ pub fn spawn_window(app: &AppHandle, project: Option<PathBuf>) {
 fn spawn_window_with(app: &AppHandle, project: Option<PathBuf>, files: Vec<PathBuf>) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = create_window_with(&app, project, files, false) {
+        if let Err(e) = create_window_with(&app, project, files, Tabbing::Never) {
             tracing::warn!("cannot open window: {}", e.message);
         }
     });
@@ -797,20 +818,32 @@ pub enum OpenOutcome {
     Current,
 }
 
+/// Where [`open_project_window`] / [`open_remote_window`] put a project that isn't open yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenIn<'a> {
+    /// The caller opens it in its own window.
+    Current,
+    NewWindow,
+    /// A new tab of window `caller`'s group (a plain window when `caller` has no project).
+    NewTab {
+        caller: &'a str,
+    },
+}
+
 /// Opens folder `path` as a project and then `files` in its editor; see [`OpenOutcome`]
 /// (`Current`: the caller opens both itself).
 pub fn open_project_window(
     app: &AppHandle,
     path: &Path,
-    new_window: bool,
+    open_in: OpenIn,
     files: Vec<PathBuf>,
 ) -> IdeResult<OpenOutcome> {
     // Before touching the share: a stat on `\\wsl.localhost` is what makes it slow.
     if let Some(remote) = wsl_launch(path) {
-        return open_remote_window(app, &remote.target, &remote.path, new_window);
+        return open_remote_window(app, &remote.target, &remote.path, open_in);
     }
     let root = dunce::canonicalize(path).map_err(|e| IdeError::not_found(format!("{}: {e}", path.display())))?;
-    tracing::info!("open_project_window {} new_window={new_window}", root.display());
+    tracing::info!("open_project_window {} {open_in:?}", root.display());
     if let Some(w) = find_project_window(app, &root) {
         if files.is_empty() {
             focus(&w);
@@ -819,10 +852,12 @@ pub fn open_project_window(
         }
         return Ok(OpenOutcome::Focused { label: w.label().to_owned() });
     }
-    if !new_window {
-        return Ok(OpenOutcome::Current);
-    }
-    let window = create_window_with(app, Some(root), files, false)?;
+    let tabbing = match open_in {
+        OpenIn::Current => return Ok(OpenOutcome::Current),
+        OpenIn::NewWindow => Tabbing::Never,
+        OpenIn::NewTab { caller } => Tabbing::Into(caller),
+    };
+    let window = create_window_with(app, Some(root), files, tabbing)?;
     Ok(OpenOutcome::Opened { label: window.label().to_owned() })
 }
 
@@ -832,7 +867,7 @@ pub fn open_project_window(
 /// detach an editor tab out of its window.
 pub fn open_file_in_new_window(app: &AppHandle, project: Option<PathBuf>, file: PathBuf) -> IdeResult<OpenOutcome> {
     tracing::info!("open_file_in_new_window {} project={:?}", file.display(), project);
-    let window = create_window_with(app, project, vec![file], false)?;
+    let window = create_window_with(app, project, vec![file], Tabbing::Never)?;
     Ok(OpenOutcome::Opened { label: window.label().to_owned() })
 }
 
@@ -846,25 +881,22 @@ pub fn open_files_window(app: &AppHandle, caller: &str, files: Vec<PathBuf>) -> 
 }
 
 /// [`open_project_window`] for folder `path` of `target` (Remote Development).
-pub fn open_remote_window(
-    app: &AppHandle,
-    target: &RemoteTarget,
-    path: &str,
-    new_window: bool,
-) -> IdeResult<OpenOutcome> {
-    tracing::info!("open_remote_window {target:?}:{path} new_window={new_window}");
+pub fn open_remote_window(app: &AppHandle, target: &RemoteTarget, path: &str, open_in: OpenIn) -> IdeResult<OpenOutcome> {
+    tracing::info!("open_remote_window {target:?}:{path} {open_in:?}");
     let windows = app.webview_windows();
     let open = app.try_state::<AppState>().and_then(|s| s.remote_dev.window_of(target, path));
     if let Some(w) = open.and_then(|label| windows.get(&label)) {
         focus(w);
         return Ok(OpenOutcome::Focused { label: w.label().to_owned() });
     }
-    if !new_window {
-        return Ok(OpenOutcome::Current);
-    }
+    let tabbing = match open_in {
+        OpenIn::Current => return Ok(OpenOutcome::Current),
+        OpenIn::NewWindow => Tabbing::Never,
+        OpenIn::NewTab { caller } => Tabbing::Into(caller),
+    };
     let title = path.trim_end_matches('/').rsplit('/').next().filter(|n| !n.is_empty() && *n != "~").map(str::to_owned);
     let remote = RemoteLaunch { target: target.clone(), path: path.to_owned() };
-    let window = create_window_for(app, title, Launch { remote: Some(remote), ..Default::default() }, false)?;
+    let window = create_window_for(app, title, Launch { remote: Some(remote), ..Default::default() }, tabbing)?;
     Ok(OpenOutcome::Opened { label: window.label().to_owned() })
 }
 
@@ -1130,7 +1162,7 @@ fn run_open(app: &AppHandle, steps: Vec<OpenStep>) {
                 tauri::async_runtime::spawn(async move {
                     let title = remote.path.trim_end_matches('/').rsplit('/').next().map(str::to_owned);
                     let launch = Launch { remote: Some(remote), ..Default::default() };
-                    if let Err(e) = create_window_for(&app, title, launch, false) {
+                    if let Err(e) = create_window_for(&app, title, launch, Tabbing::Never) {
                         tracing::warn!("cannot open window: {}", e.message);
                     }
                 });
