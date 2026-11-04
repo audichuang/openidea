@@ -202,8 +202,9 @@ Markers are matched like a language server's `root-markers`.
 ## 5. Installing and developing
 
 - **Install:** Settings › Plugins › _Install Plugin from Disk…_ (or the action
-  _Install Plugin from Disk…_) and pick the package folder. The manifest and the
-  files it references are copied to `<app-data>/plugins/<id>/`.
+  _Install Plugin from Disk…_) and pick the package's `plugin.toml`, or a `.zip` of
+  the folder. The manifest and the files it references are copied to
+  `<app-data>/plugins/<id>/`.
 - **Dev plugins:** put (or symlink) the package in `<project>/.openidea/plugins/<name>/`.
   It loads when the project is opened, is listed with a _dev_ tag, and _Reload_
   (or the _Reload Plugins_ action) picks up a rebuilt `plugin.wasm` without
