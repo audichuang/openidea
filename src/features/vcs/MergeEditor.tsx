@@ -11,6 +11,7 @@ import { setContext } from "@/platform/context";
 import { tx, useTxTemplate } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { copyText } from "@/ui/selectableText";
+import { readPlainText } from "@/platform/clipboard";
 import { Button, Spinner, T } from "@/ui";
 import { editorService, type EditorInput } from "@/workbench/contributions";
 import { blameSlot, toggleAnnotations } from "./blame";
@@ -493,7 +494,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
         const { from, to } = view.state.selection.main;
         if (id === "selectAll") view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } });
         else if (id === "paste") {
-          const text = await navigator.clipboard?.readText().catch(() => undefined);
+          const text = await readPlainText().catch(() => undefined);
           if (text !== undefined) view.dispatch({ ...view.state.replaceSelection(text), userEvent: "input.paste" });
         } else {
           await copyText(view.state.sliceDoc(from, to));
