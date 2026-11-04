@@ -46,11 +46,13 @@ if [ -n "$lock" ]; then
   moved=0
   approved=-
   if [ -n "$pr" ]; then
-    marks=$(gh pr view "${pr%% *}" -R audichuang/openidea --json comments --jq '[.comments[].body] | "\([.[] | select(startswith("<!-- auto-rebase:needs-human -->"))] | length) \([.[] | select(startswith("<!-- auto-rebase:develop-moved "))] | length) \([.[] | select(startswith("<!-- auto-rebase:approved "))] | last // "" | split(" ")[2] // "-")"') || skip "gh pr view failed"
+    marks=$(gh pr view "${pr%% *}" -R audichuang/openidea --json comments --jq '[.comments[].body] | . as $b | ([range(length) | select($b[.] | startswith("<!-- auto-rebase:needs-human -->"))] | last // -1) as $nh | ([range(length) | select($b[.] | startswith("<!-- auto-rebase:approved "))] | last // -1) as $ap | "\([$b[] | select(startswith("<!-- auto-rebase:needs-human -->"))] | length) \([$b[] | select(startswith("<!-- auto-rebase:develop-moved "))] | length) \(if $ap > $nh then $b[$ap] | split(" ")[2] // "-" else "-" end)"') || skip "gh pr view failed"
     read -r waiting moved approved <<<"$marks"
   fi
   # Why before the obsolete check: the user may move develop onto the approved commit themselves, which makes the
-  # lock look obsolete; the run must still release it. Only an approval of the current lock tip counts.
+  # lock look obsolete; the run must still release it. Only an approval of the current lock tip counts, and only
+  # when it comes after the last needs-human comment: a run that rejected the approval (say Fork CI red on that sha)
+  # posts a new needs-human, and the stale approval would otherwise start a run, and a comment, every hour.
   if [ "$waiting" != 0 ] && [ "$moved" = 0 ] && [ "$approved" = "${lock%%[[:space:]]*}" ]; then
     echo "approved by the user: $branch at $approved"
     exit 0
