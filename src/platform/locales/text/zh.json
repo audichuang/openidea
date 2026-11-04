@@ -7827,5 +7827,22 @@
   "ClipCode: Copy Branch Commits (Entire History)": "ClipCode：复制分支提交（完整历史）",
   "ClipCode: Copy All Open Tabs": "ClipCode：复制所有打开的标签页",
   "No open tabs found to copy.": "没有可复制的已打开标签页。",
-  "ClipCode: Ignore When Copying": "ClipCode：复制时忽略"
+  "ClipCode: Ignore When Copying": "ClipCode：复制时忽略",
+  "Git Graph": "Git 图",
+  "No Git repository": "没有 Git 仓库",
+  "Show All Branches": "显示所有分支",
+  "Show Remote Branches": "显示远程分支",
+  "{length} branches": "{length} 个分支",
+  "All branches": "所有分支",
+  "Find commit (message, author, hash)": "查找提交（消息、作者、哈希）",
+  "Find commit": "查找提交",
+  "Previous Match": "上一个匹配项",
+  "Next Match": "下一个匹配项",
+  "Graph": "图",
+  "Select a commit": "选择一个提交",
+  "{length} commits selected": "已选择 {length} 个提交",
+  "Right-click for cherry-pick, squash, compare and more.": "右键可进行拣选、压缩、比较等操作。",
+  "Parents": "父提交",
+  "Committed": "提交时间",
+  "Changed Files": "已更改的文件"
 }
