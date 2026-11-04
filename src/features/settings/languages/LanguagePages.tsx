@@ -394,7 +394,7 @@ export function MavenPage() {
           directory
           browseTitle="Select Maven Home Directory"
           aria-label="Maven home path"
-          hint="Runs sync, builds and Maven run configurations. A chosen home is used instead of the project's mvnw."
+          hint="Runs sync, builds and Maven run configurations. A chosen home is used instead of the project's mvnw; a Maven Daemon (mvnd) home runs mvnd."
         />
         <PathInput
           k="languages.java.maven.userSettings"

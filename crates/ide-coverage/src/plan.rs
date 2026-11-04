@@ -63,7 +63,7 @@ pub fn prepare(root: &Path, config: &RunConfig, out: &Path) -> CoveragePrepared 
         "cargo" => cargo(config, &dir, out),
         "go" if first == "test" => go(config, &dir, out),
         "go" => unsupported("Go coverage is collected by `go test`; run a test configuration with coverage."),
-        "mvn" | "mvnw" => maven(config, &dir),
+        "mvn" | "mvnw" | "mvnd" => maven(config, &dir),
         "gradle" | "gradlew" => gradle(config, &dir, out),
         "npm" | "pnpm" | "yarn" | "bun" => npm(root, config, &dir, out),
         "node" | "npx" | "tsx" | "ts-node" => c8(root, config, &dir, out),
@@ -323,6 +323,10 @@ mod tests {
         let (l, _) = launch(&p);
         assert_eq!(l.args[0], "org.jacoco:jacoco-maven-plugin:prepare-agent");
         assert!(l.args.contains(&"org.jacoco:jacoco-maven-plugin:report".to_owned()));
+        for mvnd in ["/opt/mvnd/bin/mvnd", r"C:\mvnd\bin\mvnd.exe", r"C:\mvnd\bin\mvnd.cmd"] {
+            let p = prepare(dir.path(), &cfg("maven", mvnd, &["test"]), dir.path());
+            assert_eq!(launch(&p).0.args[0], "org.jacoco:jacoco-maven-plugin:prepare-agent", "{mvnd}");
+        }
         assert!(matches!(
             prepare(dir.path(), &cfg("maven", "mvn", &["package"]), dir.path()),
             CoveragePrepared::Unsupported { .. }
