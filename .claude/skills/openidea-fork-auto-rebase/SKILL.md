@@ -82,9 +82,11 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
 git push --force-with-lease=develop:OLD_DEVELOP fork HEAD:develop
 ```
 
-lease 失敗（develop 在這期間合進了別的 PR）→ PR 留言說明後關閉、刪 `rebase/vNEW` 與 `ci-base/vNEW`，通知「下一次 run 從新的 develop 重來」，結束。成功 → PR 留言 `<!-- auto-rebase:develop-moved <HEAD 完整 sha> -->`，接第 5 步。
+lease 失敗（develop 在這期間合進了別的 PR）→ PR 留言說明後關閉、刪 `rebase/vNEW` 與 `ci-base/vNEW`，通知「下一次 run 從新的 develop 重來」，結束。成功 → PR 留言 `<!-- auto-rebase:develop-moved <HEAD 完整 sha> -->`。
 
-不符合條件（MANUAL，或有修不掉的紅）→ 不移動，PR 留言 `<!-- auto-rebase:needs-human -->` 加上要使用者看什麼，跳第 7 步。
+develop 一移動（含已在 HEAD 不重推的情況）就 `gh workflow list -R audichuang/openidea --all`：state 是 active、名稱不是 `Fork CI`／`Fork Release` 的，是這次 rebase 帶進來的上游 workflow，照 FORK.md 馬上 `gh workflow disable`，寫進通知。`pull_request_target` 從 PR 的 base 分支讀 workflow，develop 一動，下一個對 develop 開的 PR 就會觸發它（v0.1.35 的 `PR check` 幾秒內就在 PR 上貼了 needs-info）。清單裡還沒出現的，第 6 步移動 main 後再查一次。接第 5 步。
+
+不符合條件（MANUAL，或有修不掉的紅）→ 不移動，PR 留言 `<!-- auto-rebase:needs-human -->` 加上要使用者看什麼，最後一段固定寫交回方法：看完沒問題就另留一則第一行是 `<!-- auto-rebase:approved <HEAD 完整 sha> -->` 的留言，下一次排程（每小時 :37）會移動 develop 並發版。不要給使用者手動 lease 推送或發版的指令。跳第 7 步。
 
 ## 5. 對 develop 開著的 PR
 
@@ -104,7 +106,7 @@ lease 失敗（develop 在這期間合進了別的 PR）→ PR 留言說明後�
    git tag -a vNEW-fork.N <develop-moved 的 sha> -F "$MAIN/.rebase-review/notes.md"
    git push --atomic --force-with-lease=main:$old fork <sha>:refs/heads/main vNEW-fork.N
    ```
-   推完 `gh workflow list -R audichuang/openidea --all`：state 是 active、名稱不是 `Fork CI`／`Fork Release` 的，都是這次 rebase 帶進 `main` 的上游 workflow，照 FORK.md `gh workflow disable`，寫進通知。
+   推完再跑一次第 4 步的 `gh workflow list` 檢查，有新出現的 active 上游 workflow 就 disable。
 4. `gh run list -R audichuang/openidea --workflow fork-release.yml --branch vNEW-fork.N --json databaseId,headSha` 找 run，`gh-wait run <id>` 等完（約 50 分鐘：macOS 與 Windows 並行建置，都成功才發布、附 latest.json、更新 cask；任一平台失敗就沒有發版）。失敗看 `--log-failed`；只靠改程式才能修的失敗不在這裡修，通知裡寫原因。
 5. 發版成功 → PR 留言結果後關閉，刪 `rebase/vNEW` 與 `ci-base/vNEW`。
 
