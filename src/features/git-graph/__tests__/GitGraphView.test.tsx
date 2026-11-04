@@ -38,6 +38,7 @@ vi.mock("@/ui", async (importOriginal) => {
 import { provideGitGraphBridge, type GitGraphBridge, type GitGraphRepoState } from "@/workbench/gitGraphBridge";
 import { GitGraphEditor } from "../GitGraphView";
 import { findMatches, logBranches } from "../data";
+import { initialGraphView, useGraphView } from "../viewState";
 
 const REPO = "/repo";
 const ok = <T,>(data: T) => Promise.resolve({ status: "ok" as const, data });
@@ -117,6 +118,7 @@ beforeEach(() => {
   vcsTags.mockImplementation(() => ok(["v1"]));
   vcsCommitFiles.mockImplementation(() => ok([{ path: "src/app.ts", kind: "modified", oldPath: null }]));
   withdraw = provideGitGraphBridge(bridge);
+  useGraphView.setState(initialGraphView());
 });
 
 afterEach(() => {
