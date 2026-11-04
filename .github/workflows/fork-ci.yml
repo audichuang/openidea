@@ -10,6 +10,10 @@ on:
     branches: [develop]
     types: [opened, synchronize, reopened]
   workflow_dispatch:
+  # Why: the target cache key rolls over each ISO week; this builds the new week's caches on develop
+  # before the first PR of the week would have to build cold.
+  schedule:
+    - cron: "5 0 * * 1"
 
 concurrency:
   group: fork-ci-${{ github.ref }}
