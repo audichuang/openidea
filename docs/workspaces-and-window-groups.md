@@ -34,7 +34,7 @@ Links are saved in project settings as `languages.java.gradle.linkedProjects`. U
 
 ## Window group
 
-To open a project as a tab of the current window, choose **New Tab** when OpenIDEA asks where to open it, or set **Settings → System Settings → Project → Open project in** to **New tab**. This works the same on every platform: a project joins a tab group only when you choose New Tab, and the macOS setting "Prefer tabs when opening documents" is not consulted. A LightEdit window opens the project in a new window instead.
+To open a project as a tab of the current window, choose **New Tab** when OpenIDEA asks where to open it, or set **Settings → System Settings → Project → Open project in** to **New tab**. This works the same on every platform: a project joins a tab group only when you choose New Tab, and the macOS setting "Prefer tabs when opening documents" is not consulted. New Tab is offered for local projects opened from a local project window; a remote project, or an open from a LightEdit or remote window, uses a new window instead, since saved groups hold local project paths only.
 
 To group windows that are already open, use **Window → Merge All Project Windows**. The project tabs occupy their own row below the main toolbar. Click a tab or use **Next/Previous Project Tab** to switch; drag tabs to reorder them. The default shortcuts are ⌥⌘PageDown/PageUp on macOS and Ctrl+Alt+PageDown/PageUp on Windows/Linux.
 
