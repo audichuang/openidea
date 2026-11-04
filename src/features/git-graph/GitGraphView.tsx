@@ -4,7 +4,7 @@ import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Branch, ChangedFile } from "@/bindings";
 import { executeAction } from "@/platform/actions";
-import { formatTimestamp } from "@/platform/dateFormat";
+import { formatClock, formatDay, formatTimestamp } from "@/platform/dateFormat";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import {
@@ -27,6 +27,9 @@ import styles from "./GitGraph.module.css";
 import { useGraphView } from "./viewState";
 
 export const ROW = 24;
+
+/** Day and time in the user's date format (Settings › Appearance › Date Formats). */
+const fullDate = (ms: number) => `${formatDay(new Date(ms))} ${formatClock(new Date(ms))}`;
 
 export function GitGraphEditor() {
   const repoState = useRepoState();
@@ -614,13 +617,13 @@ function Details({
           <dt>
             <T>Date</T>
           </dt>
-          <dd>{one.timeMs ? new Date(one.timeMs).toLocaleString() : ""}</dd>
+          <dd>{one.timeMs ? fullDate(one.timeMs) : ""}</dd>
           {one.commitTimeMs && one.commitTimeMs !== one.timeMs ? (
             <>
               <dt>
                 <T>Committed</T>
               </dt>
-              <dd>{new Date(one.commitTimeMs).toLocaleString()}</dd>
+              <dd>{fullDate(one.commitTimeMs)}</dd>
             </>
           ) : null}
         </dl>
