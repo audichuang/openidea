@@ -75,6 +75,7 @@ import {
   setGroupByDir,
   setGroupByRepo,
   setGroupByStaging,
+  setUntrackedInUnstaged,
   useCommit,
   type CommitTab,
 } from "./commitStore";
@@ -634,6 +635,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const groupByDir = useCommit((s) => s.groupByDir);
   const groupByStaging = useCommit((s) => s.groupByStaging);
   const groupByRepo = useCommit((s) => s.groupByRepo);
+  const untrackedInUnstaged = useCommit((s) => s.untrackedInUnstaged);
   const diffPreview = useCommit((s) => s.diffPreview);
   const commitDiffPreview = useCommit((s) => s.commitDiffPreview);
   const doubleClickOpensDiff = useWorkflowSettings((s) => s.vcs.commit.doubleClickOpensDiff);
@@ -654,9 +656,9 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const roots = useMemo(
     () =>
       staging
-        ? buildStagingTree(status, root, groupByDir, repos, heads)
+        ? buildStagingTree(status, root, groupByDir, repos, untrackedInUnstaged, heads)
         : buildChangeTree(status, root, groupByDir, lists, repos, groupByStaging, heads, groupByRepo),
-    [staging, status, root, groupByDir, lists, repos, groupByStaging, heads, groupByRepo],
+    [staging, status, root, groupByDir, lists, repos, groupByStaging, untrackedInUnstaged, heads, groupByRepo],
   );
   const [byKey, parents] = useMemo(() => {
     const m = new Map<string, ChangeNode>();
@@ -782,7 +784,14 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                 ? [{ label: "Repository", checked: groupByRepo, run: () => setGroupByRepo(!groupByRepo) }]
                 : []),
               ...(staging
-                ? []
+                ? [
+                    { kind: "separator" as const },
+                    {
+                      label: "Unversioned Files Under Unstaged",
+                      checked: untrackedInUnstaged,
+                      run: () => setUntrackedInUnstaged(!untrackedInUnstaged),
+                    },
+                  ]
                 : [{ label: "Staging State", checked: groupByStaging, run: () => setGroupByStaging(!groupByStaging) }]),
               ...(mode === "local"
                 ? [
