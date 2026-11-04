@@ -356,15 +356,15 @@ mod runtime {
         });
     }
 
-    /// Window `label` takes the frame of a project tab group: normal `size` plus the group's mode.
-    /// Its own saved position, size and mode are not restored over it.
-    pub fn frame_inherited(
-        app: &AppHandle,
-        label: &str,
-        size: tauri::PhysicalSize<u32>,
-        maximized: bool,
-        fullscreen: bool,
-    ) {
+    /// Window `label` takes its frame from a project tab group: its own saved position must not be
+    /// restored over it once it maps.
+    pub fn frame_inherited(app: &AppHandle, label: &str) {
+        if let Some(pending) = app.state::<Mutex<Cache>>().lock().windows.get_mut(label) {
+            pending.restore_position = false;
+        }
+    }
+
+    pub fn normal_size_requested(app: &AppHandle, label: &str, size: tauri::PhysicalSize<u32>) {
         let cache = app.state::<Mutex<Cache>>();
         let mut cache = cache.lock();
         cache.next_request += 1;
@@ -372,8 +372,6 @@ mod runtime {
         if let Some(pending) = cache.windows.get_mut(label) {
             pending.normal = Size(size.width, size.height);
             pending.saved.set_normal_size(pending.normal);
-            (pending.saved.maximized, pending.saved.fullscreen) = (maximized, fullscreen);
-            pending.restore_position = false;
             pending.mode_requested = false;
             pending.presented = false;
             pending.presentation_request = request;
@@ -381,7 +379,6 @@ mod runtime {
         }
         let saved = cache.saved.entry(key(label).to_owned()).or_default();
         saved.set_normal_size(Size(size.width, size.height));
-        (saved.maximized, saved.fullscreen) = (maximized, fullscreen);
         drop(cache);
         if let Some(webview) = app.get_webview_window(label) {
             request_presentation(webview.as_ref(), request);
@@ -535,7 +532,9 @@ mod runtime {
 }
 
 #[cfg(target_os = "linux")]
-pub use runtime::{content_size, frame_inherited, is_wayland, plugin, prepare, save_before_close};
+pub use runtime::{
+    content_size, frame_inherited, is_wayland, normal_size_requested, plugin, prepare, save_before_close,
+};
 
 #[cfg(test)]
 mod tests {
