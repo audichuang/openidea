@@ -324,17 +324,26 @@ fn parse_ls_tree(text: &str) -> Vec<GraphTreeEntry> {
         .collect()
 }
 
-/// `# first bad commit: [<sha>] subject` in `BISECT_LOG`.
+/// `# first bad commit: [<sha>] subject` in `BISECT_LOG`; git 2.56+ quotes the term
+/// (`# first 'bad' commit: …`).
 fn first_bad_in_log(log: &str) -> Option<String> {
     log.lines().rev().find_map(|l| {
-        let rest = l.strip_prefix("# first bad commit: [")?;
+        let rest = l.strip_prefix("# first ")?;
+        let (term, rest) = rest.split_once(" commit: [")?;
+        if term.trim_matches('\'') != "bad" {
+            return None;
+        }
         Some(rest.split(']').next()?.trim().to_string())
     })
 }
 
-/// `<sha> is the first bad commit` in git's bisect output.
+/// `<sha> is the first bad commit` in git's bisect output (`… first 'bad' commit` since 2.56).
 fn first_bad_commit(output: &str) -> Option<String> {
-    output.lines().find_map(|l| l.strip_suffix(" is the first bad commit").map(|id| id.trim().to_string()))
+    output.lines().find_map(|l| {
+        let (id, rest) = l.split_once(" is the first ")?;
+        let term = rest.strip_suffix(" commit")?;
+        (term.trim_matches('\'') == "bad").then(|| id.trim().to_string())
+    })
 }
 
 #[cfg(test)]
@@ -374,6 +383,11 @@ mod tests {
     #[test]
     fn finds_the_first_bad_commit() {
         assert_eq!(first_bad_commit("abc123 is the first bad commit\ncommit abc123\n"), Some("abc123".to_string()));
+        assert_eq!(
+            first_bad_commit("f68ccfaf is the first 'bad' commit\ncommit f68ccfaf\n"),
+            Some("f68ccfaf".to_string())
+        );
+        assert_eq!(first_bad_commit("abc is the first 'new' commit"), None);
         assert_eq!(first_bad_commit("Bisecting: 1 revision left"), None);
     }
 
@@ -381,6 +395,10 @@ mod tests {
     fn finds_the_first_bad_commit_in_the_log() {
         let log = "git bisect start 'b' 'g'\n# bad: [abc] x\ngit bisect bad abc\n# first bad commit: [abc123] bug\n";
         assert_eq!(first_bad_in_log(log), Some("abc123".to_string()));
+        assert_eq!(
+            first_bad_in_log("git bisect good x\n# first 'bad' commit: [f68ccfaf] 3\n"),
+            Some("f68ccfaf".to_string())
+        );
         assert_eq!(first_bad_in_log("git bisect start\n"), None);
     }
 
