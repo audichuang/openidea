@@ -17,6 +17,7 @@ import { showBranchesPopup } from "./BranchWidget";
 import { checkoutRevision, newBranch, newBranchInRepos } from "./branchOps";
 import {
   addToVcs,
+  deleteLocalFiles,
   commitChanges,
   isNestedRepoEntry,
   rollbackCandidates,
@@ -504,6 +505,16 @@ export function registerVcsActions(): () => void {
       run: ({ arg }) => {
         return addToVcs(contextPaths(arg));
       },
+    },
+    {
+      // IDEA's Delete in the Changes view: removes unversioned files (or any changed file) from disk.
+      id: "vcs.delete",
+      title: "Delete…",
+      category: "Git",
+      icon: "trash",
+      when: VCS,
+      keywords: ["remove", "trash", "unversioned", "untracked"],
+      run: ({ arg }) => deleteLocalFiles(contextPaths(arg)),
     },
     {
       id: "vcs.stash",
