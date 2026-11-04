@@ -437,7 +437,7 @@ pub struct GeneralSettings {
     pub close_without_welcome: bool,
     /// When on, closing a window drops its saved editor tabs, so they are not restored next time.
     pub close_tabs_with_window: bool,
-    /// Where Open… puts a project while one is open: `ask` | `new` | `same` | `attach`.
+    /// Where Open… puts a project while one is open: `ask` | `new` | `tab` | `same` | `attach`.
     pub open_project_in: String,
     /// Initial folder of the Open / Clone dialogs; empty = the OS default.
     pub default_project_directory: String,
