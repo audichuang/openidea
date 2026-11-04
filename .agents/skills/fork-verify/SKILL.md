@@ -126,7 +126,7 @@ PATH="$HOME/.cargo/bin:$PATH" CARGO_PROFILE_DEV_DEBUG=0 pnpm dev:app > /tmp/oi-d
 ## Native AppKit
 
 - Window frames: `osascript -e 'tell application "System Events" to tell (first process whose unix id is <pid>) to get {position, size} of windows'`. Fullscreen should equal the screen (minus the notch safe area on notched displays).
-- Pixels: `screencapture -x /tmp/oi-verify/evidence/x.png` (lcu captures of a fullscreen window were stale or offset). Drags: `cliclick dd:x,y dm:x,y du:x,y` in screen points.
+- Pixels: `screencapture -x /tmp/oi-verify/evidence/x.png`. Drags: `cliclick dd:x,y dm:x,y du:x,y` in screen points.
 - Run against the `pnpm dev:app` process itself. A plain `cargo build` binary lacks `devUrl` (blank window), and copying the binary into a `.app` needs `codesign --force --sign -` (else POSIX 162) plus your own Vite; past wrappers cost more time than they saved.
 - AppKit view trees: lldb attach hangs (Developer mode off). Temporarily `eprintln!` `_subtreeDescription` behind an env var; remove before committing.
 - Private-API behavior (e.g. `_setTabBarAccessoryViewController:`) can only be judged live: AppKit re-applies state on its run loop. Recheck after a resize, a tab switch, entering and leaving fullscreen.
