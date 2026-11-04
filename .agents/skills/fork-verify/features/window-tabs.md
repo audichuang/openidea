@@ -21,7 +21,7 @@ Open two project windows (Open → "New Window" in the "Open project" dialog), t
 
 ## Gotchas
 
-- Use `cliclick` for drags (lcu `drag` returned `noWindowsAvailable`) and `screencapture -x` for pixels (fullscreen captures from other tools were stale).
+- Use `cliclick` for drags and `screencapture -x` for pixels, fullscreen included.
 - Only the selected tab of a group is an AX window; `manage_window action=focus` the one you need first.
 - AppKit re-installs its tab bar; a fix that looks right once must survive tab switch, new tab, resize, fullscreen enter/exit.
 - Joining a fullscreen group used to leave the new window at 1440x900 — recheck this case on every change here. Notched displays are not covered by the Mac mini; note it as untested.
