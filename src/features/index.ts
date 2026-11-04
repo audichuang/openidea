@@ -89,6 +89,9 @@ const features: Array<[string, Activate]> = [
   ["ssh", ssh],
   ["remote-dev", remoteDev],
 ];
+// Fork-owned features: src/features/fork.ts.
+import { forkFeatures } from "./fork";
+features.push(...forkFeatures);
 
 export function activateFeatures(): () => void {
   const disposers: Array<() => void> = [];
