@@ -805,13 +805,11 @@ pub fn create_restored_window(app: &AppHandle, project: PathBuf) -> IdeResult<We
 }
 
 /// The project window a "New tab" open from window `caller` joins: its own (a settings window's
-/// parent), when it holds a project; otherwise the project opens in a plain window.
+/// parent), when it holds a local project (groups save local paths only); otherwise the project
+/// opens in a plain window.
 fn tab_anchor(app: &AppHandle, caller: &str) -> Option<WebviewWindow> {
     let label = auxiliary_parent(caller).unwrap_or(caller);
-    let host = app.state::<AppState>();
-    (host.opened_project(label).is_some() || host.remote_dev.get(label).is_some())
-        .then(|| app.get_webview_window(label))
-        .flatten()
+    app.state::<AppState>().opened_project(label).is_some().then(|| app.get_webview_window(label)).flatten()
 }
 
 fn create_window_for(
@@ -883,7 +881,7 @@ pub enum OpenOutcome {
     Current,
 }
 
-/// Where [`open_project_window`] / [`open_remote_window`] put a project that isn't open yet.
+/// Where [`open_project_window`] puts a project that isn't open yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpenIn<'a> {
     /// The caller opens it in its own window.
@@ -905,7 +903,8 @@ pub fn open_project_window(
 ) -> IdeResult<OpenOutcome> {
     // Before touching the share: a stat on `\\wsl.localhost` is what makes it slow.
     if let Some(remote) = wsl_launch(path) {
-        return open_remote_window(app, &remote.target, &remote.path, open_in);
+        // Remote projects open in a window of their own, never as a tab.
+        return open_remote_window(app, &remote.target, &remote.path, open_in != OpenIn::Current);
     }
     let root = dunce::canonicalize(path).map_err(|e| IdeError::not_found(format!("{}: {e}", path.display())))?;
     tracing::info!("open_project_window {} {open_in:?}", root.display());
@@ -946,22 +945,20 @@ pub fn open_files_window(app: &AppHandle, caller: &str, files: Vec<PathBuf>) -> 
 }
 
 /// [`open_project_window`] for folder `path` of `target` (Remote Development).
-pub fn open_remote_window(app: &AppHandle, target: &RemoteTarget, path: &str, open_in: OpenIn) -> IdeResult<OpenOutcome> {
-    tracing::info!("open_remote_window {target:?}:{path} {open_in:?}");
+pub fn open_remote_window(app: &AppHandle, target: &RemoteTarget, path: &str, new_window: bool) -> IdeResult<OpenOutcome> {
+    tracing::info!("open_remote_window {target:?}:{path} new_window={new_window}");
     let windows = app.webview_windows();
     let open = app.try_state::<AppState>().and_then(|s| s.remote_dev.window_of(target, path));
     if let Some(w) = open.and_then(|label| windows.get(&label)) {
         focus(w);
         return Ok(OpenOutcome::Focused { label: w.label().to_owned() });
     }
-    let tabbing = match open_in {
-        OpenIn::Current => return Ok(OpenOutcome::Current),
-        OpenIn::NewWindow => Tabbing::Never,
-        OpenIn::NewTab { caller } => Tabbing::Into(caller),
-    };
+    if !new_window {
+        return Ok(OpenOutcome::Current);
+    }
     let title = path.trim_end_matches('/').rsplit('/').next().filter(|n| !n.is_empty() && *n != "~").map(str::to_owned);
     let remote = RemoteLaunch { target: target.clone(), path: path.to_owned() };
-    let window = create_window_for(app, title, Launch { remote: Some(remote), ..Default::default() }, tabbing)?;
+    let window = create_window_for(app, title, Launch { remote: Some(remote), ..Default::default() }, Tabbing::Never)?;
     Ok(OpenOutcome::Opened { label: window.label().to_owned() })
 }
 
