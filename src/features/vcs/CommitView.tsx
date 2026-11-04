@@ -59,6 +59,7 @@ import {
   setDiffPreview,
   setGroupByDir,
   setGroupByStaging,
+  setUntrackedInUnstaged,
   useCommit,
   type CommitTab,
 } from "./commitStore";
@@ -468,6 +469,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const root = useVcs((s) => s.root) ?? "";
   const groupByDir = useCommit((s) => s.groupByDir);
   const groupByStaging = useCommit((s) => s.groupByStaging);
+  const untrackedInUnstaged = useCommit((s) => s.untrackedInUnstaged);
   const diffPreview = useCommit((s) => s.diffPreview);
   const lists = useChangelists((s) => s.state);
   const checks = useCommitChecks();
@@ -485,9 +487,9 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const roots = useMemo(
     () =>
       staging
-        ? buildStagingTree(status, root, groupByDir, repos)
+        ? buildStagingTree(status, root, groupByDir, repos, untrackedInUnstaged)
         : buildChangeTree(status, root, groupByDir, lists, repos, groupByStaging),
-    [staging, status, root, groupByDir, lists, repos, groupByStaging],
+    [staging, status, root, groupByDir, lists, repos, groupByStaging, untrackedInUnstaged],
   );
   const [byKey, parents] = useMemo(() => {
     const m = new Map<string, ChangeNode>();
@@ -563,7 +565,14 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
               { kind: "header", label: "Group By" },
               { label: "Directory", checked: groupByDir, run: () => setGroupByDir(!groupByDir) },
               ...(staging
-                ? []
+                ? [
+                    { kind: "separator" as const },
+                    {
+                      label: "Unversioned Files Under Unstaged",
+                      checked: untrackedInUnstaged,
+                      run: () => setUntrackedInUnstaged(!untrackedInUnstaged),
+                    },
+                  ]
                 : [{ label: "Staging State", checked: groupByStaging, run: () => setGroupByStaging(!groupByStaging) }]),
               ...(mode === "local"
                 ? [
