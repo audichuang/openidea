@@ -21,11 +21,14 @@ function seg(fx: number, fy: number, tx: number, ty: number) {
 export function GraphCell({
   row,
   head,
+  hollow,
   width,
   highlight,
 }: {
   row: GraphLaneRow;
   head?: boolean;
+  /** A pseudo row (uncommitted changes, stash): an outlined node. */
+  hollow?: boolean;
   width: number;
   highlight: number | null;
 }) {
@@ -52,7 +55,18 @@ export function GraphCell({
           strokeDasharray={s.dashed ? "2 2" : undefined}
         />
       ))}
-      {head ? (
+      {hollow ? (
+        <circle
+          className={dim(row.color)}
+          cx={x(row.lane)}
+          cy={cy}
+          r={4}
+          fill="var(--graph-row-bg, var(--bg-editor))"
+          stroke={color(row.color)}
+          strokeWidth={1.5}
+          strokeDasharray="2 1.5"
+        />
+      ) : head ? (
         <>
           <circle
             className={dim(row.color)}

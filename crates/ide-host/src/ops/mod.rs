@@ -13,6 +13,7 @@ pub mod dependencies;
 pub mod deploy;
 pub mod doc;
 pub mod env;
+pub mod fork_graph;
 pub mod fs;
 pub mod history;
 pub mod java;
@@ -66,6 +67,7 @@ impl<T> Clone for Channel<T> {
 pub fn register_all(d: &mut crate::rpc::Dispatcher) {
     agent::register(d);
     clip::register(d);
+    fork_graph::register(d);
     lsp::register(d);
     notebook::register(d);
     nav::register(d);
