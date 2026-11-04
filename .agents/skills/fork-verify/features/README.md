@@ -9,3 +9,4 @@ One file per user-facing feature: what it is, how a user reaches it, how to driv
 | Auto fetch / incoming check                                   | [vcs-auto-fetch.md](vcs-auto-fetch.md)   | MCP          |
 | Theme switching (light / dark / high contrast / color themes) | [themes.md](themes.md)                   | MCP          |
 | Clipboard paste into editor/terminal                          | [clipboard-paste.md](clipboard-paste.md) | MCP + native |
+| Git Graph editor tab (graph, details, menus, hover)           | [git-graph.md](git-graph.md)             | MCP + native |
