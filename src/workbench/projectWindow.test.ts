@@ -23,11 +23,11 @@ beforeEach(() => {
     lightEdit: false,
   });
 });
-it("offers IDEA's four choices with This Window primary and remembers Attach", async () => {
+it("offers IDEA's four choices plus New Tab with This Window primary and remembers Attach", async () => {
   vi.mocked(ask).mockResolvedValue({ button: "attach", checked: true });
   expect(await chooseProjectWindow("B")).toBe("attach");
   const prompt = vi.mocked(ask).mock.calls[0]![0];
-  expect(prompt.buttons.map((b) => b.id)).toEqual(["cancel", "attach", "new", "same"]);
+  expect(prompt.buttons.map((b) => b.id)).toEqual(["cancel", "attach", "new", "tab", "same"]);
   expect(prompt.buttons.filter((b) => b.primary).map((b) => b.id)).toEqual(["same"]);
   expect(commands.settingsSet).toHaveBeenCalledWith("global", "general.openProjectIn", '"attach"');
   expect(openPolicy()).toBe("attach");
@@ -40,7 +40,16 @@ it("does not attach without a project or when opening a remote project", async (
   });
   vi.mocked(ask).mockResolvedValue({ button: "cancel", checked: false });
   expect(await chooseProjectWindow("remote", false)).toBeNull();
-  expect(vi.mocked(ask).mock.calls[0]![0].buttons.map((b) => b.id)).not.toContain("attach");
+  expect(vi.mocked(ask).mock.calls[0]![0].buttons.map((b) => b.id)).toEqual(["cancel", "new", "same"]);
   useProject.setState({ project: null });
   expect(await chooseProjectWindow("B")).toBe("same");
+});
+it("opens in a new tab per the setting, and asks instead from a LightEdit window", async () => {
+  useProject.setState({ settings: { general: { openProjectIn: "tab" } } as never });
+  expect(await chooseProjectWindow("B")).toBe("tab");
+  expect(ask).not.toHaveBeenCalled();
+  useProject.setState({ project: null, lightEdit: true });
+  vi.mocked(ask).mockResolvedValue({ button: "new", checked: false });
+  expect(await chooseProjectWindow("B")).toBe("new");
+  expect(vi.mocked(ask).mock.calls[0]![0].buttons.map((b) => b.id)).toEqual(["cancel", "new", "same"]);
 });

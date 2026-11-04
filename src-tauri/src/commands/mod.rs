@@ -380,6 +380,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         sdk::sdk_python_packages,
         sdk::sdk_python_pip,
         window::window_open_project,
+        window::window_open_project_tab,
         window::window_open_files,
         window::window_open_file_in_new_window,
         window::window_open_remote,
