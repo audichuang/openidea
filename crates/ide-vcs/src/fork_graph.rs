@@ -170,10 +170,11 @@ impl Repo {
             .collect())
     }
 
-    /// Commits per author over every branch, most first.
+    /// Commits per author over every branch, tag and remote branch, most first. Not `--all`:
+    /// that also walks `refs/stash`, counting each stash's internal commits.
     pub fn graph_author_stats(&self) -> IdeResult<Vec<GraphAuthorStat>> {
         let _scope = self.fork_scope();
-        let out = run_raw(self.root(), &["shortlog", "-sne", "--all"], Some(b""))?;
+        let out = run_raw(self.root(), &["shortlog", "-sne", "--branches", "--tags", "--remotes", "HEAD"], Some(b""))?;
         if out.code != Some(0) {
             return Ok(Vec::new());
         }
