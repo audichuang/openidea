@@ -2,7 +2,7 @@
 
 use crate::menu::{self, MenuConfig, MenuState};
 use crate::state::AppState;
-use crate::windows::{self, Launch, OpenOutcome, WindowsState};
+use crate::windows::{self, Launch, OpenIn, OpenOutcome, WindowsState};
 use ide_core::{IdeError, IdeResult, RequestId};
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -22,7 +22,21 @@ pub async fn window_open_project(
     new_window: bool,
     files: Vec<PathBuf>,
 ) -> IdeResult<OpenOutcome> {
-    windows::open_project_window(&app, &path, new_window, files)
+    let open_in = if new_window { OpenIn::NewWindow } else { OpenIn::Current };
+    windows::open_project_window(&app, &path, open_in, files)
+}
+
+/// [`window_open_project`] into a new tab of this window's group ("Open project in: New tab");
+/// a plain new window when this window has no project.
+#[tauri::command]
+#[specta::specta]
+pub async fn window_open_project_tab(
+    app: AppHandle,
+    window: WebviewWindow,
+    path: PathBuf,
+    files: Vec<PathBuf>,
+) -> IdeResult<OpenOutcome> {
+    windows::open_project_window(&app, &path, OpenIn::NewTab { caller: window.label() }, files)
 }
 
 /// Loose `files` opened from a window without a local project: a file inside a local project
@@ -62,7 +76,20 @@ pub async fn window_open_remote(
     path: String,
     new_window: bool,
 ) -> IdeResult<OpenOutcome> {
-    windows::open_remote_window(&app, &ssh_config, &path, new_window)
+    let open_in = if new_window { OpenIn::NewWindow } else { OpenIn::Current };
+    windows::open_remote_window(&app, &ssh_config, &path, open_in)
+}
+
+/// [`window_open_remote`] into a new tab of this window's group.
+#[tauri::command]
+#[specta::specta]
+pub async fn window_open_remote_tab(
+    app: AppHandle,
+    window: WebviewWindow,
+    ssh_config: String,
+    path: String,
+) -> IdeResult<OpenOutcome> {
+    windows::open_remote_window(&app, &ssh_config, &path, OpenIn::NewTab { caller: window.label() })
 }
 
 /// Opens an empty (welcome) window; returns its label.
