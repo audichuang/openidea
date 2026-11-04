@@ -96,6 +96,9 @@ const features: Array<[string, Activate]> = [
   ["ssh", ssh],
   ["remote-dev", remoteDev],
 ];
+// Fork-owned features: src/features/fork.ts.
+import { forkFeatures } from "./fork";
+features.push(...forkFeatures);
 
 function activateAll(what: string, list: Array<[string, Activate]>): () => void {
   const disposers: Array<() => void> = [];
