@@ -55,7 +55,7 @@ jobs:
             case "$f" in
               # Never reaches the app or a test: agent docs, fork rules, the auto-rebase skill.
               # The release workflow only runs on a fork tag; CI cannot exercise it.
-              *.md|docs/*|LICENSE|NOTICE|.claude/*|scripts/fork/*|.github/workflows/fork-release.yml) ;;
+              *.md|docs/*|LICENSE|NOTICE|.claude/*|scripts/fork/*|.github/workflows/fork-release.yml|.github/actions/fork-release-setup/*) ;;
               crates/*|src-tauri/*|Cargo.toml|Cargo.lock|deny.toml|rustfmt.toml|wit/*) rust=true ;;
               # src/bindings.ts is generated from Rust: a change there needs the bindings check too.
               src/bindings.ts) rust=true; web=true ;;
