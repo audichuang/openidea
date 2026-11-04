@@ -6,10 +6,22 @@ name: Fork Release
 # latest.json, and bumps the Homebrew cask `audichuang/tap/openidea-fork`. Both builds point the
 # built-in updater at this fork's releases with the fork's own key, so the app updates itself to
 # fork releases and never to upstream ones. A `fork-release-dryrun-*` tag builds both and uploads
-# them as workflow artifacts only. Release rules: FORK.md.
+# them as workflow artifacts only. A develop push that changes the Rust dependencies (and a weekly
+# run, since a new stable rustc changes the key) only warms the dependency cache release tags
+# restore. Release rules: FORK.md.
 on:
   push:
     tags: ["v*-fork.*", "fork-release-dryrun-*"]
+    # Tags ignore `paths`; it filters the develop pushes only.
+    branches: [develop]
+    paths:
+      - Cargo.lock
+      - "**/Cargo.toml"
+      - .github/workflows/fork-release.yml
+      - .github/actions/fork-release-setup/**
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -20,6 +32,12 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  # Fat LTO links the whole program on one core (~28 of the macOS job's ~41 minutes). Thin LTO
+  # parallelises it; measured on openidea-server: final link 178 s → 61 s, +5% size, benches
+  # within noise. Overrides Cargo.toml's [profile.release] here only, so upstream stays untouched.
+  # Workflow-level, like every CARGO_* here: rust-cache hashes them into the key, so the warm job
+  # and the release build must see the same set.
+  CARGO_PROFILE_RELEASE_LTO: thin
   TAG: ${{ github.ref_name }}
   DRY_RUN: ${{ startsWith(github.ref_name, 'fork-release-dryrun-') }}
   # The fork's updater public key (private half: TAURI_SIGNING_PRIVATE_KEY, 1Password Agent vault).
@@ -27,8 +45,30 @@ env:
   UPDATER_ENDPOINT: https://github.com/audichuang/openidea/releases/latest/download/latest.json
 
 jobs:
+  warm:
+    name: Warm the dependency cache (${{ matrix.name }})
+    if: github.repository == 'audichuang/openidea' && github.ref_type != 'tag'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macOS arm64, os: macos-latest, target: aarch64-apple-darwin }
+          - { name: Windows x64, os: windows-latest, target: x86_64-pc-windows-msvc }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: ./.github/actions/fork-release-setup
+        with: { target: "${{ matrix.target }}", save-cache: "true" }
+      # Same cargo build as a release (features, target, profile), without signing or bundles.
+      - name: Build
+        shell: bash
+        working-directory: ${{ env.WORK }}
+        run: pnpm tauri build --target "${{ matrix.target }}" --no-bundle
+
   guard:
-    if: github.repository == 'audichuang/openidea'
+    if: github.repository == 'audichuang/openidea' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -92,24 +132,13 @@ jobs:
     env:
       TARGET: ${{ matrix.target }}
       VERSION: ${{ needs.guard.outputs.version }}
-      # Fat LTO links the whole program on one core (~28 of the macOS job's ~41 minutes). Thin LTO
-      # parallelises it; measured on openidea-server: final link 178 s → 61 s, +5% size, benches
-      # within noise. Overrides Cargo.toml's [profile.release] here only, so upstream stays untouched.
-      CARGO_PROFILE_RELEASE_LTO: thin
     steps:
       - uses: actions/checkout@v4
         with: { persist-credentials: false }
-      - uses: pnpm/action-setup@v4
-        with: { version: 11 }
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: pnpm }
-      - uses: dtolnay/rust-toolchain@stable
-        with: { targets: "${{ matrix.target }}" }
-      # Why no save: a tag-scoped cache is readable only by that tag's own reruns, and 1 GB each
-      # pushes develop's CI caches out of the repo's 10 GB.
-      - uses: Swatinem/rust-cache@v2
-        with: { key: "fork-${{ matrix.target }}", save-if: false }
-      - run: pnpm install --frozen-lockfile
+      # Restores the dependency cache the warm job saved on develop; never saves (a tag-scoped
+      # cache is readable only by that tag's own reruns).
+      - uses: ./.github/actions/fork-release-setup
+        with: { target: "${{ matrix.target }}" }
 
       # tauri reads the notarization key from a file path.
       - name: Stage the notarization API key
@@ -124,6 +153,7 @@ jobs:
 
       - name: Build
         shell: bash
+        working-directory: ${{ env.WORK }}
         env:
           APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE || '' }}
           APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
@@ -138,6 +168,7 @@ jobs:
 
       - name: Verify the signature and notarization
         if: runner.os == 'macOS'
+        working-directory: ${{ env.WORK }}
         run: |
           app="target/$TARGET/release/bundle/macos/OpenIDEA.app"
           info=$(codesign --display --verbose=2 "$app" 2>&1)
@@ -152,6 +183,7 @@ jobs:
       # Stable asset names: the cask and latest.json point at them.
       - name: Stage the assets
         shell: bash
+        working-directory: ${{ env.WORK }}
         run: |
           out="$RUNNER_TEMP/assets"; mkdir -p "$out"
           b="target/$TARGET/release/bundle"
