@@ -64,7 +64,7 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
 
 先在 PR 留言「本機閘門開始」（心跳）。`pnpm install --frozen-lockfile && mkdir -p dist`，然後各自跑、全部跑完再看結果：`pnpm typecheck`、`pnpm lint`、`pnpm format:check`、`pnpm knip`、`pnpm test`；`rust-remote fmt --all --check`、`rust-remote clippy --workspace --all-targets -- -D warnings`、`rust-remote nextest run --workspace --profile ubuntu-remote --no-fail-fast`（profile 已排除 ubuntu 上必失敗的環境性測試）。
 
-失敗要拿上游對照：`git worktree add --detach ../ar-$RUN-base vNEW`，在那裡跑同一條指令（Rust 一樣走 `rust-remote`，它在遠端用目錄名分開）。兩邊都紅的是上游或環境的（例如遠端主機沒有先編 sample plugin 的 wasm），兩份輸出尾段都貼進 PR 說明；只有 fork 紅的是 fork 造成的，要修（修正 commit 讓模式變 MANUAL）。同一個問題修兩輪還不過 → 第 7 步交人。
+失敗要拿上游對照：`git worktree add --detach ../ar-$RUN-base vNEW`，在那裡跑同一條指令（Rust 一樣走 `rust-remote`，它在遠端用目錄名分開）。兩邊都紅的是上游或環境的，兩份輸出尾段都貼進 PR 說明；只有 fork 紅的是 fork 造成的，要修（修正 commit 讓模式變 MANUAL）。同一個問題修兩輪還不過 → 第 7 步交人。
 
 ## 3. Fork CI
 
@@ -107,7 +107,7 @@ develop 一移動（含已在 HEAD 不重推的情況）就 `gh workflow list -R
    git push --atomic --force-with-lease=main:$old fork <sha>:refs/heads/main vNEW-fork.N
    ```
    推完再跑一次第 4 步的 `gh workflow list` 檢查，有新出現的 active 上游 workflow 就 disable。
-4. `gh run list -R audichuang/openidea --workflow fork-release.yml --branch vNEW-fork.N --json databaseId,headSha` 找 run，`gh-wait run <id>` 等完（約 50 分鐘：macOS 與 Windows 並行建置，都成功才發布、附 latest.json、更新 cask；任一平台失敗就沒有發版）。失敗看 `--log-failed`；只靠改程式才能修的失敗不在這裡修，通知裡寫原因。
+4. `gh run list -R audichuang/openidea --workflow fork-release.yml --branch vNEW-fork.N --json databaseId,headSha` 找 run，`gh-wait run <id>` 等完（macOS 與 Windows 並行建置，都成功才發布、附 latest.json、更新 cask；任一平台失敗就沒有發版）。失敗看 `--log-failed`；只靠改程式才能修的失敗不在這裡修，通知裡寫原因。
 5. 發版成功 → PR 留言結果後關閉，刪 `rebase/vNEW` 與 `ci-base/vNEW`。
 
 ## 7. Bark 通知（有做事就推）
