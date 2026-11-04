@@ -1,4 +1,7 @@
 {
+  "Cannot delete": "无法删除",
+  "Delete \"{name}\"? Items are moved to the Trash.": "删除“{name}”？项目将移到废纸篓。",
+  "Delete {count} files? Items are moved to the Trash.": "删除 {count} 个文件？项目将移到废纸篓。",
   "Edit {name}": "编辑 {name}",
   "The language server JDK ({path}) must be a full JDK with jdk.compiler, jdk.jdi and jdk.unsupported for Java language support and debugging. jdtls needs JDK {version} or newer. Download JDK {version}, choose a full JDK in {setting}, or set it to Auto.": "语言服务器 JDK（{path}）必须是包含 jdk.compiler、jdk.jdi 和 jdk.unsupported 的完整 JDK，才能支持 Java 语言功能和调试。jdtls 需要 JDK {version} 或更高版本。请下载 JDK {version}，在 {setting} 中选择完整 JDK，或设为自动。",
   "ACP Registry": "ACP 注册表",
