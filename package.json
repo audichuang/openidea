@@ -39,7 +39,7 @@
     "dogfood:all": "node scripts/dogfood.ts all"
   },
   "simple-git-hooks": {
-    "pre-commit": "PATH=\"$HOME/.cargo/bin:$PATH\" pnpm lint-staged"
+    "pre-commit": "PATH=\"$HOME/.cargo/bin:$PWD/node_modules/.bin:$PATH\" lint-staged"
   },
   "lint-staged": {
     "*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}": "oxlint --fix --no-error-on-unmatched-pattern",
