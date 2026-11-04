@@ -78,6 +78,6 @@ runs:
         KEEP: ${{ steps.key.outputs.prefix }}${{ github.sha }}
         FAMILY: tgt-${{ inputs.name }}-${{ runner.os }}-
       run: |
-        gh cache list -R "$GITHUB_REPOSITORY" --key "$FAMILY" --ref refs/heads/develop --limit 100 --json id,key \
+        gh cache list -R "$GITHUB_REPOSITORY" --key "$FAMILY" --ref "$GITHUB_REF" --limit 100 --json id,key \
           --jq ".[] | select(.key != \"$KEEP\") | .id" |
           while read -r id; do gh cache delete -R "$GITHUB_REPOSITORY" "$id"; done
