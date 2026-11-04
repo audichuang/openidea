@@ -550,6 +550,9 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
         <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void refreshNow()} />
         {mode === "local" && <IconButton icon="commit" action="vcs.commit" size="small" />}
         <IconButton icon="undo" action="vcs.rollback" size="small" />
+        {/* IDEA's Commit view: Show Diff and Shelve after Rollback. */}
+        {mode !== "dialog" && <IconButton icon="diff" action="vcs.showDiff" size="small" />}
+        {mode !== "dialog" && <IconButton icon="shelve" action="vcs.shelve" size="small" />}
         {mode === "local" && <IconButton icon="changelist" action="vcs.changelist.new" size="small" />}
         {mode !== "dialog" && <IconButton icon="git-pull" action="vcs.update" size="small" />}
         <IconButton
