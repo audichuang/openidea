@@ -127,6 +127,10 @@ describe("git graph bridge", () => {
     ]);
   });
 
+  it("keeps a slashed local branch local in a repository without remotes", () => {
+    expect(bridge().refLabels(["feature/search"], new Set())).toEqual([{ kind: "local", name: "feature/search" }]);
+  });
+
   it("offers the Git Log commit operations for one commit", async () => {
     const c = commit("b".repeat(40), ["c".repeat(40)]);
     const ids = actionIds(await bridge().commitMenu(c, [c]));
@@ -143,6 +147,8 @@ describe("git graph bridge", () => {
       "vcs.log.interactiveRebase",
     ])
       expect(ids).toContain(id);
+    expect(ids).not.toContain("vcs.log.goToParent");
+    expect(ids).not.toContain("vcs.log.goToChild");
   });
 
   it("offers the multi-commit operations for a selection", async () => {
