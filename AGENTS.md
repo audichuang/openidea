@@ -2,6 +2,10 @@
 
 This is a personal fork. Before rebasing onto upstream, merging into `develop`, or releasing, read `FORK.md`: branch model, merge gate, platform scope, conflict rules and the release flow.
 
+This overrides the upstream guidance below (Issues & PRs, Parallel worktrees, `issue-fix`): cut work
+branches from `fork/develop`, not `origin/main`, and pass `-R audichuang/openidea` to every `gh issue`
+and `gh pr` command, with PRs into `develop`. Never open an issue or PR on `l0ng-ai/openidea`.
+
 # OpenIDEA — contributor guide
 
 Rust + Tauri 2 desktop IDE with full-featured, multi-language code intelligence.
