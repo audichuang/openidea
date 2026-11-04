@@ -34,7 +34,7 @@ import { bindingsFor, normalizeBinding, shortcutLabel, strokeOf } from "@/platfo
 import { tx } from "@/platform/i18n";
 import { IconButton, Select, Spinner, T, showContextMenu } from "@/ui";
 import { editorService, type EditorInput } from "@/workbench/contributions";
-import { changedLineGutters, diffWords, languageFor, viewerBase } from "./cm";
+import { changedLineGutters, diffOverview, diffWords, languageFor, viewerBase } from "./cm";
 import { applyChunk, arrowControls, chunkAt, hoverRevert, revertUnifiedChunk } from "./diffControls";
 import {
   HIGHLIGHT_OPTIONS,
@@ -406,10 +406,12 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
                 : undefined,
           });
       // IDEA's colouring: lines by chunk type, carried into the gutters, and typed word highlights.
+      // Aligned panes scroll together in the merge view, so a pane's own stripe would not fit it.
       const colours = [
         changedLineGutters,
         highlightChanges ? diffWords : [],
         opts.highlight !== "none" ? movedCodeHighlights(highlightChanges) : [],
+        panes ? diffOverview : [],
       ];
       const mv = new MergeView({
         a: {
@@ -478,6 +480,7 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
           findWatch("b"),
           inclusion,
           highlightChanges ? diffWords : [],
+          diffOverview,
           unifiedMergeView({
             original: textA,
             highlightChanges,
