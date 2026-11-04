@@ -16,6 +16,7 @@ pub mod deploy;
 pub mod doc;
 pub mod docker;
 pub mod env;
+pub mod fork_graph;
 pub mod fs;
 pub mod heap;
 pub mod history;
