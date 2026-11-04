@@ -54,7 +54,7 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
 
    腳本已經 `git checkout --conflict=diff3`（rerere 重放過的也會被重建後重解）；解完 `git add <檔>`、`GIT_EDITOR=true git rebase --continue`。把每個衝突檔、它的類別與 commit 記進 `$MAIN/.rebase-review/conflicts.txt`，PR 說明要用。
 
-4. rebase 完重新產生生成檔（在 Mac mini 上 Rust 一律走 `rust-remote`）：`pnpm install --lockfile-only`；`rust-remote --pull Cargo.lock metadata --format-version 1 > /dev/null`。有差異就一個 commit `chore(fork): 重新產生 lockfile`（MECHANICAL）。`src/bindings.ts` 不在這裡重新產生（ubuntu 主機缺 dbus-1，bindings 測試編不起來；本機又不編 Rust）：維持上游那邊，由第 3 步 Fork CI 的 `Bindings are up to date` 檢查。
+4. rebase 完重新產生生成檔（在 Mac mini 上 Rust 一律走 `rust-remote`）：`pnpm install --lockfile-only`；`rust-remote --pull Cargo.lock metadata --format-version 1 > /dev/null`。有差異就一個 commit `chore(fork): 重新產生 lockfile`（MECHANICAL）。`src/bindings.ts` 不在這裡重新產生：維持上游那邊，由第 3 步 Fork CI 的 `Bindings are up to date` 檢查。
 5. 模式：沒有衝突、第 4 點沒產生 commit → CLEAN；只有前三類衝突與第 4 點的 commit → MECHANICAL；其餘（自己解的衝突、任何修正 commit）→ MANUAL。
 6. `git push --force fork HEAD:refs/heads/rebase/vNEW`，`git push fork "vNEW^{commit}:refs/heads/ci-base/vNEW"`，開 PR：`gh pr create -R audichuang/openidea --base ci-base/vNEW --head rebase/vNEW --title "[不合併] develop rebase 到 vNEW 的驗證"`，記下 `PR`。body 第一行 `<!-- auto-rebase:old-develop OLD_DEVELOP 的完整 sha -->`，其餘寫：為什麼不合併（develop 由 lease 推送移動）、`develop = vOLD(+上游 commit) + N 個 fork commit → vNEW + …`、模式、每個衝突檔的類別與解法、額外 commit。不加任何 attribution 行。
 
@@ -70,7 +70,7 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
 
 `git push --force fork HEAD:refs/heads/rebase/vNEW` 觸發 Fork CI（`fork-ci.yml` 對 `rebase/**` 的 push 也會跑）。用 `gh run list -R audichuang/openidea --workflow fork-ci.yml --branch rebase/vNEW --json databaseId,headSha` 找 `headSha` 等於 HEAD 的 run，`gh-wait run <id> -R audichuang/openidea` 等它（不用 `gh run watch`、不輪詢）。
 
-結果看 `Fork CI passed` 這個 job。Linux Rust job 停在 `Bindings are up to date`，代表 fork 的 IPC 型別要重新產生 bindings：不修、不重跑，模式改成 MANUAL，needs-human 留言寫明要使用者在 Mac 上用 `pnpm dev:app` 重新產生 `src/bindings.ts`、推上 `rebase/vNEW`，等 CI 綠了再核可新的 sha。`Upstream ci.yml unchanged` 紅了代表上游改了 `ci.yml`：照 FORK.md 把改動移植進 `fork-ci.yml` 並更新 pin（修正 commit，模式變 MANUAL）。其他紅的 job 先 `gh run rerun <id> --failed` 一次；再紅就看上游同一個 job 在 vNEW 是否也紅：`gh run list -R l0ng-ai/openidea --workflow ci.yml --commit $(git rev-parse 'vNEW^{commit}')`。上游也紅 → 不擋（PR 說明附兩邊的 run 連結）；上游綠或沒有可比的 run → fork 造成的，照第 2 步的規則修，修完回到第 3 步。
+結果看 `Fork CI passed` 這個 job。Linux Rust job 停在 `Bindings are up to date`，代表 fork 的 IPC 型別要重新產生 bindings：不修、不重跑，模式改成 MANUAL，needs-human 留言寫明要用 `rust-remote --pull src/bindings.ts test -p openidea --test export_bindings` 重新產生 `src/bindings.ts`（見 FORK.md）、推上 `rebase/vNEW`，等 CI 綠了再核可新的 sha。`Upstream ci.yml unchanged` 紅了代表上游改了 `ci.yml`：照 FORK.md 把改動移植進 `fork-ci.yml` 並更新 pin（修正 commit，模式變 MANUAL）。其他紅的 job 先 `gh run rerun <id> --failed` 一次；再紅就看上游同一個 job 在 vNEW 是否也紅：`gh run list -R l0ng-ai/openidea --workflow ci.yml --commit $(git rev-parse 'vNEW^{commit}')`。上游也紅 → 不擋（PR 說明附兩邊的 run 連結）；上游綠或沒有可比的 run → fork 造成的，照第 2 步的規則修，修完回到第 3 步。
 
 ## 4. 移動 develop
 
