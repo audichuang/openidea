@@ -54,6 +54,25 @@ describe("staging area tree", () => {
     ]);
   });
 
+  it("puts unversioned files under Unstaged as VS Code does, when asked", () => {
+    expect(shape(buildStagingTree(status, "/r", false, [], true))).toEqual([
+      "Merge Conflicts",
+      "  conf.yml (conflicted)",
+      "Staged",
+      "  Gone.kt (added)",
+      "  New.kt (added)",
+      "  Partial.kt (modified)",
+      "Unstaged",
+      "  App.kt (modified)",
+      "  Gone.kt (deleted)",
+      "  notes.txt (untracked)",
+      "  Partial.kt (modified)",
+    ]);
+    expect(stagingGroups(fs("n", null, "untracked"), true)).toEqual(["unstaged"]);
+    // Staged once (`git add`), a file is no longer unversioned.
+    expect(stagingGroups(fs("n", "added", null), true)).toEqual(["staged"]);
+  });
+
   it("keeps node keys unique when a file is in two groups", () => {
     const all = keys(buildStagingTree(status, "/r", true));
     expect(new Set(all).size).toBe(all.length);
@@ -116,5 +135,9 @@ describe("staging area diffs", () => {
       label: "HEAD (a.kt)",
     });
     expect(stagingDiffData(fs("u.txt", null, "untracked"), "unversioned")).toBeNull();
+    // Under Unstaged an unversioned file has no index side yet.
+    const u = stagingDiffData(fs("u.txt", null, "untracked"), "unstaged");
+    expect(u?.left).toMatchObject({ type: "text", label: "(does not exist)" });
+    expect(u?.right).toEqual({ type: "worktree" });
   });
 });
