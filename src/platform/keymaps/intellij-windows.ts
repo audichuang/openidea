@@ -290,6 +290,8 @@ export const intellijWindows: Record<string, string[]> = {
   "vcs.showMessageHistory": ["Ctrl+M"],
   "vcs.update": ["Ctrl+T"],
   "vcs.rollback": ["Ctrl+Alt+Z"],
+  "vcs.delete": ["Delete"],
+  "vcs.addToVcs": ["Ctrl+Alt+A"],
   "vcs.showDiff": ["Ctrl+D"],
   "vcs.nextChange": ["Ctrl+Alt+Shift+Down"],
   "vcs.prevChange": ["Ctrl+Alt+Shift+Up"],

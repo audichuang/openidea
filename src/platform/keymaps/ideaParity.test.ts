@@ -27,6 +27,9 @@ describe("IDEA keymap parity", () => {
     ["editor.copyPath", ["Meta+Shift+C"], ["Ctrl+Shift+C"]],
     ["project.open", ["F4", "Meta+Down"], ["F4"]],
     ["project.delete", ["Delete", "Backspace", "Meta+Backspace"], ["Delete"]],
+    // $Delete and ChangesView.AddUnversioned in the Commit view.
+    ["vcs.delete", ["Delete", "Backspace", "Meta+Backspace"], ["Delete"]],
+    ["vcs.addToVcs", ["Meta+Alt+A"], ["Ctrl+Alt+A"]],
     ["file.reloadFromDisk", ["Meta+Alt+Y"], ["Ctrl+Alt+Y"]],
     ["project.reloadFromDisk", ["Meta+Alt+Y"], ["Ctrl+Alt+Y"]],
     ["project.expandAll", ["Meta+="], ["Ctrl+="]],
