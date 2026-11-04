@@ -501,6 +501,8 @@ export function registerVcsActions(): () => void {
       category: "Git",
       icon: "plus",
       when: VCS,
+      // ⌃⌥A on Windows also applies a diff's right side there.
+      keyWhen: "!diffEditorFocus",
       keywords: ["git add", "stage"],
       run: ({ arg }) => {
         return addToVcs(contextPaths(arg));
@@ -513,8 +515,15 @@ export function registerVcsActions(): () => void {
       category: "Git",
       icon: "trash",
       when: VCS,
+      // ⌦ / ⌫ only in the Commit view's tree: a changelist header claims them (CommitView).
+      keyWhen: "changesTreeFocus && !popupOpen",
       keywords: ["remove", "trash", "unversioned", "untracked"],
-      run: ({ arg }) => deleteLocalFiles(contextPaths(arg)),
+      // Never falls back to the file in the editor, unlike `contextPaths`.
+      run: ({ arg }) => {
+        const explicit = argPaths(arg);
+        const sel = useCommit.getState().selection;
+        return deleteLocalFiles(explicit?.length ? explicit : commitWindowFocused() ? sel : []);
+      },
     },
     {
       id: "vcs.stash",

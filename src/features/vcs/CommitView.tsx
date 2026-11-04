@@ -8,6 +8,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, typ
 import { tx } from "@/platform/i18n";
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
+import { setContext } from "@/platform/context";
+import { registerKeyClaim } from "@/platform/keymap";
 import { dirname } from "@/platform/project";
 import { isTestFile, useEffectiveRoots } from "@/platform/projectRoots";
 import {
@@ -247,6 +249,7 @@ function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuItem[] {
   const paths = files.map((f) => f.path);
   const first = nodes.find((n) => n.type === "file");
   const untracked = files.filter((f) => f.unstaged === "untracked");
+  const onlyUntracked = files.length > 0 && untracked.length === files.length;
   const toIgnore = ignoreTargets(nodes, repos);
   const conflicted = files.filter((f) => f.unstaged === "conflicted");
   const items: MenuItem[] = [
@@ -304,8 +307,9 @@ function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuItem[] {
     ...(nodes.some((n) => n.changelist)
       ? [{ kind: "action" as const, action: "vcs.changelist.move", arg: paths, label: "Move to Another Changelist…" }]
       : []),
-    { kind: "action", action: "vcs.shelve", arg: paths },
-    { kind: "action", action: "vcs.createPatch", arg: paths },
+    // IDEA: nothing to shelve or diff while only unversioned files are selected.
+    { kind: "action", action: "vcs.shelve", arg: paths, disabled: onlyUntracked },
+    { kind: "action", action: "vcs.createPatch", arg: paths, disabled: onlyUntracked },
     { kind: "separator" },
     {
       label: "Show History",
@@ -526,6 +530,25 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   }, []);
 
   const selectedNodes = () => [...selected].map((k) => byKey.get(k)).filter((n): n is ChangeNode => !!n);
+  const treeWrapRef = useRef<HTMLDivElement>(null);
+  const headerSelected = useRef(false);
+  useEffect(() => {
+    headerSelected.current = [...selected].some((k) => {
+      const n = byKey.get(k);
+      return n?.type === "group" && !!n.changelist;
+    });
+  }, [selected, byKey]);
+  // ⌦ / ⌫ on a changelist header delete the list (below), not its files (`vcs.delete`).
+  useEffect(
+    () =>
+      registerKeyClaim(
+        (e, stroke) =>
+          (stroke === "Delete" || stroke === "Backspace") &&
+          headerSelected.current &&
+          !!treeWrapRef.current?.contains(e.target as Node),
+      ),
+    [],
+  );
 
   return (
     <div className={styles.changes}>
@@ -572,24 +595,22 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
       </div>
       {mode !== "dialog" && <OperationBanner />}
       <div
+        ref={treeWrapRef}
         className={styles.treeWrap}
+        onFocus={(e) => setContext("changesTreeFocus", !!(e.target as HTMLElement).closest('[role="tree"]'))}
+        onBlur={() => setContext("changesTreeFocus", false)}
         onKeyDownCapture={(e) => {
           if (checkboxes && e.key === " " && !e.metaKey && !e.ctrlKey && selected.size) {
             e.preventDefault();
             e.stopPropagation();
             toggle(selectedNodes());
           } else if ((e.key === "Delete" || e.key === "Backspace") && !e.metaKey) {
-            const nodes = selectedNodes();
-            const group = nodes.find((x) => x.type === "group" && x.changelist);
-            const paths = filesOf(nodes.filter((x) => x.type !== "group" || !x.changelist)).map((f) => f.path);
+            // Files go through the keymap (`vcs.delete`); a changelist header claims the key.
+            const group = selectedNodes().find((x) => x.type === "group" && x.changelist);
             if (group?.changelist) {
               e.preventDefault();
               e.stopPropagation();
               void executeAction("vcs.changelist.delete", group.changelist);
-            } else if (paths.length) {
-              e.preventDefault();
-              e.stopPropagation();
-              void executeAction("vcs.delete", paths);
             }
           } else if (e.key === "F4") {
             const n = selectedNodes().find((x) => x.type === "file");
