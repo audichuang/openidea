@@ -169,7 +169,7 @@ Put proof in `/tmp/oi-verify/evidence/<task>/` (cleanup never deletes it):
 1. Restore settings you changed through the same bindings call.
 2. Stop the `pnpm dev:app` you started (its background task or pid; never `pkill openidea`, the installed app has the same name).
 3. `rm -rf /tmp/oi-verify/repo*`; keep `/tmp/oi-verify/evidence`.
-4. `cargo clean` in `src-tauri` (`target/` grows past 6 GB). If `PATH="$HOME/.cargo/bin:$PATH" cargo -V` mentions `huacnlee`, do not: that cargo keeps build output for every worktree of the repo in one directory under `~/.cargo/targets/` and trims it itself, and its `cargo clean` deletes that directory without a lock, breaking builds running in other worktrees. Leave it, or `rm -rf ./target` for this worktree only.
+4. Free this worktree's build output. If `PATH="$HOME/.cargo/bin:$PATH" cargo -V` mentions `huacnlee` (the Mac mini), only `rm -rf ./target` if you need the space: that cargo keeps the real build output for every worktree of the repo under `~/.cargo/targets/` and trims it itself, and its `cargo clean` deletes that shared directory without a lock, breaking builds running in other worktrees. With a stock cargo, `cargo clean` in `src-tauri` (`target/` grows past 6 GB).
 
 ## Feature map
 
