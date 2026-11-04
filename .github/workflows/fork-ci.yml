@@ -70,7 +70,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: |
           # Port upstream's ci.yml edits into this file, then update the pin.
-          pin=75d7fdec13adba7a2f7b5b853b77683e600d7238ec10568b451850a1202145ed
+          pin=e32b07341a09c29ac34edbbbb255f54b5f56279a576727ff357bd992ce60f602
           sha=$(sha256sum .github/workflows/ci.yml | cut -d' ' -f1)
           [ "$sha" = "$pin" ] || { echo "::error::upstream ci.yml changed ($sha); port it into fork-ci.yml and update the pin"; exit 1; }
 
@@ -213,6 +213,60 @@ jobs:
       - run: cargo build --locked -p ide-host --bin openidea-server --target x86_64-unknown-linux-musl
       - run: target/x86_64-unknown-linux-musl/debug/openidea-server --version
 
+  # The plugin SDK, the official plugins and the test fixtures build in their own workspaces (the
+  # root excludes them), so the jobs above don't see them. Ported from upstream's ci.yml `plugins`.
+  plugins:
+    name: Plugins (SDK, official, fixtures)
+    needs: scope
+    if: needs.scope.outputs.rust == 'true'
+    runs-on: ubuntu-22.04
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target-plugins
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: wasm32-wasip2, components: "clippy, rustfmt" }
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: plugins
+          cache-directories: target-plugins
+          save-if: ${{ github.ref == 'refs/heads/develop' }}
+          cache-on-failure: true
+      - name: Format, lint (host and wasm) and test each crate
+        shell: bash
+        run: |
+          set -euo pipefail
+          for dir in sdk/rust/openidea-plugin plugins/official/*/ crates/ide-plugin/tests/fixtures/*/; do
+            [ -f "$dir/Cargo.toml" ] || continue
+            echo "::group::$dir"
+            cargo fmt --check --manifest-path "$dir/Cargo.toml"
+            cargo clippy --locked --all-targets --manifest-path "$dir/Cargo.toml" -- -D warnings
+            cargo clippy --locked --target wasm32-wasip2 --manifest-path "$dir/Cargo.toml" -- -D warnings
+            cargo test --locked --manifest-path "$dir/Cargo.toml"
+            echo "::endgroup::"
+          done
+      - uses: pnpm/action-setup@v4
+        with: { version: 11 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      # Plugin web pages (`web-src/`, their own pnpm projects): typecheck and test.
+      - name: Web pages typecheck and test
+        shell: bash
+        run: |
+          set -euo pipefail
+          for dir in plugins/official/*/web-src/; do
+            [ -f "$dir/package.json" ] || continue
+            echo "::group::$dir"
+            pnpm --dir "$dir" install --frozen-lockfile --ignore-workspace
+            pnpm --dir "$dir" exec tsc --noEmit
+            pnpm --dir "$dir" test
+            echo "::endgroup::"
+          done
+      # The host's tests run the checked-in components: they must be built from these sources.
+      # Web pages aren't checked in: this builds them and checks the result.
+      - name: Checked-in components are up to date, web pages build
+        run: plugins/build.sh --check
+
   deny:
     name: Cargo deny
     needs: scope
@@ -292,7 +346,7 @@ jobs:
   passed:
     name: Fork CI passed
     if: ${{ always() && !startsWith(github.event.head_commit.message, 'auto-rebase lock') }}
-    needs: [scope, upstream-ci, precheck, clippy, test, server, deny, frontend-static, frontend-test, e2e]
+    needs: [scope, upstream-ci, precheck, clippy, test, server, plugins, deny, frontend-static, frontend-test, e2e]
     runs-on: ubuntu-latest
     steps:
       - env:
