@@ -202,7 +202,14 @@ impl Repo {
             GraphBisectOp::Reset => run(root, &["bisect", "reset"], None)?,
         };
         let mut state = self.graph_bisect_state()?;
-        state.output = out.stdout_str().trim().to_string();
+        // Recent git prints the verdict on stderr, older on stdout: keep both.
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        state.output = [out.stdout_str(), stderr]
+            .iter()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
         state.culprit = state.culprit.or_else(|| first_bad_commit(&state.output));
         Ok(state)
     }
