@@ -21,14 +21,18 @@ const indexed = (k: ChangeKind | null) => !!k && k !== "untracked" && k !== "ign
 
 const conflicted = (fs: FileStatus) => fs.staged === "conflicted" || fs.unstaged === "conflicted";
 
-/** The groups a file shows under: a partially staged file is both staged and unstaged. */
-export function stagingGroups(fs: FileStatus): GroupId[] {
+/**
+ * The groups a file shows under: a partially staged file is both staged and unstaged.
+ * An unversioned file is unstaged too with `untrackedInUnstaged` (VS Code's two groups),
+ * else in IDEA's own Unversioned Files.
+ */
+export function stagingGroups(fs: FileStatus, untrackedInUnstaged = false): GroupId[] {
   if (conflicted(fs)) return ["conflicts"];
   if (fs.unstaged === "ignored") return [];
   const out: GroupId[] = [];
   if (indexed(fs.staged)) out.push("staged");
   if (indexed(fs.unstaged)) out.push("unstaged");
-  if (fs.unstaged === "untracked" && !fs.staged) out.push("unversioned");
+  if (fs.unstaged === "untracked" && !fs.staged) out.push(untrackedInUnstaged ? "unstaged" : "unversioned");
   return out;
 }
 
@@ -68,10 +72,11 @@ export function buildStagingTree(
   root: string,
   groupByDir: boolean,
   repos: readonly string[] = [],
+  untrackedInUnstaged = false,
 ): ChangeNode[] {
   const byGroup = new Map<GroupId, FileStatus[]>();
   for (const fs of status)
-    for (const g of stagingGroups(fs)) {
+    for (const g of stagingGroups(fs, untrackedInUnstaged)) {
       let list = byGroup.get(g);
       if (!list) byGroup.set(g, (list = []));
       list.push(fs);
@@ -122,6 +127,11 @@ export function stagingDiffData(fs: FileStatus, group: GroupId): DiffData | null
     return { path, left, right: fs.staged === "deleted" ? NONE("(deleted)") : INDEX };
   }
   if (group === "unstaged")
-    return { path, left: INDEX, right: fs.unstaged === "deleted" ? NONE("(deleted)") : { type: "worktree" } };
+    return {
+      path,
+      // An unversioned file has nothing in the index yet.
+      left: fs.unstaged === "untracked" ? NONE("(does not exist)") : INDEX,
+      right: fs.unstaged === "deleted" ? NONE("(deleted)") : { type: "worktree" },
+    };
   return null;
 }

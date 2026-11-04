@@ -404,6 +404,7 @@
   "Sign in with the agent's own command line first.": "请先使用智能体自身的命令行登录。",
   "This agent is configured in its agent file.": "此智能体在其智能体文件中配置。",
   "This agent runs through a package runner (npm or uv) and has no executable to choose.": "此智能体通过包运行器（npm 或 uv）启动，无需选择可执行文件。",
+  "Unversioned Files Under Unstaged": "未跟踪的文件放在“未暂存”中",
   "Update to {latest}": "更新至 {latest}",
   "A newer version is available: {latest}": "有新版本可用：{latest}",
   "Kotlin bridge requires a Maven build root": "Kotlin 桥接需要 Maven 构建根目录",
