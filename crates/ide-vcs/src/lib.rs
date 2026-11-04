@@ -472,6 +472,8 @@ pub use compare::{CompareResult, CompareScope, RepositoryComparison, WorkingTree
 pub mod shelf;
 mod status;
 pub use index_writes::is_own_index_write;
+/// Fork-owned: the Git Graph view's extra queries and operations.
+pub mod fork_graph;
 mod text_encoding;
 mod write;
 
