@@ -217,18 +217,19 @@ mod platform {
     use super::{AutoProxy, PAC_FETCH_TIMEOUT, pick_from_list, scheme_of};
     use windows::Win32::Foundation::{GlobalFree, HGLOBAL};
     use windows::Win32::Networking::WinHttp::{
-        WINHTTP_ACCESS_TYPE_NAMED_PROXY, WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_AUTO_DETECT_TYPE_DHCP,
-        WINHTTP_AUTO_DETECT_TYPE_DNS_A, WINHTTP_AUTOPROXY_AUTO_DETECT, WINHTTP_AUTOPROXY_CONFIG_URL,
-        WINHTTP_AUTOPROXY_OPTIONS, WINHTTP_CURRENT_USER_IE_PROXY_CONFIG, WINHTTP_PROXY_INFO, WinHttpCloseHandle,
-        WinHttpGetIEProxyConfigForCurrentUser, WinHttpGetProxyForUrl, WinHttpOpen, WinHttpSetTimeouts,
+        ERROR_WINHTTP_AUTODETECTION_FAILED, WINHTTP_ACCESS_TYPE_NAMED_PROXY, WINHTTP_ACCESS_TYPE_NO_PROXY,
+        WINHTTP_AUTO_DETECT_TYPE_DHCP, WINHTTP_AUTO_DETECT_TYPE_DNS_A, WINHTTP_AUTOPROXY_AUTO_DETECT,
+        WINHTTP_AUTOPROXY_CONFIG_URL, WINHTTP_AUTOPROXY_OPTIONS, WINHTTP_CURRENT_USER_IE_PROXY_CONFIG,
+        WINHTTP_PROXY_INFO, WinHttpCloseHandle, WinHttpGetIEProxyConfigForCurrentUser, WinHttpGetProxyForUrl,
+        WinHttpOpen, WinHttpSetTimeouts,
     };
-    use windows::core::{BOOL, PCWSTR, PWSTR, w};
+    use windows::core::{BOOL, HRESULT, PCWSTR, PWSTR, w};
 
     pub(super) async fn auto_proxy_for(url: &str) -> Result<Option<AutoProxy>, String> {
         let url = url.to_owned();
         tokio::task::spawn_blocking(move || {
             let Some((detect, config_url)) = user_auto_config()? else { return Ok(None) };
-            resolve(&url, detect, config_url.as_deref()).map(Some)
+            resolve(&url, detect, config_url.as_deref())
         })
         .await
         .map_err(|e| e.to_string())?
@@ -258,8 +259,10 @@ mod platform {
         Ok((detect || config_url.is_some()).then_some((detect, config_url)))
     }
 
-    /// Runs WPAD (`detect`) and/or the PAC script at `config_url` for `url`.
-    pub(super) fn resolve(url: &str, detect: bool, config_url: Option<&str>) -> Result<AutoProxy, String> {
+    /// Runs WPAD (`detect`) and/or the PAC script at `config_url` for `url`. `None` when
+    /// WPAD alone finds nothing: "Automatically detect settings" is on by default, so that
+    /// is an ordinary network without automatic configuration, not a failure.
+    pub(super) fn resolve(url: &str, detect: bool, config_url: Option<&str>) -> Result<Option<AutoProxy>, String> {
         // SAFETY: the session handle is closed below; every string WinHTTP returns is freed by `take`.
         unsafe {
             let session = WinHttpOpen(w!("OpenIDEA"), WINHTTP_ACCESS_TYPE_NO_PROXY, PCWSTR::null(), PCWSTR::null(), 0);
@@ -283,15 +286,21 @@ mod platform {
             let mut info = WINHTTP_PROXY_INFO::default();
             let result = WinHttpGetProxyForUrl(session, PCWSTR(url_wide.as_ptr()), &mut options, &mut info);
             let _ = WinHttpCloseHandle(session);
-            result.map_err(|e| e.to_string())?;
+            if let Err(e) = result {
+                if config_url.is_none() && e.code() == HRESULT::from_win32(ERROR_WINHTTP_AUTODETECTION_FAILED) {
+                    tracing::debug!("WPAD found no proxy configuration");
+                    return Ok(None);
+                }
+                return Err(e.to_string());
+            }
             let list = take(info.lpszProxy);
             take(info.lpszProxyBypass);
             if info.dwAccessType != WINHTTP_ACCESS_TYPE_NAMED_PROXY {
-                return Ok(AutoProxy::Direct);
+                return Ok(Some(AutoProxy::Direct));
             }
             let list = list.unwrap_or_default();
             pick_from_list(&list, &scheme_of(url))
-                .map(AutoProxy::Via)
+                .map(|via| Some(AutoProxy::Via(via)))
                 .ok_or_else(|| format!("unusable proxy list {list:?}"))
         }
     }
@@ -381,7 +390,7 @@ mod tests {
     #[test]
     fn windows_runs_a_pac_script() {
         let pac = format!("http://127.0.0.1:{}/proxy.pac", serve(PAC));
-        let resolve = |url: &str| platform::resolve(url, false, Some(&pac)).unwrap();
+        let resolve = |url: &str| platform::resolve(url, false, Some(&pac)).unwrap().unwrap();
         assert_eq!(resolve("https://github.com/a/b"), AutoProxy::Via("http://127.0.0.1:3128".into()));
         assert_eq!(resolve("https://elsewhere.example/"), AutoProxy::Direct);
     }
