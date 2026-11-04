@@ -19,6 +19,13 @@ rustls.workspace = true
 rustls-platform-verifier.workspace = true
 uuid.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFArray", "CFDictionary", "CFError", "CFNumber", "CFString", "CFURL"] }
+objc2-cf-network = { version = "0.3", default-features = false, features = ["std", "CFProxySupport"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Networking_WinHttp"] }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["net"] }
 tempfile.workspace = true
