@@ -284,6 +284,102 @@ fn saved_maven_goal_configs_take_the_configured_launcher() {
     assert_eq!(configs[2].command, "./mvnw");
 }
 
+/// A Maven Daemon distribution as released for `windows` or Unix: the launchers in
+/// `bin`, Maven itself in `mvn` (Homebrew puts the same tree in `libexec`).
+fn fake_mvnd(home: &Path, windows: bool) {
+    std::fs::create_dir_all(home.join("bin")).unwrap();
+    std::fs::create_dir_all(home.join("mvn/bin")).unwrap();
+    std::fs::create_dir_all(home.join("mvn/lib")).unwrap();
+    let launchers: &[&str] = if windows { &["mvnd.exe", "mvnd.cmd"] } else { &["mvnd"] };
+    for n in launchers {
+        std::fs::write(home.join("bin").join(n), "").unwrap();
+    }
+    std::fs::write(home.join("mvn/bin").join(if windows { "mvn.cmd" } else { "mvn" }), "").unwrap();
+    std::fs::write(home.join("mvn/lib/maven-core-3.9.16.jar"), "").unwrap();
+    std::fs::write(home.join("mvn/lib/mvnd-logging-1.0.6.jar"), "").unwrap();
+}
+
+#[test]
+fn maven_daemon_homes_launch_mvnd_on_windows_and_unix() {
+    use crate::apply::maven_launcher_in;
+    for windows in [true, false] {
+        let tmp = tempfile::tempdir().unwrap();
+        let mvnd = tmp.path().join("maven-mvnd-1.0.6");
+        fake_mvnd(&mvnd, windows);
+        // Windows prefers the native client over the `.cmd` script.
+        let launcher = mvnd.join("bin").join(if windows { "mvnd.exe" } else { "mvnd" });
+        assert_eq!(maven_launcher_in(&mvnd, windows), Some(launcher.clone()), "windows={windows}");
+        assert_eq!(maven_launcher_in(&mvnd.join("bin"), windows), Some(launcher.clone()));
+        assert_eq!(maven_launcher_in(&launcher, windows), Some(launcher.clone()), "the executable itself");
+        let cmd = mvnd.join("bin/mvnd.cmd");
+        if windows {
+            assert_eq!(maven_launcher_in(&cmd, windows), Some(cmd.clone()), "a chosen mvnd.cmd is kept");
+        }
+        // Its bundled Maven is a plain Maven home.
+        let bundled = mvnd.join("mvn/bin").join(if windows { "mvn.cmd" } else { "mvn" });
+        assert_eq!(maven_launcher_in(&mvnd.join("mvn"), windows), Some(bundled));
+        assert_eq!(maven_launcher_in(&tmp.path().join("missing"), windows), None);
+
+        // A Maven home with both keeps preferring `mvn`.
+        let maven = tmp.path().join("maven");
+        std::fs::create_dir_all(maven.join("bin")).unwrap();
+        for n in if windows { ["mvn.cmd", "mvnd.exe"] } else { ["mvn", "mvnd"] } {
+            std::fs::write(maven.join("bin").join(n), "").unwrap();
+        }
+        let mvn = maven.join("bin").join(if windows { "mvn.cmd" } else { "mvn" });
+        assert_eq!(maven_launcher_in(&maven, windows), Some(mvn));
+    }
+}
+
+#[test]
+fn configured_mvnd_home_runs_sync_builds_and_run_configs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mvnd = tmp.path().join("mvnd");
+    fake_mvnd(&mvnd, cfg!(windows));
+    let launcher = mvnd.join("bin").join(if cfg!(windows) { "mvnd.exe" } else { "mvnd" });
+    let mut s = Settings::default();
+    s.languages.java.maven.home = mvnd.to_string_lossy().into_owned();
+    assert_eq!(maven_command(tmp.path(), &s), Some(launcher.clone()));
+
+    let mut configs = vec![run("maven", "mvn", &["package"])];
+    apply_to_run_configs(&mut configs, tmp.path(), &s);
+    assert_eq!(configs[0].command, launcher.to_string_lossy());
+}
+
+#[test]
+fn maven_daemon_installs_are_listed_with_both_versions() {
+    use crate::discover::{maven_home, maven_sdk};
+    for windows in [true, false] {
+        let tmp = tempfile::tempdir().unwrap();
+        let mvnd = tmp.path().join("maven-mvnd-1.0.6");
+        fake_mvnd(&mvnd, windows);
+        assert_eq!(maven_home(&mvnd, windows), Some(mvnd.clone()), "windows={windows}");
+        let sdk = maven_sdk(mvnd.clone(), "path");
+        assert_eq!(sdk.name, "mvnd 1.0.6 (Maven 3.9.16)");
+        assert_eq!(sdk.version.as_deref(), Some("3.9.16"));
+        assert_eq!(sdk.path.to_string_lossy(), mvnd.to_string_lossy());
+
+        // Homebrew: `opt/mvnd/libexec`.
+        let brew = tmp.path().join("opt-mvnd");
+        fake_mvnd(&brew.join("libexec"), windows);
+        assert_eq!(maven_home(&brew, windows), Some(brew.join("libexec")));
+
+        // Only the other platform's launchers: not a home here.
+        let other = tmp.path().join("other");
+        fake_mvnd(&other, !windows);
+        assert_eq!(maven_home(&other, windows), None, "windows={windows}");
+
+        // A plain Maven home keeps its name.
+        let maven = tmp.path().join("apache-maven-3.9.6");
+        std::fs::create_dir_all(maven.join("bin")).unwrap();
+        std::fs::create_dir_all(maven.join("lib")).unwrap();
+        std::fs::write(maven.join("bin").join(if windows { "mvn.cmd" } else { "mvn" }), "").unwrap();
+        std::fs::write(maven.join("lib/maven-core-3.9.6.jar"), "").unwrap();
+        assert_eq!(maven_home(&maven, windows), Some(maven.clone()));
+        assert_eq!(maven_sdk(maven, "path").name, "Maven 3.9.6");
+    }
+}
+
 #[test]
 fn maven_launch_refreshes_legacy_defaults_but_keeps_user_overrides() {
     use crate::apply::prepare_maven_run;
