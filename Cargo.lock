@@ -4481,6 +4481,8 @@ name = "ide-http"
 version = "0.1.40"
 dependencies = [
  "ide-core",
+ "objc2-cf-network",
+ "objc2-core-foundation",
  "parking_lot",
  "reqwest",
  "rustls",
@@ -4492,6 +4494,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "windows",
 ]
 
 [[package]]
@@ -6103,6 +6106,15 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
  "objc2-quartz-core 0.3.2",
+]
+
+[[package]]
+name = "objc2-cf-network"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4b4c9e30e636e2cd7d7414f320af2e0aa86f686adfc6f1bbe50b92366e4309c8"
+dependencies = [
+ "objc2-core-foundation",
 ]
 
 [[package]]
