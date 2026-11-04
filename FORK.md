@@ -50,6 +50,8 @@ Mechanical kinds:
 
 Anything else is MANUAL: keep the fork's behaviour, adopt upstream's new structure.
 
+Standing decision: on macOS, project window groups keep the fork's AppKit native window tabs, which share one real fullscreen Space. Upstream's simple fullscreen for grouped windows (l0ng-ai/openidea#1218, reverted by the fork's `revert(macos)` commit on v0.1.36) is not taken: it covers the current desktop instead of giving the IDE its own Space. When upstream changes group fullscreen again, resolve toward the native tabs and still take its unrelated window changes.
+
 ## Unattended rebase
 
 - The Orca automation "OpenIDEA fork 自動 rebase" fires hourly at :37. Its precheck (`.claude/skills/openidea-fork-auto-rebase/scripts/precheck.sh`, read from `fork/develop`) lets the agent run only when upstream published a newer Release than the fork base, or a rebase lock went stale or obsolete. The agent follows the `openidea-fork-auto-rebase` skill in a fresh worktree on `fork/develop`.
