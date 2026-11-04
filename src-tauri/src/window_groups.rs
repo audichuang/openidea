@@ -201,7 +201,19 @@ fn copy_frame(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
         return Ok(());
     }
     let err = |e: tauri::Error| IdeError::internal(e.to_string());
+    #[cfg(target_os = "linux")]
+    crate::linux_window_state::frame_inherited(to.app_handle(), to.label());
     let fullscreen = from.is_fullscreen().map_err(err)?;
+    let maximized = !fullscreen && from.is_maximized().map_err(err)?;
+    // Maximize and fullscreen apply to the window's current monitor, and a window just opened as
+    // a tab sits where its label was last saved: move it to the group's monitor first.
+    let monitor = |w: &WebviewWindow| w.current_monitor().ok().flatten().map(|m| *m.position());
+    if (fullscreen || maximized) && monitor(from) != monitor(to) {
+        let position = from.outer_position().map_err(err)?;
+        to.set_fullscreen(false).map_err(err)?;
+        to.unmaximize().map_err(err)?;
+        to.set_position(position).map_err(err)?;
+    }
     if fullscreen {
         to.set_fullscreen(false).map_err(err)?;
         place_on_monitor(from, to)?;
@@ -210,7 +222,6 @@ fn copy_frame(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
         return Ok(());
     }
     to.set_fullscreen(false).map_err(err)?;
-    let maximized = from.is_maximized().map_err(err)?;
     if !maximized {
         to.unmaximize().map_err(err)?;
         to.set_position(from.outer_position().map_err(err)?).map_err(err)?;
