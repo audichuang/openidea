@@ -7,7 +7,7 @@
 
 ## How to get to it (user POV)
 
-Settings → Version Control → Git → "Auto fetch" toggle and minutes field (`src/features/settings/pages/vcs.tsx`).
+Settings → Version Control → Git → "Fetch remotes automatically every … min" (one toggle plus a minutes field) (`src/features/settings/pages/vcs.tsx`).
 
 ## Driving it with Tauri MCP
 
