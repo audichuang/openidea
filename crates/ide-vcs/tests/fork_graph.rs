@@ -142,6 +142,8 @@ fn bisect_names_the_first_bad_commit_and_resets() {
         };
     }
     assert_eq!(state.culprit.as_deref(), Some(bad_first.as_str()));
+    // A later refresh still knows it (read from the bisect log, not the last command's output).
+    assert_eq!(repo.graph_bisect_state().unwrap().culprit.as_deref(), Some(bad_first.as_str()));
 
     let after = repo.graph_bisect(&GraphBisectOp::Reset).unwrap();
     assert!(!after.active);
