@@ -33,6 +33,49 @@ export const findStyles = {
   },
 };
 
+/** The error stripe over the scrollbar (cm/lanes.ts), also for viewers (diff). */
+export const overviewStyles = {
+  ".cm-openidea-overview": {
+    position: "absolute",
+    top: "0",
+    right: "0",
+    bottom: "0",
+    width: "12px",
+    pointerEvents: "none",
+    zIndex: "3",
+  },
+  ".cm-openidea-overviewMark": {
+    position: "absolute",
+    left: "3px",
+    width: "6px",
+    minHeight: "3px",
+    borderRadius: "1px",
+    pointerEvents: "auto",
+    cursor: "pointer",
+  },
+  ".cm-openidea-overviewMark-thin": { left: "4px", width: "4px", minHeight: "2px" },
+  // The scrollbar thumb wins over the marks under it (cm/lanes.ts, #752).
+  ".cm-openidea-overview-onThumb .cm-openidea-overviewMark": { pointerEvents: "none" },
+  // The lane draws the thumb over its marks (#1014); the native one only takes the drag.
+  "&.cm-openidea-withOverview .cm-scroller::-webkit-scrollbar-thumb:vertical": { backgroundColor: "transparent" },
+  ".cm-openidea-overviewThumb": {
+    position: "absolute",
+    right: "2px",
+    width: "6px",
+    borderRadius: "3px",
+    background: "var(--scrollbar-thumb)",
+    pointerEvents: "none",
+  },
+  ".cm-openidea-overview-onThumb .cm-openidea-overviewThumb": { background: "var(--scrollbar-thumb-hover)" },
+  ".cm-openidea-overviewCaret": {
+    position: "absolute",
+    left: "2px",
+    right: "2px",
+    height: "2px",
+    background: "color-mix(in srgb, var(--fg) 30%, transparent)",
+  },
+};
+
 /** The caret and Settings › Editor › General › Appearance caret options (`caretExtension`), also for viewers. */
 export const caretStyles = {
   ".cm-cursor, .cm-dropCursor": {
@@ -263,46 +306,7 @@ export const openideaTheme = EditorView.theme({
   ".cm-panels.cm-panels-top": { borderBottom: "1px solid var(--border)" },
   ".cm-panels.cm-panels-bottom": { borderTop: "1px solid var(--border)" },
 
-  // Error stripe over the scrollbar (cm/lanes.ts)
-  ".cm-openidea-overview": {
-    position: "absolute",
-    top: "0",
-    right: "0",
-    bottom: "0",
-    width: "12px",
-    pointerEvents: "none",
-    zIndex: "3",
-  },
-  ".cm-openidea-overviewMark": {
-    position: "absolute",
-    left: "3px",
-    width: "6px",
-    minHeight: "3px",
-    borderRadius: "1px",
-    pointerEvents: "auto",
-    cursor: "pointer",
-  },
-  ".cm-openidea-overviewMark-thin": { left: "4px", width: "4px", minHeight: "2px" },
-  // The scrollbar thumb wins over the marks under it (cm/lanes.ts, #752).
-  ".cm-openidea-overview-onThumb .cm-openidea-overviewMark": { pointerEvents: "none" },
-  // The lane draws the thumb over its marks (#1014); the native one only takes the drag.
-  "&.cm-openidea-withOverview .cm-scroller::-webkit-scrollbar-thumb:vertical": { backgroundColor: "transparent" },
-  ".cm-openidea-overviewThumb": {
-    position: "absolute",
-    right: "2px",
-    width: "6px",
-    borderRadius: "3px",
-    background: "var(--scrollbar-thumb)",
-    pointerEvents: "none",
-  },
-  ".cm-openidea-overview-onThumb .cm-openidea-overviewThumb": { background: "var(--scrollbar-thumb-hover)" },
-  ".cm-openidea-overviewCaret": {
-    position: "absolute",
-    left: "2px",
-    right: "2px",
-    height: "2px",
-    background: "color-mix(in srgb, var(--fg) 30%, transparent)",
-  },
+  ...overviewStyles,
 
   // Sticky lines (cm/stickyScroll.ts)
   ".cm-openidea-sticky": {

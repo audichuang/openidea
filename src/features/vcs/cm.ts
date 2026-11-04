@@ -33,7 +33,9 @@ import { tags as t } from "@lezer/highlight";
 import { findExtension } from "@/editor/core/cm/find";
 import { caretExtension } from "@/editor/core/cm/prefs";
 import { fontExtension } from "@/editor/core/cm/setup";
-import { caretStyles, findLocals, findStyles } from "@/editor/core/cm/theme";
+import { overviewLane } from "@/editor/core/cm/lanes";
+import { caretStyles, findLocals, findStyles, overviewStyles } from "@/editor/core/cm/theme";
+import { scrollbarMarks, type ScrollbarMark } from "@/editor/api";
 import { editorPrefs } from "@/platform/editorSettings";
 import { useProject } from "@/platform/project";
 import { hasInnerFragments } from "./diffOptions";
@@ -185,6 +187,32 @@ function changedGutterMarkers(state: EditorState): RangeSet<GutterMarker> {
   return builder.finish();
 }
 
+/**
+ * One mark per change on the scrollbar, in its type's colour (IDEA's error stripe in the
+ * diff viewers). A change with no lines on this side marks the line it sits at.
+ */
+export function diffMarks(state: EditorState): ScrollbarMark[] {
+  const info = getChunks(state);
+  if (!info) return [];
+  const isA = info.side === "a";
+  return info.chunks.map((chunk) => {
+    const from = isA ? chunk.fromA : chunk.fromB;
+    const to = isA ? chunk.toA : chunk.toB;
+    // `to` is past the chunk's last line break: end on the line before it.
+    return { from, to: Math.max(from, to - 1), color: `var(--diff-${chunkKind(chunk)})` };
+  });
+}
+
+const diffScrollbarMarks = StateField.define<readonly ScrollbarMark[]>({
+  create: diffMarks,
+  update: (value, tr) =>
+    tr.docChanged || getChunks(tr.startState)?.chunks !== getChunks(tr.state)?.chunks ? diffMarks(tr.state) : value,
+  provide: (f) => scrollbarMarks.from(f),
+});
+
+/** The change stripe for a pane that scrolls itself (unaligned side-by-side, unified). */
+export const diffOverview: Extension = [diffScrollbarMarks, overviewLane];
+
 /** Recomputes `build` when the document, viewport or chunks change. */
 const chunkDecorations = (build: (view: EditorView) => DecorationSet) =>
   ViewPlugin.fromClass(
@@ -254,6 +282,7 @@ export const viewerTheme = EditorView.theme(
     "&.cm-openidea-ligatures .cm-scroller": { fontVariantLigatures: "normal" },
     ".cm-content": { caretColor: "var(--caret, var(--fg-strong))", WebkitUserSelect: "text", userSelect: "text" },
     ...caretStyles,
+    ...overviewStyles,
     "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, ::selection": {
       backgroundColor: "var(--bg-selected-strong)",
     },

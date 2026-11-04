@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { Chunk, MergeView } from "@codemirror/merge";
+import { Chunk, MergeView, unifiedMergeView } from "@codemirror/merge";
 import { ChangeSet, Text } from "@codemirror/state";
-import type { EditorView } from "@codemirror/view";
+import { EditorView } from "@codemirror/view";
 import { applyChunk, arrowControls } from "../diffControls";
 import {
   DEFAULT_DIFF_OPTIONS,
@@ -13,7 +13,8 @@ import {
 } from "../diffOptions";
 import { clipboardDiffData, compareFilesData, parseTextsArg } from "../compare";
 import { diffInput, diffTitle, sideFile, sideKey } from "../diffInput";
-import { changedLineGutters, chunkKind, diffWords, viewerBase } from "../cm";
+import { changedLineGutters, chunkKind, diffMarks, diffOverview, diffWords, viewerBase } from "../cm";
+import { scrollbarMarks } from "@/editor/api";
 
 const doc = (s: string) => Text.of(s.split("\n"));
 
@@ -145,6 +146,49 @@ describe("diff options", () => {
     expect(lines(mv.b, "inserted")).toEqual([]);
     expect(chunkKind(mv.chunks[1]!)).toBe("modified");
     mv.destroy();
+    parent.remove();
+  });
+
+  it("marks every change on the scrollbar in its type's colour, on both sides and unified", () => {
+    const parent = document.createElement("div");
+    document.body.appendChild(parent);
+    const extensions = [viewerBase({ readOnly: true }), diffOverview];
+    const a = "keep\nremoved one\nremoved two\nmid\nvalue = old\nend\n";
+    const b = "keep\nmid\nvalue = new\nadded\nend\n";
+    const mv = new MergeView({
+      a: { doc: a, extensions },
+      b: { doc: b, extensions },
+      parent,
+      highlightChanges: false,
+      diffConfig: ideaDiffConfig("none", "words"),
+    });
+    const rows = (v: EditorView) =>
+      v.state.facet(scrollbarMarks).map((m) => {
+        const doc = v.state.doc;
+        return [doc.lineAt(m.from).number, doc.lineAt(m.to ?? m.from).number, m.color];
+      });
+    expect(rows(mv.a)).toEqual([
+      [2, 3, "var(--diff-deleted)"],
+      [5, 5, "var(--diff-modified)"],
+    ]);
+    // A deletion has no lines on the new side: it marks where it was.
+    expect(rows(mv.b)).toEqual([
+      [2, 2, "var(--diff-deleted)"],
+      [3, 4, "var(--diff-modified)"],
+    ]);
+    expect(diffMarks(mv.b.state)).toEqual(mv.b.state.facet(scrollbarMarks));
+    // The lane draws them over the scrollbar.
+    mv.b.requestMeasure();
+    expect(mv.b.dom.querySelector(".cm-openidea-overview")).not.toBeNull();
+    mv.destroy();
+
+    const unified = new EditorView({
+      doc: b,
+      parent,
+      extensions: [viewerBase({ readOnly: true }), diffOverview, unifiedMergeView({ original: a })],
+    });
+    expect(rows(unified).map((r) => r[2])).toEqual(["var(--diff-deleted)", "var(--diff-modified)"]);
+    unified.destroy();
     parent.remove();
   });
 
