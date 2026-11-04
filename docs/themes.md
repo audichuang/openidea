@@ -77,24 +77,9 @@ to define every colour token of the base themes (in the shared mapping or its
 own block), so a token added to `tokens.css` later can't silently fall back to
 an Islands colour.
 
-## Browser evidence
+## Regression coverage
 
-These approved screenshots are reused from the original theme implementation on
-0.1.15; regression checks are rerun against the upstream contribution base.
-Captured at 1400 × 900 in Linux Chromium 154 using OpenIDEA's public in-memory
-`acme-api` project / Kotlin fixture and synthetic ANSI terminal output. The
-terminal is a real xterm renderer, without a native PTY or shell. These images
-cover the shell, sidebar, editor, gutter, find matches, terminal, Settings,
-focused controls, disabled settings and the selected theme popup.
-
-| Theme           | Workbench, editor and terminal                           | Settings and theme popup                             |
-| --------------- | -------------------------------------------------------- | ---------------------------------------------------- |
-| Solarized Light | [Screenshot](media/themes/solarized-light-workbench.png) | [Screenshot](media/themes/solarized-light-popup.png) |
-| Solarized Dark  | [Screenshot](media/themes/solarized-dark-workbench.png)  | [Screenshot](media/themes/solarized-dark-popup.png)  |
-| One Light       | [Screenshot](media/themes/one-light-workbench.png)       | [Screenshot](media/themes/one-light-popup.png)       |
-| One Dark        | [Screenshot](media/themes/one-dark-workbench.png)        | [Screenshot](media/themes/one-dark-popup.png)        |
-
-The browser regression also checks refresh / startup cache restoration,
+`e2e/themes.spec.ts` checks refresh / startup cache restoration,
 selection visibility, same-kind switches, the quick menu, existing themes,
 explicit editor schemes and preferred OS themes. Native startup colours are
 covered by Rust unit tests.
