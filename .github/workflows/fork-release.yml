@@ -92,6 +92,10 @@ jobs:
     env:
       TARGET: ${{ matrix.target }}
       VERSION: ${{ needs.guard.outputs.version }}
+      # Fat LTO links the whole program on one core (~28 of the macOS job's ~41 minutes). Thin LTO
+      # parallelises it; measured on openidea-server: final link 178 s → 61 s, +5% size, benches
+      # within noise. Overrides Cargo.toml's [profile.release] here only, so upstream stays untouched.
+      CARGO_PROFILE_RELEASE_LTO: thin
     steps:
       - uses: actions/checkout@v4
         with: { persist-credentials: false }
