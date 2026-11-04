@@ -4,7 +4,7 @@
 
 - Projects opened with **New Tab** (Open project dialog button, or "Open project in: New tab") join the current window's group on every platform; the macOS "Prefer tabs" system preference is not consulted. On macOS a group is a native NSWindow tab group; OpenIDEA hides AppKit's tab bar and draws its own tab row **below the main toolbar** (IntelliJ layout) in both windowed and fullscreen mode (`src-tauri/src/macos.rs`, `src/workbench/WindowGroupTabs.tsx`).
 - Switch tab, close on hover, drag to reorder, "Move Tab to New Window".
-- Tab context menu: Close Tab, Close Other Tabs, Close Tabs to the Left/Right (upstream v0.1.35, `close_tabs` in `src-tauri/src/window_groups.rs`). Tabs close one at a time, each project showing its own unsaved-changes prompt in turn; Cancel stops the rest of the batch, Don't Save continues; the right-clicked tab ends selected. Left/Right are disabled on the first/last tab.
+- Tab context menu: Close Tab, Close Other Tabs, Close Tabs to the Left/Right (`close_tabs` in `src-tauri/src/window_groups.rs`). Tabs close one at a time, each project showing its own unsaved-changes prompt in turn; Cancel stops the rest of the batch, Don't Save continues; the right-clicked tab ends selected. Left/Right are disabled on the first/last tab.
 - Joining a group while it is fullscreen: the new tab must fill the screen (minus the notch safe area).
 
 ## How to get to it (user POV)
