@@ -32,6 +32,7 @@ const claude: AgentProvider = {
   name: "Claude Code",
   command: "npx",
   installed: true,
+  env: {},
   config: [],
   source: { kind: "builtin" },
   program: "npx",
