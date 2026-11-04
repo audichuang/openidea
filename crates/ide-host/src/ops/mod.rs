@@ -17,6 +17,7 @@ pub mod doc;
 pub mod docker;
 pub mod env;
 pub mod flutter;
+pub mod fork_graph;
 pub mod fs;
 pub mod heap;
 pub mod history;
