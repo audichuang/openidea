@@ -114,22 +114,37 @@ fn not_a_jdk(p: &Path) -> String {
     }
 }
 
-/// `mvn` of the configured Maven home (`languages.java.maven.home`): the
-/// executable itself, `<home>/bin/mvn` or `<bin>/mvn`; else of the Maven the project
-/// pins for mise / asdf when it has no Maven wrapper.
+/// Launchers a Maven home may hold, preferred first: Maven's own `mvn`, then the Maven
+/// Daemon's `mvnd` (on Windows its native `mvnd.exe` before the `mvnd.cmd` script).
+pub(crate) fn maven_launchers(windows: bool) -> &'static [&'static str] {
+    if windows { &["mvn.cmd", "mvnd.exe", "mvnd.cmd"] } else { &["mvn", "mvnd"] }
+}
+
+/// The launcher a configured Maven home path names: the executable itself, else one of
+/// [`maven_launchers`] in `<home>/bin` or in the directory itself.
+pub(crate) fn maven_launcher_in(p: &Path, windows: bool) -> Option<PathBuf> {
+    if p.is_file() {
+        return Some(p.to_path_buf());
+    }
+    maven_launchers(windows).iter().flat_map(|n| [p.join("bin").join(n), p.join(n)]).find(|c| c.is_file())
+}
+
+/// `mvn` (or `mvnd`) of the configured Maven home (`languages.java.maven.home`), see
+/// [`maven_launcher_in`]; else `mvn` of the Maven the project pins for mise / asdf when
+/// it has no Maven wrapper.
 pub fn maven_command(root: &Path, s: &Settings) -> Option<PathBuf> {
-    let name = if cfg!(windows) { "mvn.cmd" } else { "mvn" };
     let Some(p) = setting_path(root, &s.languages.java.maven.home) else {
         if root.join("mvnw").is_file() || root.join("mvnw.cmd").is_file() {
             return None;
         }
+        let name = if cfg!(windows) { "mvn.cmd" } else { "mvn" };
         let (dir, _) = pinned::pinned_install(root, Tool::Maven)?;
         let homes = std::iter::once(dir.clone()).chain(std::fs::read_dir(&dir).ok()?.flatten().map(|e| e.path()));
         return homes.map(|h| h.join("bin").join(name)).find(|c| c.is_file());
     };
-    let found = [p.clone(), p.join("bin").join(name), p.join(name)].into_iter().find(|c| c.is_file());
+    let found = maven_launcher_in(&p, cfg!(windows));
     if found.is_none() {
-        tracing::warn!("Maven home {} has no {name}", p.display());
+        tracing::warn!("Maven home {} has no {}", p.display(), maven_launchers(cfg!(windows)).join(" / "));
     }
     found
 }

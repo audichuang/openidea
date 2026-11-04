@@ -30,6 +30,7 @@ export function coverageSupports(config: Pick<RunConfig, "command" | "args" | "k
       return args[0] === "test";
     case "mvn":
     case "mvnw":
+    case "mvnd":
     case "gradle":
     case "gradlew":
       return runsJvmTests(args);
