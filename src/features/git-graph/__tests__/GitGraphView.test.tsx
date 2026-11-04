@@ -164,6 +164,17 @@ describe("Git Graph view", () => {
     await waitFor(() => expect(showContextMenu).toHaveBeenCalledWith(expect.anything(), [{ label: "File Item" }]));
   });
 
+  it("keeps the selection when the tab is hidden and shown again", async () => {
+    const first = render(<GitGraphEditor />);
+    await screen.findByText("subject a");
+    fireEvent.click(rowOf("subject b"));
+    first.unmount();
+    render(<GitGraphEditor />);
+    await screen.findByText("subject a");
+    expect(rowOf("subject b").getAttribute("aria-selected")).toBe("true");
+    expect(await screen.findByText("body b")).toBeTruthy();
+  });
+
   it("opens the commit menu for the selection", async () => {
     render(<GitGraphEditor />);
     await screen.findByText("subject a");
