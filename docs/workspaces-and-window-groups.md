@@ -34,7 +34,9 @@ Links are saved in project settings as `languages.java.gradle.linkedProjects`. U
 
 ## Window group
 
-Open two project windows, then use **Window → Merge All Project Windows**. The project tabs occupy their own row below the main toolbar. Click a tab or use **Next/Previous Project Tab** to switch; drag tabs to reorder them. The default shortcuts are ⌥⌘PageDown/PageUp on macOS and Ctrl+Alt+PageDown/PageUp on Windows/Linux.
+To open a project as a tab of the current window, choose **New Tab** when OpenIDEA asks where to open it, or set **Settings → System Settings → Project → Open project in** to **New tab**. This works the same on every platform: a project joins a tab group only when you choose New Tab, and the macOS setting "Prefer tabs when opening documents" is not consulted. A LightEdit window opens the project in a new window instead.
+
+To group windows that are already open, use **Window → Merge All Project Windows**. The project tabs occupy their own row below the main toolbar. Click a tab or use **Next/Previous Project Tab** to switch; drag tabs to reorder them. The default shortcuts are ⌥⌘PageDown/PageUp on macOS and Ctrl+Alt+PageDown/PageUp on Windows/Linux.
 
 Use the tab's close button to close that project, or **Move Tab to New Window** to detach the current tab. Right-click a tab for **Close Other Tabs**, **Close Tabs to the Left** and **Close Tabs to the Right**, which close the projects one at a time and keep the clicked tab; cancelling one project's unsaved-changes prompt leaves it and the rest open. The same commands are in the Command Palette and can be assigned shortcuts. Closing uses the existing unsaved-changes guard. Quit visits project windows in sequence so a hidden project's prompt is visible. Groups restore when **Reopen last project** is enabled.
 
