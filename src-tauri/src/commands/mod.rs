@@ -24,6 +24,7 @@ pub mod doc;
 pub mod docker;
 pub mod env;
 pub mod fonts;
+pub mod fork_graph;
 pub mod fs;
 pub mod github;
 pub mod history;
@@ -159,6 +160,14 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         clip::clip_paste_apply,
         clip::clip_copy_branch_series,
         clip::clip_paste_branch_series,
+        fork_graph::graph_stashes,
+        fork_graph::graph_working_state,
+        fork_graph::graph_reflog,
+        fork_graph::graph_author_stats,
+        fork_graph::graph_tree,
+        fork_graph::graph_bisect_state,
+        fork_graph::graph_bisect,
+        fork_graph::graph_ref_op,
         clipboard::clipboard_file_list,
         clipboard::clipboard_has_files,
         clipboard::clipboard_text,
