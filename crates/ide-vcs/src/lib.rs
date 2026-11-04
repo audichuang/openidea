@@ -958,6 +958,8 @@ mod status;
 mod submodules;
 pub use index_writes::is_own_index_write;
 pub use submodules::SubmoduleRollbackSource;
+/// Fork-owned: the Git Graph view's extra queries and operations.
+pub mod fork_graph;
 mod text_encoding;
 mod write;
 
