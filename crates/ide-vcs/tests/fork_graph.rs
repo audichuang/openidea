@@ -94,6 +94,9 @@ fn author_stats_count_commits_per_author() {
     let dir = tmp.path();
     commit(dir, "a.txt", "one");
     commit(dir, "a.txt", "two");
+    // A stash's own commits are not counted.
+    std::fs::write(dir.join("a.txt"), "wip").unwrap();
+    git(dir, &["stash", "push", "-q"]);
     assert_eq!(
         repo.graph_author_stats().unwrap(),
         vec![GraphAuthorStat { name: "Ann".into(), email: "ann@example.com".into(), commits: 2 }]
