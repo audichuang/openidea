@@ -98,15 +98,20 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      # Why: NTFS plus Defender scanning is the slowest part of a Windows Rust build; a ReFS
-      # Dev Drive holding a copy of the workspace (and so target/) builds much faster.
+      # Why: NTFS plus Defender scanning is the slowest part of a Windows Rust build; a trusted
+      # ReFS Dev Drive holding a copy of the workspace (and so target/) with real-time scanning
+      # off builds much faster (test build, two runs each: 306/330 s → 192/297 s).
+      - name: Disable Defender real-time scanning (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Set-MpPreference -DisableRealtimeMonitoring $true
       - name: Dev Drive (Windows)
         if: runner.os == 'Windows'
-        uses: samypr100/setup-dev-drive@v3
+        uses: samypr100/setup-dev-drive@v4
         with:
           drive-size: 40GB
-          drive-format: ReFS
           workspace-copy: true
+          trusted-dev-drive: true
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "clippy, rustfmt" }
       - uses: Swatinem/rust-cache@v2
@@ -147,17 +152,26 @@ jobs:
           - { os: windows-latest, partition: "2/3" }
           - { os: windows-latest, partition: "3/3" }
     runs-on: ${{ matrix.os }}
+    # actions:write lets the develop run delete the target caches its save supersedes.
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v4
-      # Why: NTFS plus Defender scanning is the slowest part of a Windows Rust build; a ReFS
-      # Dev Drive holding a copy of the workspace (and so target/) builds much faster.
+      # Why: NTFS plus Defender scanning is the slowest part of a Windows Rust build; a trusted
+      # ReFS Dev Drive holding a copy of the workspace (and so target/) with real-time scanning
+      # off builds much faster (test build, two runs each: 306/330 s → 192/297 s).
+      - name: Disable Defender real-time scanning (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Set-MpPreference -DisableRealtimeMonitoring $true
       - name: Dev Drive (Windows)
         if: runner.os == 'Windows'
-        uses: samypr100/setup-dev-drive@v3
+        uses: samypr100/setup-dev-drive@v4
         with:
           drive-size: 40GB
-          drive-format: ReFS
           workspace-copy: true
+          trusted-dev-drive: true
       - uses: pnpm/action-setup@v4
         with: { version: 11 }
       # Why no pnpm cache on Windows: pnpm installs on the Dev Drive, so the store setup-node
@@ -168,12 +182,23 @@ jobs:
           cache: ${{ runner.os != 'Windows' && 'pnpm' || '' }}
       - uses: dtolnay/rust-toolchain@stable
         with: { components: clippy }
+      # The registry only: target/ is in the rolling target cache below.
       - uses: Swatinem/rust-cache@v2
         with:
+          prefix-key: v1-rust
           key: test
           workspaces: ${{ env.DEV_DRIVE_WORKSPACE || '.' }}
+          cache-targets: false
           save-if: ${{ github.ref == 'refs/heads/develop' }}
           cache-on-failure: true
+      # Whole target/, workspace crates included, rolled forward by every develop run: a PR
+      # rebuilds only the crates it changed (plus their dependents). The three Windows partitions
+      # build the same thing, so only 1/3 saves.
+      - uses: ./.github/actions/target-cache
+        with:
+          mode: restore
+          name: test
+          workdir: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
       - uses: taiki-e/install-action@nextest
       - name: Linux deps
         if: runner.os == 'Linux'
@@ -190,6 +215,13 @@ jobs:
       - run: git config --global core.autocrlf false
       - run: cargo nextest run --workspace --no-fail-fast ${{ matrix.partition && format('--partition count:{0}', matrix.partition) || '' }} ${{ matrix.threads && format('--test-threads {0}', matrix.threads) || '' }}
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+      - if: github.ref == 'refs/heads/develop' && !cancelled() && (!matrix.partition || matrix.partition == '1/3')
+        uses: ./.github/actions/target-cache
+        with:
+          mode: save
+          name: test
+          workdir: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+          token: ${{ github.token }}
       # nextest ran export_bindings, which rewrites src/bindings.ts.
       - name: Bindings are up to date
         if: runner.os == 'Linux'
