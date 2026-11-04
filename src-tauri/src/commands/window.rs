@@ -598,6 +598,22 @@ pub(crate) fn update_endpoint_env() -> Option<String> {
     std::env::var("OPENIDEA_UPDATE_ENDPOINT").ok().filter(|s| !s.trim().is_empty())
 }
 
+/// The update endpoint: `OPENIDEA_UPDATE_ENDPOINT`, else the first of
+/// `plugins.updater.endpoints` in tauri.conf.json.
+fn update_endpoint<R: tauri::Runtime>(app: &AppHandle<R>) -> Option<String> {
+    update_endpoint_env().or_else(|| {
+        app.config()
+            .plugins
+            .0
+            .get("updater")
+            .and_then(|u| u.get("endpoints"))
+            .and_then(|e| e.as_array())
+            .and_then(|e| e.first())
+            .and_then(|e| e.as_str())
+            .map(str::to_owned)
+    })
+}
+
 /// Whether an update endpoint is configured: `plugins.updater.endpoints` in
 /// tauri.conf.json, or the `OPENIDEA_UPDATE_ENDPOINT` environment variable. Empty by
 /// default, and "Check for Updates…" is hidden then.
@@ -644,21 +660,19 @@ fn configure_updater_client(
     ide_http::client::with_proxy(builder, proxy).connect_timeout(UPDATER_CONNECT_TIMEOUT)
 }
 
-pub(crate) fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option<tauri_plugin_updater::Updater>> {
+/// How long the automatic proxy configuration (PAC download, WPAD) may hold up an update check.
+const AUTO_PROXY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+async fn updater(app: &AppHandle) -> IdeResult<Option<tauri_plugin_updater::Updater>> {
+    use ide_core::proxy_settings::ProxyMode;
+    use ide_http::system_proxy::{AutoProxy, auto_proxy_for};
     use tauri_plugin_updater::UpdaterExt;
-    if !updates_configured(app) {
+    let Some(endpoint) = update_endpoint(app) else {
         return Ok(None);
-    }
-    let endpoints = match update_endpoint_env() {
-        Some(url) => vec![url],
-        None => source_endpoints(config_endpoints(app), source),
     };
-    let endpoints = endpoints
-        .iter()
-        .map(|u| u.parse().map_err(|e| IdeError::invalid(format!("update endpoint {u}: {e}"))))
-        .collect::<IdeResult<Vec<_>>>()?;
     let proxy = ide_core::proxy_settings::proxy();
-    let mut builder = app.updater_builder();
+    let auto = proxy.mode == ProxyMode::Auto;
+    let mut builder = app.updater_builder().configure_client(move |b| configure_updater_client(b, &proxy));
     if let Some(target) = crate::updates::portable_target(
         std::env::consts::OS,
         std::env::consts::ARCH,
@@ -666,13 +680,28 @@ pub(crate) fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option
     ) {
         builder = builder.target(target);
     }
-    builder
-        .configure_client(move |b| configure_updater_client(b, &proxy))
-        .endpoints(endpoints)
-        .map_err(|e| IdeError::invalid(e.to_string()))?
-        .build()
-        .map(Some)
-        .map_err(|e| IdeError::unavailable(e.to_string()))
+    if let Some(url) = update_endpoint_env() {
+        let url = url.parse().map_err(|e| IdeError::invalid(format!("OPENIDEA_UPDATE_ENDPOINT: {e}")))?;
+        builder = builder.endpoints(vec![url]).map_err(|e| IdeError::invalid(e.to_string()))?;
+    }
+    // reqwest's system proxy misses PAC scripts and WPAD, the usual corporate setup. The
+    // choice for the endpoint holds for the download too (its redirect to GitHub's asset host).
+    if auto {
+        match tokio::time::timeout(AUTO_PROXY_TIMEOUT, auto_proxy_for(&endpoint)).await {
+            Ok(Some(AutoProxy::Via(via))) => {
+                tracing::info!("updates: proxy {via} from the automatic proxy configuration");
+                let via = via.parse().map_err(|e| IdeError::invalid(format!("proxy {via}: {e}")))?;
+                builder = builder.proxy(via);
+            }
+            Ok(Some(AutoProxy::Direct)) => {
+                tracing::info!("updates: direct, as the automatic proxy configuration says");
+                builder = builder.no_proxy();
+            }
+            Ok(None) => {}
+            Err(_) => tracing::warn!("updates: automatic proxy configuration timed out; using the system proxy"),
+        }
+    }
+    builder.build().map(Some).map_err(|e| IdeError::unavailable(e.to_string()))
 }
 
 #[desktop_command(trust = always)]
@@ -683,7 +712,8 @@ pub async fn app_check_update(app: AppHandle, source: UpdateSource) -> IdeResult
 }
 
 pub(crate) async fn check_update(app: &AppHandle, source: UpdateSource) -> IdeResult<UpdateCheck> {
-    let Some(updater) = updater(app, source)? else {
+    let _ = source; // fork_updater owns the endpoint list
+    let Some(updater) = updater(app).await? else {
         return Ok(UpdateCheck { enabled: false, update: None });
     };
     let update = tokio::time::timeout(std::time::Duration::from_secs(60), updater.check())
@@ -792,26 +822,35 @@ pub async fn app_install_update(
     request: RequestId,
     on_progress: Channel<UpdateProgress>,
 ) -> IdeResult<()> {
+    let _ = source; // fork_updater owns the endpoint list
     let _guard =
         InstallingGuard::acquire().ok_or_else(|| IdeError::unavailable("an update is already being installed"))?;
     let token = state.host.begin_request(request);
     let result = async {
+        let updater = updater(&app).await?.ok_or_else(|| IdeError::unavailable("updates are not configured"))?;
+        let update = tokio::select! {
+            r = updater.check() => r.map_err(|e| IdeError::unavailable(e.to_string()))?,
+            _ = token.cancelled() => return Err(IdeError::cancelled()),
+        }
+        .ok_or_else(|| IdeError::not_found("no update available"))?;
         let mut throttle = ProgressThrottle::default();
         let progress = on_progress.clone();
-        let downloaded = tokio::select! {
-            result = crate::updates::download_update(&app, source, &token, move |done, total| {
+        let mut done = 0u64;
+        let download = update.download(
+            move |len, total| {
+                done += len as u64;
                 if let Some(p) = throttle.report(done, total) {
                     let _ = progress.send(p);
                 }
-            }) => result?,
+            },
+            || {},
+        );
+        let bytes = tokio::select! {
+            r = download => r.map_err(|e| IdeError::unavailable(e.to_string()))?,
             _ = token.cancelled() => return Err(IdeError::cancelled()),
         };
-        let crate::updates::DownloadedUpdate { update, bytes, path } = downloaded;
-        if token.is_cancelled() {
-            return Err(IdeError::cancelled());
-        }
         let _ = on_progress.send(UpdateProgress::Installing);
-        let installed = tauri::async_runtime::spawn_blocking(move || {
+        tauri::async_runtime::spawn_blocking(move || {
             #[cfg(windows)]
             if update.target.ends_with("-portable") {
                 let exe = tauri::utils::platform::current_exe()?;
@@ -820,11 +859,7 @@ pub async fn app_install_update(
             update.install(bytes).map_err(|e| IdeError::internal(e.to_string()))
         })
         .await
-        .map_err(|e| IdeError::internal(e.to_string()))?;
-        if installed.is_ok() {
-            let _ = tokio::fs::remove_file(path).await;
-        }
-        installed
+        .map_err(|e| IdeError::internal(e.to_string()))?
     }
     .await;
     state.host.end_request(request);
