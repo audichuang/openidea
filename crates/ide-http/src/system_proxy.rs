@@ -351,7 +351,8 @@ mod tests {
     #[cfg(any(target_os = "macos", windows))]
     const PAC: &str = r#"function FindProxyForURL(url, host) {
         if (host == "github.com") return "PROXY 127.0.0.1:3128; DIRECT";
-        if (host == "socks.example") return "SOCKS5 127.0.0.1:1080";
+        // CFNetwork knows `SOCKS` but not `SOCKS5` (Safari neither).
+        if (host == "socks.example") return "SOCKS 127.0.0.1:1080";
         return "DIRECT";
     }"#;
 
