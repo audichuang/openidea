@@ -78,4 +78,12 @@ COMMENTS='{"comments":[{"body":"<!-- auto-rebase:needs-human -->"},{"body":"<!--
   check "real filter: approved old tip" 1 0 v0.1.35 v0.1.34 v0.1.35 ""
 COMMENTS='{"comments":[{"body":"<!-- auto-rebase:needs-human -->"}]}' \
   check "real filter: not approved"     1 0 v0.1.35 v0.1.34 v0.1.35 ""
+NH='{"body":"<!-- auto-rebase:needs-human -->"}'
+AP='{"body":"<!-- auto-rebase:approved abc -->"}'
+COMMENTS="{\"comments\":[$NH,$AP,$NH]}" \
+  check "real filter: approval rejected, lock current"  1 0 v0.1.35 v0.1.34 v0.1.35 ""
+COMMENTS="{\"comments\":[$NH,$AP,$NH,$AP]}" \
+  check "real filter: re-approved after rejection"      0 0 v0.1.35 v0.1.34 v0.1.35 ""
+COMMENTS="{\"comments\":[$NH,$AP,$NH]}" \
+  check "real filter: approval rejected, upstream newer" 0 0 v0.1.36 v0.1.34 v0.1.35 ""
 exit "$failed"
