@@ -2,6 +2,10 @@
 
 This is a personal fork. Before rebasing onto upstream, merging into `develop`, or releasing, read `FORK.md`: branch model, merge gate, platform scope, conflict rules and the release flow.
 
+This overrides the upstream guidance below (Issues & PRs, Parallel worktrees, `issue-fix`): cut work
+branches from `fork/develop`, not `origin/main`, and pass `-R audichuang/openidea` to every `gh issue`
+and `gh pr` command, with PRs into `develop`. Never open an issue or PR on `l0ng-ai/openidea`.
+
 # OpenIDEA — contributor guide
 
 Rust + Tauri 2 desktop IDE with full-featured, multi-language code intelligence.
@@ -41,8 +45,9 @@ Visual style: dark, low-contrast greys, one cool accent
   shortcuts live in `src/platform/keymaps/`.
 - Styling: CSS Modules + tokens only (no hex literals in components). Inline SVG
   icons from `src/ui/icons.tsx`, never emoji. Real `<button>`/`<input>`; `aria-label` on icon buttons.
-- User-visible text goes through the text catalog: add every new string to both
-  `src/platform/locales/text/en.json` and `zh.json` (`textCatalog.test.ts` enforces it).
+- User-visible text goes through the text catalog: English text at a call site (`tx`, `useTx`, UI
+  primitives) is its own key, so add its translation to `src/platform/locales/text/zh.json`
+  (`textCatalog.test.ts` enforces it); keyed messages go in `locales/en.json` and `locales/zh.json`.
 - Keep comments sparse and purposeful; match surrounding style.
 - For GUI verification, prefer Tauri MCP; use Computer Use only when Tauri MCP is
   unavailable or cannot cover the required checks.
