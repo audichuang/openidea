@@ -764,6 +764,11 @@ export const commands = {
 	 */
 	windowOpenProject: (path: string, newWindow: boolean, files: string[]) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_project", { path, newWindow, files })),
 	/**
+	 *  [`window_open_project`] into a new tab of this window's group ("Open project in: New tab");
+	 *  a plain new window when this window has no project.
+	 */
+	windowOpenProjectTab: (path: string, files: string[]) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_project_tab", { path, files })),
+	/**
 	 *  Loose `files` opened from a window without a local project: a file inside a local project
 	 *  open in some window goes to that window, the others to the LightEdit window (this one,
 	 *  another, or a new one from a remote project window). Returns the files this window opens
@@ -781,6 +786,8 @@ export const commands = {
 	 *  `ssh_config` (Remote Development); a new window connects itself.
 	 */
 	windowOpenRemote: (sshConfig: string, path: string, newWindow: boolean) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_remote", { sshConfig, path, newWindow })),
+	/**  [`window_open_remote`] into a new tab of this window's group. */
+	windowOpenRemoteTab: (sshConfig: string, path: string) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_remote_tab", { sshConfig, path })),
 	/**  Opens an empty (welcome) window; returns its label. */
 	windowNew: () => typedError<string, IdeError>(__TAURI_INVOKE("window_new")),
 	/**
@@ -3560,7 +3567,7 @@ export type FunctionBreakpoint = {
 export type GeneralSettings = {
 	reopenLastProject?: boolean,
 	confirmExit?: boolean,
-	/**  Where Open… puts a project while one is open: `ask` | `new` | `same` | `attach`. */
+	/**  Where Open… puts a project while one is open: `ask` | `new` | `tab` | `same` | `attach`. */
 	openProjectIn?: string,
 	/**  Initial folder of the Open / Clone dialogs; empty = the OS default. */
 	defaultProjectDirectory?: string,

@@ -243,13 +243,29 @@ fn select_shown(
     result
 }
 
-#[cfg(target_os = "macos")]
+/// Adds `new_window` to `anchor`'s group (or groups the two) and shows it.
 pub fn join(app: &AppHandle, anchor: &str, new_window: &str) -> IdeResult<()> {
-    let window = |label: &str| app.get_webview_window(label).ok_or_else(|| IdeError::not_found("Window closed"));
-    let (anchor, new_window) = (window(anchor)?, window(new_window)?);
-    crate::macos::add_tabs(app, &anchor, &[anchor.clone(), new_window.clone()], &new_window)?;
-    sync(app);
-    Ok(())
+    #[cfg(target_os = "macos")]
+    {
+        let window = |label: &str| app.get_webview_window(label).ok_or_else(|| IdeError::not_found("Window closed"));
+        let (anchor, new_window) = (window(anchor)?, window(new_window)?);
+        crate::macos::add_tabs(app, &anchor, &[anchor.clone(), new_window.clone()], &new_window)?;
+        sync(app);
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        app.state::<WindowsState>().groups.lock().join(anchor, new_window)?;
+        // `anchor`'s frame (fullscreen included) moves to the new tab.
+        select(app, anchor, new_window)?;
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = persist(&app).await {
+                tracing::warn!("cannot save window groups: {}", e.message);
+            }
+        });
+        Ok(())
+    }
 }
 
 pub fn merge(app: &AppHandle, caller: &str) -> IdeResult<()> {
