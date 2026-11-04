@@ -52,7 +52,15 @@ import { applyStash, commitChanges, dropStash, showUnstashDialog, stashChanges }
 import { CommitOptionsPopup } from "./CommitOptions";
 import { DEFAULT_LIST_NAME, useChangelists, withListDefaults } from "./changelists";
 import { moveToChangelist } from "./changelistsUi";
-import { messageHistory, setAmend, setDiffPreview, setGroupByDir, useCommit, type CommitTab } from "./commitStore";
+import {
+  messageHistory,
+  setAmend,
+  setDiffPreview,
+  setGroupByDir,
+  setUntrackedInUnstaged,
+  useCommit,
+  type CommitTab,
+} from "./commitStore";
 import { pushAfterCommit } from "./commitUi";
 import { stashTabOf, stashTabs, type ContentTab } from "./gitTabs";
 import { diffInput, openDiff, withChain, workingDiffData } from "./diffInput";
@@ -453,6 +461,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const status = useVcs((s) => s.status);
   const root = useVcs((s) => s.root) ?? "";
   const groupByDir = useCommit((s) => s.groupByDir);
+  const untrackedInUnstaged = useCommit((s) => s.untrackedInUnstaged);
   const diffPreview = useCommit((s) => s.diffPreview);
   const lists = useChangelists((s) => s.state);
   const checks = useCommitChecks();
@@ -470,9 +479,9 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const roots = useMemo(
     () =>
       staging
-        ? buildStagingTree(status, root, groupByDir, repos)
+        ? buildStagingTree(status, root, groupByDir, repos, untrackedInUnstaged)
         : buildChangeTree(status, root, groupByDir, lists, repos),
-    [staging, status, root, groupByDir, lists, repos],
+    [staging, status, root, groupByDir, lists, repos, untrackedInUnstaged],
   );
   const [byKey, parents] = useMemo(() => {
     const m = new Map<string, ChangeNode>();
@@ -566,6 +575,16 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
             showContextMenu(bottomLeft(viewRef.current), [
               { kind: "header", label: "Group By" },
               { label: "Directory", checked: groupByDir, run: () => setGroupByDir(!groupByDir) },
+              ...(staging
+                ? [
+                    { kind: "separator" as const },
+                    {
+                      label: "Unversioned Files Under Unstaged",
+                      checked: untrackedInUnstaged,
+                      run: () => setUntrackedInUnstaged(!untrackedInUnstaged),
+                    },
+                  ]
+                : []),
               ...(mode === "local"
                 ? [
                     { kind: "separator" } as const,
