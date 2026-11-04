@@ -130,6 +130,7 @@ fn bisect_names_the_first_bad_commit_and_resets() {
     // Answer each step by whether the commit is at or after `bad_first`.
     let order = [&good, &c2, &bad_first, &bad];
     let pos = |id: &str| order.iter().position(|c| c.as_str() == id).unwrap();
+    let mut trace = vec![format!("{state:?}")];
     for _ in 0..4 {
         if state.culprit.is_some() {
             break;
@@ -140,8 +141,16 @@ fn bisect_names_the_first_bad_commit_and_resets() {
         } else {
             repo.graph_bisect(&GraphBisectOp::Good { rev: current }).unwrap()
         };
+        trace.push(format!("{state:?}"));
     }
-    assert_eq!(state.culprit.as_deref(), Some(bad_first.as_str()));
+    let log = std::fs::read_to_string(dir.join(".git/BISECT_LOG")).unwrap_or_else(|e| format!("<{e}>"));
+    assert_eq!(
+        state.culprit.as_deref(),
+        Some(bad_first.as_str()),
+        "git {}\nsteps:\n{}\nBISECT_LOG:\n{log}",
+        git(dir, &["--version"]),
+        trace.join("\n")
+    );
     // A later refresh still knows it (read from the bisect log, not the last command's output).
     assert_eq!(repo.graph_bisect_state().unwrap().culprit.as_deref(), Some(bad_first.as_str()));
 
