@@ -336,6 +336,14 @@ mod runtime {
         });
     }
 
+    /// Window `label` takes its frame from a project tab group: its own saved position must not be
+    /// restored over it once it maps.
+    pub fn frame_inherited(app: &AppHandle, label: &str) {
+        if let Some(pending) = app.state::<Mutex<Cache>>().lock().windows.get_mut(label) {
+            pending.restore_position = false;
+        }
+    }
+
     pub fn normal_size_requested(app: &AppHandle, label: &str, size: tauri::PhysicalSize<u32>) {
         let cache = app.state::<Mutex<Cache>>();
         let mut cache = cache.lock();
@@ -504,7 +512,9 @@ mod runtime {
 }
 
 #[cfg(target_os = "linux")]
-pub use runtime::{content_size, is_wayland, normal_size_requested, plugin, prepare, save_before_close};
+pub use runtime::{
+    content_size, frame_inherited, is_wayland, normal_size_requested, plugin, prepare, save_before_close,
+};
 
 #[cfg(test)]
 mod tests {
