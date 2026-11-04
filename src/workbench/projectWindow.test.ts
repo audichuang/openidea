@@ -65,3 +65,12 @@ it("opens a project tab by policy, or a new window when this one can't take one"
   expect(await chooseProjectWindow("B")).toBe("new");
   expect(ask).not.toHaveBeenCalled();
 });
+it("opens in a new tab per the setting, and asks instead from a LightEdit window", async () => {
+  useProject.setState({ settings: { general: { openProjectIn: "tab" } } as never });
+  expect(await chooseProjectWindow("B")).toBe("tab");
+  expect(ask).not.toHaveBeenCalled();
+  useProject.setState({ project: null, lightEdit: true });
+  vi.mocked(ask).mockResolvedValue({ button: "new", checked: false });
+  expect(await chooseProjectWindow("B")).toBe("new");
+  expect(vi.mocked(ask).mock.calls[0]![0].buttons.map((b) => b.id)).toEqual(["cancel", "new", "same"]);
+});
