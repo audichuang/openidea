@@ -4,6 +4,7 @@ const workspaceAttach = vi.fn();
 const workspaceUpdate = vi.fn();
 const projectCurrent = vi.fn();
 const windowOpenProject = vi.fn();
+const windowOpenProjectTab = vi.fn();
 const windowOpenFiles = vi.fn();
 const windowTakeLaunch = vi.fn();
 const wslResolve = vi.fn();
@@ -35,6 +36,7 @@ vi.mock("@/platform/ipc", async (orig) => {
       workspaceUpdate: (...a: unknown[]) => workspaceUpdate(...a),
       projectCurrent: () => projectCurrent(),
       windowOpenProject: (...a: unknown[]) => windowOpenProject(...a),
+      windowOpenProjectTab: (...a: unknown[]) => windowOpenProjectTab(...a),
       windowOpenFiles: (...a: unknown[]) => windowOpenFiles(...a),
       windowTakeLaunch: () => windowTakeLaunch(),
       wslResolve: (p: string) => wslResolve(p),
@@ -167,6 +169,16 @@ describe("replacing a project in this window", () => {
     await openProjectWithPolicy("/same");
     expect(windowOpenProject).toHaveBeenCalledWith("/same", false, []);
     expect(openProject).toHaveBeenCalledWith("/same");
+  });
+
+  it("opens the project in a new tab of this window when set to 'tab'", async () => {
+    useProject.setState({ ...projectState("/a"), settings: { general: { openProjectIn: "tab" } } } as never);
+    windowOpenProjectTab.mockResolvedValue(ok({ kind: "opened", label: "project-1" }));
+    await openProjectWithPolicy("/b", ["/b/x.ts"]);
+    expect(windowOpenProjectTab).toHaveBeenCalledWith("/b", ["/b/x.ts"]);
+    expect(windowOpenProject).not.toHaveBeenCalled();
+    expect(openProject).not.toHaveBeenCalled();
+    expect(useProject.getState().project?.root).toBe("/a");
   });
 });
 
