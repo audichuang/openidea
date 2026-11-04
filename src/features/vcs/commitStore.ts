@@ -14,6 +14,8 @@ interface CommitState {
   /** Commit Options › Run Git hooks. */
   runHooks: boolean;
   groupByDir: boolean;
+  /** With the staging area: unversioned files under Unstaged (VS Code) instead of their own group (IDEA). */
+  untrackedInUnstaged: boolean;
   /** Whether the Git window's Local Changes tab previews the selection's diff. */
   diffPreview: boolean;
   /** User overrides of the inclusion checkboxes (absolute path → state). */
@@ -44,6 +46,7 @@ export const useCommit = create<CommitState>(() => ({
   author: "",
   runHooks: true,
   groupByDir: readBool("openidea.vcs.groupByDir", false),
+  untrackedInUnstaged: readBool("openidea.vcs.untrackedInUnstaged", true),
   diffPreview: readBool("openidea.vcs.diffPreview", true),
   checks: new Map(),
   excludedHunks: new Map(),
@@ -62,6 +65,15 @@ function readBool(key: string, fallback: boolean): boolean {
     return v === null ? fallback : v === "true";
   } catch {
     return fallback;
+  }
+}
+
+export function setUntrackedInUnstaged(v: boolean) {
+  useCommit.setState({ untrackedInUnstaged: v });
+  try {
+    localStorage.setItem("openidea.vcs.untrackedInUnstaged", String(v));
+  } catch {
+    // ignore
   }
 }
 
