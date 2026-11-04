@@ -16,6 +16,7 @@ import { openDiff, withChain } from "./diffInput";
 import { toLogChanges } from "./logChanges";
 import { refLabels } from "./logOptions";
 import { useVcs } from "./store";
+import { call, commands } from "@/platform/ipc";
 
 /** The Git Log changes menu's ClipCode entry reads the log's selection; point it at the graph's. */
 export function retargetClipItems(items: MenuItem[], commits: GraphCommit[]): MenuItem[] {
@@ -31,6 +32,62 @@ const LOG_NAVIGATION = new Set(["vcs.log.goToChild", "vcs.log.goToParent"]);
 
 export function withoutLogNavigation(items: MenuItem[]): MenuItem[] {
   return items.filter((i) => i.kind !== "action" || !LOG_NAVIGATION.has(i.action));
+}
+
+/** Entries that rewrite history: disabled on commits already on the upstream. */
+const REWRITES = new Set([
+  "vcs.log.editMessage",
+  "vcs.log.fixup",
+  "vcs.log.squashInto",
+  "vcs.log.squashCommits",
+  "vcs.log.dropCommit",
+  "vcs.log.interactiveRebase",
+]);
+
+/**
+ * Commits of HEAD not on its upstream (`@{u}..HEAD`); null without an upstream. The Git Log's
+ * own pushed check only knows the commits that log has loaded, so the graph asks itself.
+ */
+async function outgoingCommits(repo: string): Promise<Set<string> | null> {
+  try {
+    const info = await call(commands.vcsBranchInfo(repo));
+    if (!info.upstream) return null;
+    const commits = await call(
+      commands.vcsLog(repo, {
+        branch: "HEAD",
+        path: null,
+        author: null,
+        text: null,
+        range: "@{u}..HEAD",
+        skip: 0,
+        limit: 0,
+      }),
+    );
+    return new Set(commits.map((c) => c.id));
+  } catch {
+    return null;
+  }
+}
+
+/** The commit menu's push-dependent states, from the graph's own outgoing set (same rules as the Git Log). */
+export function applyPushGuard(
+  items: MenuItem[],
+  commit: GraphCommit,
+  selection: GraphCommit[],
+  outgoing: Set<string> | null,
+  head: string | null,
+): MenuItem[] {
+  const pushed = (c: GraphCommit) => outgoing !== null && !outgoing.has(c.id);
+  const targets = selection.some((c) => c.id === commit.id) ? selection : [commit];
+  const anyPushed = targets.some(pushed);
+  // Without an upstream there is no outgoing set: allow pushing up to any commit of HEAD.
+  const canPushHere = !!head && (outgoing ? outgoing.has(commit.id) : true);
+  return items.map((item) => {
+    if (item.kind !== "action") return item;
+    if (REWRITES.has(item.action)) return { ...item, disabled: anyPushed };
+    if (item.action === "vcs.log.pushUpToHere") return { ...item, disabled: !canPushHere };
+    return item;
+  });
 }
 
 /** Matches no branch name (git refuses NUL in ref names). */
@@ -70,8 +127,9 @@ export function createGitGraphBridge(): GitGraphBridge {
       }));
     },
     async commitMenu(commit, selection) {
-      const { commitMenu } = await import("./GitLog");
-      return withoutLogNavigation(commitMenu(commit, selection));
+      const [{ commitMenu }, outgoing] = await Promise.all([import("./GitLog"), outgoingCommits(commit.repo)]);
+      const head = useVcs.getState().heads[commit.repo]?.head ?? null;
+      return applyPushGuard(withoutLogNavigation(commitMenu(commit, selection)), commit, selection, outgoing, head);
     },
     async branchMenu(branch, repo) {
       const { branchMenu, inRepo } = await import("./branchMenu");
