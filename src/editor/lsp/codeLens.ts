@@ -105,6 +105,12 @@ function openUsages(view: EditorView, offset: number) {
   void executeAction("find.showUsages");
 }
 
+/** IDEA: clicking the author hint toggles "Annotate with Git Blame" for the file. */
+function openAnnotations(view: EditorView, path: string) {
+  view.focus();
+  void executeAction("vcs.annotate", path);
+}
+
 class UsagesLensPlugin {
   private schedule = debounce(() => void this.run(), 900);
   /** `${line}:${col}:${name}` → count, valid for `cacheDoc`. */
@@ -218,7 +224,14 @@ class UsagesLensPlugin {
         const offset = posToOffset(text, { line: t.line, col: t.col });
         const who = lines && authorSummary(lines, t.startLine, t.endLine);
         if (who)
-          lenses.push({ pos: offset, title: authorLabel(who), tooltip: authorTooltip(who), icon: "user", order: 20 });
+          lenses.push({
+            pos: offset,
+            title: authorLabel(who),
+            tooltip: authorTooltip(who),
+            icon: "user",
+            order: 20,
+            run: (v) => openAnnotations(v, doc.path),
+          });
         const n = usages ? this.cache.get(key(t)) : undefined;
         if (n === undefined) continue;
         lenses.push({
