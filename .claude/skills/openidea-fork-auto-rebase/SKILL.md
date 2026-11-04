@@ -33,7 +33,7 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
 - 沒有 `rebase/*` 且 vNEW == vOLD → 結束，不推通知。
 - 否則 **NEW**：`OLD_DEVELOP=$(git rev-parse fork/develop)`。
 
-開始前清掉之前 run 留下的 worktree：`git worktree list` 裡路徑含 `auto-openidea-fork-rebase` 而且不是 `MAIN` 的、目錄名以 `ar-` 開頭但 `$RUN` 不是這次的，只在 `git -C <路徑> status --porcelain` 沒輸出、不在 rebase 中、`git -C <路徑> branch -r --contains HEAD` 列得出 `fork/` 分支時刪（Orca 開的用 `orca worktree rm --worktree "id:38d295e1-a1dd-4eea-871a-5bbe1bef2554::<路徑>" --force --json`，其他用 `git worktree remove --force`）；其餘列進通知。
+開始前清掉之前 run 留下的 worktree：`git worktree list` 裡路徑含 `auto-openidea-fork-rebase` 而且不是 `MAIN` 的、目錄名以 `ar-` 開頭但 `$RUN` 不是這次的，只在 `git -C <路徑> status --porcelain -- . ':!.rebase-review'` 沒輸出（`.rebase-review/` 是每次 run 自己寫的，notes 已進 tag 說明，不算）、不在 rebase 中、`git -C <路徑> branch -r --contains HEAD` 列得出 `fork/` 分支時刪（Orca 開的用 `orca worktree rm --worktree "id:38d295e1-a1dd-4eea-871a-5bbe1bef2554::<路徑>" --force --json`，其他用 `git worktree remove --force`），刪完再 `git branch -D` 它原本所在的 `audichuang/auto-openidea-fork-rebase-run-*` 本地分支（有的話）；其餘列進通知。
 
 一律在 `MAIN` 做，不動 `~/Project/openidea` 主 checkout。全程 detached HEAD，推送寫明目的地（`git push fork HEAD:refs/heads/rebase/vNEW`）。
 
