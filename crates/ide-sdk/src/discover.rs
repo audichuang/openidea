@@ -482,46 +482,90 @@ pub fn jdk_sdk(j: &crate::java::Jdk) -> Sdk {
 
 // ------------------------------------------------------------------ maven
 
-/// Maven version from `lib/maven-core-<version>.jar`.
-fn maven_version(home: &Path) -> Option<String> {
-    std::fs::read_dir(home.join("lib")).ok()?.flatten().find_map(|e| {
+/// `<prefix><version>.jar` in `lib`: Maven's from `maven-core-`, the Maven Daemon's
+/// from `mvnd-logging-` (in its bundled `mvn/lib`).
+fn jar_version(lib: &Path, prefix: &str) -> Option<String> {
+    std::fs::read_dir(lib).ok()?.flatten().find_map(|e| {
         let name = e.file_name().to_string_lossy().into_owned();
-        Some(name.strip_prefix("maven-core-")?.strip_suffix(".jar")?.to_owned())
+        Some(name.strip_prefix(prefix)?.strip_suffix(".jar")?.to_owned())
     })
 }
 
-/// A Maven home (`bin/mvn` and `lib/`); Homebrew's formula keeps it in `libexec`.
-fn maven_home(dir: &Path) -> Option<PathBuf> {
-    let mvn = if cfg!(windows) { "mvn.cmd" } else { "mvn" };
-    [dir.join("libexec"), dir.to_path_buf()]
-        .into_iter()
-        .find(|h| h.join("bin").join(mvn).is_file() && h.join("lib").is_dir())
+/// A Maven home (`bin/mvn` and `lib/`) or Maven Daemon home (`bin/mvnd`, Maven itself
+/// in `mvn/`); Homebrew's formulas keep either in `libexec`.
+pub(crate) fn maven_home(dir: &Path, windows: bool) -> Option<PathBuf> {
+    let (mvn, mvnd) = crate::apply::maven_launchers(windows).split_first()?;
+    [dir.join("libexec"), dir.to_path_buf()].into_iter().find(|h| {
+        (h.join("bin").join(mvn).is_file() && h.join("lib").is_dir())
+            || (mvnd.iter().any(|n| h.join("bin").join(n).is_file()) && h.join("mvn/lib").is_dir())
+    })
+}
+
+/// The entry for a [`maven_home`]: `Maven 3.9.6`, or `mvnd 1.0.6 (Maven 3.9.16)`.
+pub(crate) fn maven_sdk(home: PathBuf, source: &str) -> Sdk {
+    let bundled = home.join("mvn/lib");
+    let (name, version) = if bundled.is_dir() && !home.join("lib").is_dir() {
+        let maven = jar_version(&bundled, "maven-core-");
+        let daemon = jar_version(&bundled, "mvnd-logging-").map(|v| format!("mvnd {v}"));
+        let name = match (daemon, &maven) {
+            (Some(d), Some(m)) => format!("{d} (Maven {m})"),
+            (Some(d), None) => d,
+            (None, _) => "mvnd".to_owned(),
+        };
+        (name, maven)
+    } else {
+        let version = jar_version(&home.join("lib"), "maven-core-");
+        (format!("Maven {}", version.clone().unwrap_or_default()).trim().to_owned(), version)
+    };
+    Sdk { path: home.clone().into(), name, version, source: source.to_owned(), home: Some(home.into()), extra: None }
+}
+
+/// The first of `names` on the search path. Windows' Maven ships `mvn.cmd` only and
+/// `which` looks for `.exe`, so the names there carry their extension.
+fn on_search_path(names: &[&str]) -> Option<PathBuf> {
+    if cfg!(windows) {
+        let dirs: Vec<PathBuf> = std::env::split_paths(&search_path()).collect();
+        names.iter().find_map(|n| dirs.iter().map(|d| d.join(n)).find(|p| p.is_file()))
+    } else {
+        names.iter().find_map(|n| which(n))
+    }
 }
 
 fn maven() -> Vec<Sdk> {
+    let windows = cfg!(windows);
     let mut found: Vec<(PathBuf, &'static str)> = Vec::new();
-    // Windows' Maven ships `mvn.cmd` only (`which` looks for `mvn.exe`).
-    let on_path = if cfg!(windows) {
-        std::env::split_paths(&search_path()).map(|d| d.join("mvn.cmd")).find(|p| p.is_file())
-    } else {
-        which("mvn")
-    };
-    if let Some(mvn) = on_path.and_then(|p| dunce::canonicalize(p).ok())
-        && let Some(home) = mvn.parent().and_then(Path::parent)
-    {
-        found.push((home.to_path_buf(), "path"));
+    // `mvn`, then `mvnd`; either is `<home>/bin/<launcher>`.
+    let launchers: [&[&str]; 2] =
+        if windows { [&["mvn.cmd"], &["mvnd.exe", "mvnd.cmd"]] } else { [&["mvn"], &["mvnd"]] };
+    for names in launchers {
+        if let Some(launcher) = on_search_path(names).and_then(|p| dunce::canonicalize(p).ok())
+            && let Some(home) = launcher.parent().and_then(Path::parent)
+        {
+            found.push((home.to_path_buf(), "path"));
+        }
     }
-    for var in ["MAVEN_HOME", "M2_HOME"] {
+    for var in ["MAVEN_HOME", "M2_HOME", "MVND_HOME"] {
         if let Some(h) = std::env::var_os(var) {
             found.push((PathBuf::from(h), "env"));
         }
     }
-    for p in ["/opt/homebrew/opt/maven", "/usr/local/opt/maven", "/usr/share/maven", "/opt/maven"] {
+    for p in [
+        "/opt/homebrew/opt/maven",
+        "/usr/local/opt/maven",
+        "/usr/share/maven",
+        "/opt/maven",
+        "/opt/homebrew/opt/mvnd",
+        "/usr/local/opt/mvnd",
+    ] {
         found.push((PathBuf::from(p), "system"));
     }
     if let Some(home) = home_dir() {
-        for d in subdirs(&home.join(".sdkman/candidates/maven")) {
-            found.push((d, "sdkman"));
+        for tool in ["maven", "mvnd"] {
+            for d in subdirs(&home.join(".sdkman/candidates").join(tool)) {
+                found.push((d, "sdkman"));
+            }
+            // Scoop's shims are not in the home, its `current` link is.
+            found.push((home.join("scoop/apps").join(tool).join("current"), "scoop"));
         }
         for (d, manager) in version_managers::installs(Tool::Maven) {
             found.extend(subdirs(&d).into_iter().map(|s| (s, manager)));
@@ -539,20 +583,11 @@ fn maven() -> Vec<Sdk> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for (dir, source) in found {
-        let Some(home) = maven_home(&dir) else { continue };
+        let Some(home) = maven_home(&dir, windows) else { continue };
         let home = dunce::canonicalize(&home).unwrap_or(home);
-        if !seen.insert(home.clone()) {
-            continue;
+        if seen.insert(home.clone()) {
+            out.push(maven_sdk(home, source));
         }
-        let version = maven_version(&home);
-        out.push(Sdk {
-            path: home.clone().into(),
-            name: format!("Maven {}", version.clone().unwrap_or_default()).trim().to_owned(),
-            version,
-            source: source.to_owned(),
-            home: Some(home.into()),
-            extra: None,
-        });
     }
     out
 }

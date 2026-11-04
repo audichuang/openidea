@@ -233,6 +233,7 @@ fn maven_steps(root: &Path, model: &BuildModel, kind: BuildKind, module: Option<
     }
     let step = |p: &maven::MavenProject, extra: &[String]| {
         let mut s = BuildStep::new(&p.command, &["-B", "-Dstyle.color=never"], &subdir(root, &p.dir), Format::Maven);
+        s.args.extend(maven::parsed_log_options(&p.command).iter().map(|o| (*o).to_owned()));
         s.args.extend(p.options.iter().cloned());
         s.args.extend(extra.iter().cloned());
         s.args.extend(goals.iter().map(|g| (*g).to_owned()));
@@ -1047,6 +1048,27 @@ mod tests {
                 step.args,
                 ["-B", "-Dstyle.color=never", "-s", "settings.xml", "-pl", "app", "-am", "clean", goal]
             );
+        }
+    }
+
+    #[test]
+    fn mvnd_builds_and_launch_steps_write_a_serial_log() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(root, "app/pom.xml", "<project/>");
+        for mvnd in ["/opt/homebrew/bin/mvnd", r"C:\tools\mvnd\bin\mvnd.exe"] {
+            let mut model = reactor_model();
+            for p in &mut model.maven.as_mut().unwrap().projects {
+                p.command = mvnd.into();
+            }
+            let plan = launch_plan(root, &model, &root.join("app"), false).unwrap();
+            assert_eq!(plan.steps[0].program, mvnd);
+            assert_eq!(
+                plan.steps[0].args,
+                ["-B", "-Dstyle.color=never", "-T1", "-s", "settings.xml", "-pl", "app", "-am", "clean", "compile"]
+            );
+            let build = maven_steps(root, &model, BuildKind::Build, None).unwrap();
+            assert!(build.iter().all(|s| s.args[..3] == ["-B", "-Dstyle.color=never", "-T1"]), "{build:?}");
         }
     }
 
