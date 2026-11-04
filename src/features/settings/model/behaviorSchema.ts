@@ -10,7 +10,7 @@ import { ZOOM_LIMITS } from "@/platform/zoom";
 import { validateIconThemeOptionsMap } from "@/platform/iconThemeOptions";
 
 export type Antialiasing = "subpixel" | "greyscale" | "none";
-export type OpenProjectIn = "ask" | "new" | "same";
+export type OpenProjectIn = "ask" | "new" | "tab" | "same";
 export type NotificationDisplay = "balloon" | "sticky" | "none";
 export type NavigationBarPosition = "top" | "statusBar" | "hidden";
 /** Themes selectable as "preferred" when syncing with the OS. */
@@ -200,7 +200,7 @@ export function validateGeneralExtras(raw: unknown): GeneralExtras {
   const d = DEFAULT_GENERAL_EXTRAS;
   const df = obj(g.dateFormat);
   return {
-    openProjectIn: oneOf(g.openProjectIn, ["ask", "new", "same"] as const, d.openProjectIn),
+    openProjectIn: oneOf(g.openProjectIn, ["ask", "new", "tab", "same"] as const, d.openProjectIn),
     updateSource: oneOf(g.updateSource, ["auto", "github", "cnb"] as const, d.updateSource),
     autoCheckUpdates: bool(g.autoCheckUpdates, d.autoCheckUpdates),
     showWhatsNewAfterUpdate: bool(g.showWhatsNewAfterUpdate, d.showWhatsNewAfterUpdate),
