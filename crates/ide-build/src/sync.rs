@@ -267,7 +267,9 @@ pub fn sync_maven(
     for (n, top) in model.projects.iter().filter(|p| !p.aggregated).enumerate() {
         let effective = cache_dir.join(format!("effective-pom-{n}.xml"));
         let _ = std::fs::remove_file(&effective);
+        let command = options.maven_command.as_deref().unwrap_or(&top.command);
         let mut args: Vec<String> = vec!["-B".into(), "-fae".into(), "-Dstyle.color=never".into()];
+        args.extend(maven::parsed_log_options(command).iter().map(|o| (*o).to_owned()));
         args.extend(options.maven_options.iter().cloned());
         if options.offline {
             args.push("-o".into());
@@ -277,7 +279,6 @@ pub fn sync_maven(
         }
         args.extend(maven_sync_goals(&effective, options.offline));
         progress(SyncProgress { message: format!("Reading {}", top.display_name), fraction: None });
-        let command = options.maven_command.as_deref().unwrap_or(&top.command);
         let out = run(command, &args, &root.join(&top.dir), &options.env, cancel, |line| {
             if let Some((name, i, total)) = maven_building(line) {
                 let fraction = (i.saturating_sub(1) as f32 / total.max(1) as f32).min(1.0);
@@ -370,6 +371,96 @@ mod tests {
         };
         sync_gradle(root, &root.join("cache"), &options, &CancellationToken::new(), &|_| {}).unwrap();
         assert_eq!(std::fs::read_to_string(root.join("actual-env")).unwrap(), "/jdk21\n/gradle-cache\n");
+    }
+
+    /// A Maven Daemon that records its arguments: `mvnd` on Unix, `mvnd.cmd` on Windows.
+    fn recording_mvnd(dir: &Path) -> PathBuf {
+        let bin = dir.join("mvnd/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let launcher = bin.join("mvnd");
+            std::fs::write(&launcher, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/args\"\n").unwrap();
+            std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+            launcher
+        }
+        #[cfg(windows)]
+        {
+            let launcher = bin.join("mvnd.cmd");
+            std::fs::write(&launcher, "@echo off\r\n> \"%~dp0args\" echo %*\r\n").unwrap();
+            launcher
+        }
+    }
+
+    #[test]
+    fn mvnd_sync_reads_a_serial_log() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("p");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("pom.xml"), "<project><groupId>g</groupId><artifactId>a</artifactId></project>")
+            .unwrap();
+        let launcher = recording_mvnd(tmp.path());
+        let options = SyncOptions {
+            maven_command: Some(launcher.to_string_lossy().into_owned()),
+            maven_options: vec!["-s".into(), "settings.xml".into()],
+            ..Default::default()
+        };
+        sync_maven(&root, &tmp.path().join("cache"), &options, &CancellationToken::new(), &|_| {}).unwrap();
+        let args = std::fs::read_to_string(launcher.parent().unwrap().join("args")).unwrap();
+        // `cmd.exe` gets `=`-carrying arguments quoted, which `%*` keeps.
+        let args: Vec<&str> = args.split_whitespace().map(|a| a.trim_matches('"')).collect();
+        assert_eq!(args[..6], ["-B", "-fae", "-Dstyle.color=never", "-T1", "-s", "settings.xml"], "{args:?}");
+    }
+
+    #[test]
+    fn mvnd_launchers_get_a_serial_log() {
+        for mvnd in ["mvnd", "/opt/homebrew/bin/mvnd", r"C:\tools\mvnd\bin\mvnd.exe", r"C:\mvnd\bin\MVND.CMD"] {
+            assert!(maven::is_mvnd(mvnd), "{mvnd}");
+            assert_eq!(maven::parsed_log_options(mvnd), ["-T1"]);
+        }
+        for mvn in ["mvn", "mvn.cmd", "./mvnw", r"C:\maven\bin\mvn.cmd", "/opt/mvnd/mvn/bin/mvn", "mvnDebug"] {
+            assert!(!maven::is_mvnd(mvn), "{mvn}");
+            assert!(maven::parsed_log_options(mvn).is_empty());
+        }
+    }
+
+    /// `mvnd -B -T1` output of a reactor (Maven Daemon 1.0.6): the same blocks `mvn` writes.
+    #[test]
+    fn dependency_trees_from_a_serial_mvnd_log() {
+        let log = "\
+[INFO] Processing build on daemon 8fbe4ac5
+[INFO] Using the SmartBuilder implementation with a thread count of 1
+[INFO] --- dependency:3.8.1:tree (default-cli) @ root ---
+[INFO] p:root:pom:1
+[INFO] 
+[INFO] --------------------------------< p:m9 >--------------------------------
+[INFO] Building m9 1                                                     [3/11]
+[INFO]   from m9/pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- dependency:3.8.1:tree (default-cli) @ m9 ---
+[INFO] p:m9:jar:1
+[INFO] +- org.slf4j:slf4j-api:jar:2.0.13:compile
+[INFO] +- com.google.guava:guava:jar:33.2.1-jre:compile
+[INFO] |  +- com.google.guava:failureaccess:jar:1.0.2:compile
+[INFO] |  \\- com.google.j2objc:j2objc-annotations:jar:3.0.0:compile
+[INFO] \\- com.fasterxml.jackson.core:jackson-databind:jar:2.17.1:compile
+[INFO]    \\- com.fasterxml.jackson.core:jackson-core:jar:2.17.1:compile
+[INFO] 
+";
+        let trees = maven::parse_dependency_tree(log);
+        let keys: Vec<&str> = trees.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["p:root", "p:m9"]);
+        let m9 = &trees[1].1;
+        let ids: Vec<&str> = m9.iter().map(|d| d.artifact_id.as_str()).collect();
+        assert_eq!(ids, ["slf4j-api", "guava", "jackson-databind"]);
+        assert_eq!(m9[1].children.len(), 2);
+        assert_eq!(m9[2].children[0].artifact_id, "jackson-core");
+        assert_eq!(
+            maven_building("[INFO] Building m9 1                                                     [3/11]"),
+            Some(("m9 1".into(), 3, 11))
+        );
     }
 
     #[test]
