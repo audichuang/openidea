@@ -1,6 +1,6 @@
 ---
 name: fork-verify
-description: Entry point for proving any OpenIDEA change in the running app in this fork (macOS); start here instead of the upstream `verify` skill, which it loads as its base. Tauri MCP (`mcp__tauri__*`) drives and asserts everything inside the webview; real OS input that synthetic events cannot reach (⌘V and other native-menu shortcuts, real clicks, hover, drags, native menus and dialogs) goes through osascript and cliclick against the same `pnpm dev:app` process, with screencapture for pixels and AppKit chrome (project window tabs, fullscreen). lcu is not needed for the dev build. Lists Tauri MCP pitfalls on this app and the fork feature map (Annotate colors, window groups, auto fetch, clipboard paste).
+description: Entry point for proving any OpenIDEA change in the running app in this fork (macOS); start here instead of the upstream `verify` skill, which it loads as its base. Tauri MCP (`mcp__tauri__*`) drives and asserts everything inside the webview; real OS input that synthetic events cannot reach (⌘V and other native-menu shortcuts, real clicks, hover, drags, native menus and dialogs) goes through osascript and cliclick against the same `pnpm dev:app` process, with screencapture for pixels and AppKit chrome (project window tabs, fullscreen). lcu is not needed for the dev build. Lists Tauri MCP pitfalls on this app and the fork feature map (`features/`, one file per fork feature with how to reach, drive and prove it).
 ---
 
 # Verify OpenIDEA in the real app (fork, macOS)
