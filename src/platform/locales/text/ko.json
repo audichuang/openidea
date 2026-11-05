@@ -4251,7 +4251,6 @@
   "Changelist '{name}' contains {count} changes. They will be moved to '{target}'. Delete the changelist?": "변경 목록 '{name}'에 변경 사항 {count}개가 있습니다. '{target}'(으)로 이동됩니다. 변경 목록을 삭제하시겠습니까?",
   "{name} (active)": "{name}(활성)",
   "from {path}": "{path}에서",
-  "{dir} · from {path}": "{dir} · {path}에서",
   "Clipboard ↔ {file} (selection)": "클립보드 ↔ {file}(선택 영역)",
   "Clipboard ↔ {file}": "클립보드 ↔ {file}",
   "Pull to {head}": "{head}(으)로 풀",
