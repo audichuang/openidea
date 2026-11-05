@@ -52,6 +52,20 @@ describe("New › Package", () => {
     expect(packageKindAt("py/src", [], py)).toBe("python");
   });
 
+  it("keeps a nested non-Python module out of a root-level Python project", () => {
+    const mixed = [root("src", "source", "pyproject.toml"), root("frontend/src", "source", "frontend/package.json")];
+    expect(packageKindAt("frontend/src/components", mixed)).toBeNull();
+    expect(packageKindAt("frontend", mixed)).toBeNull();
+    expect(packageKindAt("src/app", mixed)).toBe("python");
+    expect(packageKindAt("scripts", mixed)).toBe("python");
+  });
+
+  it("classifies Gradle-synced roots like their static detection", () => {
+    const gen = (from: string) => [root("src/gen", "source", from)];
+    expect(packageKindAt("src/gen/com/x", gen("Gradle"))).toBe("jvm");
+    expect(packageKindAt("src/gen/com/x", gen("build.gradle"))).toBe("jvm");
+  });
+
   it("validates dotted package names", () => {
     expect(packageSegments("com.acme.util", "jvm")).toEqual({ segments: ["com", "acme", "util"], error: null });
     expect(packageSegments("com..x", "jvm").error).toMatch(/Not a valid package name/);
