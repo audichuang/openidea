@@ -22,6 +22,7 @@ import { mergeIntoCurrent, rebaseOnto } from "./branchOps";
 import { applyStash, dropStash, showUnstashDialog } from "./changeOps";
 import { runOp } from "./ops";
 import { confirmDialog, promptText } from "./dialogs";
+import { GraphBranchFilterPopup } from "./gitGraphBranchFilter";
 import { call, commands } from "@/platform/ipc";
 import { getAction } from "@/platform/actions";
 
@@ -154,6 +155,7 @@ export function createGitGraphBridge(): GitGraphBridge {
       const current = useVcs.getState().heads[repo]?.head ?? null;
       return inRepo(repo, withActionLabels(branchMenu(branch, current)));
     },
+    BranchFilterPopup: GraphBranchFilterPopup,
     async tagMenu(tag, repo) {
       const { tagMenu, inRepo } = await import("./branchMenu");
       return inRepo(repo, withActionLabels(tagMenu(tag)));
