@@ -29,6 +29,25 @@ describe("New popup", () => {
     expect(useNewPopup.getState().request).toBeNull();
   });
 
+  it("lists a group's entries in place when it is picked", () => {
+    const rust = vi.fn();
+    render(<NewPopupHost />);
+    act(() =>
+      openNewPopup({ x: 10, y: 10 }, [
+        { id: "file", label: "File", run: () => undefined },
+        { id: "other", label: "Other File Types", submenu: [{ id: "rs", label: "Rust File", run: rust }] },
+      ]),
+    );
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(["File", "Other File Types"]);
+    const search = screen.getByRole("textbox", { name: "Search for file type" });
+    fireEvent.keyDown(search, { key: "ArrowDown" });
+    fireEvent.keyDown(search, { key: "Enter" });
+    expect(useNewPopup.getState().request).not.toBeNull();
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(["File", "Rust File"]);
+    fireEvent.keyDown(search, { key: "Enter" });
+    expect(rust).toHaveBeenCalledOnce();
+  });
+
   it("moves the selection with the arrow keys, skipping separators", () => {
     const python = vi.fn();
     render(<NewPopupHost />);
