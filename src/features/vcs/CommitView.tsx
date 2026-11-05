@@ -77,7 +77,7 @@ import { runOp } from "./ops";
 import { buildStagingTree, stagePaths, stagedFiles, stagingDiffData, unstagePaths, useStagingArea } from "./staging";
 import { RepoHeadChip } from "./RepoHeadChip";
 import { RepoSwatch } from "./RepoSwatch";
-import { splitPathDetail } from "./pathDetail";
+import { fitPathDetail } from "./pathDetail";
 import { refreshNow, repoName, selectRepo, useVcs } from "./store";
 import styles from "./CommitView.module.css";
 
@@ -688,7 +688,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                 className={clsx(
                   styles.label,
                   n.type === "group" && styles.groupLabel,
-                  n.type !== "file" && styles.shrinkLabel,
+                  n.type === "file" && styles.fileLabel,
                   n.type === "group" && n.changelist && !n.active && styles.inactiveList,
                 )}
                 style={n.type === "file" && n.kind ? { color: KIND_COLOR[n.kind] } : undefined}
@@ -770,13 +770,34 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   );
 }
 
-/** A flat-mode file's directory, cut in the middle so its first and last segments stay visible as long as they can. */
+let measureContext: CanvasRenderingContext2D | null | undefined;
+
+/**
+ * A flat-mode file's directory as one string cut in the middle to the width the row leaves it,
+ * so its first and last segments stay visible as long as they can (two ellipsis boxes leave a gap).
+ */
 function PathDetail({ dir }: { dir: string }) {
-  const { head, tail } = splitPathDetail(dir);
+  const ref = useRef<HTMLSpanElement>(null);
+  const [fit, setFit] = useState<{ dir: string; text: string } | null>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const observer = new ResizeObserver(([entry]) => {
+      measureContext ??= document.createElement("canvas").getContext("2d");
+      const ctx = measureContext;
+      if (!entry || !ctx) return;
+      ctx.font = getComputedStyle(el).font;
+      setFit({ dir, text: fitPathDetail(dir, entry.contentRect.width, (t) => ctx.measureText(t).width) });
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [dir]);
   return (
-    <span className={styles.pathDetail} title={dir}>
-      {head && <span className={styles.pathHead}>{head}</span>}
-      {tail && <span className={styles.pathTail}>{tail}</span>}
+    <span ref={ref} className={styles.pathDetail} title={dir}>
+      <span className={styles.pathSizer} aria-hidden>
+        {dir}
+      </span>
+      <span className={styles.pathText}>{fit?.dir === dir ? fit.text : dir}</span>
     </span>
   );
 }

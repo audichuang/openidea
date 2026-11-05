@@ -62,12 +62,16 @@
 .icon {
   flex: none;
 }
+/* Shrinks only after the row's branch chip or directory has given way (their `flex: 1 1 0`),
+   keeping a character and its ellipsis. */
 .label {
-  flex: 0 0 auto;
-  max-width: 75%;
-  min-width: 0;
+  flex: 0 1 auto;
+  min-width: 2ch;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.fileLabel {
+  max-width: 75%;
 }
 .groupLabel {
   color: var(--fg-strong);
@@ -85,37 +89,31 @@
   white-space: nowrap;
   color: var(--fg-subtle);
 }
-/* A folder or repository label may shrink, after the branch chip has. */
-.shrinkLabel {
-  flex-shrink: 1;
-}
-/* A flat-mode file's directory, cut in the middle: the head gives way first but keeps a
-   couple of characters, then the last segment shrinks too, each with an ellipsis. */
+/* A flat-mode file's directory, cut in the middle by `fitPathDetail`. Its zero basis makes it give
+   way entirely before the label shrinks (to the floor), and it grows back up to the full path, which
+   the hidden sizer holds; the cut text is drawn over the sizer. */
 .pathDetail {
-  display: inline-flex;
-  flex: 0 1 auto;
-  min-width: 0;
+  position: relative;
+  flex: 1 1 0;
+  min-width: 2ch;
+  max-width: max-content;
   overflow: hidden;
   white-space: nowrap;
   color: var(--fg-subtle);
 }
-.pathHead {
-  flex: 0 1000 auto;
-  min-width: 2ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.pathSizer {
+  visibility: hidden;
 }
-.pathTail {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.pathText {
+  position: absolute;
+  inset: 0;
 }
-/* A repository row's current branch, as IDEA's branch chip: shrinks before the label, keeps ~3ch. */
+/* A repository row's current branch, as IDEA's branch chip: like `.pathDetail`, gives way before
+   the label, down to ~3ch. */
 .headChip {
-  flex: 0 1000 auto;
+  flex: 1 1 0;
   min-width: calc(3ch + 8px);
-  max-width: 40%;
+  max-width: max-content;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -259,7 +257,6 @@
 .nodeRow {
   flex: 1;
   min-width: 0;
-  overflow: hidden;
   align-self: stretch;
   display: flex;
   align-items: center;
