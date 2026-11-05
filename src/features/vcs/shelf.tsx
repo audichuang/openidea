@@ -17,7 +17,10 @@ import type {
 } from "@/bindings";
 import { setContext } from "@/platform/context";
 import { shortcutLabel } from "@/platform/keymap";
-import { openDiff, openVcsDiff, withChain, type DiffData } from "./diffInput";
+import clsx from "clsx";
+import { diffInput, openDiff, openVcsDiff, withChain, workingDiffData, type DiffData } from "./diffInput";
+import { DiffEditor } from "./DiffEditor";
+import { buildShelveTree, firstFile, nodeCheck, toggleNode, type ShelveNode } from "./shelveTree";
 import { showCreatePatchForShelf } from "./patches";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
@@ -25,6 +28,7 @@ import { workflowSettings } from "@/platform/workflowSettings";
 import {
   Checkbox,
   Dialog,
+  EmptyState,
   Icon,
   IconButton,
   Input,
@@ -281,6 +285,38 @@ export function FileChecklist({
     />
   );
 }
+
+function ShelveCheck({
+  checked,
+  indeterminate,
+  label,
+  onToggle,
+}: {
+  checked: boolean;
+  indeterminate: boolean;
+  label: string;
+  onToggle: () => void;
+}) {
+  return (
+    <span
+      role="checkbox"
+      aria-checked={indeterminate ? "mixed" : checked}
+      aria-label={label}
+      className={clsx(shelfStyles.check, (checked || indeterminate) && shelfStyles.checkOn)}
+      onMouseDown={(e) => {
+        if (e.button !== 0) return;
+        e.stopPropagation();
+        e.preventDefault();
+        onToggle();
+      }}
+      onDoubleClick={(e) => e.stopPropagation()}
+    >
+      {indeterminate ? <Icon name="minus" size={10} /> : checked ? <Icon name="check" size={10} /> : null}
+    </span>
+  );
+}
+
+/** IDEA's Shelve Changes dialog: a directory tree of the changes with inclusion checkboxes, the selected file's diff, the name. */
 function ShelveDialog({
   files,
   initialName,
@@ -290,8 +326,28 @@ function ShelveDialog({
   initialName: string;
   onClose: () => void;
 }) {
+  const root = useVcs((s) => s.root) ?? "";
   const [selected, setSelected] = useState(() => new Set(files.map((f) => f.path)));
   const [name, setName] = useState(initialName);
+  const tree = useMemo(() => buildShelveTree(files, root), [files, root]);
+  const allKeys = useMemo(() => dirKeys(tree), [tree]);
+  const byKey = useMemo(() => {
+    const map = new Map<string, ShelveNode>();
+    const walk = (nodes: readonly ShelveNode[]) => {
+      for (const n of nodes) {
+        map.set(n.key, n);
+        walk(n.children);
+      }
+    };
+    walk(tree);
+    return map;
+  }, [tree]);
+  const [focused, setFocused] = useState<Set<string>>(() => {
+    const first = firstFile(tree);
+    return new Set(first ? [first.key] : []);
+  });
+  const focusedNode = byKey.get([...focused][0] ?? "");
+  const previewPath = focusedNode?.file && !focusedNode.file.path.endsWith("/") ? focusedNode.file.path : null;
   const run = async () => {
     const chosen = files.filter((f) => selected.has(f.path)).map((f) => stripSlash(f.path));
     if (!chosen.length || !name.trim()) return;
@@ -304,7 +360,7 @@ function ShelveDialog({
       open
       title="Shelve Changes"
       onClose={onClose}
-      width={540}
+      width={900}
       buttons={[
         {
           label: "Shelve Changes",
@@ -320,7 +376,64 @@ function ShelveDialog({
           ? tx`${selected.size} of ${files.length} file will be shelved and reverted in the working tree.`
           : tx`${selected.size} of ${files.length} files will be shelved and reverted in the working tree.`}
       </div>
-      <FileChecklist files={files} selected={selected} onChange={setSelected} label="Files to shelve" />
+      <div className={shelfStyles.body}>
+        <SplitGroup orientation="horizontal" className={shelfStyles.split}>
+          <SplitPanel defaultSize="38%" minSize="200px">
+            <div
+              className={shelfStyles.tree}
+              onKeyDownCapture={(e) => {
+                if (e.key !== " " || e.metaKey || e.ctrlKey || !focusedNode) return;
+                e.preventDefault();
+                e.stopPropagation();
+                setSelected((cur) => toggleNode(focusedNode, cur));
+              }}
+            >
+              <Tree<ShelveNode>
+                roots={tree}
+                getKey={(n) => n.key}
+                getLabel={(n) => n.name}
+                getChildren={(n) => n.children}
+                isExpandable={(n) => !n.file}
+                defaultExpanded={allKeys}
+                selected={focused}
+                onSelectionChange={(sel) => setFocused(sel)}
+                multiSelect={false}
+                aria-label="Files to shelve"
+                renderNode={(n) => {
+                  const check = nodeCheck(n, selected);
+                  const kind = n.file ? (effectiveKind(n.file) ?? "modified") : null;
+                  return (
+                    <span className={shelfStyles.row}>
+                      <ShelveCheck
+                        {...check}
+                        label={tx`Include ${n.name}`}
+                        onToggle={() => setSelected((cur) => toggleNode(n, cur))}
+                      />
+                      <Icon name={n.file ? fileIconName(n.name, n.file.path) : "folder"} size={16} />
+                      <span className={shelfStyles.label} style={kind ? { color: KIND_COLOR[kind] } : undefined}>
+                        {n.name}
+                      </span>
+                      {!n.file && <span className={shelfStyles.rowDetail}>{fileCount(n.count)}</span>}
+                    </span>
+                  );
+                }}
+              />
+            </div>
+          </SplitPanel>
+          <SplitHandle />
+          <SplitPanel defaultSize="62%" minSize="240px">
+            <div className={shelfStyles.preview} data-shelve-preview>
+              {previewPath ? (
+                <DiffEditor input={diffInput(workingDiffData(previewPath))} />
+              ) : (
+                <EmptyState>
+                  <T>Select a file to preview its changes</T>
+                </EmptyState>
+              )}
+            </div>
+          </SplitPanel>
+        </SplitGroup>
+      </div>
       <div className={styles.form}>
         <label className={styles.fieldLabel} htmlFor="openidea-shelf-name">
           <T>Name:</T>
