@@ -4777,6 +4777,11 @@ export type JavaSettings = {
 	 *  (VS Code's `java.jdt.ls.vmargs`).
 	 */
 	jdtlsVmArgs?: string,
+	/**
+	 *  Minutes the Java language server keeps running once no Java file of the project
+	 *  is open; it starts again with the next one, or for Run / Debug. 0 = never stops.
+	 */
+	jdtlsIdleShutdownMinutes?: number,
 	/**  Build Tools › Maven. */
 	maven?: MavenSettings,
 	/**  Build Tools › Gradle. */
