@@ -31,9 +31,18 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
   };
 });
 
+const chooseMany = vi.fn();
+vi.mock("../dialogs", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../dialogs")>();
+  return { ...real, chooseMany: (opts: unknown) => chooseMany(opts) };
+});
+
+import { createElement } from "react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { gitGraphBridge, type GraphCommit } from "@/workbench/gitGraphBridge";
 import { activate, retargetClipItems } from "../gitGraphBridge";
 import { useVcs } from "../store";
+import { useFavoriteBranches } from "../branchOps";
 import { registerActions } from "@/platform/actions";
 
 const REPO = "/repo";
@@ -254,5 +263,60 @@ describe("git graph bridge", () => {
       { kind: "action", action: "clip.copyLogChanges", arg: { commits: [c], changes: [1] } },
       { kind: "action", action: "vcs.log.changes.showDiff", arg: [1] },
     ]);
+  });
+
+  const filterBranches = [
+    branch("alpha"),
+    branch("main"),
+    branch("zeta"),
+    branch("origin/HEAD", { remote: true }),
+    branch("origin/dev", { remote: true }),
+  ];
+  const renderFilter = (repo: string) => {
+    const props = { onSelect: vi.fn(), onSelectMany: vi.fn(), onClose: vi.fn() };
+    render(
+      createElement(bridge().BranchFilterPopup, {
+        anchor: document.body,
+        repo,
+        branches: filterBranches,
+        selected: [],
+        ...props,
+      }),
+    );
+    const rows = () => [...document.querySelectorAll("[role='option']")].map((el) => el.textContent?.trim() ?? "");
+    return { ...props, rows, input: screen.getByRole("textbox", { name: "Search branches" }) };
+  };
+
+  it("offers the Git Log's searchable branch filter, grouped, with the repository's favorites first", () => {
+    useFavoriteBranches.setState({ key: `openidea.vcs.favoriteBranches:${REPO}`, names: ["zeta"] });
+    const { rows, input, onSelect } = renderFilter(REPO);
+    expect(screen.getByText("Local")).toBeTruthy();
+    expect(screen.getByText("Remote")).toBeTruthy();
+    expect(screen.queryByText("origin/HEAD")).toBeNull();
+    const order = ["zeta", "alpha", "main"].map((n) => rows().indexOf(n));
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    fireEvent.change(input, { target: { value: "dev" } });
+    expect(screen.queryByText("alpha")).toBeNull();
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSelect).toHaveBeenCalledWith("origin/dev");
+  });
+
+  it("uses the default favorites for a repository the vcs feature has not selected", () => {
+    useFavoriteBranches.setState({ key: `openidea.vcs.favoriteBranches:${REPO}`, names: ["zeta"] });
+    const { rows } = renderFilter("/other");
+    const order = ["main", "alpha", "zeta"].map((n) => rows().indexOf(n));
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+  });
+
+  it("chooses several branches with the Select… dialog", async () => {
+    chooseMany.mockResolvedValue(["HEAD", "zeta"]);
+    const { onSelectMany, onClose } = renderFilter(REPO);
+    fireEvent.click(screen.getByRole("button", { name: "Select…" }));
+    expect(onClose).toHaveBeenCalled();
+    expect(chooseMany).toHaveBeenCalledWith(
+      expect.objectContaining({ options: ["HEAD", "alpha", "main", "zeta", "origin/dev"], initial: [] }),
+    );
+    await waitFor(() => expect(onSelectMany).toHaveBeenCalledWith(["HEAD", "zeta"]));
   });
 });
