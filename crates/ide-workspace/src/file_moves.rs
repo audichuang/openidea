@@ -110,6 +110,7 @@ impl FileMoves {
     /// Local History first. On failure everything done so far is rolled back.
     /// `sync_git_index` is false for untrusted projects: no git command runs then.
     /// Returns the id for [`undo`](Self::undo).
+    #[allow(clippy::too_many_arguments)]
     pub fn perform(
         &self,
         documents: &Documents,
@@ -350,7 +351,8 @@ mod tests {
             FileMove { from: root.join("sub/A.txt").into(), to: root.join("A2.txt").into() },
             FileMove { from: root.join("B.txt").into(), to: root.join("B2.txt").into() },
         ];
-        let id = moves.perform(&docs, Some(&history), &mv, &WorkspaceEdit::default(), "Move", true, &apply(&docs)).unwrap();
+        let id =
+            moves.perform(&docs, Some(&history), &mv, &WorkspaceEdit::default(), "Move", true, &apply(&docs)).unwrap();
         // Undo renames B2 back first, then fails on A2 because `sub` is now a file.
         fs::remove_dir_all(root.join("sub")).unwrap();
         fs::write(root.join("sub"), "x").unwrap();
@@ -470,7 +472,7 @@ mod tests {
         assert_eq!(git(root, &["ls-files", "--others", "--exclude-standard"]), "");
         assert_eq!(git(root, &["diff", "--name-only"]), "");
 
-        moves.undo(&documents(), id).unwrap();
+        moves.undo(&documents(), None, true, id).unwrap();
         assert_eq!(git(root, &["ls-files"]), "t.txt\n");
         assert_eq!(git(root, &["status", "--porcelain"]), "");
     }
@@ -518,7 +520,7 @@ mod tests {
         fs::write(root.join("m.txt"), "content\n").unwrap();
         git(root, &["add", "-N", "m.txt"]);
         let (moves, id) = rename(root, "m.txt", "n.txt");
-        moves.undo(&documents(), id).unwrap();
+        moves.undo(&documents(), None, true, id).unwrap();
         assert_eq!(git(root, &["status", "--porcelain"]), " A m.txt\n");
     }
 
@@ -557,7 +559,7 @@ mod tests {
         let (moves, id) = rename(root, "a.txt", "ignored.txt");
         assert_eq!(git(root, &["ls-files"]), ".gitignore\nignored.txt\n");
         assert_eq!(git(root, &["status", "--porcelain"]), " A ignored.txt\n");
-        moves.undo(&documents(), id).unwrap();
+        moves.undo(&documents(), None, true, id).unwrap();
         assert_eq!(git(root, &["status", "--porcelain"]), " A a.txt\n");
     }
 

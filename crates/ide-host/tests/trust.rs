@@ -436,9 +436,15 @@ async fn file_moves_sync_the_git_index_only_in_trusted_projects() {
     let before = index();
     let mv = |from: &str, to: &str| vec![FileMove { from: root.join(from).into(), to: root.join(to).into() }];
 
-    let id = ops::refactor::refactor_move_files(&host, "main", mv("a.txt", "b.txt"), WorkspaceEdit::default(), "Rename".into())
-        .await
-        .unwrap();
+    let id = ops::refactor::refactor_move_files(
+        &host,
+        "main",
+        mv("a.txt", "b.txt"),
+        WorkspaceEdit::default(),
+        "Rename".into(),
+    )
+    .await
+    .unwrap();
     assert_eq!(index(), before, "restricted project: no git index sync");
     assert_eq!(git(&root, &["ls-files"]), "a.txt\n");
     ops::refactor::refactor_undo_file_move(&host, "main", id).await.unwrap();
