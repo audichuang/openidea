@@ -96,6 +96,8 @@ export const LANGUAGE_PAGES: PageSpec[] = [
       "lombok",
       "javaagent",
       "eclipse jdt",
+      "stop when idle",
+      "memory",
     ],
     component: JavaPage,
   },
