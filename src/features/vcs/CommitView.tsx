@@ -798,6 +798,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                 className={clsx(
                   styles.label,
                   n.type === "group" && styles.groupLabel,
+                  n.type !== "file" && styles.shrinkLabel,
                   n.type === "group" && n.changelist && !n.active && styles.inactiveList,
                 )}
                 style={n.type === "file" && n.kind ? { color: KIND_COLOR[n.kind] } : undefined}
@@ -860,7 +861,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                 )}
                 {n.repo && <RepoSwatch root={n.repo} />}
                 {label}
-                {n.type !== "file" && <span className={styles.detail}>{fileCount(n.files.length)}</span>}
+                {n.type !== "file" && <span className={styles.count}>{fileCount(n.files.length)}</span>}
                 {n.repo && <RepoHeadChip root={n.repo} className={styles.headChip} />}
                 {!staging && n.type === "file" && n.files[0] && isPartiallyStaged(n.files[0]) && (
                   <span className={styles.partial} title={tx("Partially staged: only staged hunks are committed")}>
@@ -879,12 +880,12 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   );
 }
 
-/** A flat-mode file's directory, cut in the middle so its first and last segments stay visible. */
+/** A flat-mode file's directory, cut in the middle so its first and last segments stay visible as long as they can. */
 function PathDetail({ dir }: { dir: string }) {
   const { head, tail } = splitPathDetail(dir);
   return (
     <span className={styles.pathDetail} title={dir}>
-      <span className={styles.pathHead}>{head}</span>
+      {head && <span className={styles.pathHead}>{head}</span>}
       {tail && <span className={styles.pathTail}>{tail}</span>}
     </span>
   );
