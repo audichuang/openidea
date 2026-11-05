@@ -149,16 +149,33 @@
 }
 .commitBar {
   flex: none;
-  height: 32px;
+  min-height: 32px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
-  padding: 0 6px 0 12px;
+  gap: 2px 4px;
+  padding: 4px 6px 4px 12px;
   white-space: nowrap;
   overflow: hidden;
 }
 .grow {
   flex: 1;
+}
+/* Wraps under Amend as one group when the bar is too narrow; its counts wrap between each other, never mid-count. */
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 6px;
+  font-size: var(--fs-small);
+}
+.summaryAdded {
+  color: var(--vcs-added);
+}
+.summaryModified {
+  color: var(--vcs-modified);
+}
+.summaryDeleted {
+  color: var(--vcs-deleted);
 }
 .lineLen {
   color: var(--fg-faint);

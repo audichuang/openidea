@@ -8,6 +8,8 @@ async function open(page: Page, query: string) {
   await page.goto(`/e2e/commitTreeLabels.html?${query}`);
   const tree = page.getByRole("tree", { name: "Changes" });
   await expect(tree.getByRole("treeitem").first()).toBeVisible();
+  // Several repositories start collapsed; these checks need every row.
+  await page.getByRole("button", { name: "Expand All" }).click();
   return tree;
 }
 
