@@ -268,4 +268,23 @@ describe("status refresh", () => {
     expect(useVcs.getState().status.map((f) => f.relPath)).toEqual(["after.ts"]);
     expect(vcsStatus).toHaveBeenCalledTimes(2);
   });
+
+  it("keeps the repositories and the last status when reading the status fails", async () => {
+    useVcs.setState({ roots: [], status: [fs("kept.ts", { unstaged: "modified" })], statusError: null });
+    vcsStatus.mockImplementationOnce(async () => ({
+      status: "error",
+      error: { kind: "internal", message: "git: An object with id d5e93a54 could not be found" },
+    }));
+    await refreshNow();
+    const s = useVcs.getState();
+    expect(s.roots).toEqual(["/p"]);
+    expect(s.branch?.head).toBe("main");
+    expect(s.status.map((f) => f.relPath)).toEqual(["kept.ts"]);
+    expect(s.statusError).toContain("could not be found");
+    expect(s.error).toBeNull();
+
+    vcsStatus.mockImplementationOnce(async () => ({ status: "ok", data: [] }));
+    await refreshNow();
+    expect(useVcs.getState().statusError).toBeNull();
+  });
 });
