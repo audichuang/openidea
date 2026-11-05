@@ -844,23 +844,30 @@ let measureContext: CanvasRenderingContext2D | null | undefined;
  */
 function PathDetail({ dir }: { dir: string }) {
   const ref = useRef<HTMLSpanElement>(null);
+  const sizerRef = useRef<HTMLSpanElement>(null);
   const [fit, setFit] = useState<{ dir: string; text: string } | null>(null);
   useEffect(() => {
     const el = ref.current;
-    if (!el) return;
-    const observer = new ResizeObserver(([entry]) => {
+    const sizer = sizerRef.current;
+    if (!el || !sizer) return;
+    // The sizer's width follows the font, so a font change or a late web font refits even when
+    // the box itself keeps its width (e.g. held by the label's max-width).
+    let width: number | undefined;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) if (entry.target === el) width = entry.contentRect.width;
       measureContext ??= document.createElement("canvas").getContext("2d");
       const ctx = measureContext;
-      if (!entry || !ctx) return;
+      if (width === undefined || !ctx) return;
       ctx.font = getComputedStyle(el).font;
-      setFit({ dir, text: fitPathDetail(dir, entry.contentRect.width, (t) => ctx.measureText(t).width) });
+      setFit({ dir, text: fitPathDetail(dir, width, (t) => ctx.measureText(t).width) });
     });
     observer.observe(el);
+    observer.observe(sizer);
     return () => observer.disconnect();
   }, [dir]);
   return (
     <span ref={ref} className={styles.pathDetail} title={dir}>
-      <span className={styles.pathSizer} aria-hidden>
+      <span ref={sizerRef} className={styles.pathSizer} aria-hidden>
         {dir}
       </span>
       <span className={styles.pathText}>{fit?.dir === dir ? fit.text : dir}</span>
