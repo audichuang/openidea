@@ -16,11 +16,19 @@ export function NewPopupHost() {
 function NewPopup({ at, items }: { at: { x: number; y: number }; items: MenuItem[] }) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(-1);
-  const rows = useMemo(() => newPopupRows(items, query), [items, query]);
+  const [expanded, setExpanded] = useState(false);
+  const rows = useMemo(() => newPopupRows(items, query, expanded), [items, query, expanded]);
   const current =
     active >= 0 && active < rows.length && !rows[active]!.separator ? active : firstSelectable(rows, isSeparator);
 
   const pick = (row: NewPopupRow | undefined) => {
+    if (row?.expand) {
+      // List the group's entries in place, with its first entry selected.
+      const next = newPopupRows(items, query, true);
+      setExpanded(true);
+      setActive(next.findIndex((r) => r.key.startsWith(`${row.key}/`) && !r.separator));
+      return;
+    }
     if (!row?.run) return;
     closeNewPopup();
     row.run();
@@ -94,6 +102,7 @@ function NewPopup({ at, items }: { at: { x: number; y: number }; items: MenuItem
               <HighlightedText text={r.label} indices={r.matches ?? undefined} />
             </span>
             {r.shortcut && <span className={styles.shortcut}>{r.shortcut}</span>}
+            {r.expand && <Icon name="chevron-right" size={12} className={styles.chevron} />}
           </div>
         )}
       />
