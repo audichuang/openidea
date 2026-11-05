@@ -9,7 +9,7 @@ import { RangeSetBuilder, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { getChunks, type Chunk, type MergeView } from "@codemirror/merge";
 import { changedLineGutters, chunkKind, type DiffKind } from "./cm";
-import { arrowButton } from "./diffControls";
+import { arrowButton, diffArrows, type ArrowSides, type DiffArrow } from "./diffControls";
 
 type Side = "a" | "b";
 
@@ -144,8 +144,11 @@ const ARROW_HEIGHT = 16;
 export interface UnalignedPanesOptions {
   /** Scrolling one pane carries the other along. */
   sync: boolean;
-  /** Divider arrows toward the editable sides; `apply` copies chunk `index` from `source`. */
-  arrows?: { toA: boolean; toB: boolean; apply(index: number, source: Side): void };
+  /**
+   * Divider controls (`diffArrows`): `apply` copies chunk `index` from `source`;
+   * `stage` stages it, for a staging diff.
+   */
+  arrows?: ArrowSides & { apply(index: number, source: Side): void; stage?(index: number): void };
 }
 
 /**
@@ -339,7 +342,7 @@ export class UnalignedPanes {
     const lineHeight = mv.a.defaultLineHeight;
     const arrowTop = (y0: number, y1: number) =>
       y1 - y0 < 2 ? y0 - ARROW_HEIGHT / 2 : y0 + (Math.min(lineHeight, y1 - y0) - ARROW_HEIGHT) / 2;
-    const arrows = this.opts.arrows;
+    const arrows = this.opts.arrows ? diffArrows(this.opts.arrows) : [];
     const shown = new Set<string>();
     let paths = "";
     const { chunks } = mv;
@@ -360,8 +363,8 @@ export class UnalignedPanes {
       paths +=
         `<path class="cm-diffBand cm-diffBand-${kind}" d="${bandPath(w, a0, a1, b0, b1)}"/>` +
         `<path class="cm-diffBandLine cm-diffBand-${kind}" d="M0 ${mid}C${w * 0.3} ${mid} ${w * 0.7} ${midB} ${w} ${midB}"/>`;
-      if (arrows?.toB) this.placeArrow(shown, i, "a-to-b", arrowTop(a0, a1), h);
-      if (arrows?.toA) this.placeArrow(shown, i, "b-to-a", arrowTop(b0, b1), h);
+      for (const arrow of arrows)
+        this.placeArrow(shown, i, arrow, arrow.dir === "a-to-b" ? arrowTop(a0, a1) : arrowTop(b0, b1), h);
     }
     this.bandLayer.innerHTML = paths;
     for (const [key, el] of this.arrowEls)
@@ -371,12 +374,16 @@ export class UnalignedPanes {
       }
   }
 
-  private placeArrow(shown: Set<string>, index: number, dir: "a-to-b" | "b-to-a", top: number, h: number) {
+  private placeArrow(shown: Set<string>, index: number, arrow: DiffArrow, top: number, h: number) {
     if (top < -ARROW_HEIGHT || top > h) return;
-    const key = `${index}${dir}`;
+    const key = `${index}${arrow.dir}${arrow.action}`;
     let el = this.arrowEls.get(key);
     if (!el) {
-      el = arrowButton(dir, (i) => this.opts.arrows?.apply(i, dir === "a-to-b" ? "a" : "b"));
+      el = arrowButton(arrow, (i) =>
+        arrow.action === "stage"
+          ? this.opts.arrows?.stage?.(i)
+          : this.opts.arrows?.apply(i, arrow.dir === "a-to-b" ? "a" : "b"),
+      );
       this.arrowEls.set(key, el);
       this.divider.appendChild(el);
     }
