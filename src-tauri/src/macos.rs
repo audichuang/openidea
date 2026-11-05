@@ -272,17 +272,20 @@ pub fn match_tab_frames(window: &WebviewWindow) {
     let Some(group) = (unsafe { &*native }).tabGroup() else { return };
     let Some(shown) = group.selectedWindow() else { return };
     // A tab that joins a fullscreen group gets the Space's frame from AppKit, then is resized
-    // back to the size it had as a window: it would sit in the middle of the Space, and the
-    // hidden tabs would be given that frame too. AppKit's fullscreen frame spans the screen but
-    // leaves out a notch at the top, hence the width test and the safe area.
+    // back to the size it had as a window: it would not fill the Space, and the hidden tabs
+    // would be given that frame too. AppKit's fullscreen frame spans the screen but leaves out a
+    // notch at the top, hence the safe area. Test the height too: a saved window as wide as the
+    // screen (common on a notched laptop) only falls short in height.
     if shown.styleMask().contains(NSWindowStyleMask::FullScreen)
         && !in_fullscreen_transition(&shown)
         && let Some(screen) = shown.screen()
-        && shown.frame().size.width < screen.frame().size.width
     {
         let mut full = screen.frame();
         full.size.height -= screen.safeAreaInsets().top;
-        shown.setFrame_display(full, true);
+        let size = shown.frame().size;
+        if size.width < full.size.width || size.height < full.size.height {
+            shown.setFrame_display(full, true);
+        }
     }
     let frame = shown.frame();
     for tab in group.windows().iter() {
