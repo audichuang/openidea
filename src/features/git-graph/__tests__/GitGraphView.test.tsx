@@ -90,6 +90,7 @@ const bridge = {
     state: { _layout: null },
   }),
   laneColor: () => "var(--accent)",
+  repoColor: () => null,
   refLabels: (refs: readonly string[]) =>
     refs.map((r) =>
       r === "HEAD"
