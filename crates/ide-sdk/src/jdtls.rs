@@ -145,8 +145,6 @@ fn option_key(arg: &str) -> Option<String> {
         let name = name.split_once('=').map_or(name, |(n, _)| n);
         match name {
             "MaxHeapSize" | "MaxRAM" | "MaxRAMPercentage" | "MaxRAMFraction" => "Xmx".to_owned(),
-            // The JVM rejects a minimum above the maximum, so they go together.
-            "MinHeapFreeRatio" | "MaxHeapFreeRatio" => "XX:HeapFreeRatio".to_owned(),
             "InitialHeapSize" | "InitialRAMPercentage" | "InitialRAMFraction" => "Xms".to_owned(),
             _ if is_collector(name) => "collector".to_owned(),
             _ => format!("XX:{name}"),
@@ -172,14 +170,15 @@ fn is_collector(name: &str) -> bool {
 
 /// Our tuning of the default collector, meant for it alone (string deduplication was only
 /// measured with G1).
-const COLLECTOR_TUNING: &[&str] = &["G1PeriodicGCInterval", "HeapFreeRatio", "UseStringDeduplication"];
+const COLLECTOR_TUNING: &[&str] =
+    &["G1PeriodicGCInterval", "MinHeapFreeRatio", "MaxHeapFreeRatio", "UseStringDeduplication"];
 
 /// [`DEFAULT_VM_ARGS`] less what `user` (the JVM options already on the command line)
 /// sets itself. Choosing a collector drops our collector and its tuning altogether.
 pub fn default_vm_args(user: &[String]) -> Vec<String> {
     let user_keys: Vec<String> = user.iter().filter_map(|a| option_key(a)).collect();
     let own_collector = user_keys.iter().any(|k| k == "collector");
-    DEFAULT_VM_ARGS
+    let mut defaults: Vec<String> = DEFAULT_VM_ARGS
         .iter()
         .filter(|arg| {
             let key = option_key(arg).expect("default JVM options are keyed");
@@ -187,7 +186,56 @@ pub fn default_vm_args(user: &[String]) -> Vec<String> {
             !user_keys.contains(&key) && !(own_collector && (key == "collector" || tuning))
         })
         .map(|a| a.to_string())
-        .collect()
+        .collect();
+    reconcile_pairs(&mut defaults, user);
+    defaults
+}
+
+/// The JVM refuses to start when the minimum free-heap ratio is above the maximum, or the
+/// initial heap above the maximum heap. Each pair has a default on one side and, when the
+/// user set the other, possibly a contradiction: the default then takes the user's value
+/// (a value the user set is never changed; two of the user's own are left to the JVM).
+fn reconcile_pairs(defaults: &mut [String], user: &[String]) {
+    // (the side that may be a default, the user's side it must stay on the right of, bound)
+    // lower: default must be <= user value; upper: default must be >= user value.
+    let rules: [(&str, &str, &str, bool); 4] = [
+        ("-XX:MinHeapFreeRatio=", "-XX:MaxHeapFreeRatio=", "-XX:MaxHeapFreeRatio=", true),
+        ("-XX:MaxHeapFreeRatio=", "-XX:MinHeapFreeRatio=", "-XX:MinHeapFreeRatio=", false),
+        ("-Xms", "-Xmx", "-XX:MaxHeapSize=", true),
+        ("-Xmx", "-Xms", "-XX:InitialHeapSize=", false),
+    ];
+    for (default_prefix, user_prefix, user_alt, default_is_lower) in rules {
+        let Some(user_value) = user
+            .iter()
+            .rev()
+            .find_map(|a| a.strip_prefix(user_prefix).or_else(|| a.strip_prefix(user_alt)).map(str::to_owned))
+        else {
+            continue;
+        };
+        let Some(user_n) = size_value(&user_value) else { continue };
+        for arg in defaults.iter_mut() {
+            let Some(value) = arg.strip_prefix(default_prefix) else { continue };
+            let Some(n) = size_value(value) else { continue };
+            if (default_is_lower && n > user_n) || (!default_is_lower && n < user_n) {
+                *arg = format!("{default_prefix}{user_value}");
+            }
+        }
+    }
+}
+
+/// A plain number or a JVM size (`64m`, `2G`) in bytes; plain ratios come out as is.
+fn size_value(text: &str) -> Option<u64> {
+    let digits = text.trim_end_matches(|c: char| c.is_ascii_alphabetic());
+    let n: u64 = digits.parse().ok()?;
+    let unit = match text[digits.len()..].to_ascii_lowercase().as_str() {
+        "" => 1,
+        "k" => 1 << 10,
+        "m" => 1 << 20,
+        "g" => 1 << 30,
+        "t" => 1 << 40,
+        _ => return None,
+    };
+    n.checked_mul(unit)
 }
 
 /// Adds the [`DEFAULT_VM_ARGS`] the launch doesn't override to `args` (meant for the
@@ -444,7 +492,6 @@ mod tests {
         "-XX:MaxHeapFreeRatio=15",
         "-XX:+UseStringDeduplication",
     ];
-    const HEAP_FREE: &[&str] = &["-XX:MinHeapFreeRatio=5", "-XX:MaxHeapFreeRatio=15"];
 
     #[test]
     fn user_options_override_the_defaults() {
@@ -464,8 +511,8 @@ mod tests {
             (&["-XX:-UseG1GC"], G1),
             (&["-XX:+UseG1GC"], G1),
             (&["-XX:G1PeriodicGCInterval=0"], &["-XX:G1PeriodicGCInterval=60000"]),
-            (&["-XX:MinHeapFreeRatio=40"], HEAP_FREE),
-            (&["-XX:MaxHeapFreeRatio=70"], HEAP_FREE),
+            (&["-XX:MinHeapFreeRatio=3"], &["-XX:MinHeapFreeRatio=5"]),
+            (&["-XX:MaxHeapFreeRatio=70"], &["-XX:MaxHeapFreeRatio=15"]),
             (&["-XX:-UseStringDeduplication"], &["-XX:+UseStringDeduplication"]),
             (&["-Xlog:gc*:file=gc.log"], &["-Xlog:disable"]),
             (&["-Dsun.zip.disableMemoryMapping=false"], &["-Dsun.zip.disableMemoryMapping=true"]),
@@ -476,6 +523,34 @@ mod tests {
         }
         // Not collectors: they keep ours.
         assert_eq!(keep(&["-XX:+UseCompressedOops", "-XX:+UseCompactObjectHeaders"]), without(&[]));
+    }
+
+    /// The JVM refuses to start when the minimum free ratio exceeds the maximum, or the
+    /// initial heap exceeds the maximum: a default left standing beside a user option that
+    /// contradicts it is adjusted to the user's value, never the other way round.
+    #[test]
+    fn a_default_never_contradicts_the_users_option() {
+        let has = |user: &[&str], flag: &str| keep(user).iter().any(|a| a == flag);
+        // Only a maximum: the default minimum stays when it fits, else follows the user.
+        assert!(has(&["-XX:MaxHeapFreeRatio=10"], "-XX:MinHeapFreeRatio=5"));
+        assert!(!has(&["-XX:MaxHeapFreeRatio=10"], "-XX:MaxHeapFreeRatio=15"));
+        assert!(has(&["-XX:MaxHeapFreeRatio=3"], "-XX:MinHeapFreeRatio=3"));
+        // Only a minimum: the default maximum is raised to it when below.
+        assert!(has(&["-XX:MinHeapFreeRatio=50"], "-XX:MaxHeapFreeRatio=50"));
+        assert!(has(&["-XX:MinHeapFreeRatio=10"], "-XX:MaxHeapFreeRatio=15"));
+        // Both from the user: nothing of ours is left to adjust.
+        let both = keep(&["-XX:MinHeapFreeRatio=60", "-XX:MaxHeapFreeRatio=20"]);
+        assert!(!both.iter().any(|a| a.contains("HeapFreeRatio")), "{both:?}");
+        // A maximum heap below the default initial heap.
+        assert!(has(&["-Xmx64m"], "-Xms64m"));
+        assert!(has(&["-XX:MaxHeapSize=64m"], "-Xms64m"));
+        assert!(has(&["-Xmx512m"], "-Xms100m"));
+        // An initial heap above the default maximum.
+        assert!(has(&["-Xms4G"], "-Xmx4G"));
+        assert!(has(&["-Xms1G"], "-Xmx2G"));
+        // Both from the user: untouched.
+        let both = keep(&["-Xms4G", "-Xmx1G"]);
+        assert!(!both.iter().any(|a| a.starts_with("-Xm")), "{both:?}");
     }
 
     #[test]
