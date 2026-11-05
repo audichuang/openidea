@@ -61,6 +61,8 @@ export interface DiffData {
   embedded?: boolean;
   /** Annotate the left (previous) side with Git Blame when the diff opens. */
   annotateLeft?: boolean;
+  /** A preview only: no inclusion checkboxes, no revert/stage, and the sides cannot be edited. */
+  readOnly?: boolean;
   /** Show the sides this way at first instead of the saved mode, which it leaves unchanged. */
   mode?: "split" | "unified";
 }
