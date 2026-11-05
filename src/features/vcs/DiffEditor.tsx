@@ -376,6 +376,9 @@ export function DiffEditor({
     !staging && trackedChange && left.type === "rev" && left.rev === "HEAD" && !left.path && isWorktree(right);
   const editableA = !binary && !!attached?.a && !attached.a.readOnly;
   const editableB = !binary && !!attached?.b && !attached.b.readOnly;
+  // Index ↔ working copy: the per-change controls stage a hunk or discard it back to the index.
+  const stagingDiff = editableB && isIndex(left) && isWorktree(right);
+  const stageRef = useRef<(index: number) => void>(() => {});
   const ready = !!attached && !!statics && lang !== null && binary !== null;
 
   // Soft wraps follow the editor's (Settings › Editor › General) unless toggled in the viewer settings.
@@ -476,7 +479,13 @@ export function DiffEditor({
             sync: syncScroll.current,
             arrows:
               editableA || editableB
-                ? { toA: editableA, toB: editableB, apply: (i, source) => merge && applyChunk(merge, i, source) }
+                ? {
+                    toA: editableA,
+                    toB: editableB,
+                    staging: stagingDiff,
+                    apply: (i, source) => merge && applyChunk(merge, i, source),
+                    stage: (i) => stageRef.current(i),
+                  }
                 : undefined,
           });
       // IDEA's colouring: lines by chunk type, carried into the gutters, and typed word highlights.
@@ -510,7 +519,12 @@ export function DiffEditor({
             focusTracker("b"),
             findWatch("b"),
             inclusion,
-            editableB ? hoverRevert((_v, i) => merge && applyChunk(merge, i, "a")) : [],
+            editableB
+              ? hoverRevert(
+                  (_v, i) => merge && applyChunk(merge, i, "a"),
+                  stagingDiff ? tx("Revert to staged version") : undefined,
+                )
+              : [],
           ],
         },
         parent: host,
@@ -518,7 +532,11 @@ export function DiffEditor({
         revertControls: panes ? undefined : editableB ? "a-to-b" : editableA ? "b-to-a" : undefined,
         renderRevertControl:
           !panes && (editableA || editableB)
-            ? arrowControls(() => merge, { toA: editableA, toB: editableB })
+            ? arrowControls(
+                () => merge,
+                { toA: editableA, toB: editableB, staging: stagingDiff },
+                (i) => stageRef.current(i),
+              )
             : undefined,
         // Words are highlighted by type (`diffWords`), and gutters tinted instead of a change bar.
         highlightChanges: false,
@@ -565,11 +583,22 @@ export function DiffEditor({
               ? (type) => {
                   const btn = document.createElement("button");
                   if (type === "accept") {
-                    btn.hidden = true;
+                    if (!stagingDiff) {
+                      btn.hidden = true;
+                      return btn;
+                    }
+                    btn.textContent = tx("Stage");
+                    btn.title = tx("Stage this change (git add hunk)");
+                    btn.onmousedown = (event) => {
+                      event.preventDefault();
+                      const pos = view.posAtDOM(btn);
+                      const index = getChunks(view.state)?.chunks.findIndex((c) => c.fromB <= pos && c.endB >= pos);
+                      if (index != null && index >= 0) stageRef.current(index);
+                    };
                     return btn;
                   }
-                  btn.textContent = "Revert";
-                  btn.title = "Revert this change";
+                  btn.textContent = tx("Revert");
+                  btn.title = stagingDiff ? tx("Revert to staged version") : "Revert this change";
                   btn.onmousedown = (event) => {
                     event.preventDefault();
                     revertUnifiedChunk(view, view.posAtDOM(btn));
@@ -632,6 +661,7 @@ export function DiffEditor({
     wrapSlot,
     editableA,
     editableB,
+    stagingDiff,
     updateChunkInfo,
     data.annotations,
     includable,
@@ -875,14 +905,15 @@ export function DiffEditor({
     else revertUnifiedChunk(views.b, cur.chunk.fromB);
   };
 
-  const stageChunk = async () => {
+  /** Stages chunk `index` of the diff, or the one at the caret. */
+  const stageChunk = async (index?: number) => {
     const views = viewsRef.current;
-    const cur = currentChunk();
-    if (!views || !cur) return;
+    const chunk = index === undefined ? currentChunk()?.chunk : views && getChunks(views.b.state)?.chunks[index];
+    if (!views || !chunk) return;
     setBusy(true);
     try {
       const aDoc = views.a?.state.doc ?? Text.of((attached?.a?.text() ?? statics?.a ?? "").split("\n"));
-      const lines = chunkLines(cur.chunk, aDoc, views.b.state.doc);
+      const lines = chunkLines(chunk, aDoc, views.b.state.doc);
       await saveAll();
       const [indexText, disk] = await Promise.all([call(commands.vcsFileAt(path, ":0")), readWorkingText(path)]);
       const hunks = await commands.vcsDiffHunks(indexText ?? "", disk ?? "");
@@ -902,6 +933,10 @@ export function DiffEditor({
     } finally {
       setBusy(false);
     }
+  };
+
+  stageRef.current = (index) => {
+    if (!busy) void stageChunk(index);
   };
 
   // Find (⌘F / ⌘R / ⌘G): the editor's find bar over the focused side.
@@ -1263,7 +1298,7 @@ export function DiffEditor({
             <span className={styles.sep} />
             <IconButton
               icon="revert"
-              title="Revert Change"
+              title={stagingDiff ? "Revert to staged version" : "Revert Change"}
               size="small"
               disabled={!chunkInfo.count}
               onClick={revertChunk}
