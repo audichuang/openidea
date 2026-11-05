@@ -7,6 +7,7 @@
  * interface means an upstream refactor surfaces as a type error in that provider instead of
  * a rebase conflict across the graph.
  */
+import type { ComponentType } from "react";
 import type { Branch, ChangedFile, Commit } from "@/bindings";
 import type { MenuItem } from "@/ui";
 
@@ -53,6 +54,20 @@ export interface GitGraphRepoState {
   version: number;
 }
 
+/** Props of the Git Log's branch filter popup as the graph's toolbar uses it. */
+export interface GraphBranchFilterProps {
+  anchor: HTMLElement;
+  /** The repository whose branches are listed (favorites are per repository). */
+  repo: string;
+  branches: readonly Branch[];
+  selected: readonly string[];
+  /** A branch (or `HEAD`) picked from the list. */
+  onSelect(branch: string): void;
+  /** The result of the Select… multi-choice dialog. */
+  onSelectMany(branches: string[]): void;
+  onClose(): void;
+}
+
 export interface GitGraphBridge {
   state(): GitGraphRepoState;
   subscribe(listener: () => void): () => void;
@@ -71,6 +86,8 @@ export interface GitGraphBridge {
   /** The Branches popup's menu for a branch of `repo`. */
   branchMenu(branch: Branch, repo: string): Promise<MenuItem[]>;
   tagMenu(tag: string, repo: string): Promise<MenuItem[]>;
+  /** The Git Log's searchable branch filter: HEAD, then Local and Remote, favorites first. */
+  BranchFilterPopup: ComponentType<GraphBranchFilterProps>;
   /** The Git Log's changed-files menu for `files` of `commit`. */
   filesMenu(commit: GraphCommit, files: ChangedFile[]): Promise<MenuItem[]>;
   /** Opens the diff of `files[index]` with the others chained (F7 moves along). */
