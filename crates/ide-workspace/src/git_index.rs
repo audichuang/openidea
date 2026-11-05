@@ -18,7 +18,12 @@ pub(crate) struct IndexMove {
 }
 
 /// The index edits that would move the entries at `from` to `to`, or `None` when
-/// there is nothing to move (untracked, no repository, different repositories).
+/// there is nothing to move (untracked, no repository, different repositories) or when
+/// any entry is skip-worktree (sparse checkout) or assume-unchanged: rewriting those
+/// entries would drop the flag, so such a move leaves the index alone.
+///
+/// Known unhandled race: `plan` reads the entries and `apply` writes them back later, so
+/// a concurrent `git add` on the same paths in between can be overwritten (rare, not fixed).
 pub(crate) fn plan(from: &Path, to: &Path) -> Option<IndexMove> {
     let (root, old) = locate(from)?;
     let (to_root, new) = locate(to)?;
@@ -30,9 +35,15 @@ pub(crate) fn plan(from: &Path, to: &Path) -> Option<IndexMove> {
     // read without touching the worktree (a diff would run the project's clean filters).
     let out = run(&root, &["ls-files", "--stage", "--debug", "-z", "--", pathspec.as_str()], None)?;
     let mut intent_to_add = Vec::new();
-    let entries: Vec<_> = parse_entries(&String::from_utf8(out.stdout).ok()?)
+    let text = String::from_utf8(out.stdout).ok()?;
+    let parsed = parse_entries(&text);
+    if parsed.iter().any(|(_, _, flags)| flags & (SKIP_WORKTREE | ASSUME_UNCHANGED) != 0) {
+        return None;
+    }
+    let entries: Vec<_> = parsed
         .into_iter()
-        .filter_map(|(meta, path, ita)| {
+        .filter_map(|(meta, path, flags)| {
+            let ita = flags & INTENT_TO_ADD != 0;
             let mut meta = meta.split(' ');
             let (mode, oid, stage) = (meta.next()?, meta.next()?, meta.next()?);
             // Conflicted entries (stages 1-3) can't be written back as one; a gitlink
@@ -54,26 +65,29 @@ pub(crate) fn plan(from: &Path, to: &Path) -> Option<IndexMove> {
     (!entries.is_empty()).then_some(IndexMove { root, entries, intent_to_add })
 }
 
-/// Splits `ls-files --stage --debug -z` output into `(meta, path, intent-to-add)`.
+const INTENT_TO_ADD: u32 = 0x2000_0000;
+const SKIP_WORKTREE: u32 = 0x4000_0000;
+const ASSUME_UNCHANGED: u32 = 0x8000;
+
+/// Splits `ls-files --stage --debug -z` output into `(meta, path, flags)`.
 /// Each entry is `meta\tpath\0` followed by indented stat lines ending in
 /// `size: N\tflags: HEX\n`, which run into the next entry's `meta`.
-fn parse_entries(text: &str) -> Vec<(&str, &str, bool)> {
-    const INTENT_TO_ADD: u32 = 0x2000_0000;
-    let mut out: Vec<(&str, &str, bool)> = Vec::new();
+fn parse_entries(text: &str) -> Vec<(&str, &str, u32)> {
+    let mut out: Vec<(&str, &str, u32)> = Vec::new();
     let mut rest = text;
     while !rest.is_empty() {
         let Some((record, tail)) = rest.split_once('\0') else { break };
         let Some((meta, path)) = record.split_once('\t') else { break };
-        let mut ita = false;
+        let mut flags_bits = 0;
         rest = tail;
         if tail.starts_with("  ctime:")
             && let Some((_, flags)) = tail.split_once("\tflags: ")
             && let Some((flags, next)) = flags.split_once('\n')
         {
-            ita = u32::from_str_radix(flags, 16).is_ok_and(|f| f & INTENT_TO_ADD != 0);
+            flags_bits = u32::from_str_radix(flags, 16).unwrap_or(0);
             rest = next;
         }
-        out.push((meta, path, ita));
+        out.push((meta, path, flags_bits));
     }
     out
 }

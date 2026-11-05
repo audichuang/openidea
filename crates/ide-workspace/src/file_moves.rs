@@ -548,6 +548,40 @@ mod tests {
     }
 
     #[test]
+    fn moving_a_folder_with_a_skip_worktree_entry_leaves_the_index_alone() {
+        let tmp = repo();
+        let root = tmp.path();
+        fs::create_dir(root.join("dir")).unwrap();
+        fs::write(root.join("dir/a.txt"), "a\n").unwrap();
+        fs::write(root.join("dir/hidden"), "h\n").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-q", "-m", "init"]);
+        git(root, &["sparse-checkout", "set", "--no-cone", "/*", "!/dir/hidden"]);
+        assert!(!root.join("dir/hidden").exists());
+        let before = git(root, &["ls-files", "--stage", "-t"]);
+        assert!(before.contains("S dir/hidden") || before.contains("S 100644"), "{before}");
+        let (moves, id) = rename(root, "dir", "new");
+        assert_eq!(git(root, &["ls-files", "--stage", "-t"]), before);
+        assert!(!git(root, &["status", "--porcelain"]).contains("hidden"));
+        moves.undo(&documents(), None, true, id).unwrap();
+        assert_eq!(git(root, &["ls-files", "--stage", "-t"]), before);
+        assert!(!git(root, &["status", "--porcelain"]).contains("hidden"));
+    }
+
+    #[test]
+    fn moving_an_assume_unchanged_file_leaves_the_index_alone() {
+        let tmp = repo();
+        let root = tmp.path();
+        fs::write(root.join("a.txt"), "a\n").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-q", "-m", "init"]);
+        git(root, &["update-index", "--assume-unchanged", "a.txt"]);
+        let before = git(root, &["ls-files", "--stage", "-t"]);
+        rename(root, "a.txt", "b.txt");
+        assert_eq!(git(root, &["ls-files", "--stage", "-t"]), before);
+    }
+
+    #[test]
     fn renaming_an_intent_to_add_file_onto_an_ignored_path_keeps_it_tracked() {
         let tmp = repo();
         let root = tmp.path();
