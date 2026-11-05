@@ -57,6 +57,8 @@ export interface DiffData {
   context?: { kind: string; [key: string]: unknown };
   /** Shown inside another view (deployment comparison), not as an editor tab: no tab controls. */
   embedded?: boolean;
+  /** A preview only: no inclusion checkboxes, no revert/stage, and the sides cannot be edited. */
+  readOnly?: boolean;
   /** Show the sides this way at first instead of the saved mode, which it leaves unchanged. */
   mode?: "split" | "unified";
 }
