@@ -4142,7 +4142,6 @@
   "Changelist '{name}' contains {count} changes. They will be moved to '{target}'. Delete the changelist?": "Lista zmian '{name}' zawiera zmiany w liczbie: {count}. Zostaną one przeniesione do '{target}'. Usunąć listę zmian?",
   "{name} (active)": "{name} (aktywne)",
   "from {path}": "z {path}",
-  "{dir} · from {path}": "{dir} · z {path}",
   "Clipboard ↔ {file} (selection)": "Schowek ↔ {file} (zaznaczenie)",
   "Clipboard ↔ {file}": "Schowek ↔ {file}",
   "Pull to {head}": "Pobierz (pull) do {head}",
