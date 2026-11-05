@@ -212,11 +212,17 @@ fn reconcile_pairs(defaults: &mut [String], user: &[String]) {
         else {
             continue;
         };
-        let Some(user_n) = size_value(&user_value) else { continue };
+        // A value this can't read (e.g. hex `0x32`, which the JVM accepts): take it for the
+        // default too, an equal pair is always valid.
+        let user_n = size_value(&user_value);
         for arg in defaults.iter_mut() {
             let Some(value) = arg.strip_prefix(default_prefix) else { continue };
-            let Some(n) = size_value(value) else { continue };
-            if (default_is_lower && n > user_n) || (!default_is_lower && n < user_n) {
+            let contradicts = match (user_n, size_value(value)) {
+                (Some(user_n), Some(n)) => (default_is_lower && n > user_n) || (!default_is_lower && n < user_n),
+                (None, _) => true,
+                (Some(_), None) => false,
+            };
+            if contradicts {
                 *arg = format!("{default_prefix}{user_value}");
             }
         }
@@ -551,6 +557,8 @@ mod tests {
         // Both from the user: untouched.
         let both = keep(&["-Xms4G", "-Xmx1G"]);
         assert!(!both.iter().any(|a| a.starts_with("-Xm")), "{both:?}");
+        // A value in a form this doesn't read (hex): the default takes it, an equal pair.
+        assert!(has(&["-XX:MinHeapFreeRatio=0x32"], "-XX:MaxHeapFreeRatio=0x32"));
     }
 
     #[test]
