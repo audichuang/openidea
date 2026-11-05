@@ -4226,7 +4226,6 @@
   "Changelist '{name}' contains {count} changes. They will be moved to '{target}'. Delete the changelist?": "变更列表 '{name}' 包含 {count} 个更改，它们将被移至 '{target}'。是否删除该变更列表？",
   "{name} (active)": "{name}（活动）",
   "from {path}": "来自 {path}",
-  "{dir} · from {path}": "{dir} · 来自 {path}",
   "Clipboard ↔ {file} (selection)": "剪贴板 ↔ {file}（所选内容）",
   "Clipboard ↔ {file}": "剪贴板 ↔ {file}",
   "Pull to {head}": "拉取到 {head}",
