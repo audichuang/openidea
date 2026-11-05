@@ -3,6 +3,7 @@ import { executeAction, getAction } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import { canRevealInFileManager, fileManagerName } from "@/platform/fileManager";
 import { formatBinding, hostBinding, isMacHost, shortcutLabel } from "@/platform/keymap";
+import { packageKindOf } from "@/platform/packageKind";
 import { projectFolder, relativePath, useProject } from "@/platform/project";
 import { currentDetectedRoots, currentRoots } from "@/platform/projectRoots";
 import type { MenuItem } from "@/ui";
@@ -11,7 +12,6 @@ import type { FolderRole } from "@/platform/languageSettings";
 import { directoryRole, markDirectory } from "./markDirectory";
 import { fileColorMenu } from "./fileColor";
 import type { ProjectNode } from "./model";
-import { packageKindAt } from "./packages";
 import {
   beginNew,
   beginNewPackage,
@@ -57,9 +57,7 @@ export const keyLabel = (id: string) =>
  * name in a dialog, and the inline Directory / Package editors bring up the project view.
  */
 export function newMenuItems(parent: string | null, { outsideTree = false } = {}): MenuItem[] {
-  const root = useProject.getState().project?.root;
-  const rel = parent && root ? (parent === root ? "" : relativePath(root, parent)) : null;
-  const pkg = rel === null ? null : packageKindAt(rel, currentRoots(), currentDetectedRoots());
+  const pkg = packageKindOf(parent);
   const inline = (start: () => Promise<void>) => () => {
     if (outsideTree) showProjectView();
     void start();
@@ -72,6 +70,7 @@ export function newMenuItems(parent: string | null, { outsideTree = false } = {}
     run: inline(() => beginNew("dir", parent)),
   };
   return [
+    ...primaryNewItems(parent),
     emptyFile
       ? {
           id: "new.file",
@@ -106,15 +105,23 @@ function showProjectView() {
   }
 }
 
+function newMenuContext(parent: string | null): MenuGroupContext {
+  if (!parent) return { paths: [] };
+  const owner = projectFolder(useProject.getState().project, parent);
+  const projectType =
+    owner && isSameOrInside(parent, owner.root) ? useProjectTree.getState().projectTypes.get(owner.root) : undefined;
+  return { paths: [parent], dirs: [true], projectType };
+}
+
 /** File kinds contributed to the `new` menu group (templates, HTTP Request, Scratch File…). */
 function contributedNewItems(parent: string | null): MenuItem[] {
-  const owner = parent ? projectFolder(useProject.getState().project, parent) : null;
-  const projectType =
-    parent && owner && isSameOrInside(parent, owner.root)
-      ? useProjectTree.getState().projectTypes.get(owner.root)
-      : undefined;
-  const items = menuGroupItems("new", parent ? { paths: [parent], dirs: [true], projectType } : { paths: [] });
+  const items = menuGroupItems("new", newMenuContext(parent));
   return items.length ? [{ kind: "separator" }, ...items] : [];
+}
+
+/** Kinds that lead the menu for this directory (IDEA lists Java Class first in a Java package). */
+function primaryNewItems(parent: string | null): MenuItem[] {
+  return menuGroupItems("newPrimary", newMenuContext(parent));
 }
 
 /** An item bound to another feature's action (resolved by the menu: hidden when missing, disabled when off). */
