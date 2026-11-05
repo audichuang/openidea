@@ -1,3 +1,4 @@
+use crate::file_moves::{FileMove, moved_path};
 use ide_core::{IdeError, IdeResult};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -275,6 +276,50 @@ impl LocalHistory {
         Ok(())
     }
 
+    /// The IDE moved or renamed files (`moves` already done on disk): the history
+    /// of everything under each `from` continues at its new path, and each moved
+    /// file with history (or the moved file itself) gets a "Renaming …" / "Moving …"
+    /// snapshot. Returns how many snapshots were recorded.
+    pub fn follow_moves(&self, moves: &[FileMove]) -> IdeResult<usize> {
+        let mut followed: Vec<PathBuf> = Vec::new();
+        let mut seen: HashSet<PathBuf> = HashSet::new();
+        {
+            let mut state = self.state.lock();
+            // Re-read so entries appended by another instance are not lost.
+            let mut entries = self.read_index()?;
+            let mut changed = false;
+            for e in &mut entries {
+                let to = moved_path(&e.path, moves);
+                if to != *e.path {
+                    if e.kind == HistoryKind::Snapshot && seen.insert(to.clone()) {
+                        followed.push(to.clone());
+                    }
+                    e.path = to.into();
+                    changed = true;
+                }
+            }
+            if changed {
+                self.write_index(&entries)?;
+                *state = HistoryState::from_entries(entries);
+            }
+        }
+        for m in moves {
+            if m.to.is_file() && seen.insert(m.to.to_path_buf()) {
+                followed.push(m.to.to_path_buf());
+            }
+        }
+        let mut recorded = 0;
+        for path in &followed {
+            let Some(m) = moves.iter().rev().find(|m| path.starts_with(&m.to)) else { continue };
+            match self.record_file(path, &move_label(m), true) {
+                Ok(true) => recorded += 1,
+                Ok(false) => {}
+                Err(e) => tracing::debug!("local history: {}: {e}", path.display()),
+            }
+        }
+        Ok(recorded)
+    }
+
     /// Adds a label (user "Put Label…" or a system event) for everything under `scope`.
     pub fn put_label(&self, scope: &Path, label: &str) -> IdeResult<()> {
         let label = label.trim();
@@ -370,16 +415,20 @@ impl LocalHistory {
         self.rewrite(|_| Vec::new())
     }
 
+    fn write_index(&self, entries: &[HistoryEntry]) -> IdeResult<()> {
+        let mut text = String::new();
+        for e in entries {
+            text.push_str(&serde_json::to_string(e).map_err(|e| IdeError::internal(e.to_string()))?);
+            text.push('\n');
+        }
+        ide_vfs::write_atomic(&self.index_path(), text.as_bytes())
+    }
+
     fn rewrite(&self, keep: impl FnOnce(Vec<HistoryEntry>) -> Vec<HistoryEntry>) -> IdeResult<()> {
         let mut state = self.state.lock();
         // Re-read so entries appended by another instance are not lost.
         let kept = keep(self.read_index()?);
-        let mut text = String::new();
-        for e in &kept {
-            text.push_str(&serde_json::to_string(e).map_err(|e| IdeError::internal(e.to_string()))?);
-            text.push('\n');
-        }
-        ide_vfs::write_atomic(&self.index_path(), text.as_bytes())?;
+        self.write_index(&kept)?;
 
         let referenced: HashSet<&str> = kept.iter().map(|e| e.id.as_str()).collect();
         for shard in fs::read_dir(self.dir.join("blobs"))?.flatten() {
@@ -401,6 +450,17 @@ impl LocalHistory {
         *state = HistoryState::from_entries(kept);
         Ok(())
     }
+}
+
+/// "Renaming a.txt to b.txt", "Moving a.txt to lib" (IDEA lists these in Local History).
+fn move_label(m: &FileMove) -> String {
+    let name = |p: &Path| p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned());
+    let (from, to) = (name(&m.from), name(&m.to));
+    if m.from.parent() == m.to.parent() {
+        return format!("Renaming {from} to {to}");
+    }
+    let dir = m.to.parent().map(name).unwrap_or_default();
+    if from == to { format!("Moving {from} to {dir}") } else { format!("Moving {from} to {dir}/{to}") }
 }
 
 fn day_of(ms: f64) -> i64 {
@@ -590,6 +650,72 @@ mod tests {
         h.clear().unwrap();
         assert!(h.list(&a).unwrap().is_empty());
         assert_eq!(h.stored_bytes(), 0);
+    }
+
+    #[test]
+    fn history_follows_moves_and_renames() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("dir")).unwrap();
+        fs::create_dir_all(root.join("lib")).unwrap();
+        let store = tmp.path().join("history");
+        let h = LocalHistory::open(&store, &root).unwrap();
+        let mv = |from: &Path, to: &Path| FileMove { from: from.into(), to: to.into() };
+        let labels = |h: &LocalHistory, p: &Path| h.list(p).unwrap().into_iter().map(|e| e.label).collect::<Vec<_>>();
+
+        // Rename: the old revisions continue under the new name.
+        let a = root.join("src/a.txt");
+        let b = root.join("src/b.txt");
+        fs::write(&a, "v2").unwrap();
+        h.record(&a, "v1", "Saved").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        h.record(&a, "v2", "Saved").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        fs::rename(&a, &b).unwrap();
+        assert_eq!(h.follow_moves(&[mv(&a, &b)]).unwrap(), 1);
+        assert_eq!(labels(&h, &b), vec!["Renaming a.txt to b.txt", "Saved", "Saved"]);
+        let list = h.list(&b).unwrap();
+        assert_eq!(h.content(&list[0].id).unwrap(), "v2");
+        assert_eq!(h.content(&list[2].id).unwrap(), "v1");
+        assert!(h.list(&a).unwrap().is_empty());
+        // The watcher's events for the same move add nothing.
+        assert!(h.record_file(&b, "External change", false).unwrap());
+        h.note_removed(std::slice::from_ref(&a)).unwrap();
+        assert_eq!(h.list(&b).unwrap().len(), 3);
+        assert!(h.list(&a).unwrap().is_empty());
+
+        // Folder move: files with history follow, untracked ones are not snapshotted.
+        let sub = root.join("dir/sub.txt");
+        fs::write(&sub, "s1").unwrap();
+        fs::write(root.join("dir/new.txt"), "n1").unwrap();
+        h.record(&sub, "s1", "Saved").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let moved_dir = root.join("lib/dir");
+        fs::rename(root.join("dir"), &moved_dir).unwrap();
+        assert_eq!(h.follow_moves(&[mv(&root.join("dir"), &moved_dir)]).unwrap(), 1);
+        assert_eq!(labels(&h, &moved_dir.join("sub.txt")), vec!["Moving dir to lib", "Saved"]);
+        assert!(h.list(&moved_dir.join("new.txt")).unwrap().is_empty());
+        assert!(h.list(&sub).unwrap().is_empty());
+        assert!(h.list_dir(&root.join("dir")).unwrap().deleted.is_empty());
+
+        // A moved file without history gets the move entry; move + rename names both.
+        let c = root.join("src/c.txt");
+        let d = root.join("lib/d.txt");
+        fs::write(&c, "c1").unwrap();
+        fs::rename(&c, &d).unwrap();
+        assert_eq!(h.follow_moves(&[mv(&c, &d)]).unwrap(), 1);
+        assert_eq!(labels(&h, &d), vec!["Moving c.txt to lib/d.txt"]);
+
+        // The rewritten index survives a reopen; moving back (undo) continues it again.
+        drop(h);
+        let h = LocalHistory::open(&store, &root).unwrap();
+        assert_eq!(h.list(&b).unwrap().len(), 3);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        fs::rename(&b, &a).unwrap();
+        assert_eq!(h.follow_moves(&[mv(&b, &a)]).unwrap(), 1);
+        assert_eq!(labels(&h, &a), vec!["Renaming b.txt to a.txt", "Renaming a.txt to b.txt", "Saved", "Saved"]);
+        assert!(h.list(&b).unwrap().is_empty());
     }
 
     #[test]
