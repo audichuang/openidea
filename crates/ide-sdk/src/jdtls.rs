@@ -281,7 +281,7 @@ fn resolved_command(cfg: &LanguageServerConfig) -> Option<PathBuf> {
 /// A launcher wrapper that passes its own Lombok agent: the script `cfg.command` runs and
 /// the agent as written there (see [`crate::lombok::agent_in_script`]). The release's
 /// launchers attach none, and binaries (a scoop shim) aren't read.
-pub fn wrapper_lombok_agent(cfg: &LanguageServerConfig) -> Option<(PathBuf, String)> {
+pub fn wrapper_lombok_agent(cfg: &LanguageServerConfig) -> Option<(PathBuf, crate::lombok::ScriptAgent)> {
     // Wrappers are a few lines; this skips reading a binary someone named `jdtls`.
     const MAX_SCRIPT: u64 = 256 * 1024;
     if cfg.name != "jdtls" {
@@ -671,7 +671,8 @@ mod tests {
         write("jdtls", b"#!/bin/sh\nexec /opt/jdtls/bin/jdtls --jvm-arg=-javaagent:$HOME/lombok-1.18.46.jar \"$@\"\n");
         let (script, agent) = wrapper_lombok_agent(&cfg("jdtls")).unwrap();
         assert_eq!(script, dunce::canonicalize(bin.join("jdtls")).unwrap());
-        assert_eq!(agent, "$HOME/lombok-1.18.46.jar");
+        assert_eq!(agent.agent, "$HOME/lombok-1.18.46.jar");
+        assert!(!agent.conditional);
 
         // The release's Python launcher, a binary, nothing on PATH, another server.
         write("jdtls", b"#!/usr/bin/env python3\nimport jdtls\n");
