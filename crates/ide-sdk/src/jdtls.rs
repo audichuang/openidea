@@ -721,6 +721,36 @@ mod tests {
         assert_eq!(failing.command, "jdtls");
     }
 
+    /// A wrapper the parser misreads (a flag in a trailing comment) must not cost the launch
+    /// its Lombok agent: the app attaches its own whatever the script seems to say.
+    #[cfg(unix)]
+    #[test]
+    fn a_misread_wrapper_never_drops_the_app_agent() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("jdtls");
+        std::fs::write(&script, "#!/bin/sh\nexec /opt/jdtls/bin/jdtls \"$@\" # --jvm-arg=-javaagent:/m2/lombok.jar\n")
+            .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut cfg: LanguageServerConfig = toml::from_str("name = \"jdtls\"\ncommand = \"jdtls\"").unwrap();
+        cfg.env.insert("PATH".into(), dir.path().to_string_lossy().into_owned());
+        let managed = PathBuf::from("/managed/lombok.jar");
+        let agent = crate::lombok::lombok_agent(Path::new("/p"), None, Some(managed.clone()), None);
+        assert_eq!(agent.jar(), Some(managed.as_path()));
+        crate::java::configure_jdtls(
+            &mut cfg,
+            Path::new("/p"),
+            Path::new("/data"),
+            &[],
+            None,
+            None,
+            crate::java::JDTLS_MIN_JAVA,
+            &[],
+            agent.jar(),
+        );
+        assert!(cfg.args.contains(&"--jvm-arg=-javaagent:/managed/lombok.jar".to_owned()), "{:?}", cfg.args);
+    }
+
     #[cfg(unix)]
     #[test]
     fn finds_the_lombok_agent_of_a_wrapper_on_path() {
