@@ -242,3 +242,29 @@ describe("commit inclusion", () => {
     expect(toggledHunk("hunks", new Set(["gone", "a"]), all, "b").excluded).toEqual(new Set(["a", "b"]));
   });
 });
+
+describe("file row details", () => {
+  const files = (nodes: ChangeNode[]): ChangeNode[] =>
+    nodes.flatMap((n) => (n.type === "file" ? [n] : files(n.children ?? [])));
+  const renamed: FileStatus = { ...fs("src/main/New.kt", "renamed", null), renamedFrom: "src/main/Old.kt" };
+
+  it("gives flat-mode files their directory relative to the repository, and only a rename as detail", () => {
+    const flat = files(buildChangeTree([...status, renamed], "/r", false));
+    const byName = new Map(flat.map((n) => [n.label, n]));
+    expect(byName.get("App.kt")).toMatchObject({ dir: "src/main/kotlin", detail: undefined });
+    expect(byName.get("README.md")).toMatchObject({ dir: undefined, detail: undefined });
+    expect(byName.get("New.kt")).toMatchObject({ dir: "src/main", detail: "from src/main/Old.kt" });
+  });
+
+  it("is relative to the file's own repository with several repositories", () => {
+    const lib = fs("libs/core/src/Lib.kt", null, "modified");
+    const flat = files(buildChangeTree([lib], "/r", false, undefined, ["/r", "/r/libs/core"]));
+    expect(flat.map((n) => n.dir)).toEqual(["src"]);
+  });
+
+  it("leaves the directory to the tree when grouped by directory", () => {
+    const tree = files(buildChangeTree([...status, renamed], "/r", true));
+    expect(tree.every((n) => n.dir === undefined)).toBe(true);
+    expect(tree.find((n) => n.label === "New.kt")?.detail).toBe("from src/main/Old.kt");
+  });
+});
