@@ -57,6 +57,10 @@
   font-family: var(--font-keys);
   color: var(--fg-muted);
 }
+.chevron {
+  flex: none;
+  color: var(--fg-muted);
+}
 .separator {
   flex: 1;
   height: 1px;
