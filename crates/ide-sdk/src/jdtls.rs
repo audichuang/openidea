@@ -111,13 +111,24 @@ fn split_script_args(args: &[String]) -> ScriptArgs {
 /// committed for good), a 2 GB heap limit (the JVM's own is a quarter of physical
 /// memory), no JVM logging on stdout (the LSP channel), and no scan for installed JDKs at
 /// start (they are passed as `java.configuration.runtimes`).
+///
+/// The 5–15 % free-heap band and string deduplication were measured together, as one
+/// bundle, against the previous 10–30 % band on a 5-module Maven monorepo (warm workspace,
+/// two runs each, phys_footprint): jdtls after 3 idle minutes 478/481 MB against 579/710,
+/// after completion, Find Usages and go-to-definition 651/569 MB against 750/756, with
+/// completion and Find Usages times unchanged (within 0.36 s). Measured and left out:
+/// `-XX:+UseCompactObjectHeaders` (no gain), `-XX:TieredStopAtLevel=1` (Find Usages about
+/// 1 s slower), `-XX:-G1PeriodicGCInvokesConcurrent` (more memory after the operations).
+/// All of these exist on JDK 21 ([`crate::java::JDTLS_MIN_JAVA`]), so none depends on the
+/// version jdtls runs on.
 pub const DEFAULT_VM_ARGS: &[&str] = &[
-    // Measured JVM flags (metaspace, code cache, compiler threads…) go here. Every entry
-    // must be keyed by `option_key`, so the user's own option for the same thing wins.
+    // Every entry must be keyed by `option_key`, so the user's own option for the same
+    // thing wins.
     "-XX:+UseG1GC",
     "-XX:G1PeriodicGCInterval=60000",
-    "-XX:MinHeapFreeRatio=10",
-    "-XX:MaxHeapFreeRatio=30",
+    "-XX:MinHeapFreeRatio=5",
+    "-XX:MaxHeapFreeRatio=15",
+    "-XX:+UseStringDeduplication",
     "-Dsun.zip.disableMemoryMapping=true",
     "-Xmx2G",
     "-Xms100m",
@@ -159,8 +170,9 @@ fn is_collector(name: &str) -> bool {
     name.starts_with("Use") && name.ends_with("GC") && name.len() > "UseGC".len()
 }
 
-/// Our tuning of the default collector, meant for it alone.
-const COLLECTOR_TUNING: &[&str] = &["G1PeriodicGCInterval", "HeapFreeRatio"];
+/// Our tuning of the default collector, meant for it alone (string deduplication was only
+/// measured with G1).
+const COLLECTOR_TUNING: &[&str] = &["G1PeriodicGCInterval", "HeapFreeRatio", "UseStringDeduplication"];
 
 /// [`DEFAULT_VM_ARGS`] less what `user` (the JVM options already on the command line)
 /// sets itself. Choosing a collector drops our collector and its tuning altogether.
@@ -412,9 +424,14 @@ mod tests {
         DEFAULT_VM_ARGS.iter().filter(|a| !drop.contains(a)).map(|a| a.to_string()).collect()
     }
 
-    const G1: &[&str] =
-        &["-XX:+UseG1GC", "-XX:G1PeriodicGCInterval=60000", "-XX:MinHeapFreeRatio=10", "-XX:MaxHeapFreeRatio=30"];
-    const HEAP_FREE: &[&str] = &["-XX:MinHeapFreeRatio=10", "-XX:MaxHeapFreeRatio=30"];
+    const G1: &[&str] = &[
+        "-XX:+UseG1GC",
+        "-XX:G1PeriodicGCInterval=60000",
+        "-XX:MinHeapFreeRatio=5",
+        "-XX:MaxHeapFreeRatio=15",
+        "-XX:+UseStringDeduplication",
+    ];
+    const HEAP_FREE: &[&str] = &["-XX:MinHeapFreeRatio=5", "-XX:MaxHeapFreeRatio=15"];
 
     #[test]
     fn user_options_override_the_defaults() {
@@ -436,6 +453,7 @@ mod tests {
             (&["-XX:G1PeriodicGCInterval=0"], &["-XX:G1PeriodicGCInterval=60000"]),
             (&["-XX:MinHeapFreeRatio=40"], HEAP_FREE),
             (&["-XX:MaxHeapFreeRatio=70"], HEAP_FREE),
+            (&["-XX:-UseStringDeduplication"], &["-XX:+UseStringDeduplication"]),
             (&["-Xlog:gc*:file=gc.log"], &["-Xlog:disable"]),
             (&["-Dsun.zip.disableMemoryMapping=false"], &["-Dsun.zip.disableMemoryMapping=true"]),
             (&["-Daether.dependencyCollector.impl=df"], &["-Daether.dependencyCollector.impl=bf"]),
@@ -444,7 +462,7 @@ mod tests {
             assert_eq!(keep(user), without(dropped), "{user:?}");
         }
         // Not collectors: they keep ours.
-        assert_eq!(keep(&["-XX:+UseStringDeduplication", "-XX:+UseCompressedOops"]), without(&[]));
+        assert_eq!(keep(&["-XX:+UseCompressedOops", "-XX:+UseCompactObjectHeaders"]), without(&[]));
     }
 
     #[test]
@@ -473,7 +491,16 @@ mod tests {
         let args = java_args(&install, 25, &script);
         let jar = args.iter().position(|a| a == "-jar").unwrap();
         let jvm = &args[..jar];
-        for flag in ["-XX:+UseG1GC", "-XX:G1PeriodicGCInterval=60000", "-Xms100m", "-Xlog:disable", "-Xmx3G"] {
+        for flag in [
+            "-XX:+UseG1GC",
+            "-XX:G1PeriodicGCInterval=60000",
+            "-XX:MinHeapFreeRatio=5",
+            "-XX:MaxHeapFreeRatio=15",
+            "-XX:+UseStringDeduplication",
+            "-Xms100m",
+            "-Xlog:disable",
+            "-Xmx3G",
+        ] {
             assert!(jvm.contains(&flag.to_owned()), "{flag}: {jvm:?}");
         }
         let heap: Vec<&String> = jvm.iter().filter(|a| option_key(a).as_deref() == Some("Xmx")).collect();
