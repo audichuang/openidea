@@ -48,6 +48,11 @@ export interface VcsState {
   version: number;
   loading: boolean;
   error: string | null;
+  /**
+   * Why the last status read failed (e.g. a repository git cannot read). The
+   * repositories, branches and log stay available; `status` keeps its last value.
+   */
+  statusError: string | null;
   /** A network operation (fetch / pull / push) is running. */
   remoteBusy: string | null;
 }
@@ -70,6 +75,7 @@ const initial: VcsState = {
   version: 0,
   loading: false,
   error: null,
+  statusError: null,
   remoteBusy: null,
 };
 
@@ -198,11 +204,12 @@ export function refreshNow(): Promise<void> {
         (values) => ({ values }),
         (error: unknown) => ({ error }),
       );
-      const [vcsRoots, status, selected] = await Promise.all([
-        call(commands.vcsRoots()),
-        call(commands.vcsStatus()),
-        scoped,
-      ]);
+      // A status failure must not hide the repositories: roots, branches and log still load.
+      const status = call(commands.vcsStatus()).then(
+        (data) => ({ data }),
+        (error: unknown) => ({ error }),
+      );
+      const [vcsRoots, statusResult, selected] = await Promise.all([call(commands.vcsRoots()), status, scoped]);
       const roots = vcsRoots.map((r) => r.root);
       if ("error" in selected) {
         // The selected repository is gone (removed since the last scan): fall back to the primary one.
@@ -220,21 +227,27 @@ export function refreshNow(): Promise<void> {
       useVcs.setState({ operations, heads });
       const sameRoots = roots.join("\n") === s.roots.join("\n");
       if (repo !== s.repo || !sameRoots) useVcs.setState({ roots: sameRoots ? s.roots : roots, repo });
-      applyStatus(status, branch);
-      useVcs.setState({ branches, stashes, error: null });
+      if ("data" in statusResult) applyStatus(statusResult.data, branch);
+      else useVcs.setState({ branch });
+      const statusError = "error" in statusResult ? errorMessage(statusResult.error) : null;
+      useVcs.setState({ branches, stashes, error: null, statusError });
       // Branch info and branches above are of another repository: load the selected one's.
       if (repo !== shown || (s.repo && repo !== s.repo)) {
         useVcs.setState({ branchesLoaded: false, stashesLoaded: false });
         void refreshNow();
       }
     } catch (e) {
-      useVcs.setState({ error: e instanceof Error ? e.message : String(e) });
+      useVcs.setState({ error: errorMessage(e) });
     } finally {
       useVcs.setState((st) => ({ loading: false, version: st.version + 1 }));
       inflight = null;
     }
   })();
   return inflight;
+}
+
+function errorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }
 
 export function applyStatus(status: FileStatus[], branch: BranchInfo | null) {
