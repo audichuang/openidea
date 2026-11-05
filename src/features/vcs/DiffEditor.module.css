@@ -176,11 +176,15 @@
   font-size: var(--fs-small);
 }
 .host :global(.cm-diffArrows) {
+  position: absolute;
+  left: 0;
+  right: 0;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 0;
 }
 .host :global(.cm-merge-revert button.cm-diffArrow) {
+  position: static;
   display: flex;
   align-items: center;
   justify-content: center;
