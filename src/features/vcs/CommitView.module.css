@@ -80,26 +80,42 @@
   text-overflow: ellipsis;
   color: var(--fg-subtle);
 }
-/* A flat-mode file's directory: the head gives way first, the last segment stays whole. */
+/* A folder / repository / group row's "N files": always shown whole, the label and chip give way first. */
+.count {
+  flex: none;
+  white-space: nowrap;
+  color: var(--fg-subtle);
+}
+/* A folder or repository label may shrink, after the branch chip has. */
+.shrinkLabel {
+  flex-shrink: 1;
+}
+/* A flat-mode file's directory, cut in the middle: the head gives way first but keeps a
+   couple of characters, then the last segment shrinks too, each with an ellipsis. */
 .pathDetail {
   display: inline-flex;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   color: var(--fg-subtle);
 }
 .pathHead {
-  min-width: 0;
+  flex: 0 1000 auto;
+  min-width: 2ch;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .pathTail {
-  flex: none;
-}
-/* A repository row's current branch, as IDEA's branch chip. */
-.headChip {
-  flex: none;
+  flex: 0 1 auto;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* A repository row's current branch, as IDEA's branch chip: shrinks before the label, keeps ~3ch. */
+.headChip {
+  flex: 0 1000 auto;
+  min-width: calc(3ch + 8px);
   max-width: 40%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -247,6 +263,7 @@
 .nodeRow {
   flex: 1;
   min-width: 0;
+  overflow: hidden;
   align-self: stretch;
   display: flex;
   align-items: center;
