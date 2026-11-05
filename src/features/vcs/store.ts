@@ -48,6 +48,11 @@ export interface VcsState {
   version: number;
   loading: boolean;
   error: string | null;
+  /**
+   * Why the last status read failed (e.g. a repository git cannot read). The
+   * repositories, branches and log stay available; `status` keeps its last value.
+   */
+  statusError: string | null;
   /** A network operation (fetch / pull / push) is running. */
   remoteBusy: string | null;
 }
@@ -70,6 +75,7 @@ const initial: VcsState = {
   version: 0,
   loading: false,
   error: null,
+  statusError: null,
   remoteBusy: null,
 };
 
@@ -237,6 +243,7 @@ export function refreshNow(): Promise<void> {
         (values) => ({ values }),
         (error: unknown) => ({ error }),
       );
+      // A status failure must not hide the repositories: roots, branches and log still load.
       const [vcsRoots, status, selected] = await Promise.all([
         call(commands.vcsRoots()),
         call(commands.vcsStatus()).then(
@@ -253,7 +260,6 @@ export function refreshNow(): Promise<void> {
         setFileDecorations("vcs", new Map());
         return;
       }
-      if ("error" in status) throw status.error;
       if (s.repo && !roots.includes(s.repo)) {
         // Keep the loaded flags so the retry also reads the new repository's branch and stash lists.
         useVcs.setState({ repo: roots[0]!, branch: null, branches: [], stashes: [] });
@@ -270,8 +276,10 @@ export function refreshNow(): Promise<void> {
       useVcs.setState({ operations, heads });
       const sameRoots = roots.join("\n") === s.roots.join("\n");
       if (repo !== s.repo || !sameRoots) useVcs.setState({ roots: sameRoots ? s.roots : roots, repo });
-      applyStatus(status.files, branch);
-      useVcs.setState({ branches, stashes, error: null });
+      if ("files" in status) applyStatus(status.files, branch);
+      else useVcs.setState({ branch });
+      const statusError = "error" in status ? errorMessage(status.error) : null;
+      useVcs.setState({ branches, stashes, error: null, statusError });
       // Branch info and branches above are of another repository: load the selected one's.
       if (repo !== shown || (s.repo && repo !== s.repo)) {
         useVcs.setState({ branchesLoaded: false, stashesLoaded: false });
@@ -279,7 +287,7 @@ export function refreshNow(): Promise<void> {
       }
     } catch (e) {
       if (generation === projectGeneration) {
-        useVcs.setState({ error: e instanceof Error ? e.message : String(e) });
+        useVcs.setState({ error: errorMessage(e) });
       }
     } finally {
       if (generation === projectGeneration) {
@@ -385,6 +393,10 @@ export function pairsRenames(
   const has = (list: readonly FileStatus[], kind: "added" | "deleted") =>
     list.some((f) => f.staged === kind || f.unstaged === kind);
   return (has(fresh, "added") && has(outside, "deleted")) || (has(fresh, "deleted") && has(outside, "added"));
+}
+
+function errorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }
 
 export function applyStatus(status: FileStatus[], branch: BranchInfo | null) {
