@@ -51,6 +51,7 @@ import {
 } from "./changes";
 import { applyStash, commitChanges, deleteUnversioned, dropStash, showUnstashDialog, stashChanges } from "./changeOps";
 import { CommitOptionsPopup } from "./CommitOptions";
+import { expandedKeys } from "./changesExpansion";
 import { DEFAULT_LIST_NAME, useChangelists, withListDefaults } from "./changelists";
 import { moveToChangelist } from "./changelistsUi";
 import {
@@ -59,10 +60,12 @@ import {
   setDiffPreview,
   setGroupByDir,
   setGroupByStaging,
+  setStagingGroupByDir,
   setUntrackedInUnstaged,
   useCommit,
   type CommitTab,
 } from "./commitStore";
+import { commitSummary } from "./commitSummary";
 import { pushAfterCommit } from "./commitUi";
 import { stashTabOf, stashTabs, type ContentTab } from "./gitTabs";
 import { diffInput, openDiff, withChain, workingDiffData } from "./diffInput";
@@ -405,16 +408,24 @@ function useCommitChecks() {
   return useMemo(() => withListDefaults(status, root, lists, userChecks), [status, root, lists, userChecks]);
 }
 
-/** Number of changes the commit would include. */
-export function useIncludedCount(): number {
+/** The changes the commit would include: the staged ones with the staging area, else the checked ones. */
+function useIncludedFiles(): FileStatus[] {
   const status = useVcs((s) => s.status);
   const checks = useCommitChecks();
   const staging = useStagingArea();
   return useMemo(
-    () => (staging ? stagedFiles(status) : planCommit(status, checks).included).length,
+    () => (staging ? stagedFiles(status) : planCommit(status, checks).included),
     [status, checks, staging],
   );
 }
+
+/** Number of changes the commit would include. */
+export function useIncludedCount(): number {
+  return useIncludedFiles().length;
+}
+
+/** No expansion choices made yet: every row takes its default (`expandedKeys`). */
+const NO_OVERRIDES: ReadonlyMap<string, boolean> = new Map();
 
 /** The Commit tool window's Commit tab: changes with inclusion checkboxes above the message. */
 function ChangesPanel() {
@@ -471,17 +482,27 @@ export function LocalChangesView() {
 export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const status = useVcs((s) => s.status);
   const root = useVcs((s) => s.root) ?? "";
-  const groupByDir = useCommit((s) => s.groupByDir);
+  const staging = useStagingArea();
+  // The staging area tree has its own Group By › Directory (on by default, as in IDEA).
+  const groupByDir = useCommit((s) => (staging ? s.stagingGroupByDir : s.groupByDir));
   const groupByStaging = useCommit((s) => s.groupByStaging);
   const untrackedInUnstaged = useCommit((s) => s.untrackedInUnstaged);
   const diffPreview = useCommit((s) => s.diffPreview);
   const lists = useChangelists((s) => s.state);
   const checks = useCommitChecks();
-  const staging = useStagingArea();
   const checkboxes = mode !== "local" && !staging;
   const [dropTarget, setDropTarget] = useState<string | null>(null);
-  // IDEA starts with Unversioned Files collapsed.
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(["group:unversioned"]));
+  // Rows the user opened or closed (key → open) keep that state across refreshes; other
+  // rows take their default. Changing the grouping goes back to the default view, as in IDEA.
+  const grouping = `${staging}:${groupByDir}:${staging ? untrackedInUnstaged : groupByStaging}`;
+  const [expansion, setExpansion] = useState(() => ({ grouping, overrides: NO_OVERRIDES }));
+  const overrides = expansion.grouping === grouping ? expansion.overrides : NO_OVERRIDES;
+  const override = (keys: Iterable<string>, open: boolean) =>
+    setExpansion((e) => {
+      const next = new Map<string, boolean>(e.grouping === grouping ? e.overrides : NO_OVERRIDES);
+      for (const k of keys) next.set(k, open);
+      return { grouping, overrides: next };
+    });
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const treeRef = useRef<TreeHandle>(null);
   const viewRef = useRef<HTMLButtonElement>(null);
@@ -515,14 +536,11 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
     if (!node) return;
     const ancestors: string[] = [];
     for (let k = parents.get(node.key); k; k = parents.get(k)) ancestors.push(k);
-    setCollapsed((c) => new Set([...c].filter((k) => !ancestors.includes(k))));
+    override(ancestors, true);
     requestAnimationFrame(() => treeRef.current?.reveal(node.key));
   };
-  const expanded = useMemo(() => {
-    const s = new Set<string>();
-    for (const k of byKey.keys()) if (!collapsed.has(k)) s.add(k);
-    return s;
-  }, [byKey, collapsed]);
+  const expanded = useMemo(() => expandedKeys(roots, overrides), [roots, overrides]);
+  const folderKeys = () => [...byKey.values()].filter((n) => n.type !== "file").map((n) => n.key);
 
   // Forget overrides for files that are no longer changed.
   useEffect(() => {
@@ -567,7 +585,11 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
             viewRef.current &&
             showContextMenu(bottomLeft(viewRef.current), [
               { kind: "header", label: "Group By" },
-              { label: "Directory", checked: groupByDir, run: () => setGroupByDir(!groupByDir) },
+              {
+                label: "Directory",
+                checked: groupByDir,
+                run: () => (staging ? setStagingGroupByDir : setGroupByDir)(!groupByDir),
+              },
               ...(staging
                 ? [
                     { kind: "separator" as const },
@@ -591,12 +613,12 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
         {mode !== "dialog" && (
           <IconButton icon="locate" title="Select Opened File" size="small" onClick={selectOpened} />
         )}
-        <IconButton icon="expand-all" title="Expand All" size="small" onClick={() => setCollapsed(new Set())} />
+        <IconButton icon="expand-all" title="Expand All" size="small" onClick={() => override(folderKeys(), true)} />
         <IconButton
           icon="collapse-all"
           title="Collapse All"
           size="small"
-          onClick={() => setCollapsed(new Set([...byKey.values()].filter((n) => n.type !== "file").map((n) => n.key)))}
+          onClick={() => override(folderKeys(), false)}
         />
       </div>
       {mode !== "dialog" && <OperationBanner />}
@@ -641,14 +663,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
           }
           isExpandable={(n) => n.type !== "file"}
           expanded={expanded}
-          onExpandedChange={(_next, node, open) =>
-            setCollapsed((c) => {
-              const s = new Set(c);
-              if (open) s.delete(node.key);
-              else s.add(node.key);
-              return s;
-            })
-          }
+          onExpandedChange={(_next, node, open) => override([node.key], open)}
           selected={selected}
           onSelectionChange={(sel) => {
             setSelected(sel);
@@ -895,6 +910,9 @@ export function CommitMessageField({ included, runner }: { included: number; run
   const historyTick = useCommit((s) => s.historyTick);
   const checkProblems = useCommit((s) => s.checkProblems);
   const { emptyError } = runner;
+  const includedFiles = useIncludedFiles();
+  const staging = useStagingArea();
+  const summary = useMemo(() => commitSummary(includedFiles, staging), [includedFiles, staging]);
 
   // The failed checks concern what was about to be committed: editing it dismisses them.
   useEffect(() => {
@@ -949,6 +967,13 @@ export function CommitMessageField({ included, runner }: { included: number; run
           }))}
         />
         <span className={styles.grow} />
+        {summary.added + summary.modified + summary.deleted > 0 && (
+          <span className={styles.summary}>
+            {summary.added > 0 && <span className={styles.summaryAdded}>{tx`${summary.added} added`}</span>}
+            {summary.modified > 0 && <span className={styles.summaryModified}>{tx`${summary.modified} modified`}</span>}
+            {summary.deleted > 0 && <span className={styles.summaryDeleted}>{tx`${summary.deleted} deleted`}</span>}
+          </span>
+        )}
         {tooLong && (
           <span className={clsx(styles.lineLen, styles.lineLenWarn)} title={tx("Subject line length")}>
             {first.length}/{cfg.subjectLimit}
