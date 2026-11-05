@@ -496,6 +496,8 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   // rows take their default. Changing the grouping goes back to the default view, as in IDEA.
   const grouping = `${staging}:${groupByDir}:${staging ? untrackedInUnstaged : groupByStaging}`;
   const [expansion, setExpansion] = useState(() => ({ grouping, overrides: NO_OVERRIDES }));
+  // Drop the old choices for good (adjusting state during render), so A → B → A is not A again.
+  if (expansion.grouping !== grouping) setExpansion({ grouping, overrides: NO_OVERRIDES });
   const overrides = expansion.grouping === grouping ? expansion.overrides : NO_OVERRIDES;
   const override = (keys: Iterable<string>, open: boolean) =>
     setExpansion((e) => {
