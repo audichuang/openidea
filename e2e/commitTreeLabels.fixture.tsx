@@ -42,7 +42,7 @@ useVcs.setState({
     ),
   ],
 });
-useCommit.setState({ groupByDir: !params.has("flat"), checks: new Map(), selection: [] });
+useCommit.setState({ stagingGroupByDir: !params.has("flat"), checks: new Map(), selection: [] });
 
 createRoot(document.getElementById("root")!).render(
   <div id="panel" style={{ width, height: 600, display: "flex", flexDirection: "column" }}>
