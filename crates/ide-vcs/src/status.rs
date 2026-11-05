@@ -1,24 +1,144 @@
-//! Working tree status via gitoxide (parallel index refresh + dirwalk).
+//! Working tree status via gitoxide (parallel index refresh + dirwalk), or the git
+//! CLI for partial clones and sparse checkouts, which gitoxide cannot read fully.
 
 use crate::repo::{gx, to_string};
 use crate::{ChangeKind, FileStatus, Repo};
 use gix::status::index_worktree::Item as WtItem;
 use gix::status::plumbing::index_as_worktree::{Change as WtChange, EntryStatus};
 use ide_core::IdeResult;
+use ide_core::ignored::IgnoredNames;
 use std::collections::{BTreeMap, HashSet};
 
-#[derive(Default)]
+#[derive(Debug, Default, PartialEq)]
 struct Entry {
     staged: Option<ChangeKind>,
     unstaged: Option<ChangeKind>,
     renamed_from: Option<String>,
 }
 
+/// Changes by repository-relative path, and the conflicted paths among them.
+#[derive(Default)]
+struct Changes {
+    map: BTreeMap<String, Entry>,
+    conflicts: HashSet<String>,
+}
+
 pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
     let repo = r.gix()?;
+    let ignored = r.ignored.read().unwrap_or_else(|p| p.into_inner()).clone();
+    let changes = if needs_git_cli(&repo) {
+        cli_changes(r, &ignored)?
+    } else {
+        match gix_changes(&repo, &ignored) {
+            Ok(changes) => changes,
+            // Same idea as `blob_data`: a repository gitoxide cannot read (an object
+            // missing locally) may still be readable by git itself.
+            Err(e) => {
+                tracing::debug!("gitoxide status of {} failed, using git: {e}", r.root().display());
+                cli_changes(r, &ignored).map_err(|_| e)?
+            }
+        }
+    };
+    Ok(finish(r, changes, &ignored))
+}
+
+/// Partial clones lack blobs that gitoxide does not fetch on demand, and sparse
+/// checkouts carry skip-worktree entries it does not honour: git reads both.
+fn needs_git_cli(repo: &gix::Repository) -> bool {
+    let config = repo.config_snapshot();
+    let enabled = |key: &str| config.boolean(key).unwrap_or(false);
+    enabled("core.sparseCheckout")
+        || config.string("extensions.partialClone").is_some()
+        || repo.remote_names().iter().any(|name| enabled(&format!("remote.{name}.promisor")))
+}
+
+/// Status through `git status --porcelain=v2`, without taking the index lock (no
+/// stat refresh write-back, so no index change for the watcher to report).
+fn cli_changes(r: &Repo, ignored: &IgnoredNames) -> IdeResult<Changes> {
+    let mut args = vec!["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=all"];
+    if !crate::execution_allowed() {
+        // Restricted git may not fetch missing blobs, and rename detection needs them.
+        args.push("--no-renames");
+    }
+    let out = crate::cli::run(r.root(), &args, None)?;
+    Ok(parse_porcelain_v2(&out.stdout, ignored))
+}
+
+/// Parses NUL-terminated `git status --porcelain=v2 -z` output into the same entries
+/// the gitoxide path produces.
+fn parse_porcelain_v2(out: &[u8], ignored: &IgnoredNames) -> Changes {
+    fn staged(c: char) -> Option<ChangeKind> {
+        match c {
+            'M' | 'T' => Some(ChangeKind::Modified),
+            'A' | 'C' => Some(ChangeKind::Added),
+            'D' => Some(ChangeKind::Deleted),
+            'R' => Some(ChangeKind::Renamed),
+            _ => None,
+        }
+    }
+    fn unstaged(c: char) -> Option<ChangeKind> {
+        match c {
+            'M' | 'T' => Some(ChangeKind::Modified),
+            // Worktree-side renames and copies come from intent-to-add entries.
+            'A' | 'R' | 'C' => Some(ChangeKind::Added),
+            'D' => Some(ChangeKind::Deleted),
+            _ => None,
+        }
+    }
+    let mut changes = Changes::default();
+    let mut tokens = out.split(|b| *b == 0).filter(|t| !t.is_empty()).map(String::from_utf8_lossy);
+    while let Some(token) = tokens.next() {
+        let Some((kind, rest)) = token.split_once(' ') else { continue };
+        match kind {
+            // `1 XY sub mH mI mW hH hI path`, or `2 XY sub mH mI mW hH hI Xscore path`
+            // followed by the original path as the next token.
+            "1" | "2" => {
+                let count = if kind == "1" { 8 } else { 9 };
+                let fields: Vec<&str> = rest.splitn(count, ' ').collect();
+                let from = if kind == "2" { tokens.next().map(|t| t.into_owned()) } else { None };
+                if fields.len() < count {
+                    continue;
+                }
+                let mut xy = fields[0].chars();
+                let (x, y) = (xy.next().unwrap_or('.'), xy.next().unwrap_or('.'));
+                let entry = changes.map.entry(fields[count - 1].to_owned()).or_default();
+                entry.staged = staged(x);
+                entry.unstaged = unstaged(y);
+                if x == 'R' {
+                    entry.renamed_from = from.clone();
+                }
+                if y == 'R'
+                    && let Some(from) = from
+                {
+                    // gitoxide reports a worktree rename as a deletion plus a new file.
+                    changes.map.entry(from).or_default().unstaged = Some(ChangeKind::Deleted);
+                }
+            }
+            // `u XY sub m1 m2 m3 mW h1 h2 h3 path`
+            "u" => {
+                let fields: Vec<&str> = rest.splitn(10, ' ').collect();
+                if fields.len() < 10 {
+                    continue;
+                }
+                let path = fields[9].to_owned();
+                changes.conflicts.insert(path.clone());
+                changes.map.entry(path).or_default().unstaged = Some(ChangeKind::Conflicted);
+            }
+            "?" => {
+                if ignored.is_ignored_path(rest) {
+                    continue;
+                }
+                changes.map.entry(rest.to_owned()).or_default().unstaged = Some(ChangeKind::Untracked);
+            }
+            _ => {}
+        }
+    }
+    changes
+}
+
+fn gix_changes(repo: &gix::Repository, ignored: &IgnoredNames) -> IdeResult<Changes> {
     let mut map: BTreeMap<String, Entry> = BTreeMap::new();
     let mut conflicts: HashSet<String> = HashSet::new();
-    let ignored = r.ignored.read().unwrap_or_else(|p| p.into_inner()).clone();
 
     // Stamp before status can read the index: stamping after the load could capture
     // an external `git switch`, `add` or commit's new index and allow the stale
@@ -118,8 +238,12 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
         }
     }
 
-    Ok(map
-        .into_iter()
+    Ok(Changes { map, conflicts })
+}
+
+fn finish(r: &Repo, changes: Changes, ignored: &IgnoredNames) -> Vec<FileStatus> {
+    let Changes { map, conflicts } = changes;
+    map.into_iter()
         .filter(|(_, e)| e.staged.is_some() || e.unstaged.is_some())
         // Ignored names mean "the IDE treats these as nonexistent": hide their tracked
         // changes too, not just untracked hits above. Conflicts stay visible so merges
@@ -139,7 +263,7 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
                 renamed_from: e.renamed_from,
             }
         })
-        .collect())
+        .collect()
 }
 
 /// Lets a test land an external index write in the window between the status run
@@ -173,6 +297,50 @@ mod tests {
             .output()
             .expect("git runs");
         assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    fn entry(staged: Option<ChangeKind>, unstaged: Option<ChangeKind>, from: Option<&str>) -> Entry {
+        Entry { staged, unstaged, renamed_from: from.map(str::to_owned) }
+    }
+
+    #[test]
+    fn porcelain_v2_entries_map_like_the_gitoxide_path() {
+        use ChangeKind::*;
+        let hash = "ce013625030ba8dba906f756967f9e9ca394464a";
+        let out = [
+            format!("1 .M N... 100644 100644 100644 {hash} {hash} README.md"),
+            format!("1 A. N... 000000 100644 100644 {hash} {hash} dir/with space.txt"),
+            format!("1 MD N... 100644 100644 000000 {hash} {hash} both.txt"),
+            format!("1 .A N... 000000 000000 100644 {hash} {hash} intent.txt"),
+            format!("2 R. N... 100644 100644 100644 {hash} {hash} R99 new name.txt"),
+            "docs/old name.txt".to_owned(),
+            format!("2 C. N... 100644 100644 100644 {hash} {hash} C100 copy.txt"),
+            "orig.txt".to_owned(),
+            format!("u UU N... 100644 100644 100644 100644 {hash} {hash} {hash} merge me.txt"),
+            "? untracked file.txt".to_owned(),
+            "? nested/".to_owned(),
+            "? node_modules/x.js".to_owned(),
+        ]
+        .join("\0")
+            + "\0";
+        let ignored = IgnoredNames::new(&["node_modules".to_owned()]);
+        let changes = parse_porcelain_v2(out.as_bytes(), &ignored);
+        let got: Vec<(&str, &Entry)> = changes.map.iter().map(|(k, v)| (k.as_str(), v)).collect();
+        assert_eq!(
+            got,
+            [
+                ("README.md", &entry(None, Some(Modified), None)),
+                ("both.txt", &entry(Some(Modified), Some(Deleted), None)),
+                ("copy.txt", &entry(Some(Added), None, None)),
+                ("dir/with space.txt", &entry(Some(Added), None, None)),
+                ("intent.txt", &entry(None, Some(Added), None)),
+                ("merge me.txt", &entry(None, Some(Conflicted), None)),
+                ("nested/", &entry(None, Some(Untracked), None)),
+                ("new name.txt", &entry(Some(Renamed), None, Some("docs/old name.txt"))),
+                ("untracked file.txt", &entry(None, Some(Untracked), None)),
+            ]
+        );
+        assert_eq!(changes.conflicts, HashSet::from(["merge me.txt".to_owned()]));
     }
 
     fn commit_all(dir: &Path, msg: &str) {
