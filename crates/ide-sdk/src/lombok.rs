@@ -151,7 +151,12 @@ fn logical_lines(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut pending = String::new();
     for line in text.lines().map(str::trim) {
-        if is_script_comment(line) && pending.is_empty() {
+        if is_script_comment(line) {
+            // A comment runs to the end of the logical line: it ends a pending command.
+            if !pending.is_empty() {
+                out.push(pending.trim_end().to_owned());
+                pending.clear();
+            }
             out.push(line.to_owned());
             continue;
         }
@@ -828,6 +833,9 @@ exec /opt/homebrew/opt/jdtls/libexec/bin/jdtls \
             // Only in comments.
             "#!/bin/sh\n# --jvm-arg=-javaagent:/m2/lombok.jar\nexec jdtls \"$@\"\n",
             "@echo off\r\nREM --jvm-arg=-javaagent:C:\\lombok.jar\r\n:: -javaagent:C:\\lombok.jar\r\njdtls %*\r\n",
+            // A comment line after a continuation ends the command; it never joins it.
+            "exec jdtls \"$@\" \\\n# --jvm-arg=-javaagent:/m2/lombok.jar\n",
+            "@echo off\r\njdtls %* ^\r\nREM -javaagent:C:\\lombok.jar\r\n",
             // Another agent, through a variable set to something else.
             "AGENT=/opt/jacoco.jar\nexec jdtls --jvm-arg=-javaagent:$AGENT \"$@\"\n",
             "exec jdtls --jvm-arg=-javaagent:/opt/jacoco/agent.jar \"$@\"\n",

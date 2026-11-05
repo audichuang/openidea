@@ -276,7 +276,16 @@ impl Server {
     pub async fn wait_ready(&self, timeout: Duration) -> Option<Running> {
         let mut rx = self.phase.subscribe();
         // `Down` while a start waits for the stop to finish is not an answer yet.
-        let _ = tokio::time::timeout(timeout, rx.wait_for(|p| *p != Phase::Starting && !self.restart_pending())).await;
+        // The predicate runs under the watch lock, which `begin_start`/`begin_stop` take while
+        // holding the state lock: taking the state lock inside it would be the reverse order.
+        let _ = tokio::time::timeout(timeout, async {
+            while rx.wait_for(|p| *p != Phase::Starting).await.is_ok() && self.restart_pending() {
+                if rx.changed().await.is_err() {
+                    break;
+                }
+            }
+        })
+        .await;
         self.running()
     }
 
@@ -661,6 +670,62 @@ mod tests {
         tokio::task::yield_now().await;
         assert!(s.fail_start(generation, Conn::Failed, &sink, ServerStatus::Crashed, Some("boom".into())));
         assert_eq!(waiter.await.unwrap(), (true, ServerStatus::Crashed));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn wait_ready_does_not_deadlock_with_start_and_stop() {
+        // The watch read lock must never be held while the state lock is taken.
+        let s = Arc::new(server());
+        let hammer = {
+            let s = s.clone();
+            tokio::task::spawn_blocking(move || {
+                for _ in 0..20_000 {
+                    s.begin_start();
+                    s.begin_stop();
+                }
+            })
+        };
+        let waiters: Vec<_> = (0..3)
+            .map(|_| {
+                let s = s.clone();
+                tokio::spawn(async move {
+                    for _ in 0..2_000 {
+                        s.wait_ready(Duration::from_millis(1)).await;
+                    }
+                })
+            })
+            .collect();
+        tokio::time::timeout(Duration::from_secs(60), async {
+            hammer.await.unwrap();
+            for w in waiters {
+                w.await.unwrap();
+            }
+        })
+        .await
+        .expect("deadlocked");
+    }
+
+    #[tokio::test]
+    async fn wait_ready_holds_on_for_a_requested_restart() {
+        let s = Arc::new(server());
+        let g = s.begin_start().unwrap();
+        let run = s.begin_stop();
+        assert!(run.is_none());
+        let _ = g;
+        // Stopping with a start requested: simulate via state.
+        {
+            let mut st = s.state.lock();
+            st.conn = Conn::Stopping;
+        }
+        assert!(s.begin_start().is_none());
+        let w = {
+            let s = s.clone();
+            tokio::spawn(async move { s.wait_ready(Duration::from_secs(30)).await.is_none() })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!w.is_finished(), "must hold on while a restart is pending");
+        s.drop_restart();
+        assert!(w.await.unwrap());
     }
 
     #[test]
