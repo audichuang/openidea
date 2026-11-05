@@ -90,7 +90,9 @@ import {
   unstagePaths,
   useStagingArea,
 } from "./staging";
+import { RepoHeadChip } from "./RepoHeadChip";
 import { RepoSwatch } from "./RepoSwatch";
+import { splitPathDetail } from "./pathDetail";
 import { refreshNow, repoName, selectRepo, useVcs } from "./store";
 import styles from "./CommitView.module.css";
 
@@ -858,13 +860,15 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                 )}
                 {n.repo && <RepoSwatch root={n.repo} />}
                 {label}
-                {n.type === "group" && <span className={styles.detail}>{fileCount(n.files.length)}</span>}
+                {n.type !== "file" && <span className={styles.detail}>{fileCount(n.files.length)}</span>}
+                {n.repo && <RepoHeadChip root={n.repo} className={styles.headChip} />}
                 {!staging && n.type === "file" && n.files[0] && isPartiallyStaged(n.files[0]) && (
                   <span className={styles.partial} title={tx("Partially staged: only staged hunks are committed")}>
                     <T>partial</T>
                   </span>
                 )}
-                {n.detail && <span className={styles.detail}>{n.detail}</span>}
+                {n.dir && <PathDetail dir={n.dir} />}
+                {n.detail && <span className={styles.detail}>{n.dir ? `· ${n.detail}` : n.detail}</span>}
                 {staging && <StageAction node={n} />}
               </span>
             );
@@ -872,6 +876,17 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
         />
       </div>
     </div>
+  );
+}
+
+/** A flat-mode file's directory, cut in the middle so its first and last segments stay visible. */
+function PathDetail({ dir }: { dir: string }) {
+  const { head, tail } = splitPathDetail(dir);
+  return (
+    <span className={styles.pathDetail} title={dir}>
+      <span className={styles.pathHead}>{head}</span>
+      {tail && <span className={styles.pathTail}>{tail}</span>}
+    </span>
   );
 }
 
