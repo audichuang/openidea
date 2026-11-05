@@ -44,6 +44,8 @@ export interface ChangeNode {
   changelist?: string;
   /** The active change list's group. */
   active?: boolean;
+  /** Repository root (repository nodes, with several repositories). */
+  repo?: string;
 }
 
 export function groupOf(fs: FileStatus): GroupId | null {
@@ -208,6 +210,7 @@ export function repoNodes(
       children: childNodes(own, repo, group, groupByDir, `${scope}@${repo}`),
       files: own,
       path: repo,
+      repo,
     }));
 }
 

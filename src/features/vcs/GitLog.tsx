@@ -7,6 +7,7 @@ import { branchesByRepo, commitKey, commitRepo, graphCommit, type RepoCommit } f
 import { IssueText } from "./issueLinks";
 import { BranchFilterPopup } from "./BranchFilterPopup";
 import { RepositoryFilterPopup } from "./RepositoryFilterPopup";
+import { RepoSwatch } from "./RepoSwatch";
 import {
   Fragment,
   memo,
@@ -85,7 +86,7 @@ import {
   PAGE,
 } from "./logStore";
 import { logOptions, refLabels, useLogOptions, type LogOptions } from "./logOptions";
-import { KIND_COLOR, baseName, dirName, fileCount, formatTime, relTo, type EffectiveKind } from "./model";
+import { KIND_COLOR, baseName, dirName, fileCount, formatTime, relTo, repoColor, type EffectiveKind } from "./model";
 import { clearConsole, useVcsConsole } from "./ops";
 import { currentRepo, currentRepoRoot, loadBranches, repoName, useVcs } from "./store";
 import { canDeleteBranch, loadFavoriteBranches, useFavoriteBranches } from "./branchOps";
@@ -578,6 +579,7 @@ export function BranchesPanel() {
                     : "folder"
           }
           getDetail={branchDetail}
+          getSwatch={(n) => (n.kind === "repository" && n.repo ? repoColor(n.repo, repositories) : null)}
           selected={selected}
           onSelectionChange={(sel) => setSelected(sel)}
           onActivate={(n) => {
@@ -2208,6 +2210,7 @@ function CommitRowView({
     >
       {opts.showRepository && commitRepo(c) && useVcs.getState().roots.length > 1 && (
         <span className={styles.colRepository} title={commitRepo(c)!}>
+          <RepoSwatch root={commitRepo(c)!} />
           {repoName(commitRepo(c)!)}
         </span>
       )}

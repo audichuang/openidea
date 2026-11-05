@@ -2,7 +2,7 @@
 import type { Branch } from "@/bindings";
 import { tx } from "@/platform/i18n";
 import { fuzzyMatch } from "@/ui/match";
-import { rootOf } from "./model";
+import { repoColorIndex, rootOf } from "./model";
 import {
   actionRows,
   defaultFolderOpen,
@@ -23,14 +23,6 @@ export interface RepoEntry {
   /** Current branch; `null` when HEAD is detached. */
   head: string | null;
   headCommit: string | null;
-}
-
-/** Number of `--project-color-N` tokens repositories are coloured with. */
-export const REPO_COLORS = 9;
-
-/** Colour slot (1-based) of the repository at `index`: distinct for up to `REPO_COLORS` repositories. */
-export function repoColorIndex(index: number): number {
-  return (index % REPO_COLORS) + 1;
 }
 
 /** Display name of a repository's HEAD: its branch, else the short commit. */
