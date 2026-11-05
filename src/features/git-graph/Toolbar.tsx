@@ -1,9 +1,9 @@
 /** The Git Graph tab's toolbar: repository, branch filter, find, and the remote / commit actions. */
-import type { MouseEvent as ReactMouseEvent } from "react";
+import { useState, type MouseEvent as ReactMouseEvent } from "react";
 import type { Branch } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
-import { Icon, IconButton, SearchField, showContextMenu, Spinner, T, type MenuItem } from "@/ui";
+import { Icon, IconButton, SearchField, showContextMenu, Spinner, T } from "@/ui";
 import { gitGraphBridge } from "@/workbench/gitGraphBridge";
 import styles from "./GitGraph.module.css";
 
@@ -32,37 +32,12 @@ const repoName = (root: string) =>
     .pop() ?? root;
 
 export function Toolbar(p: ToolbarProps) {
-  const branchMenu = (e: ReactMouseEvent<HTMLElement>) => {
-    const r = e.currentTarget.getBoundingClientRect();
-    const toggle = (name: string) =>
-      p.onBranchFilter(
-        p.branchFilter.includes(name) ? p.branchFilter.filter((b) => b !== name) : [...p.branchFilter, name],
-      );
-    const items: MenuItem[] = [
-      { label: "Show All Branches", checked: !p.branchFilter.length, run: () => p.onBranchFilter([]) },
-      { label: "Show Remote Branches", checked: p.showRemotes, run: () => p.onShowRemotes(!p.showRemotes) },
-      { kind: "separator" },
-      { kind: "header", label: "Local" },
-      ...p.branches
-        .filter((b) => !b.remote)
-        .map((b): MenuItem => ({
-          label: b.name,
-          verbatim: true,
-          checked: p.branchFilter.includes(b.name),
-          run: () => toggle(b.name),
-        })),
-      { kind: "header", label: "Remote" },
-      ...p.branches
-        .filter((b) => b.remote)
-        .map((b): MenuItem => ({
-          label: b.name,
-          verbatim: true,
-          checked: p.branchFilter.includes(b.name),
-          run: () => toggle(b.name),
-        })),
-    ];
-    showContextMenu({ x: r.left, y: r.bottom + 2 }, items);
-  };
+  const [branchAnchor, setBranchAnchor] = useState<HTMLElement | null>(null);
+  const BranchFilterPopup = gitGraphBridge()?.BranchFilterPopup;
+  const toggleBranch = (name: string) =>
+    p.onBranchFilter(
+      p.branchFilter.includes(name) ? p.branchFilter.filter((b) => b !== name) : [...p.branchFilter, name],
+    );
   const repoColor = (root: string) => gitGraphBridge()?.repoColor(root, p.roots) ?? null;
   const swatch = (root: string) => {
     const color = repoColor(root);
@@ -94,11 +69,40 @@ export function Toolbar(p: ToolbarProps) {
           <Icon name="chevron-down" size={12} />
         </button>
       ) : null}
-      <button type="button" className={styles.dropdown} onClick={branchMenu} aria-label={tx("Branches")}>
+      <button
+        type="button"
+        className={styles.dropdown}
+        onClick={(e) => setBranchAnchor(e.currentTarget)}
+        aria-label={tx("Branches")}
+        aria-haspopup="dialog"
+      >
         <Icon name="branch" size={14} />
         <span>{branchLabel}</span>
         <Icon name="chevron-down" size={12} />
       </button>
+      {p.branchFilter.length ? (
+        <IconButton icon="close" title="Show All Branches" onClick={() => p.onBranchFilter([])} />
+      ) : null}
+      <IconButton
+        icon="web"
+        title="Show Remote Branches"
+        pressed={p.showRemotes}
+        onClick={() => p.onShowRemotes(!p.showRemotes)}
+      />
+      {branchAnchor && BranchFilterPopup ? (
+        <BranchFilterPopup
+          anchor={branchAnchor}
+          repo={p.repo ?? ""}
+          branches={p.branches}
+          selected={p.branchFilter}
+          onSelect={(branch) => {
+            toggleBranch(branch);
+            setBranchAnchor(null);
+          }}
+          onSelectMany={p.onBranchFilter}
+          onClose={() => setBranchAnchor(null)}
+        />
+      ) : null}
       <SearchField
         className={styles.search}
         value={p.query}
