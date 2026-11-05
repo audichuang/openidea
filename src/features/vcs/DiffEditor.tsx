@@ -363,6 +363,7 @@ export interface DiffEditorProps {
    * toolbar, side-by-side panes always aligned, and not taking the editor tab's focus.
    */
   fit?: boolean;
+  allowSourceNavigation?: boolean;
 }
 
 export function DiffEditor(props: DiffEditorProps) {
@@ -395,6 +396,7 @@ function TwoPaneDiff({
   onJumpToSource,
   onClose,
   fit = false,
+  allowSourceNavigation = true,
   gitModes,
   metadataLoading,
 }: DiffEditorProps & { gitModes?: [string | null, string | null]; metadataLoading: boolean }) {
@@ -599,20 +601,17 @@ function TwoPaneDiff({
   }, []);
 
   // A HEAD ↔ working file diff of a tracked change: blocks can be left out of the commit.
+  const trackedChange = useVcs((s) => {
+    const fs = s.status.find((f) => stripSlash(f.path) === path);
+    return !!fs && groupOf(fs) === "changes" && effectiveKind(fs) === "modified";
+  });
   const includable =
-    useVcs((s) => {
-      const fs = s.status.find((f) => stripSlash(f.path) === path);
-      return !!fs && groupOf(fs) === "changes" && effectiveKind(fs) === "modified";
-    }) &&
-    left.type === "rev" &&
-    left.rev === "HEAD" &&
-    !left.path &&
-    isWorktree(right);
-  const editableA = !binary && (indexSide === "a" ? indexReady : attached?.a ? !readOnlyA : isEditableText(left));
-  const editableB = !binary && (indexSide === "b" ? indexReady : attached?.b ? !readOnlyB : isEditableText(right));
+    !data.readOnly && trackedChange && left.type === "rev" && left.rev === "HEAD" && !left.path && isWorktree(right);
+  const editableA = !data.readOnly && !binary && (indexSide === "a" ? indexReady : attached?.a ? !readOnlyA : isEditableText(left));
+  const editableB = !data.readOnly && !binary && (indexSide === "b" ? indexReady : attached?.b ? !readOnlyB : isEditableText(right));
   const unifiedOnLeft = viewMode === "unified" && indexSide === "a" && editableA && !editableB;
-  const canStageIndex = indexReady && !binary && indexSide === "a" && !!attached?.b;
-  const canUnstage = indexReady && !binary && indexSide === "b" && left.type === "rev" && left.rev === "HEAD";
+  const canStageIndex = !data.readOnly && indexReady && !binary && indexSide === "a" && !!attached?.b;
+  const canUnstage = !data.readOnly && indexReady && !binary && indexSide === "b" && left.type === "rev" && left.rev === "HEAD";
   const canReplaceA = !indexSide && editableA;
   const canRevert = editableB && (indexSide ? canStageIndex : true);
   const ready = !!attached && !!statics && lang !== null && binary !== null;
@@ -1280,6 +1279,7 @@ function TwoPaneDiff({
 
   const jumpToSource = useCallback(() => {
     if (gitlink || metadataLoading) return;
+    if (!allowSourceNavigation) return;
     const views = viewsRef.current;
     const fileA = sideFile(left, path);
     const fileB = sideFile(right, path);
@@ -1310,7 +1310,7 @@ function TwoPaneDiff({
       const line = mapLine(Chunk.build(from, to), at.number - 1, from, to);
       open(line, to.line(line + 1).text === at.text ? head - at.from : 0);
     });
-  }, [left, right, path, worktreeSource, onJumpToSource, indexDoc, gitlink, metadataLoading]);
+  }, [allowSourceNavigation, left, right, path, worktreeSource, onJumpToSource, indexDoc, gitlink, metadataLoading]);
 
   const currentChunk = (useFocusedPane = false, fallback = true): { chunk: Chunk; index: number } | undefined => {
     const views = viewsRef.current;
@@ -1725,7 +1725,7 @@ function TwoPaneDiff({
   const canStage = indexSide
     ? canStageIndex
     : editableB && isWorktree(right) && left.type === "rev" && !!useVcs.getState().root;
-  const hasSource = !!source;
+  const hasSource = allowSourceNavigation && !!source;
 
   const paneTitle = (s: DiffSide): PaneTitle => {
     if (s.type === "worktree" || s.type === "text") return { label: sideLabel(s), detail: s.labelDetail };
