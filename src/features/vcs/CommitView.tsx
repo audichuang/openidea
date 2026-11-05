@@ -1033,7 +1033,11 @@ export function CommitMessageField({ included, runner }: { included: number; run
   const { emptyError } = runner;
   const includedFiles = useIncludedFiles();
   const staging = useStagingArea();
-  const summary = useMemo(() => commitSummary(includedFiles, staging), [includedFiles, staging]);
+  const checks = useCommitChecks();
+  const summary = useMemo(
+    () => commitSummary(includedFiles, staging ? null : checks),
+    [includedFiles, staging, checks],
+  );
 
   // The failed checks concern what was about to be committed: editing it dismisses them.
   useEffect(() => {
