@@ -421,7 +421,8 @@ impl LocalHistory {
             text.push_str(&serde_json::to_string(e).map_err(|e| IdeError::internal(e.to_string()))?);
             text.push('\n');
         }
-        ide_vfs::write_atomic(&self.index_path(), text.as_bytes())
+        ide_vfs::write_atomic(&self.index_path(), text.as_bytes())?;
+        Ok(())
     }
 
     fn rewrite(&self, keep: impl FnOnce(Vec<HistoryEntry>) -> Vec<HistoryEntry>) -> IdeResult<()> {
