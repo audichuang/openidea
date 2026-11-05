@@ -3,7 +3,8 @@
  * (`expr.if` …), Emmet (Tab expansion, Update Tag with Emmet) and file
  * templates ("New ▸ …").
  */
-import { lazyComponent } from "@/ui";
+import { lazyComponent, type MenuItem } from "@/ui";
+import { packageKindOf } from "@/platform/packageKind";
 import { registerAction, registerActions, type Action } from "@/platform/actions";
 import { activeEditor, registerEditorContribution } from "@/editor/api";
 import {
@@ -20,6 +21,7 @@ import { NewFileDialogHost, openNewFileDialog } from "./files/NewFileDialog";
 import { defaultDirectory } from "./files/create";
 import { fileTemplates, useFileTemplates, watchTemplateProject } from "./files/store";
 import type { FileTemplate } from "./files/model";
+import { newMenuTemplates } from "./files/newMenu";
 import { syncTemplatesFromStorage } from "./sync";
 import { tagAtCaret, updateTag } from "./emmet/editor";
 import { loadEmmet } from "./emmet/model";
@@ -109,31 +111,48 @@ const templateProjectTypes: Partial<Record<string, readonly ProjectType[]>> = {
   kotlin: ["maven", "gradle"],
 };
 
-/** New popup / New › entries: the enabled templates ("File" is the project view's own entry), then From Template…. */
-function registerNewMenuGroups(): () => void {
+/**
+ * New popup / New › entries: the enabled templates ("File" is the project view's own entry)
+ * arranged for the directory's kind, then From Template….
+ */
+export function registerNewMenuGroups(): () => void {
   const arg = (ctx: MenuGroupContext) => (ctx.paths[0] ? { directory: ctx.paths[0] } : undefined);
+  const arranged = (ctx: MenuGroupContext) =>
+    newMenuTemplates(
+      fileTemplates().filter((t) => {
+        if (t.enabled === false || t.id === "file") return false;
+        if (t.id === "tomcat-context") return ctx.paths[0] !== undefined && hasRunConfiguration("tomcat", ctx.paths[0]);
+        const types = templateProjectTypes[t.id];
+        return !types || !ctx.projectType || types.includes(ctx.projectType);
+      }),
+      packageKindOf(ctx.paths[0]),
+    );
+  const item =
+    (ctx: MenuGroupContext) =>
+    (t: FileTemplate): MenuItem => ({
+      kind: "action",
+      action: `templates.new.${t.id}`,
+      arg: arg(ctx),
+      label: t.name,
+      icon: t.icon,
+    });
   const disposers = [
+    registerMenuGroup({
+      id: "templates.newPrimary",
+      menus: ["newPrimary"],
+      order: 10,
+      items: (_menu, ctx) => arranged(ctx).primary.map(item(ctx)),
+    }),
     registerMenuGroup({
       id: "templates.new",
       menus: ["new"],
       order: 10,
       items: (_menu, ctx) => {
-        const directory = ctx.paths[0];
-        const tomcat = directory !== undefined && hasRunConfiguration("tomcat", directory);
-        return fileTemplates()
-          .filter((t) => {
-            if (t.enabled === false || t.id === "file") return false;
-            if (t.id === "tomcat-context") return tomcat;
-            const types = templateProjectTypes[t.id];
-            return !types || !ctx.projectType || types.includes(ctx.projectType);
-          })
-          .map((t) => ({
-            kind: "action",
-            action: `templates.new.${t.id}`,
-            arg: arg(ctx),
-            label: t.name,
-            icon: t.icon,
-          }));
+        const { common, other } = arranged(ctx);
+        const items = common.map(item(ctx));
+        if (other.length)
+          items.push({ id: "templates.new.other", label: "Other File Types", submenu: other.map(item(ctx)) });
+        return items;
       },
     }),
     registerMenuGroup({
