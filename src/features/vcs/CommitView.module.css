@@ -226,11 +226,11 @@
 .grow {
   flex: 1;
 }
+/* Wraps under Amend as one group when the bar is too narrow; its counts wrap between each other, never mid-count. */
 .summary {
   display: flex;
-  gap: 6px;
-  min-width: 0;
-  overflow: hidden;
+  flex-wrap: wrap;
+  gap: 0 6px;
   font-size: var(--fs-small);
 }
 .summaryAdded {
