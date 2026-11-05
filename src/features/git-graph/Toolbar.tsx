@@ -4,6 +4,7 @@ import type { Branch } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { Icon, IconButton, SearchField, showContextMenu, Spinner, T, type MenuItem } from "@/ui";
+import { gitGraphBridge } from "@/workbench/gitGraphBridge";
 import styles from "./GitGraph.module.css";
 
 interface ToolbarProps {
@@ -62,6 +63,11 @@ export function Toolbar(p: ToolbarProps) {
     ];
     showContextMenu({ x: r.left, y: r.bottom + 2 }, items);
   };
+  const repoColor = (root: string) => gitGraphBridge()?.repoColor(root, p.roots) ?? null;
+  const swatch = (root: string) => {
+    const color = repoColor(root);
+    return color ? <span className={styles.repoSwatch} style={{ background: color }} aria-hidden="true" /> : null;
+  };
   const repoMenu = (e: ReactMouseEvent<HTMLElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
     showContextMenu(
@@ -83,7 +89,7 @@ export function Toolbar(p: ToolbarProps) {
     <div className={styles.toolbar} role="toolbar" aria-label={tx("Git Graph")}>
       {p.roots.length > 1 && p.repo ? (
         <button type="button" className={styles.dropdown} onClick={repoMenu} aria-label={tx("Repository")}>
-          <Icon name="folder" size={14} />
+          {swatch(p.repo) ?? <Icon name="folder" size={14} />}
           <span>{repoName(p.repo)}</span>
           <Icon name="chevron-down" size={12} />
         </button>
