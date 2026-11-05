@@ -32,6 +32,8 @@ struct MockState {
     /// Computes a response from the request and the open documents (before `responses`).
     responder: Mutex<Option<Responder>>,
     peer: Mutex<Option<Peer>>,
+    /// How long `shutdown` takes to answer.
+    shutdown_delay: Mutex<Duration>,
 }
 
 type Responder = Arc<dyn Fn(&MockState, &str, &Value) -> Option<Value> + Send + Sync>;
@@ -122,7 +124,11 @@ impl Handler for MockHandler {
         s.requests.lock().push((method.to_owned(), params.clone()));
         match method {
             "initialize" => Ok(json!({ "capabilities": s.caps.lock().clone(), "serverInfo": { "name": "mock" } })),
-            "shutdown" => Ok(Value::Null),
+            "shutdown" => {
+                let delay = *s.shutdown_delay.lock();
+                std::thread::sleep(delay);
+                Ok(Value::Null)
+            }
             _ => {
                 if let Some(error) = s.errors.lock().get(method).cloned() {
                     return Err(error);
@@ -1057,6 +1063,38 @@ async fn unused_servers_stop_and_start_again_with_the_next_file() {
     s.respond("textDocument/hover", json!({ "contents": { "kind": "markdown", "value": "back" } }));
     let hover = h.mgr.hover(doc, Pos::new(0, 1), Default::default()).await.unwrap().unwrap();
     assert_eq!(hover.contents.value, "back");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_opened_while_an_unused_server_is_stopping_gets_the_restarted_server() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.mgr.set_idle_hook(Box::new(|name: &str| {
+        if name == "mock" {
+            IdlePolicy { timeout: Duration::from_millis(50), keep_alive: false }
+        } else {
+            IdlePolicy::default()
+        }
+    }));
+    let s = h.launcher.state("mock");
+    let (doc, _) = h.open("a.mk", "one");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    h.mgr.did_close(doc);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    *s.shutdown_delay.lock() = Duration::from_millis(600);
+    let stopping = {
+        let mgr = h.mgr.clone();
+        tokio::spawn(async move { mgr.stop_idle_servers().await })
+    };
+    eventually(|| !s.requested("shutdown").is_empty()).await;
+
+    // The server is shutting down: the request waits for the restart instead of failing.
+    s.respond("textDocument/hover", json!({ "contents": { "kind": "markdown", "value": "again" } }));
+    let (doc, _) = h.open("b.mk", "two");
+    let hover = h.mgr.hover(doc, Pos::new(0, 1), Default::default()).await.unwrap().unwrap();
+    assert_eq!(hover.contents.value, "again");
+    stopping.await.unwrap();
+    assert_eq!(s.launches.load(Ordering::SeqCst), 2);
+    h.wait_status("mock", ServerStatus::Ready).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

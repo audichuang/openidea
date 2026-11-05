@@ -52,6 +52,8 @@ pub enum Phase {
 struct State {
     generation: u64,
     conn: Conn,
+    /// A start was asked for while the instance was stopping: the stop starts it again.
+    restart: bool,
 }
 
 /// A file opened on the server by the client itself (not by the user) for the
@@ -124,7 +126,7 @@ impl Server {
             effective: Mutex::new(None),
             resolved_binary: RwLock::new(None),
             languages: Mutex::new(vec![language]),
-            state: Mutex::new(State { generation: 0, conn: Conn::Idle }),
+            state: Mutex::new(State { generation: 0, conn: Conn::Idle, restart: false }),
             initializing: Mutex::new(None),
             start_cancel: Mutex::new(CancellationToken::new()),
             phase: watch::channel(Phase::Down).0,
@@ -175,12 +177,18 @@ impl Server {
 
     // ---- instance state machine ----
 
-    /// Idle → Starting; returns the new generation.
+    /// Idle → Starting; returns the new generation. Asked for during a stop, it is
+    /// remembered ([`Self::take_restart`]) and waiters hold on for that start.
     pub fn begin_start(&self) -> Option<u64> {
         let mut st = self.state.lock();
+        if matches!(st.conn, Conn::Stopping) {
+            st.restart = true;
+            return None;
+        }
         if !matches!(st.conn, Conn::Idle) {
             return None;
         }
+        st.restart = false;
         st.generation += 1;
         st.conn = Conn::Starting;
         *self.start_cancel.lock() = CancellationToken::new();
@@ -267,7 +275,8 @@ impl Server {
     /// Waits while the server is starting; returns the instance once ready.
     pub async fn wait_ready(&self, timeout: Duration) -> Option<Running> {
         let mut rx = self.phase.subscribe();
-        let _ = tokio::time::timeout(timeout, rx.wait_for(|p| *p != Phase::Starting)).await;
+        // `Down` while a start waits for the stop to finish is not an answer yet.
+        let _ = tokio::time::timeout(timeout, rx.wait_for(|p| *p != Phase::Starting && !self.restart_pending())).await;
         self.running()
     }
 
@@ -297,6 +306,26 @@ impl Server {
     /// Cancelled when the current start is abandoned.
     pub fn start_token(&self) -> CancellationToken {
         self.start_cancel.lock().clone()
+    }
+
+    /// Whether a start asked for during the stop is still to be made.
+    fn restart_pending(&self) -> bool {
+        self.state.lock().restart
+    }
+
+    /// Whether a start was asked for during the stop. [`Self::begin_start`] clears it;
+    /// when no start follows, [`Self::drop_restart`].
+    pub fn restart_requested(&self) -> bool {
+        self.restart_pending()
+    }
+
+    /// No start follows the stop after all: wakes the waiters that held on for one.
+    pub fn drop_restart(&self) {
+        let mut st = self.state.lock();
+        if std::mem::take(&mut st.restart) {
+            drop(st);
+            self.announce_down();
+        }
     }
 
     pub fn end_stop(&self, generation: u64) {

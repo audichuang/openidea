@@ -467,14 +467,17 @@ impl LspManager {
         }
     }
 
-    fn ensure_started(&self, server: &Arc<Server>) {
+    /// Starts `server` unless it is not stopped. Asked for during a stop, the start is
+    /// remembered and made when the stop ends. False when no start was made.
+    fn ensure_started(&self, server: &Arc<Server>) -> bool {
         if self.shutting_down.load(Ordering::Acquire) || !self.execution_allowed.load(Ordering::Acquire) {
-            return;
+            return false;
         }
-        let Some(generation) = server.begin_start() else { return };
-        let Some(me) = self.me.upgrade() else { return };
+        let Some(generation) = server.begin_start() else { return false };
+        let Some(me) = self.me.upgrade() else { return false };
         let server = server.clone();
         self.runtime.spawn(async move { me.run_instance(server, generation).await });
+        true
     }
 
     async fn run_instance(self: Arc<Self>, server: Arc<Server>, generation: u64) {
@@ -2521,12 +2524,7 @@ impl LspManager {
                 continue;
             }
             tracing::info!("{}: unused for {} s, stopping until it is needed", server.name, policy.timeout.as_secs());
-            self.stop_instance(&server, false).await;
-            server.set_status(
-                &self.sink,
-                ide_core::event::ServerStatus::Stopped,
-                Some("Stopped while unused; starts again when needed".into()),
-            );
+            self.stop_instance_with(&server, false, Some("Stopped while unused; starts again when needed")).await;
             // Opened or asked for while it was stopping: start it again.
             if self.open_documents(&server) > 0 || server.idle_since() > now {
                 self.ensure_started(&server);
@@ -2796,6 +2794,12 @@ impl LspManager {
 
     /// Gracefully stops the current instance (`shutdown` + `exit`, then kill).
     async fn stop_instance(&self, server: &Arc<Server>, final_stop: bool) {
+        self.stop_instance_with(server, final_stop, None).await;
+    }
+
+    /// [`Self::stop_instance`] leaving `message` with the `Stopped` status.
+    async fn stop_instance_with(&self, server: &Arc<Server>, final_stop: bool, message: Option<&str>) {
+        let message = message.map(str::to_owned);
         let Some(run) = server.begin_stop() else {
             if final_stop {
                 server.set_status(&self.sink, ide_core::event::ServerStatus::Stopped, None);
@@ -2807,9 +2811,7 @@ impl LspManager {
         // ours to shut down: only the connection closes.
         if peer.pid().is_none() && server.effective_config().connect.is_some() {
             peer.kill();
-            server.end_stop(run.generation);
-            self.clear_server_state(server);
-            server.set_status(&self.sink, ide_core::event::ServerStatus::Stopped, None);
+            self.finish_stop(server, run.generation, final_stop, message);
             return;
         }
         let graceful = async {
@@ -2823,9 +2825,20 @@ impl LspManager {
             let _ = tokio::time::timeout(Duration::from_secs(2), peer.closed()).await;
         }
         peer.kill();
-        server.end_stop(run.generation);
+        self.finish_stop(server, run.generation, final_stop, message);
+    }
+
+    /// Publishes `Stopped`, then ends the stop and makes the start asked for meanwhile
+    /// (a request or a file opened while the server was shutting down), unless the stop
+    /// is final. The status comes
+    /// first so it cannot overwrite the new start's.
+    fn finish_stop(&self, server: &Arc<Server>, generation: u64, final_stop: bool, message: Option<String>) {
         self.clear_server_state(server);
-        server.set_status(&self.sink, ide_core::event::ServerStatus::Stopped, None);
+        server.set_status(&self.sink, ide_core::event::ServerStatus::Stopped, message);
+        server.end_stop(generation);
+        if server.restart_requested() && (final_stop || !self.ensure_started(server)) {
+            server.drop_restart();
+        }
     }
 
     pub async fn shutdown_all(&self) {
