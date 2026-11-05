@@ -111,11 +111,24 @@ fn split_script_args(args: &[String]) -> ScriptArgs {
 /// committed for good), a 2 GB heap limit (the JVM's own is a quarter of physical
 /// memory), no JVM logging on stdout (the LSP channel), and no scan for installed JDKs at
 /// start (they are passed as `java.configuration.runtimes`).
+///
+/// The 5–15 % free-heap band and string deduplication were measured together, as one
+/// bundle, against the previous 10–30 % band on a 5-module Maven monorepo (warm workspace,
+/// two runs each, phys_footprint): jdtls after 3 idle minutes 478/481 MB against 579/710,
+/// after completion, Find Usages and go-to-definition 651/569 MB against 750/756, with
+/// completion and Find Usages times unchanged (within 0.36 s). Measured and left out:
+/// `-XX:+UseCompactObjectHeaders` (no gain), `-XX:TieredStopAtLevel=1` (Find Usages about
+/// 1 s slower), `-XX:-G1PeriodicGCInvokesConcurrent` (more memory after the operations).
+/// All of these exist on JDK 21 ([`crate::java::JDTLS_MIN_JAVA`]), so none depends on the
+/// version jdtls runs on.
 pub const DEFAULT_VM_ARGS: &[&str] = &[
+    // Every entry must be keyed by `option_key`, so the user's own option for the same
+    // thing wins.
     "-XX:+UseG1GC",
     "-XX:G1PeriodicGCInterval=60000",
-    "-XX:MinHeapFreeRatio=10",
-    "-XX:MaxHeapFreeRatio=30",
+    "-XX:MinHeapFreeRatio=5",
+    "-XX:MaxHeapFreeRatio=15",
+    "-XX:+UseStringDeduplication",
     "-Dsun.zip.disableMemoryMapping=true",
     "-Xmx2G",
     "-Xms100m",
@@ -157,8 +170,9 @@ fn is_collector(name: &str) -> bool {
     name.starts_with("Use") && name.ends_with("GC") && name.len() > "UseGC".len()
 }
 
-/// Our tuning of the default collector, meant for it alone.
-const COLLECTOR_TUNING: &[&str] = &["G1PeriodicGCInterval", "HeapFreeRatio"];
+/// Our tuning of the default collector, meant for it alone (string deduplication was only
+/// measured with G1).
+const COLLECTOR_TUNING: &[&str] = &["G1PeriodicGCInterval", "HeapFreeRatio", "UseStringDeduplication"];
 
 /// [`DEFAULT_VM_ARGS`] less what `user` (the JVM options already on the command line)
 /// sets itself. Choosing a collector drops our collector and its tuning altogether.
@@ -183,18 +197,30 @@ pub fn add_default_vm_args(args: &mut Vec<String>) {
     args.splice(0..0, defaults.into_iter().map(|a| format!("--jvm-arg={a}")));
 }
 
-/// The JVM command line `bin/jdtls` builds: its system properties and module
+/// Options `bin/jdtls` puts ahead of the `--jvm-arg`s on its own: a 1 GB initial heap.
+/// The JVM honours the last of two options setting the same thing, so this only lost to
+/// the app's `-Xms100m` because the script happens to put it first.
+const LAUNCHER_VM_ARGS: &[&str] = &["-Xms1G"];
+
+/// `launcher` (options the launcher adds on its own) less those an option in `jvm` (the
+/// app's and the user's) sets too: the JVM line then has one of each, whatever the order.
+fn without_overridden(launcher: Vec<String>, jvm: &[String]) -> Vec<String> {
+    let keys: Vec<String> = jvm.iter().filter_map(|a| option_key(a)).collect();
+    launcher.into_iter().filter(|a| option_key(a).is_none_or(|k| !keys.contains(&k))).collect()
+}
+
+/// The JVM command line `bin/jdtls` builds: its system properties, initial heap and module
 /// options, the user's `--jvm-arg`s, then the Equinox launcher with `-nosplash` and
-/// `-data`. Without `-nosplash` the launcher's native library loads AppKit on macOS,
-/// which registers the server as an app that never answers events and shows as
-/// "Not Responding" in Activity Monitor.
+/// `-data`. A launcher option a `--jvm-arg` overrides is left out. Without `-nosplash` the
+/// launcher's native library loads AppKit on macOS, which registers the server as an app
+/// that never answers events and shows as "Not Responding" in Activity Monitor.
 pub fn java_args(install: &JdtlsInstall, java_major: u32, script_args: &[String]) -> Vec<String> {
     let parsed = split_script_args(script_args);
-    let mut args: Vec<String> = Vec::new();
+    let mut launcher: Vec<String> = Vec::new();
     if java_major >= 24 {
-        args.extend(["-Djdk.xml.maxGeneralEntitySizeLimit=0".into(), "-Djdk.xml.totalEntitySizeLimit=0".into()]);
+        launcher.extend(["-Djdk.xml.maxGeneralEntitySizeLimit=0".into(), "-Djdk.xml.totalEntitySizeLimit=0".into()]);
     }
-    args.extend(
+    launcher.extend(
         [
             "-Declipse.application=org.eclipse.jdt.ls.core.id1",
             "-Dosgi.bundles.defaultStartLevel=4",
@@ -203,11 +229,14 @@ pub fn java_args(install: &JdtlsInstall, java_major: u32, script_args: &[String]
         ]
         .map(String::from),
     );
-    args.push(format!("-Dosgi.sharedConfiguration.area={}", install.config.to_string_lossy()));
+    launcher.push(format!("-Dosgi.sharedConfiguration.area={}", install.config.to_string_lossy()));
+    launcher.extend(
+        ["-Dosgi.sharedConfiguration.area.readOnly=true", "-Dosgi.configuration.cascaded=true"].map(String::from),
+    );
+    launcher.extend(LAUNCHER_VM_ARGS.iter().map(|a| a.to_string()));
+    let mut args = without_overridden(launcher, &parsed.jvm);
     args.extend(
         [
-            "-Dosgi.sharedConfiguration.area.readOnly=true",
-            "-Dosgi.configuration.cascaded=true",
             "--add-modules=ALL-SYSTEM",
             "--add-opens",
             "java.base/java.util=ALL-UNNAMED",
@@ -238,8 +267,7 @@ pub(crate) fn script_for(cfg: &LanguageServerConfig) -> Option<PathBuf> {
     if cfg.name != "jdtls" {
         return None;
     }
-    let search = cfg.env.get("PATH").map(std::ffi::OsString::from).or_else(|| std::env::var_os("PATH"));
-    let script = search.and_then(|s| ide_run::which::find_executable(&cfg.command, &s))?;
+    let script = resolved_command(cfg)?;
     let resolved = dunce::canonicalize(script).ok()?;
     let name = resolved.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase());
     match name.as_deref() {
@@ -276,6 +304,47 @@ fn shim_target(shim_exe: &Path) -> Option<PathBuf> {
     }
     let script = entry("args")?;
     SCRIPTS.contains(&name(script).as_str()).then(|| PathBuf::from(script))
+}
+
+/// The executable `cfg.command` runs, found on the launch's `PATH`.
+fn resolved_command(cfg: &LanguageServerConfig) -> Option<PathBuf> {
+    let search = cfg.env.get("PATH").map(std::ffi::OsString::from).or_else(|| std::env::var_os("PATH"));
+    search.and_then(|s| ide_run::which::find_executable(&cfg.command, &s))
+}
+
+/// A launcher wrapper that passes its own Lombok agent: the script `cfg.command` runs and
+/// the agent as written there (see [`crate::lombok::agent_in_script`]). The release's
+/// launchers attach none, and binaries (a scoop shim) aren't read. None as well for a
+/// script in a release layout, even an edited one: [`launch_directly`] bypasses it, and its
+/// agent with it.
+pub fn wrapper_lombok_agent(cfg: &LanguageServerConfig) -> Option<(PathBuf, crate::lombok::ScriptAgent)> {
+    // Wrappers are a few lines; this skips reading a binary someone named `jdtls`.
+    const MAX_SCRIPT: u64 = 256 * 1024;
+    if cfg.name != "jdtls" {
+        return None;
+    }
+    let script = resolved_command(cfg)?;
+    let script = dunce::canonicalize(&script).unwrap_or(script);
+    if std::fs::metadata(&script).ok().is_none_or(|m| !m.is_file() || m.len() > MAX_SCRIPT) {
+        return None;
+    }
+    if is_release_launcher(&script) {
+        return None;
+    }
+    let bytes = std::fs::read(&script).ok()?;
+    if bytes.contains(&0) {
+        return None;
+    }
+    let agent = crate::lombok::agent_in_script(&String::from_utf8_lossy(&bytes))?;
+    Some((script, agent))
+}
+
+/// Whether `script` is one of the release's launchers of an install [`launch_directly`]
+/// runs `java` for, ignoring the script.
+fn is_release_launcher(script: &Path) -> bool {
+    let name = script.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase());
+    name.as_deref().is_some_and(|n| SCRIPTS.contains(&n))
+        && jdtls_home(script).and_then(|h| find_install(&h, std::env::consts::OS, std::env::consts::ARCH)).is_some()
 }
 
 /// Rewrites a jdtls launch (`command` = the release's script, `JAVA_HOME` chosen by
@@ -353,6 +422,7 @@ mod tests {
                 &format!(r"-Dosgi.sharedConfiguration.area={tools}\config_win"),
                 "-Dosgi.sharedConfiguration.area.readOnly=true",
                 "-Dosgi.configuration.cascaded=true",
+                "-Xms1G",
                 "--add-modules=ALL-SYSTEM",
                 "--add-opens",
                 "java.base/java.util=ALL-UNNAMED",
@@ -378,9 +448,14 @@ mod tests {
         DEFAULT_VM_ARGS.iter().filter(|a| !drop.contains(a)).map(|a| a.to_string()).collect()
     }
 
-    const G1: &[&str] =
-        &["-XX:+UseG1GC", "-XX:G1PeriodicGCInterval=60000", "-XX:MinHeapFreeRatio=10", "-XX:MaxHeapFreeRatio=30"];
-    const HEAP_FREE: &[&str] = &["-XX:MinHeapFreeRatio=10", "-XX:MaxHeapFreeRatio=30"];
+    const G1: &[&str] = &[
+        "-XX:+UseG1GC",
+        "-XX:G1PeriodicGCInterval=60000",
+        "-XX:MinHeapFreeRatio=5",
+        "-XX:MaxHeapFreeRatio=15",
+        "-XX:+UseStringDeduplication",
+    ];
+    const HEAP_FREE: &[&str] = &["-XX:MinHeapFreeRatio=5", "-XX:MaxHeapFreeRatio=15"];
 
     #[test]
     fn user_options_override_the_defaults() {
@@ -402,6 +477,7 @@ mod tests {
             (&["-XX:G1PeriodicGCInterval=0"], &["-XX:G1PeriodicGCInterval=60000"]),
             (&["-XX:MinHeapFreeRatio=40"], HEAP_FREE),
             (&["-XX:MaxHeapFreeRatio=70"], HEAP_FREE),
+            (&["-XX:-UseStringDeduplication"], &["-XX:+UseStringDeduplication"]),
             (&["-Xlog:gc*:file=gc.log"], &["-Xlog:disable"]),
             (&["-Dsun.zip.disableMemoryMapping=false"], &["-Dsun.zip.disableMemoryMapping=true"]),
             (&["-Daether.dependencyCollector.impl=df"], &["-Daether.dependencyCollector.impl=bf"]),
@@ -410,7 +486,7 @@ mod tests {
             assert_eq!(keep(user), without(dropped), "{user:?}");
         }
         // Not collectors: they keep ours.
-        assert_eq!(keep(&["-XX:+UseStringDeduplication", "-XX:+UseCompressedOops"]), without(&[]));
+        assert_eq!(keep(&["-XX:+UseCompressedOops", "-XX:+UseCompactObjectHeaders"]), without(&[]));
     }
 
     #[test]
@@ -439,7 +515,16 @@ mod tests {
         let args = java_args(&install, 25, &script);
         let jar = args.iter().position(|a| a == "-jar").unwrap();
         let jvm = &args[..jar];
-        for flag in ["-XX:+UseG1GC", "-XX:G1PeriodicGCInterval=60000", "-Xms100m", "-Xlog:disable", "-Xmx3G"] {
+        for flag in [
+            "-XX:+UseG1GC",
+            "-XX:G1PeriodicGCInterval=60000",
+            "-XX:MinHeapFreeRatio=5",
+            "-XX:MaxHeapFreeRatio=15",
+            "-XX:+UseStringDeduplication",
+            "-Xms100m",
+            "-Xlog:disable",
+            "-Xmx3G",
+        ] {
             assert!(jvm.contains(&flag.to_owned()), "{flag}: {jvm:?}");
         }
         let heap: Vec<&String> = jvm.iter().filter(|a| option_key(a).as_deref() == Some("Xmx")).collect();
@@ -447,6 +532,40 @@ mod tests {
         assert!(!jvm.iter().any(|a| a == "-Xms1G"), "{jvm:?}");
         assert_eq!(args[jar + 1], format!(r"{tools}\plugins\org.eclipse.equinox.launcher_1.7.0.jar"));
         assert_eq!(args[jar + 2..], strings(&["-nosplash", "-data", r"C:\Users\张 三\ws"]));
+    }
+
+    /// The launcher's own `-Xms1G` used to stand next to the app's `-Xms100m`, and only
+    /// their order decided which applied: an option the `--jvm-arg`s set replaces it.
+    #[test]
+    fn jvm_args_replace_the_launchers_own_options() {
+        let install = JdtlsInstall { launcher: PathBuf::from("/j/launcher.jar"), config: PathBuf::from("/j/c") };
+        let jvm = |args: &[String]| -> Vec<String> {
+            let jar = args.iter().position(|a| a == "-jar").unwrap();
+            args[..jar].to_vec()
+        };
+        let initial = |args: &[String]| -> Vec<String> {
+            jvm(args).into_iter().filter(|a| option_key(a).as_deref() == Some("Xms")).collect()
+        };
+
+        let bare = java_args(&install, 21, &strings(&["-data", "/d"]));
+        assert_eq!(initial(&bare), ["-Xms1G"], "as bin/jdtls starts it");
+
+        let mut script = strings(&["-data", "/d"]);
+        add_default_vm_args(&mut script);
+        assert_eq!(initial(&java_args(&install, 21, &script)), ["-Xms100m"], "the app's default");
+
+        for own in ["-Xms512m", "-XX:InitialHeapSize=256m", "-XX:InitialRAMPercentage=5"] {
+            let mut script = strings(&["-data", "/d", &format!("--jvm-arg={own}")]);
+            add_default_vm_args(&mut script);
+            assert_eq!(initial(&java_args(&install, 21, &script)), [own], "the user's");
+        }
+
+        // Launcher properties follow the same rule; options without a key are kept.
+        let args = java_args(&install, 21, &strings(&["--jvm-arg=-Dosgi.checkConfiguration=false", "-data", "/d"]));
+        let jvm = jvm(&args);
+        let check: Vec<&String> = jvm.iter().filter(|a| a.starts_with("-Dosgi.checkConfiguration")).collect();
+        assert_eq!(check, ["-Dosgi.checkConfiguration=false"]);
+        assert_eq!(jvm.iter().filter(|a| *a == "--add-opens").count(), 2);
     }
 
     #[test]
@@ -600,6 +719,57 @@ mod tests {
         failing.launch_error = Some("needs JDK 25".into());
         launch_directly(&mut failing);
         assert_eq!(failing.command, "jdtls");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn finds_the_lombok_agent_of_a_wrapper_on_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let cfg = |command: &str| -> LanguageServerConfig {
+            let mut cfg: LanguageServerConfig =
+                toml::from_str(&format!("name = \"jdtls\"\ncommand = {command:?}")).unwrap();
+            cfg.env.insert("PATH".into(), bin.to_string_lossy().into_owned());
+            cfg
+        };
+        let write = |name: &str, text: &[u8]| {
+            std::fs::write(bin.join(name), text).unwrap();
+            std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        write("jdtls", b"#!/bin/sh\nexec /opt/jdtls/bin/jdtls --jvm-arg=-javaagent:$HOME/lombok-1.18.46.jar \"$@\"\n");
+        let (script, agent) = wrapper_lombok_agent(&cfg("jdtls")).unwrap();
+        assert_eq!(script, dunce::canonicalize(bin.join("jdtls")).unwrap());
+        assert_eq!(agent.agent, "$HOME/lombok-1.18.46.jar");
+        assert!(!agent.conditional);
+
+        // An edited launcher of the standard install is bypassed by the direct launch, and
+        // its agent with it: the app adds its own.
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(home.join("bin")).unwrap();
+        std::fs::create_dir_all(home.join("plugins")).unwrap();
+        std::fs::write(home.join("plugins/org.eclipse.equinox.launcher.jar"), "").unwrap();
+        let config = home.join(&config_dir_names(std::env::consts::OS, std::env::consts::ARCH)[0]);
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(config.join("config.ini"), "").unwrap();
+        std::fs::write(home.join("bin/jdtls"), "#!/bin/sh\nexec java -javaagent:/m2/lombok.jar \"$@\"\n").unwrap();
+        std::fs::set_permissions(home.join("bin/jdtls"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::remove_file(bin.join("jdtls")).unwrap();
+        std::os::unix::fs::symlink(home.join("bin/jdtls"), bin.join("jdtls")).unwrap();
+        assert_eq!(wrapper_lombok_agent(&cfg("jdtls")), None);
+        std::fs::remove_file(bin.join("jdtls")).unwrap();
+        write("jdtls", b"#!/bin/sh\nexec /opt/jdtls/bin/jdtls --jvm-arg=-javaagent:$HOME/lombok-1.18.46.jar \"$@\"\n");
+
+        // The release's Python launcher, a binary, nothing on PATH, another server.
+        write("jdtls", b"#!/usr/bin/env python3\nimport jdtls\n");
+        assert_eq!(wrapper_lombok_agent(&cfg("jdtls")), None);
+        write("jdtls", b"\x7fELF\0\0-javaagent:/lombok.jar");
+        assert_eq!(wrapper_lombok_agent(&cfg("jdtls")), None);
+        assert_eq!(wrapper_lombok_agent(&cfg("missing-jdtls")), None);
+        let mut other = cfg("jdtls");
+        other.name = "kotlin-lsp".into();
+        assert_eq!(wrapper_lombok_agent(&other), None);
     }
 
     #[test]
