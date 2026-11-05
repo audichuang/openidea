@@ -2,6 +2,7 @@ import { useMemo, useState, type KeyboardEvent } from "react";
 import { HighlightedText, Icon, List, Popup, SearchField, T, firstSelectable, fuzzyMatch, listNavigate } from "@/ui";
 import { tx } from "@/platform/i18n";
 import { isImeKey } from "@/platform/ime";
+import { RepoSwatch } from "./RepoSwatch";
 import { repoName } from "./store";
 import styles from "./GitLog.module.css";
 
@@ -94,6 +95,7 @@ export function RepositoryFilterPopup({
           }
           renderItem={(r) => (
             <span className={styles.branchFilterRow}>
+              <RepoSwatch root={r.root} />
               <HighlightedText className={styles.branchFilterLabel} text={r.label} indices={r.matches} tone="accent" />
               {selected.includes(r.root) && <Icon name="check" size={14} className={styles.branchFilterCheck} />}
             </span>
