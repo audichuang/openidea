@@ -319,8 +319,9 @@ export function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuIte
     ...(nodes.some((n) => n.changelist)
       ? [{ kind: "action" as const, action: "vcs.changelist.move", arg: paths, label: "Move to Another Changelist…" }]
       : []),
-    { kind: "action", action: "vcs.shelve", arg: paths },
-    { kind: "action", action: "vcs.createPatch", arg: paths },
+    // IDEA: nothing to shelve or diff while only unversioned files are selected.
+    { kind: "action", action: "vcs.shelve", arg: paths, disabled: deletable.length > 0 },
+    { kind: "action", action: "vcs.createPatch", arg: paths, disabled: deletable.length > 0 },
     { kind: "separator" },
     {
       label: "Show History",
