@@ -109,6 +109,11 @@ export function arrowControls(
   return () => {
     const box = document.createElement("div");
     box.className = "cm-diffArrows";
+    // The wrapper carries `data-chunk`; a press between buttons must not reach MergeView's a-to-b revert.
+    box.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
     for (const arrow of arrows) box.appendChild(arrowButton(arrow, (i) => runArrow(getView(), arrow, i, stage)));
     return box;
   };
