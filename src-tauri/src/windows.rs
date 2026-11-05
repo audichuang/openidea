@@ -1152,7 +1152,7 @@ fn run_open(app: &AppHandle, steps: Vec<OpenStep>) {
                 tauri::async_runtime::spawn(async move {
                     let title = remote.path.trim_end_matches('/').rsplit('/').next().map(str::to_owned);
                     let launch = Launch { remote: Some(remote), ..Default::default() };
-                    if let Err(e) = create_window_for(&app, title, launch, false) {
+                    if let Err(e) = create_window_for(&app, title, launch, Tabbing::Never) {
                         tracing::warn!("cannot open window: {}", e.message);
                     }
                 });
