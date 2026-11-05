@@ -1,6 +1,7 @@
+import { EditorState } from "@codemirror/state";
 import { describe, expect, it } from "vitest";
 import type { NodeAt, SyntaxNode } from "@/bindings";
-import { fileStem, isTopLevelTypeName, renamesFileInstead } from "./renameFallback";
+import { fileStem, isTopLevelTypeName, renamesFileInstead, wordQueryRange } from "./renameFallback";
 
 const n = (kind: string, field: string | null = null): SyntaxNode => ({
   kind,
@@ -71,5 +72,19 @@ describe("renamesFileInstead", () => {
   it("without a syntax tree, trusts the name only where types are named after their file", () => {
     expect(renamesFileInstead({ ...q, at: null })).toBe(true);
     expect(renamesFileInstead({ ...q, path: "/p/foo.py", language: "python", name: "foo", at: null })).toBe(false);
+  });
+});
+
+describe("wordQueryRange", () => {
+  const doc = EditorState.create({ doc: "class Foo {}\n" }).doc;
+  const word = (head: number) => EditorState.create({ doc }).wordAt(head)!;
+
+  it("is non-empty with the caret at the end of the name (class Foo| {})", () => {
+    const r = wordQueryRange(doc, word(9));
+    expect(r).toEqual({ start: { line: 0, col: 6 }, end: { line: 0, col: 9 } });
+  });
+
+  it("covers the whole name when it is selected", () => {
+    expect(wordQueryRange(doc, word(6))).toEqual({ start: { line: 0, col: 6 }, end: { line: 0, col: 9 } });
   });
 });
