@@ -535,7 +535,7 @@ function scanTypeScript(): Scan {
 /** Read strings without letting a Rust character literal open a string match. */
 function backendLiterals(source: string): string[] {
   const out: string[] = [];
-  for (const m of source.matchAll(/'(?:\\.|[^'\\\r\n])'|"((?:[^"\\]|\\.)*)"/g)) {
+  for (const m of source.matchAll(/'(?:\\.|[^'\\\r\n])'|"((?:[^"\\]|\\[\s\S])*)"/g)) {
     if (m[1] !== undefined) out.push(m[1]);
   }
   return out;
@@ -543,8 +543,10 @@ function backendLiterals(source: string): string[] {
 
 it("reads backend messages after quote character literals", () => {
   expect(
-    backendLiterals(`let quote = '"'; let message = "Select a .NET project"; let detail = "Expected 'x'";`),
-  ).toEqual(["Select a .NET project", "Expected 'x'"]);
+    backendLiterals(
+      `let quote = '"'; let message = "Select a .NET project"; let detail = "Expected 'x'"; let wrapped = "a \\\n b"; let next = "Next";`,
+    ),
+  ).toEqual(["Select a .NET project", "Expected 'x'", "a \\\n b", "Next"]);
 });
 
 /** String literals of the Rust crates and language definitions (backend messages). */
