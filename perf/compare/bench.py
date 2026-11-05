@@ -620,6 +620,32 @@ class Quiet:
         return None
 
 
+class OpenGate:
+    """Decides when an opened file has settled.
+
+    With a language server to wait for, the CPU must stay quiet for a whole
+    window that begins after the server first appeared, and the server must be
+    running at that tick. A server that disappears is forgotten until it returns.
+    """
+
+    def __init__(self, wants_lsp: bool):
+        self.wants_lsp = wants_lsp
+        self.lsp_s: float | None = None
+
+    def update(self, now: float, quiet_from: float | None, lsp_present: bool) -> float | None:
+        """Returns the ready time (seconds from the open), or None while still waiting."""
+        if self.wants_lsp:
+            if not lsp_present:
+                self.lsp_s = None
+                return None
+            if self.lsp_s is None:
+                self.lsp_s = now
+            if quiet_from is None or quiet_from < self.lsp_s:
+                return None
+            return quiet_from
+        return quiet_from
+
+
 def scan_markers(tail: LogTail, app: App, result: dict, now: float):
     for line in tail.lines():
         for name, rx in app.markers.items():
@@ -643,16 +669,16 @@ def open_and_settle(app: App, tree: Tree, args, on_tick) -> dict:
     )
     quiet = Quiet(args.quiet_secs, args.quiet_cores)
     want = app.language_server_process
-    lsp_s = None
+    gate = OpenGate(want is not None)
     while True:
         now = time.perf_counter() - o0
         cpu, _ = tree.sample()
         quiet_from = quiet.add(now, cpu)
         on_tick()
-        if want and lsp_s is None and any(want.search(c) for c in tree.categories()):
-            lsp_s = now
-        if (lsp_s is not None or not want) and quiet_from is not None:
-            out["open_ready_s"] = max(quiet_from, lsp_s or 0)
+        present = bool(want) and any(want.search(c) for c in tree.categories())
+        ready = gate.update(now, quiet_from, present)
+        if ready is not None:
+            out["open_ready_s"] = ready
             break
         if not tree.alive():
             raise SystemExit(f"{app.name} exited after opening {app.open_file}")
@@ -660,7 +686,7 @@ def open_and_settle(app: App, tree: Tree, args, on_tick) -> dict:
             out["open_timed_out"] = True
             break
         time.sleep(POLL_S)
-    out["lsp_s"] = lsp_s
+    out["lsp_s"] = gate.lsp_s
     out["open_cpu_s"] = cpu - cpu0
     # The opener only forwards the file (LaunchServices, or a second instance that
     # hands over and exits); one still running is a second app, not part of the tree.
@@ -861,6 +887,11 @@ def report(apps: list[App], runs: list[dict], meta: dict) -> str:
         lines.append(
             f"\n⚠ After open_file, no language server or no settled CPU within --open-timeout: {', '.join(open_timeouts)}"
         )
+    opener_failed = [
+        r["label"] for r in runs if r.get("opener_killed") or r.get("opener_exit_code") not in (None, 0)
+    ]
+    if opener_failed:
+        lines.append(f"\n⚠ The open_file command failed or hung, so the file may never have opened: {', '.join(opener_failed)}")
     missing = [r["label"] for r in runs if r.get(PRIMARY) is None]
     if missing:
         lines.append(f"\n⚠ {MEMORY_TITLES[PRIMARY]} unavailable for some processes (no total): {', '.join(missing)}")
@@ -919,6 +950,28 @@ def self_test():
     first = next((t, f) for t in (i * 0.5 for i in range(40)) if (f := q.add(t, min(t, 4.0))) is not None)
     assert first == (9.0, 4.0), first
     assert q.add(9.0, 6.0) is None  # busy again
+
+    # LSP first seen at 3 after a quiet 0..3: that early quiet must not count.
+    g = OpenGate(True)
+    assert g.update(3.0, 0.0, True) is None
+    assert g.update(8.0, 3.0, True) == 3.0  # quiet window began at the LSP's appearance
+    g = OpenGate(True)
+    assert g.update(1.0, None, False) is None
+    assert g.update(6.0, 1.0, False) is None  # quiet but no LSP
+    assert g.update(7.0, 2.0, True) is None  # first seen at 7, quiet began earlier
+    assert g.update(12.0, 7.0, True) == 7.0
+    g = OpenGate(True)
+    assert g.update(1.0, None, True) is None
+    assert g.update(2.0, 0.0, False) is None and g.lsp_s is None  # exited: forgotten
+    assert OpenGate(False).update(5.0, 0.0, False) == 0.0
+
+    base = {"label": "a", "app": "x", PRIMARY: 1, "markers_first_s": {}, "markers_last_s": {}}
+    fake = App.__new__(App)
+    fake.name, fake.key, fake.markers, fake.install_dir = "X", "x", {}, None
+    meta = {"project": "p", "os": "o", "cpu": "c", "cores": 1, "ram_gb": 1, "mode": "m", "runs": 1, "date": "d"}
+    for bad in ({"opener_exit_code": 1}, {"opener_killed": True}):
+        assert "open_file command failed" in report([fake], [{**base, **bad}], meta)
+    assert "open_file command failed" not in report([fake], [{**base, "opener_exit_code": 0}], meta)
 
     rows = [
         {"pid": 1, "name": "openidea", "cat": "main", "rss": 100 * MB, "uss": 80 * MB},
