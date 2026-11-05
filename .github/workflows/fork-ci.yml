@@ -39,7 +39,7 @@ jobs:
       rust: ${{ steps.scope.outputs.rust }}
       web: ${{ steps.scope.outputs.web }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with: { fetch-depth: 0 }
       - id: scope
         env:
@@ -71,10 +71,10 @@ jobs:
     needs: scope
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: |
           # Port upstream's ci.yml edits into this file, then update the pin.
-          pin=e32b07341a09c29ac34edbbbb255f54b5f56279a576727ff357bd992ce60f602
+          pin=5556e02e3a5aa805128877c00560809c29e4718204ad3e001a221dc38e39c54a
           sha=$(sha256sum .github/workflows/ci.yml | cut -d' ' -f1)
           [ "$sha" = "$pin" ] || { echo "::error::upstream ci.yml changed ($sha); port it into fork-ci.yml and update the pin"; exit 1; }
 
@@ -83,7 +83,7 @@ jobs:
     needs: scope
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: bash .claude/skills/openidea-fork-auto-rebase/scripts/precheck.test.sh
         if: hashFiles('.claude/skills/openidea-fork-auto-rebase/scripts/precheck.test.sh') != ''
       - run: python3 -m py_compile scripts/fork/resolve-conflicts.py
@@ -101,7 +101,7 @@ jobs:
         os: [ubuntu-22.04, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # Why: NTFS plus Defender scanning is the slowest part of a Windows Rust build; a trusted
       # ReFS Dev Drive holding a copy of the workspace (and so target/) with real-time scanning
       # off builds much faster (test build, two runs each: 306/330 s → 192/297 s).
@@ -161,7 +161,7 @@ jobs:
       contents: read
       actions: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # Why: NTFS plus Defender scanning is the slowest part of a Windows Rust build; a trusted
       # ReFS Dev Drive holding a copy of the workspace (and so target/) with real-time scanning
       # off builds much faster (test build, two runs each: 306/330 s → 192/297 s).
@@ -176,11 +176,11 @@ jobs:
           drive-size: 40GB
           workspace-copy: true
           trusted-dev-drive: true
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v5
         with: { version: 11 }
       # Why no pnpm cache on Windows: pnpm installs on the Dev Drive, so the store setup-node
       # recorded on C: never exists and its post step fails the job.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: ${{ runner.os != 'Windows' && 'pnpm' || '' }}
@@ -237,7 +237,7 @@ jobs:
     if: needs.scope.outputs.rust == 'true'
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: x86_64-unknown-linux-musl }
       - uses: Swatinem/rust-cache@v2
@@ -259,7 +259,7 @@ jobs:
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target-plugins
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: wasm32-wasip2, components: "clippy, rustfmt" }
       - uses: Swatinem/rust-cache@v2
@@ -281,9 +281,9 @@ jobs:
             cargo test --locked --manifest-path "$dir/Cargo.toml"
             echo "::endgroup::"
           done
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v5
         with: { version: 11 }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with: { node-version: 22 }
       # Plugin web pages (`web-src/`, their own pnpm projects): typecheck and test.
       - name: Web pages typecheck and test
@@ -309,7 +309,7 @@ jobs:
     if: needs.scope.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-deny
       - run: cargo deny check
@@ -320,10 +320,10 @@ jobs:
     if: needs.scope.outputs.web == 'true'
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
         with: { version: 11 }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
@@ -343,10 +343,10 @@ jobs:
         shard: [1, 2, 3]
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
         with: { version: 11 }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm test --shard=${{ matrix.shard }}/3
@@ -363,16 +363,16 @@ jobs:
     # Keep the tag in step with @playwright/test (same as ci.yml).
     container: mcr.microsoft.com/playwright:v1.64.1-noble
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
         with: { version: 11 }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm e2e --shard=${{ matrix.shard }}/2
         env:
           HOME: /root
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: failure()
         with:
           name: playwright-report-${{ matrix.shard }}
