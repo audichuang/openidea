@@ -3,7 +3,7 @@ import { rootFor, rootRole, type FolderRole, type RootFolder } from "@/platform/
 import { basename, relativePath } from "@/platform/project";
 import type { FolderKind } from "@/ui";
 import type { ProjectNode } from "./model";
-import { packageKindAt } from "./packages";
+import { packageKindAt } from "@/platform/packageKind";
 import type { BuildPresentation } from "@/platform/projectPresentation";
 
 const ROLE_KIND: Record<FolderRole, FolderKind> = {
