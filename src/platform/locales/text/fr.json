@@ -4054,7 +4054,6 @@
   "Changelist '{name}' contains {count} changes. They will be moved to '{target}'. Delete the changelist?": "La liste de modifications '{name}' contient {count} modifications. Elles seront déplacées vers '{target}'. Supprimer la liste de modifications ?",
   "{name} (active)": "{name} (active)",
   "from {path}": "depuis {path}",
-  "{dir} · from {path}": "{dir} · depuis {path}",
   "Clipboard ↔ {file} (selection)": "Presse-papiers ↔ {file} (sélection)",
   "Clipboard ↔ {file}": "Presse-papiers ↔ {file}",
   "Pull to {head}": "Pull vers {head}",

@@ -62,12 +62,16 @@
 .icon {
   flex: none;
 }
+/* Shrinks only after the row's branch chip or directory has given way (their `flex: 1 1 0`),
+   keeping a character and its ellipsis. */
 .label {
-  flex: 0 0 auto;
-  max-width: 75%;
-  min-width: 0;
+  flex: 0 1 auto;
+  min-width: 2ch;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.fileLabel {
+  max-width: 75%;
 }
 .groupLabel {
   color: var(--fg-strong);
@@ -78,6 +82,49 @@
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--fg-subtle);
+}
+/* A folder / repository / group row's "N files": always shown whole, the label and chip give way first. */
+.count {
+  flex: none;
+  white-space: nowrap;
+  color: var(--fg-subtle);
+}
+/* A flat-mode file's directory, cut in the middle by `fitPathDetail`. Its zero basis makes it give
+   way entirely before the label shrinks (to the floor), and it grows back up to the full path, which
+   the hidden sizer holds; the cut text is drawn over the sizer. */
+.pathDetail {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 2ch;
+  max-width: max-content;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--fg-subtle);
+}
+/* inline-block: ResizeObserver never reports a non-replaced inline box's size changes. */
+.pathSizer {
+  display: inline-block;
+  visibility: hidden;
+}
+.pathText {
+  position: absolute;
+  inset: 0;
+}
+/* A repository row's current branch, as IDEA's branch chip: like `.pathDetail`, gives way before
+   the label, down to ~3ch. */
+.headChip {
+  flex: 1 1 0;
+  min-width: calc(3ch + 8px);
+  max-width: max-content;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 4px;
+  border-radius: var(--radius-small);
+  background: color-mix(in srgb, var(--fg-subtle) 14%, transparent);
+  color: var(--fg-secondary);
+  font-size: var(--fs-tiny);
+  line-height: 14px;
 }
 .partial {
   flex: none;
@@ -228,13 +275,13 @@
   margin-left: auto;
   width: 16px;
   height: 16px;
-  display: inline-flex;
   align-items: center;
   justify-content: center;
   border-radius: var(--radius-small);
   color: var(--fg-subtle);
   --icon-color: currentColor;
-  visibility: hidden;
+  /* Takes no room until shown, so narrow rows keep the space for their name. */
+  display: none;
 }
 .stageAction:hover {
   background: var(--bg-hover);
@@ -242,7 +289,7 @@
 }
 :global([role="treeitem"]):hover .stageAction,
 :global([role="treeitem"][aria-selected="true"]) .stageAction {
-  visibility: visible;
+  display: inline-flex;
 }
 .dropTarget {
   box-shadow: inset 0 0 0 1px var(--accent);

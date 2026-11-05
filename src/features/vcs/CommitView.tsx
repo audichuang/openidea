@@ -75,7 +75,9 @@ import { OperationBanner } from "./operations";
 import { ShelfPanel, loadShelves, useShelf } from "./shelf";
 import { runOp } from "./ops";
 import { buildStagingTree, stagePaths, stagedFiles, stagingDiffData, unstagePaths, useStagingArea } from "./staging";
+import { RepoHeadChip } from "./RepoHeadChip";
 import { RepoSwatch } from "./RepoSwatch";
+import { fitPathDetail } from "./pathDetail";
 import { refreshNow, repoName, selectRepo, useVcs } from "./store";
 import styles from "./CommitView.module.css";
 
@@ -686,6 +688,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                 className={clsx(
                   styles.label,
                   n.type === "group" && styles.groupLabel,
+                  n.type === "file" && styles.fileLabel,
                   n.type === "group" && n.changelist && !n.active && styles.inactiveList,
                 )}
                 style={n.type === "file" && n.kind ? { color: KIND_COLOR[n.kind] } : undefined}
@@ -748,13 +751,15 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                 )}
                 {n.repo && <RepoSwatch root={n.repo} />}
                 {label}
-                {n.type === "group" && <span className={styles.detail}>{fileCount(n.files.length)}</span>}
+                {n.type !== "file" && <span className={styles.count}>{fileCount(n.files.length)}</span>}
+                {n.repo && <RepoHeadChip root={n.repo} className={styles.headChip} />}
                 {!staging && n.type === "file" && n.files[0] && isPartiallyStaged(n.files[0]) && (
                   <span className={styles.partial} title={tx("Partially staged: only staged hunks are committed")}>
                     <T>partial</T>
                   </span>
                 )}
-                {n.detail && <span className={styles.detail}>{n.detail}</span>}
+                {n.dir && <PathDetail dir={n.dir} />}
+                {n.detail && <span className={styles.detail}>{n.dir ? `· ${n.detail}` : n.detail}</span>}
                 {staging && <StageAction node={n} />}
               </span>
             );
@@ -762,6 +767,45 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
         />
       </div>
     </div>
+  );
+}
+
+let measureContext: CanvasRenderingContext2D | null | undefined;
+
+/**
+ * A flat-mode file's directory as one string cut in the middle to the width the row leaves it,
+ * so its first and last segments stay visible as long as they can (two ellipsis boxes leave a gap).
+ */
+function PathDetail({ dir }: { dir: string }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const sizerRef = useRef<HTMLSpanElement>(null);
+  const [fit, setFit] = useState<{ dir: string; text: string } | null>(null);
+  useEffect(() => {
+    const el = ref.current;
+    const sizer = sizerRef.current;
+    if (!el || !sizer) return;
+    // The sizer's width follows the font, so a font change or a late web font refits even when
+    // the box itself keeps its width (e.g. held by the label's max-width).
+    let width: number | undefined;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) if (entry.target === el) width = entry.contentRect.width;
+      measureContext ??= document.createElement("canvas").getContext("2d");
+      const ctx = measureContext;
+      if (width === undefined || !ctx) return;
+      ctx.font = getComputedStyle(el).font;
+      setFit({ dir, text: fitPathDetail(dir, width, (t) => ctx.measureText(t).width) });
+    });
+    observer.observe(el);
+    observer.observe(sizer);
+    return () => observer.disconnect();
+  }, [dir]);
+  return (
+    <span ref={ref} className={styles.pathDetail} title={dir}>
+      <span ref={sizerRef} className={styles.pathSizer} aria-hidden>
+        {dir}
+      </span>
+      <span className={styles.pathText}>{fit?.dir === dir ? fit.text : dir}</span>
+    </span>
   );
 }
 
