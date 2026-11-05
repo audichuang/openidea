@@ -60,17 +60,19 @@ fn cli_changes(r: &Repo, ignored: &IgnoredNames) -> IdeResult<Changes> {
     // filters, and checks dirty submodules with their own configuration.
     let overrides = if restricted {
         let config = crate::cli::run(r.root(), &["config", "--null", "--list"], None)?;
-        crate::cli::filter_overrides(&config.stdout_str())?
+        crate::cli::filter_overrides(&config.stdout)?
     } else {
         Vec::new()
     };
     let mut args: Vec<&str> = overrides.iter().map(String::as_str).collect();
-    args.extend(["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=all"]);
+    // Rename detection reads blobs a partial clone may not have; git would fetch them
+    // from the promisor remote (or fail with exit 128 when it is unreachable), and a
+    // background refresh must never use the network.
+    args.extend(["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=all", "--no-renames"]);
     if restricted {
-        // Restricted git may not fetch missing blobs, and rename detection needs them.
-        args.extend(["--no-renames", "--ignore-submodules=dirty"]);
+        args.push("--ignore-submodules=dirty");
     }
-    let out = crate::cli::run(r.root(), &args, None)?;
+    let out = crate::cli::run_env(r.root(), &args, None, &[("GIT_NO_LAZY_FETCH", std::ffi::OsStr::new("1"))])?;
     Ok(parse_porcelain_v2(&out.stdout, ignored))
 }
 
