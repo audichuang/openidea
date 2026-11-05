@@ -14,6 +14,18 @@
 #   daemons       process names meant to outlive the app (not waited for or killed on exit)
 #   single_instance  default true: refuse to start while a process with the same
 #                 executable name runs (it would take over the launch)
+#   open_command  how to open the project's open_file in the running app; {file} is
+#                 its absolute path. Default: `open -a <bundle> {file}` for a macOS
+#                 .app, otherwise the executable again with {file} (a single-instance
+#                 app forwards it to the running one)
+#   language_server_process  regex on a process category (main, webview:*, lsp:*,
+#                 jvm:*, or the process name); after open_file, wait until such a
+#                 process is in the tree before waiting for the CPU to settle
+#
+# [projects.<directory name>] applies when that project is measured:
+#   open_file     file to open after ready, relative to the project. OpenIDEA starts
+#                 language servers on the first opened file, so without it the
+#                 memory excludes them. --open-file overrides, --no-open-file skips.
 
 [apps.openidea]
 name = "OpenIDEA"
@@ -24,7 +36,26 @@ logs = { windows = "%LOCALAPPDATA%/ai.l0ng.openidea/logs/openidea*.log", macos =
 # next to the jdtls install, so a cold Java run still reuses jdtls's build state.
 cache_dirs = { windows = ["%LOCALAPPDATA%/ai.l0ng.openidea/index", "%LOCALAPPDATA%/ai.l0ng.openidea/cache"], macos = ["~/Library/Application Support/ai.l0ng.openidea/index", "~/Library/Application Support/ai.l0ng.openidea/cache"], linux = ["~/.local/share/ai.l0ng.openidea/index", "~/.local/share/ai.l0ng.openidea/cache"] }
 
+language_server_process = '^lsp:'
+
 [apps.openidea.markers]
+project_opened = 'opened .* in window'
+indexed = 'indexed \d+ files'
+lsp_initialized = 'initialized: \{'
+
+# The fork's macOS build installs next to the official app. It shares the bundle id,
+# so logs and caches are the same, and the executable name: only one of the two can
+# run at a time. On Windows the fork installer replaces the official app, so the
+# `openidea` entry measures whichever is installed there.
+[apps.openidea_fork]
+name = "OpenIDEA Fork"
+command = { macos = "/Applications/OpenIDEA Fork.app/Contents/MacOS/openidea" }
+install_dir = { macos = "/Applications/OpenIDEA Fork.app" }
+logs = { macos = "~/Library/Logs/ai.l0ng.openidea/openidea*.log" }
+cache_dirs = { macos = ["~/Library/Application Support/ai.l0ng.openidea/index", "~/Library/Application Support/ai.l0ng.openidea/cache"] }
+language_server_process = '^lsp:'
+
+[apps.openidea_fork.markers]
 project_opened = 'opened .* in window'
 indexed = 'indexed \d+ files'
 lsp_initialized = 'initialized: \{'
@@ -41,3 +72,11 @@ cache_dirs = { windows = ["%LOCALAPPDATA%/JetBrains/IntelliJIdea2026.2/caches", 
 [apps.idea.markers]
 # Indexing done: IDEA leaves dumb mode, possibly several times; compare "last".
 smart = 'exit dumb mode \[{project_name}\]'
+
+# IDEA analyses the file in its own JVM, so it has no language_server_process to wait for.
+
+[projects.spring-petclinic]
+open_file = "src/main/java/org/springframework/samples/petclinic/owner/Owner.java"
+
+[projects.freqtrade]
+open_file = "freqtrade/freqtradebot.py"
