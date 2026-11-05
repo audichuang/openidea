@@ -6,20 +6,40 @@ name: Fork Release
 # latest.json, and bumps the Homebrew cask `audichuang/tap/openidea-fork`. Both builds point the
 # built-in updater at this fork's releases with the fork's own key, so the app updates itself to
 # fork releases and never to upstream ones. A `fork-release-dryrun-*` tag builds both and uploads
-# them as workflow artifacts only. Release rules: FORK.md.
+# them as workflow artifacts only.
+#
+# Every develop push (and a weekly run) builds a release candidate: the same signed, notarized
+# build under the version the next release will carry (the fork base plus the next free fork.N),
+# kept as a workflow artifact, and rolls the release target cache forward. A release tag whose
+# commit and version match a successful candidate publishes that candidate's assets instead of
+# building again, waiting for it if it is still running. Release rules: FORK.md.
 on:
   push:
     tags: ["v*-fork.*", "fork-release-dryrun-*"]
+    branches: [develop]
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: write
+  # Read a candidate run's artifacts; delete superseded target caches.
+  actions: write
 
 concurrency:
   group: fork-release-${{ github.ref_name }}
+  # A newer develop push supersedes the candidate in flight; tags never cancel each other.
+  cancel-in-progress: ${{ github.ref == 'refs/heads/develop' }}
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  # Fat LTO links the whole program on one core (~28 of the macOS job's ~41 minutes). Thin LTO
+  # parallelises it; measured on openidea-server: final link 178 s → 61 s, +5% size, benches
+  # within noise. Overrides Cargo.toml's [profile.release] here only, so upstream stays untouched.
+  # Workflow-level, like every CARGO_* here: rust-cache hashes them into the key, so candidate and
+  # tag builds must see the same set.
+  CARGO_PROFILE_RELEASE_LTO: thin
   TAG: ${{ github.ref_name }}
   DRY_RUN: ${{ startsWith(github.ref_name, 'fork-release-dryrun-') }}
   # The fork's updater public key (private half: TAURI_SIGNING_PRIVATE_KEY, 1Password Agent vault).
@@ -27,16 +47,24 @@ env:
   UPDATER_ENDPOINT: https://github.com/audichuang/openidea/releases/latest/download/latest.json
 
 jobs:
-  guard:
+  plan:
     if: github.repository == 'audichuang/openidea'
     runs-on: ubuntu-latest
     outputs:
+      mode: ${{ steps.mode.outputs.mode }}
       version: ${{ steps.version.outputs.version }}
+      reuse-run: ${{ steps.reuse.outputs.run }}
     steps:
       - uses: actions/checkout@v4
         with: { persist-credentials: false }
+      - id: mode
+        run: |
+          if [ "$GITHUB_REF_TYPE" != tag ]; then mode=candidate
+          elif [ "$DRY_RUN" = true ]; then mode=dryrun
+          else mode=release; fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
       - name: Check the tag sits on main and on develop
-        if: env.DRY_RUN != 'true'
+        if: steps.mode.outputs.mode == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -69,18 +97,54 @@ jobs:
             [ -n "${!name}" ] || { echo "::error::$name secret is not set"; exit 1; }
           done
       - id: version
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
         run: |
           # The app's version is the tag's, so the updater and the About dialog tell fork builds apart.
-          if [ "$DRY_RUN" = true ]; then
-            version="$(jq -r .version src-tauri/tauri.conf.json)-fork.0"
-          else
-            version="${TAG#v}"
-          fi
+          base=$(jq -r .version src-tauri/tauri.conf.json)
+          case "$MODE" in
+            release) version="${TAG#v}" ;;
+            # A dry run carries the next version too, so it can exercise the candidate reuse.
+            dryrun|candidate)
+              # FORK.md: vX.Y.Z-fork.N, X.Y.Z the fork base, N counting up per base from 1.
+              last=$(git ls-remote --tags origin "refs/tags/v$base-fork.*" | grep -v '\^{}$' |
+                sed -E 's/.*-fork\.([0-9]+)$/\1/' | sort -n | tail -1)
+              version="$base-fork.$(( ${last:-0} + 1 ))" ;;
+          esac
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "::notice::$MODE build of $version"
+      # A release (or dry run) reuses the candidate built for this commit when it carries the same
+      # version and both platforms succeeded; a candidate still running is waited for.
+      - id: reuse
+        if: steps.mode.outputs.mode != 'candidate'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          latest_candidate() {
+            gh api "repos/$GITHUB_REPOSITORY/actions/workflows/fork-release.yml/runs?head_sha=$GITHUB_SHA&per_page=30" \
+              --jq "[.workflow_runs[] | select((.head_branch | test(\"^(v.*-fork[.]|fork-release-dryrun-)\") | not) and .id != $GITHUB_RUN_ID)] | sort_by(.created_at) | last | select(. != null) | \"\(.id) \(.status) \(.conclusion)\""
+          }
+          for _ in $(seq 1 90); do
+            read -r id status conclusion <<< "$(latest_candidate)" || true
+            [ -n "${id:-}" ] || { echo "::notice::no candidate for $GITHUB_SHA: building"; exit 0; }
+            [ "$status" = completed ] && break
+            echo "candidate run $id is $status; waiting"
+            sleep 60
+          done
+          [ "${conclusion:-}" = success ] || { echo "::notice::candidate run $id ended ${conclusion:-unfinished}: building"; exit 0; }
+          names=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/artifacts" --jq '.artifacts[] | select(.expired | not) | .name')
+          for t in aarch64-apple-darwin x86_64-pc-windows-msvc; do
+            grep -qx "candidate-$VERSION-$t" <<< "$names" ||
+              { echo "::notice::candidate run $id has no $VERSION build for $t: building"; exit 0; }
+          done
+          echo "::notice::publishing the assets of candidate run $id"
+          echo "run=$id" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build (${{ matrix.name }})
-    needs: guard
+    needs: plan
+    if: needs.plan.outputs.reuse-run == ''
     strategy:
       fail-fast: false
       matrix:
@@ -91,25 +155,17 @@ jobs:
     timeout-minutes: 120
     env:
       TARGET: ${{ matrix.target }}
-      VERSION: ${{ needs.guard.outputs.version }}
-      # Fat LTO links the whole program on one core (~28 of the macOS job's ~41 minutes). Thin LTO
-      # parallelises it; measured on openidea-server: final link 178 s → 61 s, +5% size, benches
-      # within noise. Overrides Cargo.toml's [profile.release] here only, so upstream stays untouched.
-      CARGO_PROFILE_RELEASE_LTO: thin
+      VERSION: ${{ needs.plan.outputs.version }}
+      MODE: ${{ needs.plan.outputs.mode }}
     steps:
       - uses: actions/checkout@v4
         with: { persist-credentials: false }
-      - uses: pnpm/action-setup@v4
-        with: { version: 11 }
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: pnpm }
-      - uses: dtolnay/rust-toolchain@stable
-        with: { targets: "${{ matrix.target }}" }
-      # Why no save: a tag-scoped cache is readable only by that tag's own reruns, and 1 GB each
-      # pushes develop's CI caches out of the repo's 10 GB.
-      - uses: Swatinem/rust-cache@v2
-        with: { key: "fork-${{ matrix.target }}", save-if: false }
-      - run: pnpm install --frozen-lockfile
+      # Restores the caches the newest develop candidate saved; only candidates save (a tag-scoped
+      # cache is readable only by that tag's own reruns).
+      - uses: ./.github/actions/fork-release-setup
+        with:
+          target: ${{ matrix.target }}
+          save-cache: ${{ needs.plan.outputs.mode == 'candidate' }}
 
       # tauri reads the notarization key from a file path.
       - name: Stage the notarization API key
@@ -124,6 +180,7 @@ jobs:
 
       - name: Build
         shell: bash
+        working-directory: ${{ env.WORK }}
         env:
           APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE || '' }}
           APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
@@ -138,6 +195,7 @@ jobs:
 
       - name: Verify the signature and notarization
         if: runner.os == 'macOS'
+        working-directory: ${{ env.WORK }}
         run: |
           app="target/$TARGET/release/bundle/macos/OpenIDEA.app"
           info=$(codesign --display --verbose=2 "$app" 2>&1)
@@ -152,6 +210,7 @@ jobs:
       # Stable asset names: the cask and latest.json point at them.
       - name: Stage the assets
         shell: bash
+        working-directory: ${{ env.WORK }}
         run: |
           out="$RUNNER_TEMP/assets"; mkdir -p "$out"
           b="target/$TARGET/release/bundle"
@@ -168,25 +227,44 @@ jobs:
           ls -l "$out"
       - uses: actions/upload-artifact@v4
         with:
-          name: assets-${{ matrix.target }}
+          name: ${{ env.MODE == 'candidate' && format('candidate-{0}-{1}', env.VERSION, matrix.target) || format('assets-{0}', matrix.target) }}
           path: ${{ runner.temp }}/assets/
-          retention-days: ${{ env.DRY_RUN == 'true' && 3 || 7 }}
+          retention-days: ${{ env.MODE == 'release' && 7 || 3 }}
+      - if: env.MODE == 'candidate' && !cancelled()
+        uses: ./.github/actions/target-cache
+        with:
+          mode: save
+          name: release-${{ matrix.target }}
+          workdir: ${{ env.WORK }}
+          token: ${{ github.token }}
 
       - name: Remove the API key
         if: always() && runner.os == 'macOS'
         run: rm -f "$RUNNER_TEMP/AuthKey.p8"
 
   publish:
-    needs: [guard, build]
-    if: ${{ !startsWith(github.ref_name, 'fork-release-dryrun-') }}
+    needs: [plan, build]
+    # Built here, or reused from a candidate (then build is skipped).
+    if: >-
+      !cancelled() && needs.plan.outputs.mode != 'candidate' &&
+      (needs.build.result == 'success' || (needs.build.result == 'skipped' && needs.plan.outputs.reuse-run != ''))
     runs-on: ubuntu-latest
     env:
-      VERSION: ${{ needs.guard.outputs.version }}
+      VERSION: ${{ needs.plan.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with: { persist-credentials: false }
-      - uses: actions/download-artifact@v4
+      - if: needs.plan.outputs.reuse-run == ''
+        uses: actions/download-artifact@v4
         with: { pattern: "assets-*", merge-multiple: true, path: assets }
+      - if: needs.plan.outputs.reuse-run != ''
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-${{ env.VERSION }}-*
+          merge-multiple: true
+          path: assets
+          run-id: ${{ needs.plan.outputs.reuse-run }}
+          github-token: ${{ github.token }}
 
       - name: Write the notes and latest.json
         id: notes
@@ -213,6 +291,8 @@ jobs:
           cat assets/latest.json
 
       - name: Publish the GitHub Release
+        # A dry run stops after checking the assets and latest.json.
+        if: needs.plan.outputs.mode == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -224,6 +304,7 @@ jobs:
           fi
 
       - name: Bump the Homebrew cask
+        if: needs.plan.outputs.mode == 'release'
         env:
           TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
           SHA256: ${{ steps.notes.outputs.mac_sha256 }}
