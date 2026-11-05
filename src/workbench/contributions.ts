@@ -956,7 +956,9 @@ export type ContextMenuId =
   | "openIn"
   | "stopProcess"
   | "selectIn"
-  | "new";
+  | "new"
+  /** New › kinds listed before File / Directory for the directory's kind (Java Class in a Java package). */
+  | "newPrimary";
 
 /**
  * Entries of the native main menu's open slots (src-tauri/src/menu.rs
