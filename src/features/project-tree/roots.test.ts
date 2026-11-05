@@ -7,7 +7,7 @@ import { newMenuItems } from "./contextMenu";
 import { folderKind } from "./folderKind";
 import { MemoryFs, setProjectFsForTests } from "./fs";
 import { beginNewPackage, checkEditingName, commitEditing } from "./operations";
-import { packageKindAt } from "./packages";
+import { packageKindAt } from "@/platform/packageKind";
 import { packageSegments } from "./paths";
 import { initProjectTree, loadDir, selectModel, useProjectTree } from "./store";
 
