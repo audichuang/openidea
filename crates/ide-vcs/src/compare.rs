@@ -138,15 +138,7 @@ impl Repos {
                 let mut overrides = Vec::new();
                 if !crate::execution_allowed() {
                     let config = cli::run_cancellable(repo.root(), &["config", "--null", "--list"], cancel)?;
-                    for record in config.stdout_str().split('\0') {
-                        let key = record.split('\n').next().unwrap_or_default();
-                        if key.starts_with("filter.")
-                            && (key.ends_with(".clean") || key.ends_with(".process") || key.ends_with(".required"))
-                        {
-                            overrides.push("-c".to_owned());
-                            overrides.push(format!("{key}={}", if key.ends_with(".required") { "false" } else { "" }));
-                        }
-                    }
+                    overrides = cli::filter_overrides(&config.stdout_str())?;
                 }
                 let run = |args: &[&str]| {
                     let mut full: Vec<&str> = overrides.iter().map(String::as_str).collect();
