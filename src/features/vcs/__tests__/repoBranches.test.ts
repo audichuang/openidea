@@ -5,12 +5,12 @@ import {
   buildMultiRepoRows,
   commonBranches,
   currentRepoFor,
-  repoColorIndex,
   repoHeadLabel,
   widgetShowsRepo,
   type RepoEntry,
   type RepoRow,
 } from "../repoBranches";
+import { repoColor, repoColorIndex } from "../model";
 
 const b = (name: string, opts: Partial<Branch> = {}): Branch => ({
   name,
@@ -303,6 +303,17 @@ describe("buildMultiRepoRows with repositories on different branches", () => {
 describe("repository colours and heads", () => {
   it("gives up to nine repositories distinct colours, then cycles", () => {
     expect(Array.from({ length: 10 }, (_, i) => repoColorIndex(i))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 1]);
+  });
+
+  it("colours a repository by its place among the roots, the same slot as the branch popup", () => {
+    const roots = ["/p", "/p/libs/a", "/p/libs/b"];
+    expect(roots.map((r) => repoColor(r, roots))).toEqual([
+      "var(--project-color-1)",
+      "var(--project-color-2)",
+      "var(--project-color-3)",
+    ]);
+    expect(repoColor("/p", ["/p"])).toBeNull();
+    expect(repoColor("/elsewhere", roots)).toBeNull();
   });
 
   it("names a detached HEAD by its short commit", () => {
