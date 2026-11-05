@@ -41,6 +41,15 @@
 .empty {
   color: var(--fg-subtle);
 }
+.statusError {
+  flex: none;
+  padding: 4px 8px;
+  color: var(--danger);
+  font-size: var(--fs-small);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .check {
   flex: none;
   width: 14px;
