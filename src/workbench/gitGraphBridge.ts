@@ -62,6 +62,8 @@ export interface GitGraphBridge {
     state?: GraphLayoutState,
   ): { rows: GraphLaneRow[]; state: GraphLayoutState };
   laneColor(color: number): string;
+  /** `root`'s colour among `roots`, as the Git tool window shows it; null with a single repository. */
+  repoColor(root: string, roots: readonly string[]): string | null;
   /** A commit's decorations (`HEAD`, `main`, `origin/main`, `tag: v1`) as one label per reference. */
   refLabels(refs: readonly string[], remoteBranches: ReadonlySet<string>): GraphRefLabel[];
   /** The Git Log's commit menu (cherry-pick, rebase, reset, squash, ClipCode…) for `commit`. */
