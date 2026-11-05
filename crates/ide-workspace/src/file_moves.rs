@@ -156,6 +156,11 @@ impl FileMoves {
             }
             done.push(m);
         }
+        if let Some(h) = history
+            && let Err(e) = h.follow_moves(moves)
+        {
+            tracing::warn!("local history: {e}");
+        }
         let mut edited = Vec::with_capacity(paths.len());
         for (p, before) in paths.iter().zip(before) {
             let path = moved_path(p, moves);
@@ -267,11 +272,17 @@ mod tests {
             }],
             ..Default::default()
         };
+        history.record(&root.join("a/util.ts"), "export const x = 1;\n", "Saved").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
         let id = moves.perform(&docs, Some(&history), &mv, &edit, "Move", &apply(&docs)).unwrap();
         assert!(root.join("b/util.ts").exists() && !root.join("a").exists());
         assert_eq!(fs::read_to_string(root.join("main.ts")).unwrap(), "import { x } from './b/util';\n");
         let snaps = history.list(&root.join("main.ts")).unwrap();
         assert_eq!(snaps[0].label, "Before refactoring: Move");
+        // The moved file's history follows it.
+        let moved: Vec<String> = history.list(&root.join("b/util.ts")).unwrap().into_iter().map(|e| e.label).collect();
+        assert_eq!(moved, vec!["Renaming a to b", "Saved"]);
+        assert!(history.list(&root.join("a/util.ts")).unwrap().is_empty());
         assert_eq!(moves.last(), Some(id));
 
         let undone = moves.undo(&docs, id).unwrap();
