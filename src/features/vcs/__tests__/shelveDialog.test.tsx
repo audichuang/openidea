@@ -6,12 +6,13 @@ const mocks = vi.hoisted(() => ({ ipc: vi.fn(), shelve: vi.fn(), mounts: 0 }));
 vi.mock("../DiffEditor", async () => {
   const React = await import("react");
   return {
-    DiffEditor: ({ input }: { input: { path: string } }) => {
+    DiffEditor: ({ input }: { input: { path: string; data: { readOnly?: boolean } } }) => {
       const [id] = React.useState(() => ++mocks.mounts);
       return (
         <div
           data-testid="diff-preview"
           data-mount={id}
+          data-readonly={String(!!input.data.readOnly)}
           tabIndex={0}
           onKeyDown={(e) => {
             if (e.key === "Escape") e.preventDefault();
@@ -68,6 +69,14 @@ describe("Shelve Changes dialog", () => {
     expect(screen.getByTestId("diff-preview").textContent).toBe("/repo/README.md");
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(mocks.shelve).not.toHaveBeenCalled();
+  });
+
+  it("previews read-only so the modal cannot include hunks, stage or revert", async () => {
+    render(<VcsDialogHost />);
+    act(() => shelveChanges(status.map((f) => f.path)));
+    await screen.findByText("src");
+    expect(screen.getByTestId("diff-preview").getAttribute("data-readonly")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   });
 
   it("excludes a folder through its checkbox and shelves only the remaining files", async () => {
