@@ -43,7 +43,7 @@ import {
 } from "./syntaxFallback";
 import { tx } from "@/platform/i18n";
 import { synchronizeDocumentIndexes } from "@/workbench/contributions";
-import { fileStem, renamesFileInstead } from "./renameFallback";
+import { fileStem, renamesFileInstead, wordQueryRange } from "./renameFallback";
 
 async function applyEdit(view: EditorView, edit: WorkspaceEdit) {
   try {
@@ -111,7 +111,7 @@ export async function startRename(view: EditorView) {
       return;
     }
     // A server error (not a missing server or feature) is a refusal: a top-level type renames its file.
-    if (!isUnavailable(e) && (await renameFileInstead(view, doc, pos))) return;
+    if (!isUnavailable(e) && (await renameFileInstead(view, doc))) return;
     if (await startSyntaxRename(view, doc, pos, e, current)) return;
     // No server covers this file (a plain text file): Shift+F6 renames the file, like IDEA.
     if (isNoServer(e) && (await executeAction("project.rename"))) return;
@@ -123,7 +123,7 @@ export async function startRename(view: EditorView) {
     if ((await hasSyntaxErrors(doc.doc)) && current() && (await startSyntaxRename(view, doc, pos, undefined, current)))
       return;
     if (!current()) return;
-    if (await renameFileInstead(view, doc, pos)) return;
+    if (await renameFileInstead(view, doc)) return;
     showHint(view, "This element can't be renamed");
     return;
   }
@@ -155,14 +155,14 @@ export async function startRename(view: EditorView) {
   });
 }
 
-/** Opens Rename File for this file when the element at `pos` is its top-level type. */
-async function renameFileInstead(view: EditorView, doc: EditorDocContext, pos: Pos): Promise<boolean> {
+/** Opens Rename File for this file when the word at the caret is its top-level type. */
+async function renameFileInstead(view: EditorView, doc: EditorDocContext): Promise<boolean> {
   const word = view.state.wordAt(view.state.selection.main.head);
   const name = word ? view.state.sliceDoc(word.from, word.to) : null;
-  if (!name || name !== fileStem(doc.path)) return false;
+  if (!word || !name || name !== fileStem(doc.path)) return false;
   let at: NodeAt | null = null;
   try {
-    at = await structure.nodeAt(doc.doc, { start: pos, end: pos });
+    at = await structure.nodeAt(doc.doc, wordQueryRange(view.state.doc, word));
   } catch (e) {
     if (isCancelled(e)) return false;
   }
