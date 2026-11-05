@@ -75,6 +75,7 @@ import { AmendTargetMenu } from "./AmendTargetMenu";
 import { commitChanges, deleteFiles } from "./changeOps";
 import { CommitOptionsPopup } from "./CommitOptions";
 import { CommitCheckSummary } from "./CommitCheckSummary";
+import { expandedKeys } from "./changesExpansion";
 import { DEFAULT_LIST_NAME, useChangelists, withListDefaults } from "./changelists";
 import {
   bulkStagePaths,
@@ -110,6 +111,7 @@ import {
   useCommit,
   type CommitTab,
 } from "./commitStore";
+import { commitSummary } from "./commitSummary";
 import { pushAfterCommit } from "./commitUi";
 import { rebaseAfterFixup } from "./rebase";
 import { stashTabOf, stashTabs, type ContentTab } from "./gitTabs";
@@ -131,6 +133,9 @@ import type { FileStatus } from "@/bindings";
 import { OperationBanner } from "./operations";
 import { runOp } from "./ops";
 import { ShelfPanel, loadShelves, useShelf } from "./shelf";
+import { RepoHeadChip } from "./RepoHeadChip";
+import { RepoSwatch } from "./RepoSwatch";
+import { fitPathDetail } from "./pathDetail";
 import { existsOnDisk, refreshNow, useVcs } from "./store";
 import { StashesPanel } from "./StashesPanel";
 import { saveVcsSetting } from "./settingsUi";
@@ -574,9 +579,15 @@ export function nodeMenu(
     },
     ...(staging ? [] : [{ kind: "separator" as const }, ...fileActions, ...stageActions]),
     { kind: "separator" },
-    ...(canExportPatch ? [{ kind: "action" as const, action: "vcs.createPatch", arg: patchSelection }] : []),
+    ...(canExportPatch ? [{ kind: "action" as const, action: "vcs.createPatch", arg: patchSelection, disabled: files.length > 0 && untracked.length === files.length }] : []),
     ...(canExportPatch ? [{ kind: "action" as const, action: "vcs.copyPatch", arg: patchSelection }] : []),
-    { kind: "action", action: "vcs.shelve", arg: paths },
+    // IDEA: nothing to shelve or diff while only unversioned files are selected.
+    {
+      kind: "action",
+      action: "vcs.shelve",
+      arg: paths,
+      disabled: files.length > 0 && untracked.length === files.length,
+    },
     ...(staging ? [] : [stash]),
     { kind: "separator" },
     {
@@ -670,8 +681,8 @@ function useCommitChecks() {
   );
 }
 
-/** Number of changes the commit would include. */
-export function useIncludedCount(): number {
+/** The changes the commit would include (with the staging area: what is staged, or Commit All). */
+function useIncludedFiles(): FileStatus[] {
   const status = useVcs((s) => s.status);
   const roots = useVcs((s) => s.roots);
   const scope = useStagedRepositoryScope();
@@ -679,10 +690,18 @@ export function useIncludedCount(): number {
   const checks = useCommitChecks();
   const includeByDefault = useWorkflowSettings((s) => s.vcs.commit.includeChangesByDefault);
   return useMemo(
-    () => planCommit(statusForCommit(status, roots, scope, excluded), checks, includeByDefault).included.length,
+    () => planCommit(statusForCommit(status, roots, scope, excluded), checks, includeByDefault).included,
     [status, roots, scope, excluded, checks, includeByDefault],
   );
 }
+
+/** Number of changes the commit would include. */
+export function useIncludedCount(): number {
+  return useIncludedFiles().length;
+}
+
+/** No expansion choices made yet: every row takes its default (`expandedKeys`). */
+const NO_OVERRIDES: ReadonlyMap<string, boolean> = new Map();
 
 /**
  * The Commit tool window's Commit tab: changes with inclusion checkboxes above the
@@ -784,6 +803,7 @@ export function LocalChangesView() {
  */
 export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dialog"; amended?: ChangeNode | null }) {
   const status = useVcs((s) => s.status);
+  const statusError = useVcs((s) => s.statusError);
   const root = useVcs((s) => s.root) ?? "";
   const groupByDir = useCommit((s) => s.groupByDir);
   // With the staging area the Commit tool window shows the index: Staged / Unstaged, no lists or checkboxes.
@@ -793,7 +813,12 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
   const showIgnored = useCommit((s) => showsIgnoredFiles(root, s.ignoredVisibility));
   const ignored = useIgnoredFiles(root, staging && showIgnored);
   const groupByStaging = useCommit((s) => s.groupByStaging) || staging;
-  const groupByRepo = useCommit((s) => s.groupByRepo);
+  // The staging area's repository rows carry the repository checkboxes, so it always groups by repository.
+  const groupByRepo = useCommit((s) => s.groupByRepo) || staging;
+  const excludedRoots = useCommit((s) => s.stagingExcludedRoots);
+  // IDEA's staging area: the repositories ticked on their rows are committed; the rows are under
+  // Staged Changes, or under Unstaged Changes when nothing is staged (Commit All).
+  const repoCheckGroup = useVcs((s) => (staging && isCommitAll(s.status) ? "unstaged" : "staged"));
   const showUnversionedSeparately = useCommit((s) => s.showUnversionedSeparately);
   const diffPreview = useCommit((s) => s.diffPreview);
   const commitDiffPreview = useCommit((s) => s.commitDiffPreview);
@@ -804,13 +829,24 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
   const includeByDefault = useWorkflowSettings((s) => s.vcs.commit.includeChangesByDefault);
   const checkboxes = mode !== "local" && !staging;
   const [dropTarget, setDropTarget] = useState<string | null>(null);
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(["group:unversioned", "group:ignored"]));
+  // Rows the user opened or closed (key → open) keep that state across refreshes; other
+  // rows take their default. Changing the grouping goes back to the default view, as in IDEA.
+  const grouping = `${staging}:${groupByDir}:${groupByStaging}`;
+  const [expansion, setExpansion] = useState(() => ({ grouping, overrides: NO_OVERRIDES }));
+  // Drop the old choices for good (adjusting state during render), so A → B → A is not A again.
+  if (expansion.grouping !== grouping) setExpansion({ grouping, overrides: NO_OVERRIDES });
+  const overrides = expansion.grouping === grouping ? expansion.overrides : NO_OVERRIDES;
+  const override = (keys: Iterable<string>, open: boolean) =>
+    setExpansion((e) => {
+      const next = new Map<string, boolean>(e.grouping === grouping ? e.overrides : NO_OVERRIDES);
+      for (const k of keys) next.set(k, open);
+      return { grouping, overrides: next };
+    });
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const treeRef = useRef<TreeHandle>(null);
   const viewRef = useRef<HTMLButtonElement>(null);
 
   const repos = useVcs((s) => s.roots);
-  const heads = useVcs((s) => s.heads);
   const projectRoots = useEffectiveRoots();
   const roots = useMemo(() => {
     const changes = buildChangeTree(
@@ -820,7 +856,7 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
       lists,
       repos,
       groupByStaging,
-      heads,
+      undefined,
       groupByRepo,
       showUnversionedSeparately,
       ignored?.files,
@@ -833,7 +869,6 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
     lists,
     repos,
     groupByStaging,
-    heads,
     groupByRepo,
     showUnversionedSeparately,
     ignored,
@@ -855,12 +890,16 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
   const [nodeToReveal, setNodeToReveal] = useState<{ key: string } | null>(null);
   const revealNode = useCallback(
     (node: ChangeNode) => {
-      const ancestors = new Set<string>();
-      for (let key = parents.get(node.key); key; key = parents.get(key)) ancestors.add(key);
-      setCollapsed((current) => new Set([...current].filter((key) => !ancestors.has(key))));
+      const ancestors: string[] = [];
+      for (let key = parents.get(node.key); key; key = parents.get(key)) ancestors.push(key);
+      setExpansion((e) => {
+        const next = new Map<string, boolean>(e.grouping === grouping ? e.overrides : NO_OVERRIDES);
+        for (const key of ancestors) next.set(key, true);
+        return { grouping, overrides: next };
+      });
       setNodeToReveal({ key: node.key });
     },
-    [parents],
+    [parents, grouping],
   );
 
   const followedDiff = useRef<string | null>(null);
@@ -911,11 +950,8 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
     const node = path ? [...byKey.values()].find((node) => node.type === "file" && node.path === path) : undefined;
     if (node) revealNode(node);
   };
-  const expanded = useMemo(() => {
-    const s = new Set<string>();
-    for (const k of byKey.keys()) if (!collapsed.has(k)) s.add(k);
-    return s;
-  }, [byKey, collapsed]);
+  const expanded = useMemo(() => expandedKeys(roots, overrides), [roots, overrides]);
+  const folderKeys = () => [...byKey.values()].filter((n) => n.type !== "file").map((n) => n.key);
 
   // Forget overrides for files that are no longer changed.
   useEffect(() => {
@@ -989,8 +1025,8 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
               showContextMenu(bottomLeft(viewRef.current), [
                 { kind: "header", label: "Group By" },
                 { label: "Directory", checked: groupByDir, run: () => setGroupByDir(!groupByDir) },
-                // IDEA offers it once the project has several repositories.
-                ...(repos.length > 1
+                // IDEA offers it once the project has several repositories; the staging area always groups by them.
+                ...(repos.length > 1 && !staging
                   ? [{ label: "Repository", checked: groupByRepo, run: () => setGroupByRepo(!groupByRepo) }]
                   : []),
                 ...(staging
@@ -1035,14 +1071,12 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
           {mode !== "dialog" && (
             <IconButton icon="locate" title="Select Opened File" size="small" onClick={selectOpened} />
           )}
-          <IconButton icon="expand-all" title="Expand All" size="small" onClick={() => setCollapsed(new Set())} />
+          <IconButton icon="expand-all" title="Expand All" size="small" onClick={() => override(folderKeys(), true)} />
           <IconButton
             icon="collapse-all"
             title="Collapse All"
             size="small"
-            onClick={() =>
-              setCollapsed(new Set([...byKey.values()].filter((n) => n.type !== "file").map((n) => n.key)))
-            }
+            onClick={() => override(folderKeys(), false)}
           />
         </div>
       </div>
@@ -1051,6 +1085,11 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
         <span role="status" className={styles.empty}>
           <T>Could not load ignored files</T>
         </span>
+      )}
+      {statusError && (
+        <div className={styles.statusError} role="alert" title={statusError}>
+          <T>Could not read the working tree status</T>: {statusError}
+        </div>
       )}
       <div
         className={styles.treeWrap}
@@ -1115,14 +1154,7 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
           }
           isExpandable={(n) => n.type !== "file" && (n.group !== "amend" || !!n.children?.length)}
           expanded={expanded}
-          onExpandedChange={(_next, node, open) =>
-            setCollapsed((c) => {
-              const s = new Set(c);
-              if (open) s.delete(node.key);
-              else s.add(node.key);
-              return s;
-            })
-          }
+          onExpandedChange={(_next, node, open) => override([node.key], open)}
           selected={selected}
           onSelectionChange={(sel) => {
             setSelected(sel);
@@ -1177,6 +1209,7 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
                   styles.label,
                   n.type === "group" && styles.groupLabel,
                   staging && n.type === "group" && styles.stageGroupLabel,
+                  n.type === "file" && styles.fileLabel,
                   n.type === "group" && n.changelist && !n.active && styles.inactiveList,
                 )}
                 style={n.type === "file" && n.kind ? { color: KIND_COLOR[n.kind] } : undefined}
@@ -1220,6 +1253,8 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
                   },
                 }),
             };
+            // IDEA's staging area: the repository's checkbox for the commit.
+            const repoCheck = staging && repos.length > 1 && n.type === "dir" && !!n.repo && n.group === repoCheckGroup;
             return (
               <span
                 className={clsx(styles.nodeRow, n.type === "group" && dropTarget === n.changelist && styles.dropTarget)}
@@ -1266,9 +1301,10 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
                         : fileIconName(n.label)
                     }
                     size={16}
-                    className={styles.icon}
+                    className={clsx(styles.icon, repoCheck && styles.repoIcon)}
                   />
                 )}
+                {n.repo && <RepoSwatch root={n.repo} />}
                 {label}
                 {n.type !== "file" && (n.group !== "amend" || n.historicalFileCount !== undefined) && (
                   <span className={styles.nodeCount}>
@@ -1277,13 +1313,15 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
                       : fileCount(n.historicalFileCount ?? n.files.length)}
                   </span>
                 )}
+                {n.repo && <RepoHeadChip root={n.repo} className={styles.headChip} />}
                 {!staging && n.type === "file" && n.files[0] && commitsStagedPart(n.files[0]) && (
                   <span className={styles.partial} title={tx("Partially staged: only staged hunks are committed")}>
                     <T>partial</T>
                   </span>
                 )}
+                {n.dir && <PathDetail dir={n.dir} />}
                 {n.detail && n.detailIcon && <Icon name={n.detailIcon} size={14} className={styles.detailIcon} />}
-                {n.detail && <span className={styles.detail}>{n.detail}</span>}
+                {n.detail && <span className={styles.detail}>{n.dir ? `· ${n.detail}` : n.detail}</span>}
                 {staging && <StageButton node={n} leadSelected={st.selected && st.lead} />}
               </span>
             );
@@ -1291,6 +1329,48 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
         />
       </div>
     </div>
+  );
+}
+
+let measureContext: CanvasRenderingContext2D | null | undefined;
+
+/**
+ * A flat-mode file's directory as one string cut in the middle to the width the row leaves it,
+ * so its first and last segments stay visible as long as they can (two ellipsis boxes leave a gap).
+ */
+function PathDetail({ dir }: { dir: string }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const sizerRef = useRef<HTMLSpanElement>(null);
+  const [fit, setFit] = useState<{ dir: string; text: string } | null>(null);
+  useEffect(() => {
+    const el = ref.current;
+    const sizer = sizerRef.current;
+    if (!el || !sizer) return;
+    // The sizer's width follows the font, so a font change or a late web font refits even when
+    // the box itself keeps its width (e.g. held by the label's max-width).
+    let width: number | undefined;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) if (entry.target === el) width = entry.contentRect.width;
+      measureContext ??= document.createElement("canvas").getContext("2d");
+      const ctx = measureContext;
+      if (width === undefined || !ctx) return;
+      // The `font` shorthand reads "" while `font-variant-ligatures` is `none`, which the
+      // shorthand cannot express; build it from the longhands, as PathText does.
+      const style = getComputedStyle(el);
+      ctx.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+      setFit({ dir, text: fitPathDetail(dir, width, (t) => ctx.measureText(t).width) });
+    });
+    observer.observe(el);
+    observer.observe(sizer);
+    return () => observer.disconnect();
+  }, [dir]);
+  return (
+    <span ref={ref} className={styles.pathDetail} title={dir}>
+      <span ref={sizerRef} className={styles.pathSizer} aria-hidden>
+        {dir}
+      </span>
+      <span className={styles.pathText}>{fit?.dir === dir ? fit.text : dir}</span>
+    </span>
   );
 }
 
@@ -1394,6 +1474,9 @@ export function CommitMessageField({
   const historyTick = useCommit((s) => s.historyTick);
   const { emptyError } = runner;
   const amendRoot = useVcs((s) => (s.roots.length === 1 ? s.roots[0] : null));
+  const includedFiles = useIncludedFiles();
+  const checks = useCommitChecks();
+  const summary = useMemo(() => commitSummary(includedFiles, checks), [includedFiles, checks]);
 
   useEffect(() => {
     if (focusTick) ref.current?.focus();
@@ -1462,6 +1545,13 @@ export function CommitMessageField({
         </Popup>
         <CommitMessageActions />
         <span className={styles.grow} />
+        {summary.added + summary.modified + summary.deleted > 0 && (
+          <span className={styles.summary}>
+            {summary.added > 0 && <span className={styles.summaryAdded}>{tx`${summary.added} added`}</span>}
+            {summary.modified > 0 && <span className={styles.summaryModified}>{tx`${summary.modified} modified`}</span>}
+            {summary.deleted > 0 && <span className={styles.summaryDeleted}>{tx`${summary.deleted} deleted`}</span>}
+          </span>
+        )}
         {tooLong && (
           <span className={clsx(styles.lineLen, styles.lineLenWarn)} title={tx("Subject line length")}>
             {first.length}/{cfg.subjectLimit}

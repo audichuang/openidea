@@ -8,6 +8,7 @@ import { IssueText } from "../issueLinks";
 import { type LogOptions } from "../logOptions";
 import { selectedCommits } from "../logStore";
 import { commitKey, commitRepo } from "../multiRoot";
+import { RepoSwatch } from "../RepoSwatch";
 import { repoName, useVcs } from "../store";
 import { CommitMessage, RefLabels } from "./CommitMessage";
 import { GraphCell } from "./GraphCell";
@@ -184,6 +185,7 @@ function CommitRowView({
     >
       {opts.showRepository && commitRepo(c) && useVcs.getState().roots.length > 1 && (
         <span className={styles.colRepository} title={commitRepo(c)!}>
+          <RepoSwatch root={commitRepo(c)!} />
           {repoName(commitRepo(c)!)}
         </span>
       )}
