@@ -58,14 +58,7 @@ pub async fn refactor_move_files(
 pub async fn refactor_undo_file_move(host: &Host, window: &str, id: u32) -> IdeResult<UndoOutcome> {
     let project = host.project(window)?;
     let p = project.clone();
-    let outcome = blocking(move || {
-        let outcome = p.moves.undo(&p.documents, id)?;
-        if let Err(e) = p.history.follow_moves(&outcome.moves) {
-            tracing::warn!("local history: {e}");
-        }
-        Ok(outcome)
-    })
-    .await?;
+    let outcome = blocking(move || p.moves.undo(&p.documents, Some(&p.history), id)).await?;
     project.lsp.did_rename_files(&pairs(&outcome.moves));
     Ok(outcome)
 }
