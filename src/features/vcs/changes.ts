@@ -38,7 +38,9 @@ export interface ChangeNode {
   kind?: EffectiveKind;
   /** Absolute path (files and directories). */
   path?: string;
-  /** Detail text: the relative directory (flat mode) or the old name. */
+  /** The file's directory relative to its repository (flat mode). */
+  dir?: string;
+  /** Detail text: the old name of a renamed file, a change list's comment. */
   detail?: string;
   /** Change list id (change list groups and their descendants). */
   changelist?: string;
@@ -108,13 +110,8 @@ function fileNode(fs: FileStatus, root: string, group: GroupId, flat: boolean, s
     files: [fs],
     kind,
     path,
-    detail: !fs.renamedFrom
-      ? flat
-        ? dir
-        : undefined
-      : flat && dir
-        ? tx`${dir} · from ${fs.renamedFrom}`
-        : tx`from ${fs.renamedFrom}`,
+    dir: flat && dir ? dir : undefined,
+    detail: fs.renamedFrom ? tx`from ${fs.renamedFrom}` : undefined,
   };
 }
 

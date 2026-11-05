@@ -79,6 +79,37 @@
   text-overflow: ellipsis;
   color: var(--fg-subtle);
 }
+/* A flat-mode file's directory: the head gives way first, the last segment stays whole. */
+.pathDetail {
+  display: inline-flex;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--fg-subtle);
+}
+.pathHead {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pathTail {
+  flex: none;
+}
+/* A repository row's current branch, as IDEA's branch chip. */
+.headChip {
+  flex: none;
+  min-width: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 4px;
+  border-radius: var(--radius-small);
+  background: color-mix(in srgb, var(--fg-subtle) 14%, transparent);
+  color: var(--fg-secondary);
+  font-size: var(--fs-tiny);
+  line-height: 14px;
+}
 .partial {
   flex: none;
   padding: 0 4px;
