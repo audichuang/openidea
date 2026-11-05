@@ -35,6 +35,15 @@ describe("languages settings", () => {
     expect(validateSettings({}).languages).toEqual(DEFAULT_LANGUAGES);
   });
 
+  it("stops jdtls after 15 idle minutes by default; 0 keeps it running", () => {
+    expect(DEFAULT_LANGUAGES.java.jdtlsIdleShutdownMinutes).toBe(15);
+    const minutes = (v: unknown) => validateLanguages({ java: { jdtlsIdleShutdownMinutes: v } }).java;
+    expect(minutes(0).jdtlsIdleShutdownMinutes).toBe(0);
+    expect(minutes(30).jdtlsIdleShutdownMinutes).toBe(30);
+    for (const bad of [-1, 2.5, "10", null, Number.NaN, 2 ** 32])
+      expect(minutes(bad).jdtlsIdleShutdownMinutes, String(bad)).toBe(15);
+  });
+
   it("keeps the Ruby interpreter through settings normalization and defaults to Auto", () => {
     expect(validateSettings({}).languages.ruby.interpreter).toBe("");
     expect(validateLanguages({ ruby: { interpreter: 42 } }).ruby.interpreter).toBe("");

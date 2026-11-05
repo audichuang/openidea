@@ -796,7 +796,7 @@ pub struct GoBuildTags {
     pub experiments: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct JavaSettings {
     /// Project JDK home; empty = per module, the installed JDK matching the
@@ -809,10 +809,26 @@ pub struct JavaSettings {
     /// Extra JVM options for the Java language server (jdtls), space-separated
     /// (VS Code's `java.jdt.ls.vmargs`).
     pub jdtls_vm_args: String,
+    /// Minutes the Java language server keeps running once no Java file of the project
+    /// is open; it starts again with the next one, or for Run / Debug. 0 = never stops.
+    pub jdtls_idle_shutdown_minutes: u32,
     /// Build Tools › Maven.
     pub maven: MavenSettings,
     /// Build Tools › Gradle.
     pub gradle: GradleSettings,
+}
+
+impl Default for JavaSettings {
+    fn default() -> Self {
+        Self {
+            jdk: String::new(),
+            jdtls_jdk: String::new(),
+            jdtls_vm_args: String::new(),
+            jdtls_idle_shutdown_minutes: 15,
+            maven: MavenSettings::default(),
+            gradle: GradleSettings::default(),
+        }
+    }
 }
 
 /// Build Tools › Gradle.
@@ -1130,5 +1146,23 @@ mod go_module_tests {
                 .unwrap();
         assert!(!configured.modules.auto_vendor);
         assert_eq!(configured.modules.env["GOPRIVATE"], "example.com/private");
+    }
+}
+
+#[cfg(test)]
+mod jdtls_idle_tests {
+    use super::*;
+
+    #[test]
+    fn idle_shutdown_defaults_to_fifteen_minutes_and_zero_is_kept() {
+        assert_eq!(Settings::default().languages.java.jdtls_idle_shutdown_minutes, 15);
+        let old: JavaSettings = serde_json::from_str(r#"{"jdtlsVmArgs":"-Xmx4g"}"#).unwrap();
+        assert_eq!(old.jdtls_idle_shutdown_minutes, 15, "settings written before the option");
+        let never: JavaSettings = serde_json::from_str(r#"{"jdtlsIdleShutdownMinutes":0}"#).unwrap();
+        assert_eq!(never.jdtls_idle_shutdown_minutes, 0);
+        let mut settings = Settings::default();
+        settings.languages.java.jdtls_idle_shutdown_minutes = 0;
+        let restored: Settings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(restored.languages.java.jdtls_idle_shutdown_minutes, 0);
     }
 }

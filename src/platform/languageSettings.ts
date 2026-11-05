@@ -80,6 +80,8 @@ export interface LanguagesValid {
     jdk: string;
     jdtlsJdk: string;
     jdtlsVmArgs: string;
+    /** Minutes jdtls keeps running with no Java file open; 0 = it never stops. */
+    jdtlsIdleShutdownMinutes: number;
     gradle: {
       jvm: string;
       distribution: "wrapper" | "local";
@@ -131,6 +133,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
     jdk: "",
     jdtlsJdk: "",
     jdtlsVmArgs: "",
+    jdtlsIdleShutdownMinutes: 15,
     gradle: { jvm: "", distribution: "wrapper", home: "", userHome: "", runUsing: "gradle" },
     maven: { home: "", userSettings: "", localRepository: "", unlinkedProjects: [] },
   },
@@ -167,6 +170,9 @@ export function normalizeFolder(path: string): string {
 /** A stored preview font size within IDEA's 8..72, or `null` (follow the editor font). */
 const previewSize = (v: unknown): number | null =>
   typeof v === "number" && Number.isFinite(v) ? Math.min(72, Math.max(8, Math.round(v))) : null;
+/** A whole number of minutes (the backend's `u32`), else `d`. */
+const minutes = (v: unknown, d: number): number =>
+  typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 0xffffffff ? v : d;
 const folders = (v: unknown): string[] =>
   Array.isArray(v)
     ? [
@@ -252,6 +258,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
       jdk: text(java.jdk, d.java.jdk),
       jdtlsJdk: text(java.jdtlsJdk, d.java.jdtlsJdk),
       jdtlsVmArgs: text(java.jdtlsVmArgs, d.java.jdtlsVmArgs),
+      jdtlsIdleShutdownMinutes: minutes(java.jdtlsIdleShutdownMinutes, d.java.jdtlsIdleShutdownMinutes),
       gradle: {
         jvm: text(gradle.jvm, d.java.gradle.jvm),
         distribution: oneOf(gradle.distribution, ["wrapper", "local"] as const, d.java.gradle.distribution),

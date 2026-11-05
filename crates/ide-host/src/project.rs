@@ -17,6 +17,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// The Java debugger's adapter (`languages/java.toml`), hosted by jdtls.
+const JAVA_DEBUG_ADAPTER: &str = "java-debug";
+
 /// Everything bound to one open project folder.
 pub struct Project {
     pub(crate) trusted: Arc<AtomicBool>,
@@ -136,6 +139,7 @@ impl Host {
             let build_cache = self.local_data_dir.join("cache").join(&project_key).join("build");
             let sink = sink.clone();
             let formatter_problem = std::sync::Mutex::new(None);
+            let lombok_problem = std::sync::Mutex::new(None::<String>);
             lsp.set_config_hook(Box::new(move |cfg, server_root| {
                 let member = ide_workspace::workspace::Workspace::load(&root).ok().flatten().and_then(|w| {
                     w.projects.into_iter().filter(|p| server_root.starts_with(p)).max_by_key(|p| p.components().count())
@@ -194,15 +198,47 @@ impl Host {
                         .collect();
                     let min_java = ide_sdk::java::jdtls_min_java(cfg);
                     let jdks = ide_sdk::java::jdtls_jdks(min_java, &data_dir);
-                    let lombok = ide_sdk::lombok::lombok_agent(
-                        server_root,
-                        ide_sdk::lombok::agent_in_args(cfg.args.iter().map(String::as_str)),
-                        ide_tools::managed_bundle(&data_dir, "lombok"),
-                        ide_sdk::apply::maven_local_repository(root, &effective),
-                    );
-                    if let Some(problem) = lombok.problem() {
-                        tracing::warn!("{problem}");
+                    let own_lombok = ide_sdk::lombok::agent_in_args(cfg.args.iter().map(String::as_str));
+                    let wrapper_lombok = ide_sdk::jdtls::wrapper_lombok_agent(cfg);
+                    let lombok = match &wrapper_lombok {
+                        // A second agent of another version would patch ECJ twice.
+                        Some((script, agent)) => {
+                            tracing::info!(
+                                "jdtls: the launcher {} attaches its own Lombok agent ({agent}); not adding the app's",
+                                script.display()
+                            );
+                            None
+                        }
+                        None => {
+                            let lombok = ide_sdk::lombok::lombok_agent(
+                                server_root,
+                                own_lombok.clone(),
+                                ide_tools::managed_bundle(&data_dir, "lombok"),
+                                ide_sdk::apply::maven_local_repository(root, &effective),
+                            );
+                            if let Some(problem) = lombok.problem() {
+                                tracing::warn!("{problem}");
+                            }
+                            lombok.jar().map(Path::to_path_buf)
+                        }
+                    };
+                    let duplicate =
+                        wrapper_lombok.as_ref().zip(own_lombok.as_ref()).and_then(|((script, agent), own)| {
+                            ide_sdk::lombok::duplicate_agents_problem(script, agent, own)
+                        });
+                    let mut previous = lombok_problem.lock().unwrap();
+                    if duplicate != *previous {
+                        if let Some(body) = &duplicate {
+                            tracing::warn!("{body}");
+                            sink.emit(IdeEvent::Notify {
+                                level: ide_core::event::NotifyLevel::Warning,
+                                title: "Two Lombok agents in the Java language server".into(),
+                                body: Some(body.clone()),
+                            });
+                        }
+                        *previous = duplicate;
                     }
+                    drop(previous);
                     let server_jdk = ide_sdk::apply::jdtls_jdk(root, &effective).unwrap_or_else(|e| {
                         cfg.launch_error = Some(e);
                         None
@@ -216,7 +252,7 @@ impl Host {
                         server_jdk.as_ref(),
                         min_java,
                         &bundles,
-                        lombok.jar(),
+                        lombok.as_deref(),
                     );
                     ide_sdk::jdtls::launch_directly(cfg);
                 }
@@ -250,6 +286,26 @@ impl Host {
             let settings = settings.clone();
             lsp.set_servers_hook(Box::new(move |language, defined| {
                 ide_sdk::apply::language_servers(language.as_str(), defined, &settings.effective())
+            }));
+        }
+        {
+            // jdtls stops once no Java file has been open for the configured minutes; the
+            // java-debug adapter runs inside it, so a Java debug session keeps it.
+            let settings = settings.clone();
+            let debugger = Arc::downgrade(&self.debugger);
+            let owner = self.owner_window(window).to_owned();
+            lsp.set_idle_hook(Box::new(move |server: &str| {
+                if server != "jdtls" {
+                    return ide_lsp::IdlePolicy::default();
+                }
+                let minutes = settings.effective().languages.java.jdtls_idle_shutdown_minutes;
+                let debugging = debugger
+                    .upgrade()
+                    .is_some_and(|d| d.sessions(Some(owner.as_str())).iter().any(|s| s.adapter == JAVA_DEBUG_ADAPTER));
+                ide_lsp::IdlePolicy {
+                    timeout: std::time::Duration::from_secs(u64::from(minutes) * 60),
+                    keep_alive: debugging,
+                }
             }));
         }
         {

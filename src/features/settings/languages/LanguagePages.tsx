@@ -5,7 +5,7 @@
  */
 import { useId, useMemo } from "react";
 import { IconButton, Input, type SelectOption } from "@/ui";
-import { Row, Section, Select, Toggle } from "../components/Form";
+import { Row, Section, Select, SettingNumber, Toggle } from "../components/Form";
 import { choosePath } from "./api";
 import { useSetting } from "../components/context";
 import { SdkField, tildify, useDetected } from "./components";
@@ -308,6 +308,15 @@ export function JavaPage() {
             onChange={(e) => setVmArgs(e.target.value)}
           />
         </Row>
+        <SettingNumber
+          k="languages.java.jdtlsIdleShutdownMinutes"
+          label="Stop when idle"
+          hint="Stops jdtls once no Java file of the project has been open this long, returning its memory (often 0.5–2 GB). It starts again with the next Java file, Run or Debug, then takes a while to load the project. A Java debug session keeps it running. 0 keeps it running while the project is open."
+          min={0}
+          max={1440}
+          integer
+          unit="min"
+        />
       </Section>
     </div>
   );

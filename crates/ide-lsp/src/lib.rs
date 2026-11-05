@@ -14,6 +14,7 @@ mod external_project;
 mod file_ops;
 mod file_watch;
 mod handler;
+mod idle;
 mod inspect;
 pub mod jdtls;
 mod launch;
@@ -27,6 +28,7 @@ pub mod types;
 mod uri;
 mod virtual_doc;
 
+pub use idle::{IdleFn, IdlePolicy};
 pub use inspect::{FileInspection, InspectHost, InspectOptions};
 pub use launch::{LaunchError, Launcher, ProcessLauncher};
 pub use scope::{CandidateFiles, CandidateFn, CandidateQuery, MAX_CANDIDATES};
@@ -182,6 +184,8 @@ pub struct LspManager {
     candidates_hook: RwLock<Option<Arc<CandidateFn>>>,
     excludes_hook: RwLock<Option<Arc<external_project::ExcludesFn>>>,
     watch_roots_hook: RwLock<Option<Arc<WatchRootsFn>>>,
+    idle_hook: RwLock<Option<Arc<IdleFn>>>,
+    idle_check_started: AtomicBool,
     shutting_down: AtomicBool,
     execution_allowed: AtomicBool,
     java_usages_warned: AtomicBool,
@@ -342,6 +346,8 @@ impl LspManager {
             candidates_hook: RwLock::new(None),
             excludes_hook: RwLock::new(None),
             watch_roots_hook: RwLock::new(None),
+            idle_hook: RwLock::new(None),
+            idle_check_started: AtomicBool::new(false),
             shutting_down: AtomicBool::new(false),
             execution_allowed: AtomicBool::new(true),
             java_usages_warned: AtomicBool::new(false),
@@ -854,6 +860,7 @@ impl LspManager {
             docs.insert(doc, state);
         }
         for s in &servers {
+            s.touch();
             self.ensure_started(s);
             if s.running().is_some()
                 && let Some(me) = self.me.upgrade()
@@ -957,6 +964,7 @@ impl LspManager {
     pub fn did_close(&self, doc: DocId) {
         let Some(d) = self.docs.lock().remove(&doc) else { return };
         for a in &d.servers {
+            a.server.touch();
             let Some(run) = a.server.running() else { continue };
             if a.opened_gen == Some(run.generation)
                 && run.caps.read().open_close
@@ -1017,6 +1025,7 @@ impl LspManager {
         cancel: Option<&CancellationToken>,
         timeout: Duration,
     ) -> IdeResult<R> {
+        t.server.touch();
         let fut = t.run.peer.request::<P, R>(method, params, cancel.cloned());
         match tokio::time::timeout(timeout, fut).await {
             Ok(r) => r.map_err(|e| rpc_err(&t.server.name, method, e)),
@@ -2469,6 +2478,67 @@ impl LspManager {
         *self.config_hook.write() = Some(Arc::from(hook));
     }
 
+    /// Installed by the host: servers it gives a timeout stop once that long without an
+    /// open document or a request, and start again when one needs them.
+    pub fn set_idle_hook(&self, hook: Box<IdleFn>) {
+        *self.idle_hook.write() = Some(Arc::from(hook));
+        if self.idle_check_started.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let weak = self.me.clone();
+        self.runtime.spawn(async move {
+            let mut tick = tokio::time::interval(idle::CHECK_INTERVAL);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                let Some(me) = weak.upgrade() else { return };
+                if me.shutting_down.load(Ordering::Acquire) {
+                    return;
+                }
+                me.stop_idle_servers().await;
+            }
+        });
+    }
+
+    /// Stops the servers the idle hook's policy says are unused: what the idle check
+    /// does every minute once [`Self::set_idle_hook`] installed one.
+    pub async fn stop_idle_servers(&self) {
+        let Some(hook) = self.idle_hook.read().clone() else { return };
+        let servers: Vec<Arc<Server>> = self.servers.lock().clone();
+        for server in servers {
+            let policy = hook(server.name.as_str());
+            if policy.timeout.is_zero() {
+                continue;
+            }
+            let now = std::time::Instant::now();
+            let state = idle::IdleState {
+                running: server.running().is_some(),
+                open_documents: self.open_documents(&server),
+                busy: server.is_busy(),
+                idle_since: server.idle_since(),
+            };
+            if !idle::should_stop(state, policy, now) {
+                continue;
+            }
+            tracing::info!("{}: unused for {} s, stopping until it is needed", server.name, policy.timeout.as_secs());
+            self.stop_instance(&server, false).await;
+            server.set_status(
+                &self.sink,
+                ide_core::event::ServerStatus::Stopped,
+                Some("Stopped while unused; starts again when needed".into()),
+            );
+            // Opened or asked for while it was stopping: start it again.
+            if self.open_documents(&server) > 0 || server.idle_since() > now {
+                self.ensure_started(&server);
+            }
+        }
+    }
+
+    /// Documents attached to `server`.
+    fn open_documents(&self, server: &Server) -> usize {
+        self.docs.lock().values().filter(|d| d.servers.iter().any(|a| a.server.id == server.id)).count()
+    }
+
     pub fn set_prepare_hook(&self, hook: Box<PrepareFn>) {
         *self.prepare_hook.write() = Some(Arc::from(hook));
     }
@@ -2833,6 +2903,7 @@ mod send_check {
         assert_send(m.semantic_tokens(doc));
         assert_send(m.code_actions(doc, Range::default(), vec![]));
         assert_send(m.will_rename_files(&[], CancellationToken::new()));
+        assert_send(m.stop_idle_servers());
     }
 }
 

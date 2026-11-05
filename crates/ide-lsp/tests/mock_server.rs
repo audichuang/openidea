@@ -5,7 +5,7 @@ use ide_core::{DocId, FileEdit, IdeEvent, LanguageId, Pos, Range, ServerId, Seve
 use ide_jsonrpc::{Handler, NoopHandler, Peer};
 use ide_language::{LanguageConfig, LanguageRegistry, LanguageServerConfig};
 use ide_lsp::types::*;
-use ide_lsp::{LaunchError, Launcher, LspManager};
+use ide_lsp::{IdlePolicy, LaunchError, Launcher, LspManager};
 use ide_text::AppliedChange;
 use parking_lot::Mutex;
 use serde_json::{Value, json};
@@ -1009,6 +1009,54 @@ async fn crash_restarts_and_reopens_documents() {
     s.respond("textDocument/hover", json!({ "contents": { "kind": "markdown", "value": "hi" } }));
     let hover = h.mgr.hover(doc, Pos::new(0, 1), Default::default()).await.unwrap().unwrap();
     assert_eq!(hover.contents.value, "hi");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unused_servers_stop_and_start_again_with_the_next_file() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let policy = Arc::new(Mutex::new(IdlePolicy { timeout: Duration::from_millis(50), keep_alive: false }));
+    {
+        let policy = policy.clone();
+        h.mgr.set_idle_hook(Box::new(
+            move |name: &str| {
+                if name == "mock" { *policy.lock() } else { IdlePolicy::default() }
+            },
+        ));
+    }
+    let s = h.launcher.state("mock");
+    let status = || h.mgr.servers()[0].status;
+    let (doc, _) = h.open("a.mk", "one");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    h.mgr.stop_idle_servers().await;
+    assert_eq!(status(), ServerStatus::Ready, "a file is open");
+
+    h.mgr.did_close(doc);
+    policy.lock().keep_alive = true;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    h.mgr.stop_idle_servers().await;
+    assert_eq!(status(), ServerStatus::Ready, "kept alive (a debug session)");
+    policy.lock().timeout = Duration::ZERO;
+    policy.lock().keep_alive = false;
+    h.mgr.stop_idle_servers().await;
+    assert_eq!(status(), ServerStatus::Ready, "0 = never");
+
+    policy.lock().timeout = Duration::from_millis(50);
+    h.mgr.stop_idle_servers().await;
+    assert_eq!(status(), ServerStatus::Stopped);
+    assert_eq!(s.requested("shutdown").len(), 1, "shut down gracefully");
+    assert_eq!(s.launches.load(Ordering::SeqCst), 1);
+    h.mgr.stop_idle_servers().await;
+    assert_eq!(s.requested("shutdown").len(), 1, "already stopped");
+
+    // The next file starts it again, transparently.
+    let (doc, path) = h.open("b.mk", "two");
+    eventually(|| s.launches.load(Ordering::SeqCst) == 2).await;
+    h.wait_status("mock", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().contains_key(&uri_of(&path))).await;
+    s.respond("textDocument/hover", json!({ "contents": { "kind": "markdown", "value": "back" } }));
+    let hover = h.mgr.hover(doc, Pos::new(0, 1), Default::default()).await.unwrap().unwrap();
+    assert_eq!(hover.contents.value, "back");
 }
 
 #[tokio::test(flavor = "multi_thread")]

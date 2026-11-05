@@ -95,6 +95,8 @@ pub struct Server {
     crashes: Mutex<usize>,
     /// When the current instance was launched.
     started: Mutex<Option<Instant>>,
+    /// When a document of the server was last opened or closed, or a request sent to it.
+    last_used: Mutex<Instant>,
     stderr: Mutex<VecDeque<String>>,
     pub progress: Mutex<HashMap<String, Progress>>,
     diagnostics: Mutex<HashMap<PathBuf, Vec<lsp::Diagnostic>>>,
@@ -129,6 +131,7 @@ impl Server {
             status: Mutex::new((ServerStatus::Stopped, None)),
             crashes: Mutex::new(0),
             started: Mutex::new(None),
+            last_used: Mutex::new(Instant::now()),
             stderr: Mutex::new(VecDeque::new()),
             progress: Mutex::new(HashMap::new()),
             diagnostics: Mutex::new(HashMap::new()),
@@ -344,6 +347,17 @@ impl Server {
         *crashes += 1;
         let n = *crashes;
         (n <= MAX_RESTARTS).then(|| Duration::from_millis(500) * (1 << (n - 1)) as u32)
+    }
+
+    /// Records a use of the server (see [`crate::idle`]).
+    pub fn touch(&self) {
+        *self.last_used.lock() = Instant::now();
+    }
+
+    /// Since when nothing used the current instance: its last use, or its start if later.
+    pub fn idle_since(&self) -> Instant {
+        let used = *self.last_used.lock();
+        self.started.lock().map_or(used, |started| started.max(used))
     }
 
     pub fn reset_for_restart(&self) {

@@ -375,6 +375,8 @@ impl LspManager {
             .into_iter()
             .find(|s| s.name == SERVER)
             .ok_or_else(|| IdeError::unavailable("no Java language server (jdtls) is configured"))?;
+        // Run / Debug / builds use it without an open file: that keeps it from stopping idle.
+        server.touch();
         self.ensure_started(&server);
         match cancellable_wait(cancel, server.wait_ready(READY_TIMEOUT)).await? {
             Some(run) => Ok((server, run)),
@@ -416,6 +418,7 @@ impl LspManager {
                 ),
             )),
         };
+        server.touch();
         tracing::info!(
             phase,
             ready_ms,
