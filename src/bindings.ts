@@ -866,6 +866,12 @@ export const commands = {
 	 */
 	windowOpenProject: (path: string, newWindow: boolean, files: string[]) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_project", { path, newWindow, files })),
 	/**
+	 *  [`window_open_project`] into a new tab of this window's group ("Open project in: New tab");
+	 *  a plain new window when this window has no local project. Remote projects don't join tab
+	 *  groups: a group saves and restores local project paths only.
+	 */
+	windowOpenProjectTab: (path: string, files: string[]) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_project_tab", { path, files })),
+	/**
 	 *  Loose `files` opened from a window without a local project: a file inside a local project
 	 *  open in some window goes to that window, the others to the LightEdit window (this one,
 	 *  another, or a new one from a remote project window). Returns the files this window opens
@@ -4121,7 +4127,7 @@ export type FunctionBreakpoint = {
 export type GeneralSettings = {
 	reopenLastProject?: boolean,
 	confirmExit?: boolean,
-	/**  Where Open… puts a project while one is open: `ask` | `new` | `same` | `attach`. */
+	/**  Where Open… puts a project while one is open: `ask` | `new` | `tab` | `same` | `attach`. */
 	openProjectIn?: string,
 	/**  Initial folder of the Open / Clone dialogs; empty = the OS default. */
 	defaultProjectDirectory?: string,
