@@ -107,6 +107,7 @@ import {
   unstagePaths,
   useStagingArea,
 } from "./staging";
+import { RepoSwatch } from "./RepoSwatch";
 import { refreshNow, repoName, selectRepo, useVcs } from "./store";
 import { saveVcsSetting } from "./settingsUi";
 import styles from "./CommitView.module.css";
@@ -950,6 +951,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                     className={styles.icon}
                   />
                 )}
+                {n.repo && <RepoSwatch root={n.repo} />}
                 {label}
                 {n.type === "group" && <span className={styles.detail}>{fileCount(n.files.length)}</span>}
                 {!staging && n.type === "file" && n.files[0] && isPartiallyStaged(n.files[0]) && (
@@ -1367,6 +1369,7 @@ export function StashesPanel() {
           return (
             <span className={styles.stashRow} title={`stash@{${s.index}}: ${s.message}`}>
               <span className={styles.stashMessage}>
+                {repos.length > 1 && s.repo && <RepoSwatch root={s.repo} />}
                 {repos.length > 1 && s.repo ? `${repoName(s.repo)} · ` : ""}
                 {text}
               </span>
