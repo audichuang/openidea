@@ -6,7 +6,8 @@ import { currentDetectedRoots, currentRoots } from "./projectRoots";
 /** Package flavour of New › Package (JVM, dotted) / New › Python Package (`__init__.py`). */
 export type PackageKind = "jvm" | "python";
 
-const JVM_BUILD = /(^|\/)(pom\.xml|build\.gradle(\.kts)?)$/;
+// "Gradle" is what a Gradle sync stamps on the roots it reports (ide-host `with_gradle_roots`).
+const JVM_BUILD = /(^|\/)(pom\.xml|build\.gradle(\.kts)?)$|^Gradle$/;
 const PY_BUILD = /(^|\/)(pyproject\.toml|setup\.py|setup\.cfg|Pipfile|requirements\.txt)$/;
 const JVM_DIR = /(^|\/)(java|kotlin|scala|groovy)$/;
 
@@ -30,10 +31,18 @@ export function packageKindAt(
     (JVM_BUILD.test(root.detectedFrom ?? "") || JVM_DIR.test(root.path))
   )
     return "jvm";
-  const python = [...roots, ...detected].some(
-    (r) => r.detectedFrom && PY_BUILD.test(r.detectedFrom) && within(rel, moduleDir(r.detectedFrom)),
-  );
-  return python ? "python" : null;
+  // The innermost module wins: a Python file at the repo root must not claim
+  // `frontend/` when `frontend/package.json` is the deeper recognised module.
+  let python = -1;
+  let other = -1;
+  for (const r of [...roots, ...detected]) {
+    if (!r.detectedFrom) continue;
+    const dir = moduleDir(r.detectedFrom);
+    if (!within(rel, dir)) continue;
+    if (PY_BUILD.test(r.detectedFrom)) python = Math.max(python, dir.length);
+    else other = Math.max(other, dir.length);
+  }
+  return python >= 0 && python >= other ? "python" : null;
 }
 
 /** `packageKindAt` for an absolute directory of the open project, from the current roots. */
