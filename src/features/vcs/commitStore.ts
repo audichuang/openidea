@@ -46,7 +46,10 @@ interface CommitState extends CommitAuthorDetails {
   signOff: boolean;
   /** Commit Options › Run Git hooks. */
   runHooks: boolean;
+  /** Group By › Directory of the change list tree. */
   groupByDir: boolean;
+  /** Group By › Directory of the staging area tree (on by default, as in IDEA). */
+  stagingGroupByDir: boolean;
   /** Group the changes into Staged / Unstaged instead of one "Changes" group. */
   groupByStaging: boolean;
   /** With several repositories, a node per repository above their files. */
@@ -105,6 +108,7 @@ export const useCommit = create<CommitState>(() => ({
   ...DEFAULT_COMMIT_AUTHOR,
   runHooks: true,
   groupByDir: readBool("openidea.vcs.groupByDir", false),
+  stagingGroupByDir: readBool("openidea.vcs.stagingGroupByDir", true),
   groupByStaging: readBool("openidea.vcs.groupByStaging", false),
   groupByRepo: readBool("openidea.vcs.groupByRepo", true),
   showUnversionedSeparately: readBool("openidea.vcs.showUnversionedSeparately", true),
@@ -169,6 +173,15 @@ export function setGroupByDir(v: boolean) {
   useCommit.setState({ groupByDir: v });
   try {
     localStorage.setItem("openidea.vcs.groupByDir", String(v));
+  } catch {
+    // ignore
+  }
+}
+
+export function setStagingGroupByDir(v: boolean) {
+  useCommit.setState({ stagingGroupByDir: v });
+  try {
+    localStorage.setItem("openidea.vcs.stagingGroupByDir", String(v));
   } catch {
     // ignore
   }
