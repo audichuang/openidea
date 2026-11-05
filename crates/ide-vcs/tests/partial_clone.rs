@@ -63,11 +63,14 @@ fn blobless_sparse_clone_keeps_its_repository_and_status() {
     std::fs::write(work.join("README.md"), "hello\nchanged\n").unwrap();
     std::fs::write(work.join("new.txt"), "new\n").unwrap();
     // A staged deletion of a never-fetched blob plus a near-identical addition: rename
-    // detection has to read the missing blob (`git rm --sparse` needs git 2.35+).
+    // detection would have to fetch the missing blob (`git rm --sparse` needs git 2.35+).
     git(&work, &["rm", "-q", "--sparse", "docs/guide.txt"]);
     let renamed: String = (1..=199).map(|i| format!("line {i}\n")).collect();
     std::fs::write(work.join("guide2.txt"), renamed).unwrap();
     git(&work, &["add", "guide2.txt"]);
+
+    // The promisor remote is gone: status must not need it.
+    std::fs::rename(&bare, base.join("gone.git")).unwrap();
 
     let repos = Repos::discover(&work, &|_| false).unwrap();
     let repo = repos.primary().expect("the partial clone is a repository");
@@ -81,10 +84,12 @@ fn blobless_sparse_clone_keeps_its_repository_and_status() {
     assert_eq!((readme.staged, readme.unstaged), (None, Some(ChangeKind::Modified)));
     let new = find("new.txt").expect("new.txt listed");
     assert_eq!(new.unstaged, Some(ChangeKind::Untracked));
+    // Renames are not detected here: that needs the blob from the (unreachable) remote.
     let moved = find("guide2.txt").expect("guide2.txt listed");
-    assert_eq!(moved.staged, Some(ChangeKind::Renamed));
-    assert_eq!(moved.renamed_from.as_deref(), Some("docs/guide.txt"));
+    assert_eq!((moved.staged, moved.renamed_from.as_deref()), (Some(ChangeKind::Added), None));
+    let removed = find("docs/guide.txt").expect("docs/guide.txt listed");
+    assert_eq!(removed.staged, Some(ChangeKind::Deleted));
     // Skip-worktree entries outside the checkout are not missing files.
     assert!(find("app/main.rs").is_none(), "{status:?}");
-    assert_eq!(status.len(), 3, "{status:?}");
+    assert_eq!(status.len(), 4, "{status:?}");
 }
