@@ -584,8 +584,10 @@ function backendLiterals(source: string): string[] {
 
 it("reads backend messages after quote character literals", () => {
   expect(
-    backendLiterals(`let quote = '"'; let message = "Select a .NET project"; let detail = "Expected 'x'";`),
-  ).toEqual(["Select a .NET project", "Expected 'x'"]);
+    backendLiterals(
+      `let quote = '"'; let message = "Select a .NET project"; let detail = "Expected 'x'"; let wrapped = "a \\\n b"; let next = "Next";`,
+    ),
+  ).toEqual(["Select a .NET project", "Expected 'x'", "a \\\n b", "Next"]);
 });
 
 it("reads backend messages continued over a line", () => {
