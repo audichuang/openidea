@@ -202,40 +202,23 @@ impl Host {
                     let min_java = ide_sdk::java::jdtls_min_java(cfg);
                     let jdks = ide_sdk::java::jdtls_jdks(min_java, &data_dir);
                     let own_lombok = ide_sdk::lombok::agent_in_args(cfg.args.iter().map(String::as_str));
-                    let wrapper_lombok = ide_sdk::jdtls::wrapper_lombok_agent(cfg);
-                    let lombok =
-                        ide_sdk::lombok::app_agent_beside(wrapper_lombok.as_ref().map(|(_, agent)| agent), || {
-                            ide_sdk::lombok::lombok_agent(
-                                server_root,
-                                own_lombok.clone(),
-                                ide_tools::managed_bundle(&data_dir, "lombok"),
-                                ide_sdk::apply::maven_local_repository(root, &effective),
-                            )
-                        });
-                    if let Some((script, agent)) = &wrapper_lombok {
-                        if lombok.is_none() {
-                            tracing::info!(
-                                "jdtls: the launcher {} attaches its own Lombok agent ({}); not adding the app's",
-                                script.display(),
-                                agent.agent
-                            );
-                        } else {
-                            tracing::info!(
-                                "jdtls: the launcher {} attaches its own Lombok agent ({}) only on a run-time \
-                                 condition; adding the app's as well",
-                                script.display(),
-                                agent.agent
-                            );
-                        }
-                    }
-                    if let Some(problem) = lombok.as_ref().and_then(ide_sdk::lombok::LombokAgent::problem) {
+                    // The app always attaches its agent: what is parsed out of a wrapper script
+                    // (shell logic, variables, PATH differences) only feeds the warning below.
+                    let lombok = ide_sdk::lombok::lombok_agent(
+                        server_root,
+                        own_lombok,
+                        ide_tools::managed_bundle(&data_dir, "lombok"),
+                        ide_sdk::apply::maven_local_repository(root, &effective),
+                    );
+                    if let Some(problem) = lombok.problem() {
                         tracing::warn!("{problem}");
                     }
-                    let lombok = lombok.as_ref().and_then(ide_sdk::lombok::LombokAgent::jar).map(Path::to_path_buf);
-                    let duplicate =
-                        wrapper_lombok.as_ref().zip(own_lombok.as_ref()).and_then(|((script, agent), own)| {
-                            ide_sdk::lombok::duplicate_agents_problem(script, &agent.agent, own)
-                        });
+                    let lombok = lombok.jar().map(Path::to_path_buf);
+                    // `cfg.env` already carries the language server's PATH here, which
+                    // `wrapper_lombok_agent` searches like the launch does.
+                    let duplicate = ide_sdk::jdtls::wrapper_lombok_agent(cfg).zip(lombok.as_deref()).and_then(
+                        |((script, agent), app)| ide_sdk::lombok::duplicate_agents_problem(&script, &agent, app),
+                    );
                     let mut previous = lombok_problem.lock().unwrap();
                     if duplicate != *previous {
                         if let Some(body) = &duplicate {
