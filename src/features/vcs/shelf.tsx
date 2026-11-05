@@ -4,7 +4,7 @@
  * merge UI), rename and delete.
  */
 import { writePlainText } from "@/platform/clipboard";
-import { useEffect, useMemo, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent } from "react";
 import { create } from "zustand";
 import type { ApplyOutcome, FileStatus, ShelvedChangeList, ShelfDiffFile } from "@/bindings";
 import { setContext } from "@/platform/context";
@@ -180,6 +180,12 @@ function ShelveCheck({
 }
 
 /** IDEA's Shelve Changes dialog: a directory tree of the changes with inclusion checkboxes, the selected file's diff, the name. */
+// The embedded editor sits inside a Dialog whose document-level handler treats Enter as "default button" and
+// Escape as "close"; keep keys the editor owns (read-only Enter, Escape already used by the find bar) from leaking.
+function keepPreviewKeysOutOfDialog(e: ReactKeyboardEvent) {
+  if (e.key === "Enter" || (e.key === "Escape" && e.defaultPrevented)) e.stopPropagation();
+}
+
 function ShelveDialog({
   files,
   initialName,
@@ -294,9 +300,9 @@ function ShelveDialog({
           </SplitPanel>
           <SplitHandle />
           <SplitPanel defaultSize="62%" minSize="240px">
-            <div className={shelfStyles.preview} data-shelve-preview>
+            <div className={shelfStyles.preview} data-shelve-preview onKeyDown={keepPreviewKeysOutOfDialog}>
               {previewPath ? (
-                <DiffEditor input={diffInput(workingDiffData(previewPath))} />
+                <DiffEditor key={previewPath} input={diffInput(workingDiffData(previewPath))} />
               ) : (
                 <EmptyState>
                   <T>Select a file to preview its changes</T>
