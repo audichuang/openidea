@@ -161,6 +161,22 @@
 .grow {
   flex: 1;
 }
+.summary {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--fs-small);
+}
+.summaryAdded {
+  color: var(--vcs-added);
+}
+.summaryModified {
+  color: var(--vcs-modified);
+}
+.summaryDeleted {
+  color: var(--vcs-deleted);
+}
 .lineLen {
   color: var(--fg-faint);
   font-family: var(--font-mono);
