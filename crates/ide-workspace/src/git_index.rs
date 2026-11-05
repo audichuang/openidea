@@ -12,6 +12,9 @@ pub(crate) struct IndexMove {
     root: PathBuf,
     /// `(mode, object id, old path, new path)`, paths relative to `root` with `/`.
     entries: Vec<(String, String, String, String)>,
+    /// New paths of intent-to-add entries (`git add -N`): their index blob is a
+    /// placeholder, so they are re-added with `add -N` rather than staged as empty files.
+    intent_to_add: Vec<String>,
 }
 
 /// The index edits that would move the entries at `from` to `to`, or `None` when
@@ -24,6 +27,12 @@ pub(crate) fn plan(from: &Path, to: &Path) -> Option<IndexMove> {
     }
     let pathspec = format!(":(literal){old}");
     let out = run(&root, &["ls-files", "--stage", "-z", "--", pathspec.as_str()], None)?;
+    // An intent-to-add entry shows as an added file in the index-to-worktree diff.
+    let ita_out =
+        run(&root, &["diff", "--no-ext-diff", "--name-only", "-z", "--diff-filter=A", "--", pathspec.as_str()], None)?;
+    let ita: std::collections::HashSet<String> =
+        String::from_utf8(ita_out.stdout).ok()?.split('\0').filter(|p| !p.is_empty()).map(str::to_owned).collect();
+    let mut intent_to_add = Vec::new();
     let entries: Vec<_> = String::from_utf8(out.stdout)
         .ok()?
         .split('\0')
@@ -37,11 +46,17 @@ pub(crate) fn plan(from: &Path, to: &Path) -> Option<IndexMove> {
                 return None;
             }
             let rest = path.strip_prefix(old.as_str())?;
-            (rest.is_empty() || rest.starts_with('/'))
-                .then(|| (mode.to_owned(), oid.to_owned(), path.to_owned(), format!("{new}{rest}")))
+            if !(rest.is_empty() || rest.starts_with('/')) {
+                return None;
+            }
+            let target = format!("{new}{rest}");
+            if ita.contains(path) {
+                intent_to_add.push(target.clone());
+            }
+            Some((mode.to_owned(), oid.to_owned(), path.to_owned(), target))
         })
         .collect();
-    (!entries.is_empty()).then_some(IndexMove { root, entries })
+    (!entries.is_empty()).then_some(IndexMove { root, entries, intent_to_add })
 }
 
 /// Applies `planned`, one `git update-index` run per move.
@@ -52,10 +67,20 @@ pub(crate) fn apply(planned: &[IndexMove]) {
             input.extend_from_slice(format!("0 {}\t{old}\0", "0".repeat(oid.len())).as_bytes());
         }
         for (mode, oid, _, new) in &m.entries {
+            if m.intent_to_add.contains(new) {
+                continue;
+            }
             input.extend_from_slice(format!("{mode} {oid}\t{new}\0").as_bytes());
         }
         if run(&m.root, &["update-index", "-z", "--index-info"], Some(input.as_slice())).is_none() {
             tracing::warn!("could not move index entries in {}", m.root.display());
+            continue;
+        }
+        for new in &m.intent_to_add {
+            let pathspec = format!(":(literal){new}");
+            if run(&m.root, &["add", "-N", "--", pathspec.as_str()], None).is_none() {
+                tracing::warn!("could not re-add intent-to-add entry {new} in {}", m.root.display());
+            }
         }
     }
 }
@@ -90,9 +115,20 @@ fn run(dir: &Path, args: &[&str], stdin: Option<&[u8]>) -> Option<Output> {
     let mut cmd = Command::new(git);
     // A project's own config must not run commands here (untrusted projects included).
     cmd.current_dir(dir)
-        .args(["-c", "core.fsmonitor=false", "-c", "core.hooksPath=", "-c", "submodule.recurse=false"])
+        .args([
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.hooksPath=",
+            "-c",
+            "submodule.recurse=false",
+            "-c",
+            "protocol.allow=never",
+        ])
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
+        // A partial clone's lazy fetch would run the repo's own transport command.
+        .env("GIT_NO_LAZY_FETCH", "1")
         .env("LC_ALL", "C")
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
@@ -117,4 +153,18 @@ fn run(dir: &Path, args: &[&str], stdin: Option<&[u8]>) -> Option<Output> {
         return None;
     }
     Some(out)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::run;
+
+    #[test]
+    fn git_runs_without_lazy_fetch_or_transports() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = run(tmp.path(), &["-c", "alias.probe=!printf '%s|' \"$GIT_NO_LAZY_FETCH\"", "probe"], None).unwrap();
+        assert_eq!(String::from_utf8(out.stdout).unwrap(), "1|");
+        let out = run(tmp.path(), &["-c", "alias.probe=!git config protocol.allow", "probe"], None).unwrap();
+        assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "never");
+    }
 }

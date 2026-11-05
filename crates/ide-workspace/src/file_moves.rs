@@ -493,6 +493,36 @@ mod tests {
     }
 
     #[test]
+    fn renaming_an_intent_to_add_file_keeps_it_intent_to_add() {
+        let tmp = repo();
+        let root = tmp.path();
+        fs::write(root.join("k.txt"), "k\n").unwrap();
+        git(root, &["add", "k.txt"]);
+        git(root, &["commit", "-q", "-m", "init"]);
+        fs::write(root.join("m.txt"), "content\n").unwrap();
+        git(root, &["add", "-N", "m.txt"]);
+        rename(root, "m.txt", "n.txt");
+        assert_eq!(git(root, &["status", "--porcelain"]), " A n.txt\n");
+        git(root, &["add", "n.txt"]);
+        git(root, &["commit", "-q", "-m", "n"]);
+        assert_eq!(git(root, &["cat-file", "-s", "HEAD:n.txt"]).trim(), "8");
+    }
+
+    #[test]
+    fn undoing_an_intent_to_add_rename_restores_intent_to_add() {
+        let tmp = repo();
+        let root = tmp.path();
+        fs::write(root.join("k.txt"), "k\n").unwrap();
+        git(root, &["add", "k.txt"]);
+        git(root, &["commit", "-q", "-m", "init"]);
+        fs::write(root.join("m.txt"), "content\n").unwrap();
+        git(root, &["add", "-N", "m.txt"]);
+        let (moves, id) = rename(root, "m.txt", "n.txt");
+        moves.undo(&documents(), id).unwrap();
+        assert_eq!(git(root, &["status", "--porcelain"]), " A m.txt\n");
+    }
+
+    #[test]
     fn untracked_and_cross_repository_moves_leave_the_index_alone() {
         let tmp = repo();
         let root = tmp.path();
