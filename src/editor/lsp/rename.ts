@@ -25,7 +25,7 @@ import {
 } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
 import { whenAllSynced, whenSynced, type EditorDocContext } from "@/editor/api";
-import { structure } from "@/editor/structure";
+import { structure, type NodeAt } from "@/editor/structure";
 import { docOf, incompleteNote, isUnavailable, lspRequest, reportLspError } from "./lsp";
 import { offsetToPos, rangeToOffsets } from "./positions";
 import { showHint } from "./hint";
@@ -44,6 +44,7 @@ import {
 import { tx } from "@/platform/i18n";
 import { synchronizeDocumentIndexes } from "@/workbench/contributions";
 import { contributedRename, type ContributedRename } from "@/editor/refactorProviders";
+import { fileStem, renamesFileInstead } from "./renameFallback";
 
 async function applyEdit(view: EditorView, edit: WorkspaceEdit) {
   try {
@@ -125,6 +126,8 @@ export async function startRename(view: EditorView) {
       reportLspError(view, e, true);
       return;
     }
+    // A server error (not a missing server or feature) is a refusal: a top-level type renames its file.
+    if (!isUnavailable(e) && (await renameFileInstead(view, doc, pos))) return;
     if (await startSyntaxRename(view, doc, pos, e, current)) return;
     // No server covers this file (a plain text file): Shift+F6 renames the file, like IDEA.
     if (isNoServer(e) && (await executeAction("project.rename"))) return;
@@ -136,6 +139,7 @@ export async function startRename(view: EditorView) {
     if ((await hasSyntaxErrors(doc.doc)) && current() && (await startSyntaxRename(view, doc, pos, undefined, current)))
       return;
     if (!current()) return;
+    if (await renameFileInstead(view, doc, pos)) return;
     showHint(view, "This element can't be renamed");
     return;
   }
@@ -165,6 +169,21 @@ export async function startRename(view: EditorView) {
     commit: (newName) => void commitInplace(view, doc, pos, oldName, newName),
     dialog,
   });
+}
+
+/** Opens Rename File for this file when the element at `pos` is its top-level type. */
+async function renameFileInstead(view: EditorView, doc: EditorDocContext, pos: Pos): Promise<boolean> {
+  const word = view.state.wordAt(view.state.selection.main.head);
+  const name = word ? view.state.sliceDoc(word.from, word.to) : null;
+  if (!name || name !== fileStem(doc.path)) return false;
+  let at: NodeAt | null = null;
+  try {
+    at = await structure.nodeAt(doc.doc, { start: pos, end: pos });
+  } catch (e) {
+    if (isCancelled(e)) return false;
+  }
+  if (!renamesFileInstead({ path: doc.path, language: doc.language, name, at })) return false;
+  return executeAction("project.rename", doc.path);
 }
 
 /** `name` with `[at, at + length)` replaced. */
