@@ -4,7 +4,9 @@
  * file instead, through the project view's Rename File dialog (which updates
  * usages, the type's own declaration included).
  */
-import type { NodeAt, SyntaxNode } from "@/bindings";
+import type { Text } from "@codemirror/state";
+import type { NodeAt, Range, SyntaxNode } from "@/bindings";
+import { offsetToPos } from "./positions";
 
 /** Languages whose top-level type is named after its file (used when the syntax tree can't tell). */
 const TYPE_PER_FILE = new Set(["java"]);
@@ -44,4 +46,13 @@ export function renamesFileInstead({ path, language, name, at }: FileRenameQuery
   if (!name || name !== fileStem(path)) return false;
   if (at) return isTopLevelTypeName(at);
   return TYPE_PER_FILE.has(language);
+}
+
+/**
+ * The range to ask the syntax tree about for the word `[from, to)`. Never zero-width: the
+ * backend skips a node that ends exactly at an empty range, so a caret at the end of `Foo|`
+ * would resolve to the enclosing declaration instead of the identifier.
+ */
+export function wordQueryRange(doc: Text, word: { from: number; to: number }): Range {
+  return { start: offsetToPos(doc, word.from), end: offsetToPos(doc, word.to) };
 }
