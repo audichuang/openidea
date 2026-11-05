@@ -61,20 +61,27 @@ pub(crate) fn apply(planned: &[IndexMove]) {
 }
 
 /// The repository root containing `path` and `path` relative to it (`/`-separated).
-/// `path` itself need not exist; its parent must.
+/// `path` and any of its parent folders need not exist yet (a move creates them), so
+/// this resolves from the nearest existing ancestor.
 fn locate(path: &Path) -> Option<(PathBuf, String)> {
-    let parent = dunce::canonicalize(path.parent()?).ok()?;
-    let name = path.file_name()?.to_str()?;
-    let out = run(&parent, &["rev-parse", "--show-toplevel"], None)?;
+    let mut missing = vec![path.file_name()?.to_str()?];
+    let mut dir = path.parent()?;
+    let base = loop {
+        if let Ok(found) = dunce::canonicalize(dir) {
+            break found;
+        }
+        missing.push(dir.file_name()?.to_str()?);
+        dir = dir.parent()?;
+    };
+    let out = run(&base, &["rev-parse", "--show-toplevel"], None)?;
     let top = String::from_utf8(out.stdout).ok()?;
     let root = dunce::canonicalize(top.trim_end_matches(['\n', '\r'])).ok()?;
-    let mut rel = String::new();
-    for part in parent.strip_prefix(&root).ok()?.components() {
-        rel.push_str(part.as_os_str().to_str()?);
-        rel.push('/');
+    let mut parts = Vec::new();
+    for part in base.strip_prefix(&root).ok()?.components() {
+        parts.push(part.as_os_str().to_str()?);
     }
-    rel.push_str(name);
-    Some((root, rel))
+    parts.extend(missing.into_iter().rev());
+    Some((root, parts.join("/")))
 }
 
 /// Runs git in `dir`; `None` when git is missing or the command fails.

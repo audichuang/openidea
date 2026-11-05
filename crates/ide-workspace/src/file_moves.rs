@@ -458,6 +458,24 @@ mod tests {
     }
 
     #[test]
+    fn moving_into_a_folder_that_does_not_exist_yet_moves_the_index_entry() {
+        let tmp = repo();
+        let root = tmp.path();
+        fs::write(root.join("t.txt"), "t\n").unwrap();
+        git(root, &["add", "t.txt"]);
+        git(root, &["commit", "-q", "-m", "init"]);
+        assert!(!root.join("d").exists());
+        let (moves, id) = rename(root, "t.txt", "d/e/t.txt");
+        assert_eq!(git(root, &["ls-files"]), "d/e/t.txt\n");
+        assert_eq!(git(root, &["ls-files", "--others", "--exclude-standard"]), "");
+        assert_eq!(git(root, &["diff", "--name-only"]), "");
+
+        moves.undo(&documents(), id).unwrap();
+        assert_eq!(git(root, &["ls-files"]), "t.txt\n");
+        assert_eq!(git(root, &["status", "--porcelain"]), "");
+    }
+
+    #[test]
     fn moving_a_folder_moves_the_entries_under_it_only() {
         let tmp = repo();
         let root = tmp.path();
