@@ -6,6 +6,7 @@
 import { StateEffect, StateField, type Extension, type Range } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, WidgetType, type DecorationSet } from "@codemirror/view";
 import { getChunks, getOriginalDoc, type Chunk, type MergeView } from "@codemirror/merge";
+import { tx } from "@/platform/i18n";
 import { iconMarkup } from "@/ui";
 import { transferChunk } from "./diffOptions";
 
@@ -27,15 +28,63 @@ export function revertUnifiedChunk(view: EditorView, pos: number) {
   });
 }
 
-/** A ">>" / "<<" button; the chunk index comes from the nearest `data-chunk` (itself included). */
-export function arrowButton(dir: "a-to-b" | "b-to-a", run: (chunkIndex: number) => void): HTMLButtonElement {
+export type ArrowDir = "a-to-b" | "b-to-a";
+/** `apply` copies the chunk across; `revert` is that copy onto the working copy of a
+ * staging diff (index ↔ working tree); `stage` adds the working copy's hunk to the index. */
+export type ArrowAction = "apply" | "revert" | "stage";
+export interface DiffArrow {
+  dir: ArrowDir;
+  action: ArrowAction;
+}
+
+export interface ArrowSides {
+  /** The left side is editable. */
+  toA: boolean;
+  /** The right side is editable. */
+  toB: boolean;
+  /** Index ↔ working tree: the right-hand arrow discards, and a stage control is added. */
+  staging?: boolean;
+}
+
+/** The per-chunk controls of a split diff, in display order. */
+export function diffArrows(sides: ArrowSides): DiffArrow[] {
+  const staging = !!sides.staging && sides.toB;
+  const arrows: DiffArrow[] = [];
+  if (sides.toB) arrows.push({ dir: "a-to-b", action: staging ? "revert" : "apply" });
+  if (sides.toA) arrows.push({ dir: "b-to-a", action: "apply" });
+  if (staging) arrows.push({ dir: "b-to-a", action: "stage" });
+  return arrows;
+}
+
+/** Tooltip and icon of a control. */
+export function arrowLook(arrow: DiffArrow): { label: string; icon: string } {
+  switch (arrow.action) {
+    case "revert":
+      return { label: tx("Revert to staged version"), icon: "revert" };
+    case "stage":
+      return { label: tx("Stage this change (git add hunk)"), icon: "plus" };
+    default:
+      return arrow.dir === "a-to-b"
+        ? { label: tx("Apply change to the right (Replace ›››)"), icon: "chevron-right" }
+        : { label: tx("Apply change to the left (‹‹‹ Replace)"), icon: "chevron-left" };
+  }
+}
+
+/** Runs `arrow` on a chunk of a split diff; `stage` stages that chunk. */
+export function runArrow(mv: MergeView | null, arrow: DiffArrow, index: number, stage?: (index: number) => void) {
+  if (arrow.action === "stage") stage?.(index);
+  else if (mv) applyChunk(mv, index, arrow.dir === "a-to-b" ? "a" : "b");
+}
+
+/** A divider control; the chunk index comes from the nearest `data-chunk` (itself included). */
+export function arrowButton(arrow: DiffArrow, run: (chunkIndex: number) => void): HTMLButtonElement {
   const btn = document.createElement("button");
   btn.type = "button";
-  btn.className = `cm-diffArrow cm-diffArrow-${dir}`;
-  const label = dir === "a-to-b" ? "Apply change to the right (Replace ›››)" : "Apply change to the left (‹‹‹ Replace)";
+  btn.className = `cm-diffArrow cm-diffArrow-${arrow.dir} cm-diffArrow-${arrow.action}`;
+  const { label, icon } = arrowLook(arrow);
   btn.setAttribute("aria-label", label);
   btn.title = label;
-  btn.innerHTML = iconMarkup(dir === "a-to-b" ? "chevron-right" : "chevron-left", 12) ?? "";
+  btn.innerHTML = iconMarkup(icon, 12) ?? "";
   btn.addEventListener("mousedown", (e) => {
     // Handled here rather than by MergeView's own (one-directional) revert handler.
     e.preventDefault();
@@ -48,18 +97,19 @@ export function arrowButton(dir: "a-to-b" | "b-to-a", run: (chunkIndex: number) 
 }
 
 /**
- * `renderRevertControl` for MergeView: one or two arrows per chunk. `toB`:
- * the right side is editable (">>"); `toA`: the left side is (">>" / "<<").
+ * `renderRevertControl` for MergeView: the controls of `diffArrows` per chunk.
+ * `stage` stages chunk `index` of a staging diff.
  */
 export function arrowControls(
   getView: () => MergeView | null,
-  sides: { toA: boolean; toB: boolean },
+  sides: ArrowSides,
+  stage?: (index: number) => void,
 ): () => HTMLElement {
+  const arrows = diffArrows(sides);
   return () => {
     const box = document.createElement("div");
     box.className = "cm-diffArrows";
-    if (sides.toB) box.appendChild(arrowButton("a-to-b", (i) => getView() && applyChunk(getView()!, i, "a")));
-    if (sides.toA) box.appendChild(arrowButton("b-to-a", (i) => getView() && applyChunk(getView()!, i, "b")));
+    for (const arrow of arrows) box.appendChild(arrowButton(arrow, (i) => runArrow(getView(), arrow, i, stage)));
     return box;
   };
 }
@@ -70,18 +120,19 @@ class RevertWidget extends WidgetType {
   constructor(
     readonly index: number,
     readonly onRevert: (view: EditorView, index: number) => void,
+    readonly label: string,
   ) {
     super();
   }
   eq(other: RevertWidget) {
-    return other.index === this.index;
+    return other.index === this.index && other.label === this.label;
   }
   toDOM(view: EditorView) {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "cm-diffHoverRevert";
-    btn.title = "Revert this change";
-    btn.setAttribute("aria-label", "Revert this change");
+    btn.title = this.label;
+    btn.setAttribute("aria-label", this.label);
     btn.innerHTML = `${iconMarkup("revert", 12) ?? ""}<span>Revert</span>`;
     btn.addEventListener("mousedown", (e) => {
       e.preventDefault();
@@ -106,7 +157,10 @@ export function chunkAt(chunks: readonly Chunk[], side: "a" | "b", pos: number, 
  * A "Revert" button at the first line of the change under the mouse, for an
  * editable pane of a split diff. `onRevert` copies the other side's content.
  */
-export function hoverRevert(onRevert: (view: EditorView, index: number) => void): Extension {
+export function hoverRevert(
+  onRevert: (view: EditorView, index: number) => void,
+  label = "Revert this change",
+): Extension {
   const field = StateField.define<{ index: number | null; deco: DecorationSet }>({
     create: () => ({ index: null, deco: Decoration.none }),
     update(value, tr) {
@@ -121,7 +175,7 @@ export function hoverRevert(onRevert: (view: EditorView, index: number) => void)
         const from = info.side === "a" ? chunk.fromA : chunk.fromB;
         const line = tr.state.doc.lineAt(Math.min(from, tr.state.doc.length));
         decos.push(Decoration.line({ class: "cm-diffHoverLine" }).range(line.from));
-        decos.push(Decoration.widget({ widget: new RevertWidget(index!, onRevert), side: 1 }).range(line.to));
+        decos.push(Decoration.widget({ widget: new RevertWidget(index!, onRevert, label), side: 1 }).range(line.to));
       }
       return { index, deco: Decoration.set(decos, true) };
     },
