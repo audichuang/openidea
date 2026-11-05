@@ -279,13 +279,13 @@
   margin-left: auto;
   width: 16px;
   height: 16px;
-  display: inline-flex;
   align-items: center;
   justify-content: center;
   border-radius: var(--radius-small);
   color: var(--fg-subtle);
   --icon-color: currentColor;
-  visibility: hidden;
+  /* Takes no room until shown, so narrow rows keep the space for their name. */
+  display: none;
 }
 .stageAction:hover {
   background: var(--bg-hover);
@@ -293,7 +293,7 @@
 }
 :global([role="treeitem"]):hover .stageAction,
 :global([role="treeitem"][aria-selected="true"]) .stageAction {
-  visibility: visible;
+  display: inline-flex;
 }
 .dropTarget {
   box-shadow: inset 0 0 0 1px var(--accent);
