@@ -1,14 +1,14 @@
 name: Fork release build setup
 description: >-
-  Toolchains, the Rust dependency cache and node_modules for a fork release build. The cache-warming
-  job and the release build both use this, so their rust-cache keys (job-free shared key, same
-  CARGO_*/RUST* env, same CARGO_HOME) match and a tag build restores what develop saved.
+  Toolchains, the Rust caches and node_modules for a fork release build. Develop candidate builds
+  and tag builds both use this, so their cache keys (job-free shared key, same CARGO_*/RUST* env,
+  same CARGO_HOME and work directory) match and a tag build restores what develop saved.
 inputs:
   target:
     description: Rust target triple.
     required: true
   save-cache:
-    description: Whether to save the Rust cache (only the develop warm job does).
+    description: Whether to save the cargo registry cache (develop candidate builds only).
     default: "false"
 runs:
   using: composite
@@ -45,15 +45,21 @@ runs:
         cache: ${{ runner.os != 'Windows' && 'pnpm' || '' }}
     - uses: dtolnay/rust-toolchain@stable
       with: { targets: "${{ inputs.target }}" }
-    # Dependencies only (rust-cache drops workspace crates). Saved by develop, restored by tags:
-    # a tag run can read caches saved on the default branch.
+    # The cargo registry only; target/ is in the rolling target cache below.
     - uses: Swatinem/rust-cache@v2
       with:
+        prefix-key: v1-rust
         shared-key: fork-release-${{ inputs.target }}
         workspaces: ${{ env.WORK }}
+        cache-targets: false
         save-if: ${{ inputs.save-cache }}
-        # The deps are the point; a failing final link must not discard them.
-        cache-on-failure: true
+    # Whole target/, rolled forward by every develop candidate build. A tag run can read caches
+    # saved on the default branch, so a release rebuilds only what changed since that candidate.
+    - uses: ./.github/actions/target-cache
+      with:
+        mode: restore
+        name: release-${{ inputs.target }}
+        workdir: ${{ env.WORK }}
     - name: pnpm install
       shell: bash
       working-directory: ${{ env.WORK }}
