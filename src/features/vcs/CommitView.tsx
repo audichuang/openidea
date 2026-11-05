@@ -593,6 +593,7 @@ export function LocalChangesView() {
  */
 export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const status = useVcs((s) => s.status);
+  const statusError = useVcs((s) => s.statusError);
   const root = useVcs((s) => s.root) ?? "";
   const staging = useStagingArea();
   // The staging area tree has its own Group By › Directory (on by default, as in IDEA).
@@ -786,6 +787,11 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
         />
       </div>
       {mode !== "dialog" && <OperationBanner />}
+      {statusError && (
+        <div className={styles.statusError} role="alert" title={statusError}>
+          <T>Could not read the working tree status</T>: {statusError}
+        </div>
+      )}
       <div
         className={styles.treeWrap}
         onKeyDownCapture={(e) => {
