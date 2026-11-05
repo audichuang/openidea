@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { MergeView } from "@codemirror/merge";
 import { arrowControls, arrowLook, diffArrows } from "../diffControls";
@@ -74,5 +75,32 @@ describe("staging diff controls", () => {
     expect(mv.b.state.doc.toString()).toBe("1\nstaged\n3\n");
     expect(mv.a.state.doc.toString()).toBe("1\nstaged\n3\n");
     mv.destroy();
+  });
+
+  it("swallows a mousedown on the wrapper gap so MergeView's own revert never fires", () => {
+    const { mv, stage, buttons } = staging();
+    const box = buttons[0]!.parentElement!;
+    document.body.appendChild(box);
+    const outer = vi.fn();
+    document.body.addEventListener("mousedown", outer);
+    box.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    document.body.removeEventListener("mousedown", outer);
+    box.remove();
+    expect(outer).not.toHaveBeenCalled();
+    expect(stage).not.toHaveBeenCalled();
+    expect(mv.b.state.doc.toString()).toBe("1\nworking\n3\n");
+    mv.destroy();
+  });
+
+  it("lays the wrapper out absolutely with in-flow buttons and no gap", () => {
+    const css = readFileSync("src/features/vcs/DiffEditor.module.css", "utf8");
+    const rule = (sel: string) => {
+      const m = css.match(new RegExp(`${sel.replace(/[.()]/g, "\\$&")}\\s*\\{([^}]*)\\}`));
+      return m?.[1] ?? "";
+    };
+    const box = rule(".host :global(.cm-diffArrows)");
+    expect(box).toMatch(/position:\s*absolute/);
+    expect(box).not.toMatch(/gap:\s*[1-9]/);
+    expect(rule(".host :global(.cm-merge-revert button.cm-diffArrow)")).toMatch(/position:\s*static/);
   });
 });
