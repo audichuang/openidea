@@ -55,10 +55,20 @@ fn needs_git_cli(repo: &gix::Repository) -> bool {
 /// Status through `git status --porcelain=v2`, without taking the index lock (no
 /// stat refresh write-back, so no index change for the watcher to report).
 fn cli_changes(r: &Repo, ignored: &IgnoredNames) -> IdeResult<Changes> {
-    let mut args = vec!["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=all"];
-    if !crate::execution_allowed() {
+    let restricted = !crate::execution_allowed();
+    // Restricted Mode: status compares content through the repository's clean
+    // filters, and checks dirty submodules with their own configuration.
+    let overrides = if restricted {
+        let config = crate::cli::run(r.root(), &["config", "--null", "--list"], None)?;
+        crate::cli::filter_overrides_from(&config.stdout_str())?
+    } else {
+        Vec::new()
+    };
+    let mut args: Vec<&str> = overrides.iter().map(String::as_str).collect();
+    args.extend(["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=all"]);
+    if restricted {
         // Restricted git may not fetch missing blobs, and rename detection needs them.
-        args.push("--no-renames");
+        args.extend(["--no-renames", "--ignore-submodules=dirty"]);
     }
     let out = crate::cli::run(r.root(), &args, None)?;
     Ok(parse_porcelain_v2(&out.stdout, ignored))
@@ -346,6 +356,47 @@ mod tests {
     fn commit_all(dir: &Path, msg: &str) {
         git(dir, &["add", "-A"]);
         git(dir, &["commit", "-q", "-m", msg]);
+    }
+
+    /// #60 review: the git CLI status reads the repository's own config, so in
+    /// Restricted Mode it must not run the repository's clean or process filters.
+    #[cfg(unix)]
+    #[test]
+    fn restricted_cli_status_does_not_run_repository_filters() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        git(dir, &["init", "-q"]);
+        git(dir, &["config", "user.name", "Test User"]);
+        git(dir, &["config", "user.email", "test@example.com"]);
+        git(dir, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.join("a.txt"), "aaaa\n").unwrap();
+        commit_all(dir, "base");
+
+        let script = dir.join(".git/marker.sh");
+        let marker = dir.join(".git/executed");
+        std::fs::write(&script, format!("#!/bin/sh\ntouch '{}'\ncat\n", marker.display())).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let script = script.to_str().unwrap();
+        git(dir, &["config", "filter.marker.clean", script]);
+        git(dir, &["config", "filter.marker.required", "true"]);
+        // Takes the git CLI path without a remote.
+        git(dir, &["config", "core.sparseCheckout", "true"]);
+        std::fs::create_dir_all(dir.join(".git/info")).unwrap();
+        std::fs::write(dir.join(".git/info/attributes"), "*.txt filter=marker\n").unwrap();
+        // Same size, new content: status has to compare content through the filter.
+        std::fs::write(dir.join("a.txt"), "bbbb\n").unwrap();
+
+        let repo = Repo::discover(dir).unwrap().expect("repository found");
+        repo.set_execution_allowed(false);
+        let status = repo.status().expect("restricted status");
+        assert!(!marker.exists(), "Restricted Mode ran a repository filter");
+        let a = status.iter().find(|f| f.rel_path == "a.txt").expect("a.txt listed");
+        assert_eq!(a.unstaged, Some(ChangeKind::Modified), "{status:?}");
+
+        // Control: the fixture's filter does run for plain git.
+        git(dir, &["--no-optional-locks", "status", "--porcelain"]);
+        assert!(marker.exists(), "control status did not run the clean filter");
     }
 
     /// #471: a status run that read the index before an external `git switch`
