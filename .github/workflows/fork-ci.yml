@@ -21,6 +21,9 @@ concurrency:
   # PRs and rebase/** heads cancel their superseded run.
   cancel-in-progress: ${{ github.ref != 'refs/heads/develop' }}
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
@@ -34,6 +37,7 @@ jobs:
     name: Scope
     # Why: the auto-rebase's lock commit only carries the old develop's tree.
     if: ${{ !startsWith(github.event.head_commit.message, 'auto-rebase lock') }}
+    timeout-minutes: 5
     runs-on: ubuntu-latest
     outputs:
       rust: ${{ steps.scope.outputs.rust }}
@@ -74,7 +78,7 @@ jobs:
       - uses: actions/checkout@v5
       - run: |
           # Port upstream's ci.yml edits into this file, then update the pin.
-          pin=5556e02e3a5aa805128877c00560809c29e4718204ad3e001a221dc38e39c54a
+          pin=094f0ab1f3516ab6ac5fb4135597cefbddaf1f1cab7d5c44ae98bdbec1b72e0f
           sha=$(sha256sum .github/workflows/ci.yml | cut -d' ' -f1)
           [ "$sha" = "$pin" ] || { echo "::error::upstream ci.yml changed ($sha); port it into fork-ci.yml and update the pin"; exit 1; }
 
@@ -93,6 +97,7 @@ jobs:
     name: Clippy (${{ matrix.os }})
     needs: scope
     if: needs.scope.outputs.rust == 'true'
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -142,6 +147,7 @@ jobs:
     name: Rust tests (${{ matrix.os }}${{ matrix.partition && format(' {0}', matrix.partition) || '' }})
     needs: scope
     if: needs.scope.outputs.rust == 'true'
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -235,6 +241,7 @@ jobs:
     name: Remote server (linux musl)
     needs: scope
     if: needs.scope.outputs.rust == 'true'
+    timeout-minutes: 40
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
@@ -255,6 +262,7 @@ jobs:
     name: Plugins (SDK, official, fixtures)
     needs: scope
     if: needs.scope.outputs.rust == 'true'
+    timeout-minutes: 30
     runs-on: ubuntu-22.04
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target-plugins
@@ -307,6 +315,7 @@ jobs:
     name: Cargo deny
     needs: scope
     if: needs.scope.outputs.rust == 'true'
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -318,6 +327,7 @@ jobs:
     name: Frontend static checks
     needs: scope
     if: needs.scope.outputs.web == 'true'
+    timeout-minutes: 30
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
@@ -336,6 +346,7 @@ jobs:
     name: Frontend tests (${{ matrix.shard }}/3)
     needs: scope
     if: needs.scope.outputs.web == 'true'
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -355,6 +366,7 @@ jobs:
     name: E2E (${{ matrix.shard }}/2)
     needs: scope
     if: needs.scope.outputs.web == 'true'
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
