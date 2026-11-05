@@ -373,9 +373,15 @@ export function DiffEditor({
     return !!fs && groupOf(fs) === "changes" && effectiveKind(fs) === "modified";
   });
   const includable =
-    !staging && trackedChange && left.type === "rev" && left.rev === "HEAD" && !left.path && isWorktree(right);
-  const editableA = !binary && !!attached?.a && !attached.a.readOnly;
-  const editableB = !binary && !!attached?.b && !attached.b.readOnly;
+    !data.readOnly &&
+    !staging &&
+    trackedChange &&
+    left.type === "rev" &&
+    left.rev === "HEAD" &&
+    !left.path &&
+    isWorktree(right);
+  const editableA = !data.readOnly && !binary && !!attached?.a && !attached.a.readOnly;
+  const editableB = !data.readOnly && !binary && !!attached?.b && !attached.b.readOnly;
   // Index ↔ working copy: the per-change controls stage a hunk or discard it back to the index.
   const stagingDiff = editableB && isIndex(left) && isWorktree(right);
   const stageRef = useRef<(index: number) => void>(() => {});
