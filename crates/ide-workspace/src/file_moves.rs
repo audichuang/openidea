@@ -187,7 +187,8 @@ impl FileMoves {
 
     /// Moves the files back and restores the edited files' text. Files changed
     /// since the refactoring keep their content and are reported as conflicts.
-    pub fn undo(&self, documents: &Documents, id: u32) -> IdeResult<UndoOutcome> {
+    /// `history` follows the moved-back files (the moves are all-or-nothing).
+    pub fn undo(&self, documents: &Documents, history: Option<&LocalHistory>, id: u32) -> IdeResult<UndoOutcome> {
         let record = {
             let mut records = self.records.lock();
             let i = records
@@ -201,6 +202,11 @@ impl FileMoves {
         if let Err(e) = crate::file_ops::move_files(&back) {
             self.records.lock().push(record);
             return Err(e);
+        }
+        if let Some(h) = history
+            && let Err(e) = h.follow_moves(&back)
+        {
+            tracing::warn!("local history: {e}");
         }
         let mut outcome = UndoOutcome { moves: back.clone(), conflicts: Vec::new() };
         for f in &record.edited {
@@ -274,13 +280,41 @@ mod tests {
         assert!(history.list(&root.join("a/util.ts")).unwrap().is_empty());
         assert_eq!(moves.last(), Some(id));
 
-        let undone = moves.undo(&docs, id).unwrap();
+        let undone = moves.undo(&docs, None, id).unwrap();
         assert!(undone.conflicts.is_empty());
         assert_eq!(undone.moves, vec![FileMove { from: root.join("b").into(), to: root.join("a").into() }]);
         assert!(root.join("a/util.ts").exists() && !root.join("b").exists());
         assert_eq!(fs::read_to_string(root.join("main.ts")).unwrap(), "import { x } from './a/util';\n");
         assert!(!moves.can_undo(id));
-        assert!(moves.undo(&docs, id).is_err());
+        assert!(moves.undo(&docs, None, id).is_err());
+    }
+
+    #[test]
+    fn failed_undo_leaves_files_and_history_where_they_are() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::write(root.join("sub/A.txt"), "a").unwrap();
+        fs::write(root.join("B.txt"), "b").unwrap();
+        let docs = documents();
+        let history = LocalHistory::open(&root.join(".history"), root).unwrap();
+        history.record(&root.join("sub/A.txt"), "a", "Saved").unwrap();
+        history.record(&root.join("B.txt"), "b", "Saved").unwrap();
+        let moves = FileMoves::new();
+        let mv = vec![
+            FileMove { from: root.join("sub/A.txt").into(), to: root.join("A2.txt").into() },
+            FileMove { from: root.join("B.txt").into(), to: root.join("B2.txt").into() },
+        ];
+        let id = moves.perform(&docs, Some(&history), &mv, &WorkspaceEdit::default(), "Move", &apply(&docs)).unwrap();
+        // Undo cannot move A2 back because `sub` is now a file: nothing moves back,
+        // so the history stays with the moved files and the undo stays available.
+        fs::remove_dir_all(root.join("sub")).unwrap();
+        fs::write(root.join("sub"), "x").unwrap();
+        assert!(moves.undo(&docs, Some(&history), id).is_err());
+        assert!(root.join("B2.txt").exists() && root.join("A2.txt").exists() && !root.join("B.txt").exists());
+        assert!(!history.list(&root.join("B2.txt")).unwrap().is_empty());
+        assert!(history.list(&root.join("B.txt")).unwrap().is_empty());
+        assert!(moves.can_undo(id));
     }
 
     #[test]
@@ -310,7 +344,7 @@ mod tests {
         let id = moves.perform(&docs, None, &mv, &edit, "Rename", &apply(&docs)).unwrap();
         assert_eq!(fs::read_to_string(root.join("Bar.java")).unwrap(), "class Bar {}\n");
         fs::write(root.join("Use.java"), "Bar f; // edited\n").unwrap();
-        let undone = moves.undo(&docs, id).unwrap();
+        let undone = moves.undo(&docs, None, id).unwrap();
         assert_eq!(fs::read_to_string(root.join("Foo.java")).unwrap(), "class Foo {}\n");
         assert_eq!(undone.conflicts, vec![root.join("Use.java")]);
         assert_eq!(fs::read_to_string(root.join("Use.java")).unwrap(), "Bar f; // edited\n");
