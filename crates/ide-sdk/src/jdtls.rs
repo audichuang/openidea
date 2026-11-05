@@ -292,7 +292,9 @@ fn resolved_command(cfg: &LanguageServerConfig) -> Option<PathBuf> {
 
 /// A launcher wrapper that passes its own Lombok agent: the script `cfg.command` runs and
 /// the agent as written there (see [`crate::lombok::agent_in_script`]). The release's
-/// launchers attach none, and binaries (a scoop shim) aren't read.
+/// launchers attach none, and binaries (a scoop shim) aren't read. None as well for a
+/// script in a release layout, even an edited one: [`launch_directly`] bypasses it, and its
+/// agent with it.
 pub fn wrapper_lombok_agent(cfg: &LanguageServerConfig) -> Option<(PathBuf, crate::lombok::ScriptAgent)> {
     // Wrappers are a few lines; this skips reading a binary someone named `jdtls`.
     const MAX_SCRIPT: u64 = 256 * 1024;
@@ -304,12 +306,23 @@ pub fn wrapper_lombok_agent(cfg: &LanguageServerConfig) -> Option<(PathBuf, crat
     if std::fs::metadata(&script).ok().is_none_or(|m| !m.is_file() || m.len() > MAX_SCRIPT) {
         return None;
     }
+    if is_release_launcher(&script) {
+        return None;
+    }
     let bytes = std::fs::read(&script).ok()?;
     if bytes.contains(&0) {
         return None;
     }
     let agent = crate::lombok::agent_in_script(&String::from_utf8_lossy(&bytes))?;
     Some((script, agent))
+}
+
+/// Whether `script` is one of the release's launchers of an install [`launch_directly`]
+/// runs `java` for, ignoring the script.
+fn is_release_launcher(script: &Path) -> bool {
+    let name = script.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase());
+    name.as_deref().is_some_and(|n| SCRIPTS.contains(&n))
+        && jdtls_home(script).and_then(|h| find_install(&h, std::env::consts::OS, std::env::consts::ARCH)).is_some()
 }
 
 /// Rewrites a jdtls launch (`command` = the release's script, `JAVA_HOME` chosen by
@@ -700,6 +713,23 @@ mod tests {
         assert_eq!(script, dunce::canonicalize(bin.join("jdtls")).unwrap());
         assert_eq!(agent.agent, "$HOME/lombok-1.18.46.jar");
         assert!(!agent.conditional);
+
+        // An edited launcher of the standard install is bypassed by the direct launch, and
+        // its agent with it: the app adds its own.
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(home.join("bin")).unwrap();
+        std::fs::create_dir_all(home.join("plugins")).unwrap();
+        std::fs::write(home.join("plugins/org.eclipse.equinox.launcher.jar"), "").unwrap();
+        let config = home.join(&config_dir_names(std::env::consts::OS, std::env::consts::ARCH)[0]);
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(config.join("config.ini"), "").unwrap();
+        std::fs::write(home.join("bin/jdtls"), "#!/bin/sh\nexec java -javaagent:/m2/lombok.jar \"$@\"\n").unwrap();
+        std::fs::set_permissions(home.join("bin/jdtls"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::remove_file(bin.join("jdtls")).unwrap();
+        std::os::unix::fs::symlink(home.join("bin/jdtls"), bin.join("jdtls")).unwrap();
+        assert_eq!(wrapper_lombok_agent(&cfg("jdtls")), None);
+        std::fs::remove_file(bin.join("jdtls")).unwrap();
+        write("jdtls", b"#!/bin/sh\nexec /opt/jdtls/bin/jdtls --jvm-arg=-javaagent:$HOME/lombok-1.18.46.jar \"$@\"\n");
 
         // The release's Python launcher, a binary, nothing on PATH, another server.
         write("jdtls", b"#!/usr/bin/env python3\nimport jdtls\n");
