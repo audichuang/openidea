@@ -78,7 +78,9 @@ pub struct ScriptAgent {
 /// lines don't count.
 pub fn agent_in_script(text: &str) -> Option<ScriptAgent> {
     let lines = script_lines(text);
-    lines.iter().find_map(|&(line, conditional_line)| {
+    let jumps = lines.iter().any(|(line, _)| jumps_over_lines(line));
+    lines.iter().find_map(|(line, conditional_line)| {
+        let line = line.as_str();
         line.match_indices("-javaagent:").find_map(|(at, flag)| {
             let rest = &line[at + flag.len()..];
             let agent = rest.split_whitespace().next()?;
@@ -91,12 +93,23 @@ pub fn agent_in_script(text: &str) -> Option<ScriptAgent> {
                 || script_variable(agent).is_some_and(|name| {
                     lines
                         .iter()
-                        .filter_map(|&(l, _)| assigned_value(l, name))
+                        .filter_map(|(l, _)| assigned_value(l, name))
                         .any(|value| value.to_ascii_lowercase().contains("lombok"))
                 });
             let prefix = &line[..at];
-            let conditional =
-                conditional_line || prefix.contains("&&") || prefix.contains("||") || in_alternate_expansion(prefix);
+            // Another launch without the agent: the script chooses between them.
+            let other_launch = is_launch_line(line)
+                && lines.iter().any(|(l, _)| {
+                    is_launch_line(l)
+                        && !l.contains("-javaagent:")
+                        && !script_variable(agent).is_some_and(|name| l.contains(name))
+                });
+            let conditional = *conditional_line
+                || jumps
+                || other_launch
+                || prefix.contains("&&")
+                || prefix.contains("||")
+                || in_alternate_expansion(prefix);
             lombok.then(|| ScriptAgent { agent: agent.to_owned(), conditional })
         })
     })
@@ -105,10 +118,11 @@ pub fn agent_in_script(text: &str) -> Option<ScriptAgent> {
 /// The lines of a script that aren't comments, each with whether it runs only on a
 /// condition: an `if` line, or one inside an sh `if … fi` / `case … esac` or a batch
 /// `if … ( … )` block.
-fn script_lines(text: &str) -> Vec<(&str, bool)> {
+fn script_lines(text: &str) -> Vec<(String, bool)> {
     let mut depth = 0usize;
     let mut lines = Vec::new();
-    for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !is_script_comment(l)) {
+    for joined in logical_lines(text).iter().filter(|l| !l.is_empty() && !is_script_comment(l)) {
+        let line = joined.as_str();
         let lower = line.to_ascii_lowercase();
         let words: Vec<&str> = lower.split_whitespace().collect();
         let first = words.first().map_or("", |w| w.trim_end_matches(';'));
@@ -118,7 +132,7 @@ fn script_lines(text: &str) -> Vec<(&str, bool)> {
         if closes {
             depth = depth.saturating_sub(1);
         }
-        lines.push((line, depth > 0 || is_if));
+        lines.push((line.to_owned(), depth > 0 || is_if));
         let sh_then = words.iter().any(|w| *w == "then" || w.ends_with(";then"));
         let opens = (is_if && first != "elif" && last != "fi" && (sh_then || last.ends_with('(')))
             || (first == "then" && words.len() == 1)
@@ -129,6 +143,50 @@ fn script_lines(text: &str) -> Vec<(&str, bool)> {
         }
     }
     lines
+}
+
+/// The trimmed lines of `text`, a line ending in `\` (sh) or `^` (batch) joined with the
+/// next: `[ -f "$JAR" ] && \` and the command it guards are one line.
+fn logical_lines(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut pending = String::new();
+    for line in text.lines().map(str::trim) {
+        if is_script_comment(line) && pending.is_empty() {
+            out.push(line.to_owned());
+            continue;
+        }
+        match line.strip_suffix('\\').or_else(|| line.strip_suffix('^')) {
+            Some(head) => {
+                pending.push_str(head.trim_end());
+                pending.push(' ');
+            }
+            None => {
+                pending.push_str(line);
+                out.push(std::mem::take(&mut pending));
+            }
+        }
+    }
+    if !pending.is_empty() {
+        out.push(pending.trim_end().to_owned());
+    }
+    out
+}
+
+/// A batch `goto` (but `goto :eof`, which only ends the script): the lines after a jump
+/// may be skipped, so a launch among them is not certain.
+fn jumps_over_lines(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    let mut words = lower.split_whitespace();
+    words.any(|w| w == "goto") && !matches!(words.next(), Some(":eof" | "eof"))
+}
+
+/// A line that starts jdtls: it names a script `jdtls`, `jdtls.py`, `jdtls.bat` ….
+fn is_launch_line(line: &str) -> bool {
+    line.to_ascii_lowercase().split_whitespace().map(|w| w.trim_matches(|c| matches!(c, '"' | '\''))).any(|w| {
+        let name = w.rsplit(['/', '\\']).next().unwrap_or(w);
+        !w.contains('=')
+            && name.strip_prefix("jdtls").is_some_and(|ext| matches!(ext, "" | ".py" | ".bat" | ".cmd" | ".exe"))
+    })
 }
 
 /// Whether `prefix`, a line up to an argument, leaves the argument inside `${NAME:+…}` or
@@ -749,6 +807,22 @@ exec /opt/homebrew/opt/jdtls/libexec/bin/jdtls \
         assert_eq!(agent_in_script(batch_if), maybe(r"C:\tools\lombok.jar"));
         let batch_one_line = "@echo off\r\nif defined LOMBOK python jdtls.py --jvm-arg=-javaagent:%LOMBOK% %*\r\n";
         assert_eq!(agent_in_script(batch_one_line), maybe("%LOMBOK%"));
+        // A guard on the line before, a skip, or another launch without the agent.
+        let continued =
+            "[ -f /m2/lombok.jar ] && \\\n  exec jdtls --jvm-arg=-javaagent:/m2/lombok.jar \"$@\"\nexec jdtls \"$@\"\n";
+        assert_eq!(agent_in_script(continued), maybe("/m2/lombok.jar"));
+        let batch_continued =
+            "@echo off\r\nif exist C:\\lombok.jar ^\r\n python jdtls.py --jvm-arg=-javaagent:C:\\lombok.jar %*\r\n";
+        assert_eq!(agent_in_script(batch_continued), maybe(r"C:\lombok.jar"));
+        let batch_goto = "@echo off\r\nif not exist C:\\lombok.jar goto plain\r\n\
+                          python jdtls.py --jvm-arg=-javaagent:C:\\lombok.jar %*\r\ngoto :eof\r\n\
+                          :plain\r\npython jdtls.py %*\r\n";
+        assert_eq!(agent_in_script(batch_goto), maybe(r"C:\lombok.jar"));
+        let sh_two = "[ \"$1\" = plain ] || true\nexec jdtls --jvm-arg=-javaagent:/m2/lombok.jar \"$@\"\n";
+        assert_eq!(agent_in_script(sh_two), always("/m2/lombok.jar"));
+        let launches =
+            "[ \"$1\" = plain ] && exec jdtls \"$@\"\nexec jdtls --jvm-arg=-javaagent:/m2/lombok.jar \"$@\"\n";
+        assert_eq!(agent_in_script(launches), maybe("/m2/lombok.jar"));
 
         for none in [
             // Only in comments.
