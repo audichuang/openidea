@@ -85,6 +85,7 @@ export function BranchFilterPopup({
   onSelect,
   onSelectMany,
   onClose,
+  favorites: favoritesProp,
 }: {
   anchor: HTMLElement;
   branches: readonly Branch[];
@@ -92,13 +93,17 @@ export function BranchFilterPopup({
   onSelect: (branch: string) => void;
   onSelectMany: () => void;
   onClose: () => void;
+  /** Stored favorite branches, listed after the current one; null = the defaults (main / master), unset = the current repository's. */
+  favorites?: readonly string[] | null;
 }) {
   const rowHeight = useRowHeight(ROW_HEIGHT);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const [expanded, setExpanded] = useState<ReadonlySet<Group>>(new Set());
-  const favorites = useFavoriteBranches((s) => s.names);
+  const stored = useFavoriteBranches((s) => s.names);
   useEffect(() => loadFavoriteBranches(), []);
+  // The Git Graph passes another repository's favorites; Git Log reads the current one's.
+  const favorites = favoritesProp === undefined ? stored : favoritesProp;
   const rows = useMemo(() => buildRows(branches, favorites, query, expanded), [branches, favorites, query, expanded]);
   const activeIndex = rows[active] && !isSection(rows[active]!) ? active : firstSelectable(rows, isSection);
   const toggle = (group: Group, open: boolean) =>
