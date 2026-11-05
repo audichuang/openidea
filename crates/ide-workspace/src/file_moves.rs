@@ -522,6 +522,45 @@ mod tests {
         assert_eq!(git(root, &["status", "--porcelain"]), " A m.txt\n");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn renaming_does_not_run_a_clean_filter_of_the_project() {
+        let tmp = repo();
+        let root = tmp.path();
+        fs::write(root.join("k.txt"), "k\n").unwrap();
+        fs::write(root.join("b.txt"), "b\n").unwrap();
+        git(root, &["add", "k.txt", "b.txt"]);
+        git(root, &["commit", "-q", "-m", "init"]);
+        let marker = root.join("MARKER");
+        fs::write(root.join(".gitattributes"), "*.txt filter=probe\n").unwrap();
+        git(root, &["config", "filter.probe.clean", &format!("touch {}; cat", marker.display())]);
+        // Git re-hashes racily clean entries (through clean filters) on any index write,
+        // so let the entries age out first; then touch b.txt so only a diff would hash it.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        git(root, &["update-index", "--refresh"]);
+        fs::write(root.join("b.txt"), "b\n").unwrap();
+        let _ = fs::remove_file(&marker);
+        rename(root, "b.txt", "c.txt");
+        assert!(!marker.exists(), "the project's clean filter ran");
+        assert_eq!(git(root, &["ls-files"]), "c.txt\nk.txt\n");
+    }
+
+    #[test]
+    fn renaming_an_intent_to_add_file_onto_an_ignored_path_keeps_it_tracked() {
+        let tmp = repo();
+        let root = tmp.path();
+        fs::write(root.join(".gitignore"), "ignored.txt\n").unwrap();
+        git(root, &["add", ".gitignore"]);
+        git(root, &["commit", "-q", "-m", "init"]);
+        fs::write(root.join("a.txt"), "content\n").unwrap();
+        git(root, &["add", "-N", "a.txt"]);
+        let (moves, id) = rename(root, "a.txt", "ignored.txt");
+        assert_eq!(git(root, &["ls-files"]), ".gitignore\nignored.txt\n");
+        assert_eq!(git(root, &["status", "--porcelain"]), " A ignored.txt\n");
+        moves.undo(&documents(), id).unwrap();
+        assert_eq!(git(root, &["status", "--porcelain"]), " A a.txt\n");
+    }
+
     #[test]
     fn untracked_and_cross_repository_moves_leave_the_index_alone() {
         let tmp = repo();

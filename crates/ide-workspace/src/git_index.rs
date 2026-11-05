@@ -26,18 +26,13 @@ pub(crate) fn plan(from: &Path, to: &Path) -> Option<IndexMove> {
         return None;
     }
     let pathspec = format!(":(literal){old}");
-    let out = run(&root, &["ls-files", "--stage", "-z", "--", pathspec.as_str()], None)?;
-    // An intent-to-add entry shows as an added file in the index-to-worktree diff.
-    let ita_out =
-        run(&root, &["diff", "--no-ext-diff", "--name-only", "-z", "--diff-filter=A", "--", pathspec.as_str()], None)?;
-    let ita: std::collections::HashSet<String> =
-        String::from_utf8(ita_out.stdout).ok()?.split('\0').filter(|p| !p.is_empty()).map(str::to_owned).collect();
+    // `--debug` prints each entry's flags straight from the index, so intent-to-add is
+    // read without touching the worktree (a diff would run the project's clean filters).
+    let out = run(&root, &["ls-files", "--stage", "--debug", "-z", "--", pathspec.as_str()], None)?;
     let mut intent_to_add = Vec::new();
-    let entries: Vec<_> = String::from_utf8(out.stdout)
-        .ok()?
-        .split('\0')
-        .filter_map(|record| {
-            let (meta, path) = record.split_once('\t')?;
+    let entries: Vec<_> = parse_entries(&String::from_utf8(out.stdout).ok()?)
+        .into_iter()
+        .filter_map(|(meta, path, ita)| {
             let mut meta = meta.split(' ');
             let (mode, oid, stage) = (meta.next()?, meta.next()?, meta.next()?);
             // Conflicted entries (stages 1-3) can't be written back as one; a gitlink
@@ -50,13 +45,37 @@ pub(crate) fn plan(from: &Path, to: &Path) -> Option<IndexMove> {
                 return None;
             }
             let target = format!("{new}{rest}");
-            if ita.contains(path) {
+            if ita {
                 intent_to_add.push(target.clone());
             }
             Some((mode.to_owned(), oid.to_owned(), path.to_owned(), target))
         })
         .collect();
     (!entries.is_empty()).then_some(IndexMove { root, entries, intent_to_add })
+}
+
+/// Splits `ls-files --stage --debug -z` output into `(meta, path, intent-to-add)`.
+/// Each entry is `meta\tpath\0` followed by indented stat lines ending in
+/// `size: N\tflags: HEX\n`, which run into the next entry's `meta`.
+fn parse_entries(text: &str) -> Vec<(&str, &str, bool)> {
+    const INTENT_TO_ADD: u32 = 0x2000_0000;
+    let mut out: Vec<(&str, &str, bool)> = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        let Some((record, tail)) = rest.split_once('\0') else { break };
+        let Some((meta, path)) = record.split_once('\t') else { break };
+        let mut ita = false;
+        rest = tail;
+        if tail.starts_with("  ctime:")
+            && let Some((_, flags)) = tail.split_once("\tflags: ")
+            && let Some((flags, next)) = flags.split_once('\n')
+        {
+            ita = u32::from_str_radix(flags, 16).is_ok_and(|f| f & INTENT_TO_ADD != 0);
+            rest = next;
+        }
+        out.push((meta, path, ita));
+    }
+    out
 }
 
 /// Applies `planned`, one `git update-index` run per move.
@@ -78,7 +97,7 @@ pub(crate) fn apply(planned: &[IndexMove]) {
         }
         for new in &m.intent_to_add {
             let pathspec = format!(":(literal){new}");
-            if run(&m.root, &["add", "-N", "--", pathspec.as_str()], None).is_none() {
+            if run(&m.root, &["add", "-N", "-f", "--", pathspec.as_str()], None).is_none() {
                 tracing::warn!("could not re-add intent-to-add entry {new} in {}", m.root.display());
             }
         }
