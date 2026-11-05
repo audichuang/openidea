@@ -14,9 +14,9 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 #[cfg(not(target_os = "macos"))]
 use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 #[cfg(not(target_os = "macos"))]
 use std::time::Duration;
 #[cfg(not(target_os = "macos"))]

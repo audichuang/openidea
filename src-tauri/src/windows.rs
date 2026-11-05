@@ -987,7 +987,12 @@ pub fn open_files_window(app: &AppHandle, caller: &str, files: Vec<PathBuf>) -> 
 }
 
 /// [`open_project_window`] for folder `path` of `target` (Remote Development).
-pub fn open_remote_window(app: &AppHandle, target: &RemoteTarget, path: &str, new_window: bool) -> IdeResult<OpenOutcome> {
+pub fn open_remote_window(
+    app: &AppHandle,
+    target: &RemoteTarget,
+    path: &str,
+    new_window: bool,
+) -> IdeResult<OpenOutcome> {
     tracing::info!("open_remote_window {target:?}:{path} new_window={new_window}");
     let windows = app.webview_windows();
     let open = app.try_state::<AppState>().and_then(|s| s.remote_dev.window_of(target, path));
