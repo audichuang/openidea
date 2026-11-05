@@ -1,0 +1,83 @@
+name: Rolling target cache
+description: >-
+  Caches the whole cargo target directory, workspace crates included, under a key that rolls with
+  every develop commit, so a build recompiles only the crates changed since the cached commit.
+  `restore` (after the Rust toolchain is installed, before cargo) restores the newest entry and
+  makes file mtimes say what changed; `save` (develop only, after cargo) stores it and deletes the
+  older entries of the same name and OS.
+inputs:
+  mode:
+    description: restore or save.
+    required: true
+  name:
+    description: Cache family, e.g. test or release-aarch64-apple-darwin.
+    required: true
+  workdir:
+    description: Directory holding the workspace and its target/.
+    required: true
+  token:
+    description: Token with actions:write, used by save to delete superseded entries.
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Target cache key
+      id: key
+      shell: bash
+      working-directory: ${{ inputs.workdir }}
+      run: |
+        # Week and rustc in the prefix: a new week or toolchain starts from a clean target instead
+        # of growing one forever with artifacts nothing uses any more.
+        rustc_hash=$(rustc -vV | git hash-object --stdin | cut -c1-8)
+        prefix="tgt-${{ inputs.name }}-$RUNNER_OS-$(date -u +%G-%V)-$rustc_hash-"
+        echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+
+    - if: inputs.mode == 'restore'
+      id: restore
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ inputs.workdir }}/target
+        key: ${{ steps.key.outputs.prefix }}${{ github.sha }}
+        restore-keys: ${{ steps.key.outputs.prefix }}
+
+    # Cargo rebuilds a crate when a source file is newer than its output. A fresh checkout makes
+    # every file new, and a file an older commit changed can predate the cached output, so set
+    # mtimes from git instead: unchanged files far in the past, files changed since the commit the
+    # cache was built from to now. Without that commit (rebased away, or no cache) every file stays
+    # new and cargo rebuilds the workspace, which is always correct.
+    - if: inputs.mode == 'restore' && steps.restore.outputs.cache-matched-key != ''
+      shell: bash
+      working-directory: ${{ inputs.workdir }}
+      run: |
+        src=$(cat target/.cache-source-sha 2>/dev/null || true)
+        if [ -n "$src" ] && { git cat-file -e "$src^{commit}" 2>/dev/null || git fetch -q --depth=1 origin "$src"; }; then
+          git ls-files -z | xargs -0 touch -t 200001010000
+          changed=$(git diff --no-renames --diff-filter=d --name-only -z "$src" HEAD | tr '\0' '\n' | grep -c . || true)
+          git diff --no-renames --diff-filter=d --name-only -z "$src" HEAD | xargs -0 -r touch
+          echo "::notice::target cache from $src: $changed files changed since"
+        else
+          echo "::notice::target cache source ${src:-unknown} not found: rebuilding the workspace"
+        fi
+
+    - if: inputs.mode == 'save'
+      shell: bash
+      working-directory: ${{ inputs.workdir }}
+      run: |
+        echo "$GITHUB_SHA" > target/.cache-source-sha
+        du -sh target
+    - if: inputs.mode == 'save'
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ inputs.workdir }}/target
+        key: ${{ steps.key.outputs.prefix }}${{ github.sha }}
+    - if: inputs.mode == 'save'
+      name: Delete superseded target caches
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        KEEP: ${{ steps.key.outputs.prefix }}${{ github.sha }}
+        FAMILY: tgt-${{ inputs.name }}-${{ runner.os }}-
+      run: |
+        gh cache list -R "$GITHUB_REPOSITORY" --key "$FAMILY" --ref "$GITHUB_REF" --limit 100 --json id,key \
+          --jq ".[] | select(.key != \"$KEEP\") | .id" |
+          while read -r id; do gh cache delete -R "$GITHUB_REPOSITORY" "$id"; done
