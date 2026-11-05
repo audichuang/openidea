@@ -428,8 +428,19 @@ export function nodeMenu(
     ...(nodes.some((n) => n.changelist)
       ? [{ kind: "action" as const, action: "vcs.changelist.move", arg: paths, label: "Move to Another Changelist…" }]
       : []),
-    { kind: "action", action: "vcs.shelve", arg: paths },
-    { kind: "action", action: "vcs.createPatch", arg: paths },
+    // IDEA: nothing to shelve or diff while only unversioned files are selected.
+    {
+      kind: "action",
+      action: "vcs.shelve",
+      arg: paths,
+      disabled: files.length > 0 && untracked.length === files.length,
+    },
+    {
+      kind: "action",
+      action: "vcs.createPatch",
+      arg: paths,
+      disabled: files.length > 0 && untracked.length === files.length,
+    },
     { label: "Copy as Patch to Clipboard", run: () => void copyChangesAsPatch(paths) },
     { kind: "separator" },
     {
