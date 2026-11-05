@@ -233,6 +233,16 @@ export const BUILTIN_FILE_TEMPLATES: readonly FileTemplate[] = [
     ],
   },
   {
+    id: "package-info",
+    name: "package-info.java",
+    icon: "file-java",
+    extension: "java",
+    nameStyle: "asis",
+    packageStyle: "jvm",
+    defaultName: "package-info",
+    kinds: [{ id: "package-info", label: "package-info.java", body: '#parse("File Header")\npackage $PACKAGE$;\n' }],
+  },
+  {
     id: "html",
     name: "HTML File",
     icon: "file-html",
