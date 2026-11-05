@@ -29,7 +29,7 @@ pub struct Project {
     pub documents: Arc<Documents>,
     pub history: Arc<LocalHistory>,
     /// Undo stack of file move / rename refactorings.
-    pub moves: FileMoves,
+    pub moves: Arc<FileMoves>,
     pub index: Arc<ProjectIndex>,
     pub lsp: Arc<LspManager>,
     /// Git repositories: the one containing the project root and those nested below it.
@@ -104,6 +104,7 @@ impl Host {
         let documents = documents(&sink, &languages, Some(&root));
         documents.set_file_defaults(ide_workspace::FileDefaults::from_settings(&settings.effective(), Some(&root)));
         let history = Arc::new(LocalHistory::open(&self.data_dir.join("history"), &root)?);
+        let moves = Arc::new(FileMoves::new());
         {
             let history = history.clone();
             let retention = history_retention(&settings.effective());
@@ -253,8 +254,12 @@ impl Host {
             }));
         }
         {
-            let documents = documents.clone();
-            lsp.set_apply_edit_hook(Box::new(move |edit| apply_workspace_edit(&documents, &edit).is_ok()));
+            let (documents, history, moves, trusted) =
+                (documents.clone(), history.clone(), moves.clone(), trusted.clone());
+            lsp.set_apply_edit_hook(Box::new(move |edit| {
+                let sync = trusted.load(Ordering::Acquire);
+                moves.apply_workspace_edit(&documents, Some(&history), sync, &edit).is_ok()
+            }));
         }
         let syntax = Arc::new(SyntaxCache::new(self.syntax()));
         documents.add_observer(Arc::new(SyntaxObserver(syntax.clone())));
@@ -443,7 +448,7 @@ impl Host {
             settings,
             documents,
             history,
-            moves: FileMoves::new(),
+            moves,
             index,
             lsp,
             repos,
@@ -576,7 +581,7 @@ impl Host {
             settings,
             documents,
             history,
-            moves: FileMoves::new(),
+            moves: Arc::new(FileMoves::new()),
             index,
             lsp,
             repos: Arc::default(),
@@ -608,6 +613,12 @@ impl Host {
 impl Project {
     pub fn is_trusted(&self) -> bool {
         self.trusted.load(Ordering::Acquire)
+    }
+
+    /// Applies a workspace edit; file renames in it also move Local History and (in a
+    /// trusted project) git's index entries along.
+    pub fn apply_workspace_edit(&self, edit: &ide_core::WorkspaceEdit) -> IdeResult<()> {
+        self.moves.apply_workspace_edit(&self.documents, Some(&self.history), self.is_trusted(), edit)
     }
 
     pub fn require_trust(&self) -> IdeResult<()> {

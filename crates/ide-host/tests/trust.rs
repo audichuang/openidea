@@ -458,3 +458,68 @@ async fn file_moves_sync_the_git_index_only_in_trusted_projects() {
     assert_eq!(git(&root, &["ls-files"]), "b.txt\n");
     host.shutdown().await;
 }
+
+/// A tracked `Greeter.java` renamed by a language server's WorkspaceEdit (file rename
+/// plus the text edit inside it), the way jdtls answers Shift+F6 on a top-level class.
+#[cfg(unix)]
+async fn rename_tracked_file_through_workspace_edit(trusted: bool) -> (String, Vec<String>, Vec<String>) {
+    use ide_core::{FileEdit, Pos, Range, TextEdit, WorkspaceEdit};
+    let tmp = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(tmp.path()).unwrap().join("proj");
+    std::fs::create_dir_all(&root).unwrap();
+    git(&root, &["init", "-q"]);
+    std::fs::write(root.join("Greeter.java"), "class Greeter {}\n").unwrap();
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-q", "-m", "init"]);
+    let host = host(&tmp.path().join("app"), false);
+    let project = host.open_project("main", &root).unwrap();
+    if trusted {
+        host.set_project_trust(&root, true, false).await.unwrap();
+    }
+    project.history.record(&root.join("Greeter.java"), "class Greeter {}\n", "Saved").unwrap();
+    std::thread::sleep(Duration::from_millis(5));
+    let edit = WorkspaceEdit {
+        files: vec![
+            FileEdit::Edit {
+                path: root.join("Greeter.java").into(),
+                version: None,
+                edits: vec![TextEdit {
+                    range: Range::new(Pos::new(0, 6), Pos::new(0, 13)),
+                    new_text: "Welcomer".into(),
+                }],
+            },
+            FileEdit::Rename { from: root.join("Greeter.java").into(), to: root.join("Welcomer.java").into() },
+        ],
+        ..Default::default()
+    };
+    ops::lsp::apply_workspace_edit(&host, "main", edit).await.unwrap();
+    assert_eq!(std::fs::read_to_string(root.join("Welcomer.java")).unwrap(), "class Welcomer {}\n");
+    let status = git(&root, &["status", "--porcelain"]);
+    let labels = |p: &Path| project.history.list(p).unwrap().into_iter().map(|e| e.label).collect::<Vec<_>>();
+    let new_history = labels(&root.join("Welcomer.java"));
+    let old_history = labels(&root.join("Greeter.java"));
+    host.shutdown().await;
+    (status, new_history, old_history)
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn workspace_edit_file_rename_follows_git_index_and_history_in_trusted_project() {
+    let (status, new_history, old_history) = rename_tracked_file_through_workspace_edit(true).await;
+    assert!(
+        status.contains("R  Greeter.java -> Welcomer.java") || status.contains("RM Greeter.java -> Welcomer.java"),
+        "{status}"
+    );
+    assert!(!status.contains("?? Welcomer.java") && !status.contains(" D Greeter.java"), "{status}");
+    assert!(new_history.iter().any(|l| l == "Saved"), "{new_history:?}");
+    assert!(old_history.is_empty(), "{old_history:?}");
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn workspace_edit_file_rename_leaves_git_index_alone_in_untrusted_project() {
+    let (status, new_history, _) = rename_tracked_file_through_workspace_edit(false).await;
+    assert!(status.contains(" D Greeter.java") && status.contains("?? Welcomer.java"), "{status}");
+    // Local History involves no git command, so it follows regardless of trust.
+    assert!(new_history.iter().any(|l| l == "Saved"), "{new_history:?}");
+}

@@ -1,6 +1,5 @@
 use super::doc::blocking;
 use crate::Host;
-use crate::apply_workspace_edit as apply_edit;
 use crate::plugins::{ProviderKind, editor_providers_for as editor_providers};
 use crate::rpc::Dispatcher;
 use ide_core::{DocId, IdeResult, Location, Pos, Range, RequestId, ServerId, TextEdit, WorkspaceEdit};
@@ -434,9 +433,9 @@ pub async fn lsp_apply_code_action(host: &Host, window: &str, doc: DocId, action
         action
     };
     if let Some(edit) = &action.edit {
-        let documents = project.documents.clone();
+        let project = project.clone();
         let edit = edit.clone();
-        blocking(move || apply_edit(&documents, &edit)).await?;
+        blocking(move || project.apply_workspace_edit(&edit)).await?;
     }
     if let Some(command) = action.command {
         project.lsp.execute_command(doc, command).await?;
@@ -614,7 +613,7 @@ pub async fn apply_workspace_edit(host: &Host, window: &str, edit: WorkspaceEdit
         if edit.files.len() > 1 {
             project.record_before_refactoring(&paths, "Apply changes");
         }
-        apply_edit(&project.documents, &edit)
+        project.apply_workspace_edit(&edit)
     })
     .await
 }
@@ -630,12 +629,18 @@ pub async fn prepare_workspace_edit(host: &Host, window: &str, mut edit: Workspa
 
 pub async fn undo_workspace_edit(host: &Host, window: &str, id: u32) -> IdeResult<()> {
     let project = host.project(window)?;
-    blocking(move || project.documents.undo_workspace_edit(id)).await
+    blocking(move || {
+        project.moves.undo_workspace_edit(&project.documents, Some(&project.history), project.is_trusted(), id)
+    })
+    .await
 }
 
 pub async fn redo_workspace_edit(host: &Host, window: &str, id: u32) -> IdeResult<()> {
     let project = host.project(window)?;
-    blocking(move || project.documents.redo_workspace_edit(id)).await
+    blocking(move || {
+        project.moves.redo_workspace_edit(&project.documents, Some(&project.history), project.is_trusted(), id)
+    })
+    .await
 }
 
 /// Runs a server command (`workspace/executeCommand`), e.g. a completion item's
@@ -677,8 +682,8 @@ pub async fn lsp_execute_code_action(
             return Err(ide_core::IdeError::cancelled());
         }
         if let Some(edit) = action.edit {
-            let documents = project.documents.clone();
-            tokio::task::spawn_blocking(move || apply_edit(&documents, &edit))
+            let project = project.clone();
+            tokio::task::spawn_blocking(move || project.apply_workspace_edit(&edit))
                 .await
                 .map_err(|e| ide_core::IdeError::internal(e.to_string()))??;
         }

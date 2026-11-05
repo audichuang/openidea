@@ -47,6 +47,9 @@ struct MoveRecord {
 pub struct FileMoves {
     records: Mutex<Vec<MoveRecord>>,
     next: Mutex<u32>,
+    /// File renames inside applied workspace edits (language server rename, code
+    /// actions), by the document layer's undo id.
+    edit_renames: Mutex<std::collections::BTreeMap<u32, Vec<FileMove>>>,
 }
 
 /// Undo records kept per project.
@@ -85,6 +88,16 @@ fn write_text(documents: &Documents, path: &Path, text: &str) -> IdeResult<()> {
         documents.close(doc);
     }
     result
+}
+
+fn renamed_files(edit: &WorkspaceEdit) -> Vec<FileMove> {
+    edit.files
+        .iter()
+        .filter_map(|f| match f {
+            FileEdit::Rename { from, to } => Some(FileMove { from: from.clone(), to: to.clone() }),
+            _ => None,
+        })
+        .collect()
 }
 
 fn edited_paths(edit: &WorkspaceEdit) -> Vec<PathBuf> {
@@ -190,6 +203,61 @@ impl FileMoves {
         Ok(id)
     }
 
+    /// Applies a workspace edit through the document layer, then lets Local History
+    /// and git's index follow its file renames, as for [`perform`](Self::perform).
+    /// Text edits are applied exactly as without this wrapper.
+    /// `sync_git_index` is false for untrusted projects: no git command runs then.
+    pub fn apply_workspace_edit(
+        &self,
+        documents: &Documents,
+        history: Option<&LocalHistory>,
+        sync_git_index: bool,
+        edit: &WorkspaceEdit,
+    ) -> IdeResult<()> {
+        let moves = renamed_files(edit);
+        if moves.is_empty() {
+            return documents.apply_workspace_edit(edit);
+        }
+        let id = follow(history, sync_git_index, &moves, || documents.apply_workspace_edit_recorded(edit))?;
+        if let Some(id) = id {
+            let mut renames = self.edit_renames.lock();
+            renames.insert(id, moves);
+            while renames.len() > MAX_RECORDS * 4 {
+                renames.pop_first();
+            }
+        }
+        Ok(())
+    }
+
+    /// Undoes a workspace edit; its file renames are reverted in history and the index.
+    pub fn undo_workspace_edit(
+        &self,
+        documents: &Documents,
+        history: Option<&LocalHistory>,
+        sync_git_index: bool,
+        id: u32,
+    ) -> IdeResult<()> {
+        let back: Vec<FileMove> = self
+            .edit_renames
+            .lock()
+            .get(&id)
+            .map(|m| m.iter().rev().map(|m| FileMove { from: m.to.clone(), to: m.from.clone() }).collect())
+            .unwrap_or_default();
+        follow(history, sync_git_index, &back, || documents.undo_workspace_edit(id))
+    }
+
+    /// Redoes an undone workspace edit, renames included.
+    pub fn redo_workspace_edit(
+        &self,
+        documents: &Documents,
+        history: Option<&LocalHistory>,
+        sync_git_index: bool,
+        id: u32,
+    ) -> IdeResult<()> {
+        let forward = self.edit_renames.lock().get(&id).cloned().unwrap_or_default();
+        follow(history, sync_git_index, &forward, || documents.redo_workspace_edit(id))
+    }
+
     /// Whether `id` can still be undone.
     pub fn can_undo(&self, id: u32) -> bool {
         self.records.lock().iter().any(|r| r.id == id)
@@ -269,6 +337,32 @@ impl FileMoves {
         }
         Ok(outcome)
     }
+}
+
+/// Runs `op`, which may rename `moves`, then makes Local History and the git index follow
+/// those that really happened (the document layer rolls a failed edit back itself).
+fn follow<T>(
+    history: Option<&LocalHistory>,
+    sync_git_index: bool,
+    moves: &[FileMove],
+    op: impl FnOnce() -> IdeResult<T>,
+) -> IdeResult<T> {
+    let planned: Vec<_> =
+        moves.iter().map(|m| (m, if sync_git_index { crate::git_index::plan(&m.from, &m.to) } else { None })).collect();
+    let result = op();
+    let (done, index): (Vec<FileMove>, Vec<_>) = planned
+        .into_iter()
+        .filter(|(m, _)| m.to.exists() && !m.from.exists())
+        .map(|(m, plan)| (m.clone(), plan))
+        .unzip();
+    if let Some(h) = history
+        && !done.is_empty()
+        && let Err(e) = h.follow_moves(&done)
+    {
+        tracing::warn!("local history: {e}");
+    }
+    crate::git_index::apply(&index.into_iter().flatten().collect::<Vec<_>>());
+    result
 }
 
 fn restore(documents: &Documents, paths: &[PathBuf], before: &[String]) {
@@ -425,6 +519,37 @@ mod tests {
         let docs = documents();
         let id = moves.perform(&docs, None, &mv, &WorkspaceEdit::default(), "Rename", true, &apply(&docs)).unwrap();
         (moves, id)
+    }
+
+    #[test]
+    fn workspace_edit_rename_undo_and_redo_keep_the_index_in_step() {
+        let tmp = repo();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        fs::write(root.join("A.java"), "class A {}\n").unwrap();
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-q", "-m", "init"]);
+        let docs = documents();
+        let history = LocalHistory::open(&root.join(".git/hist"), &root).unwrap();
+        let moves = FileMoves::new();
+        let edit = WorkspaceEdit {
+            files: vec![FileEdit::Rename { from: root.join("A.java").into(), to: root.join("B.java").into() }],
+            ..Default::default()
+        };
+        moves.apply_workspace_edit(&docs, Some(&history), true, &edit).unwrap();
+        assert_eq!(git(&root, &["ls-files"]), "B.java\n");
+        let id = *moves.edit_renames.lock().keys().next().unwrap();
+        moves.undo_workspace_edit(&docs, Some(&history), true, id).unwrap();
+        assert_eq!(git(&root, &["ls-files"]), "A.java\n");
+        assert_eq!(git(&root, &["status", "--porcelain"]), "");
+        moves.redo_workspace_edit(&docs, Some(&history), true, id).unwrap();
+        assert_eq!(git(&root, &["ls-files"]), "B.java\n");
+        // A failing edit changes nothing, index included.
+        let clash = WorkspaceEdit {
+            files: vec![FileEdit::Rename { from: root.join("B.java").into(), to: root.join("B.java").into() }],
+            ..Default::default()
+        };
+        let _ = moves.apply_workspace_edit(&docs, Some(&history), true, &clash);
+        assert_eq!(git(&root, &["ls-files"]), "B.java\n");
     }
 
     #[test]

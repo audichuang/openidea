@@ -383,12 +383,18 @@ impl Documents {
 
     /// Preflight every operation on a private copy, then apply with rollback and grouped undo.
     pub fn apply_workspace_edit(&self, edit: &WorkspaceEdit) -> IdeResult<()> {
+        self.apply_workspace_edit_inner(edit, true, &mut |_| Ok(())).map(|_| ())
+    }
+
+    /// [`apply_workspace_edit`](Self::apply_workspace_edit) returning the undo id
+    /// (`None` when the edit was empty).
+    pub fn apply_workspace_edit_recorded(&self, edit: &WorkspaceEdit) -> IdeResult<Option<u32>> {
         self.apply_workspace_edit_inner(edit, true, &mut |_| Ok(()))
     }
 
     /// File moves already own a combined move/reference undo record.
     pub fn apply_file_move_edits(&self, edit: &WorkspaceEdit) -> IdeResult<()> {
-        self.apply_workspace_edit_inner(edit, false, &mut |_| Ok(()))
+        self.apply_workspace_edit_inner(edit, false, &mut |_| Ok(())).map(|_| ())
     }
 
     fn apply_workspace_edit_inner(
@@ -396,10 +402,10 @@ impl Documents {
         edit: &WorkspaceEdit,
         remember: bool,
         before_operation: &mut dyn FnMut(usize) -> IdeResult<()>,
-    ) -> IdeResult<()> {
+    ) -> IdeResult<Option<u32>> {
         let _operation = self.operations.lock();
         if edit.files.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         let mut edit = normalize_edit(edit)?;
         self.prepare_workspace_edit(&mut edit)?;
@@ -448,10 +454,12 @@ impl Documents {
         if let Err(error) = fs::remove_file(record.directory.path().join("recovery")) {
             return Err(self.recover(record, error.into()));
         }
+        let mut recorded = None;
         if remember {
             let mut history = self.workspace_edits.lock();
             history.next += 1;
             let id = history.next;
+            recorded = Some(id);
             let mut affected: Vec<ide_core::IpcPath> = roots.into_iter().map(Into::into).collect();
             affected.extend(record.documents.iter().map(|(_, state)| state.path.clone().into()));
             affected.sort();
@@ -476,7 +484,7 @@ impl Documents {
             history.prune(SystemTime::now(), MAX_HISTORY_BYTES, MAX_HISTORY_AGE);
             self.sink.emit(IdeEvent::WorkspaceEditApplied { id, paths: affected });
         }
-        Ok(())
+        Ok(recorded)
     }
 
     fn backup(&self, roots: &[PathBuf]) -> IdeResult<Record> {
