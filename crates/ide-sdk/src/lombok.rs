@@ -203,17 +203,6 @@ fn in_alternate_expansion(prefix: &str) -> bool {
     })
 }
 
-/// The Lombok agent the app adds to a jdtls launch whose launcher wrapper passes
-/// `wrapper` itself: none when the wrapper always passes one, else `resolve`'s
-/// ([`lombok_agent`]). A wrapper that passes it on a condition may pass none, and a launch
-/// without Lombok reports every generated member as an error, which a second agent doesn't.
-pub fn app_agent_beside(wrapper: Option<&ScriptAgent>, resolve: impl FnOnce() -> LombokAgent) -> Option<LombokAgent> {
-    match wrapper {
-        Some(wrapper) if !wrapper.conditional => None,
-        _ => Some(resolve()),
-    }
-}
-
 fn is_script_comment(line: &str) -> bool {
     let lower = line.to_ascii_lowercase();
     line.starts_with('#')
@@ -257,18 +246,21 @@ pub fn agent_version(agent: &str) -> Option<String> {
 }
 
 /// Two Lombok agents would run in jdtls: `wrapper`'s (the one the launcher script at
-/// `launcher` passes) and `own`, from the JVM options. `None` when they are the same jar or
-/// both names show the same version; a version the wrapper picks at run time may differ.
-pub fn duplicate_agents_problem(launcher: &Path, wrapper: &str, own: &Path) -> Option<String> {
-    let own = own.to_string_lossy();
-    let same_version = agent_version(wrapper).is_some_and(|v| agent_version(&own) == Some(v));
-    if Path::new(wrapper) == Path::new(&*own) || same_version {
+/// `launcher` passes) and `app`, the jar the app attaches. `None` when they are the same jar
+/// or both names show the same version; a version the wrapper picks at run time may differ.
+/// A wrapper that passes its agent only on a condition "may" attach it.
+pub fn duplicate_agents_problem(launcher: &Path, wrapper: &ScriptAgent, app: &Path) -> Option<String> {
+    let app = app.to_string_lossy();
+    let agent = wrapper.agent.as_str();
+    let same_version = agent_version(agent).is_some_and(|v| agent_version(&app) == Some(v));
+    if Path::new(agent) == Path::new(&*app) || same_version {
         return None;
     }
     let launcher = launcher.to_string_lossy();
+    let verb = if wrapper.conditional { "may also attach" } else { "attaches" };
     Some(format!(
-        "The jdtls launcher {launcher} attaches its own Lombok agent ({wrapper}) and the JVM options add {own}. Two \
-         Lombok versions can generate different members: keep one of them."
+        "The jdtls launcher {launcher} {verb} its own Lombok agent ({agent}) and the app attaches {app}. Two Lombok \
+         versions can generate different members: keep one of them."
     ))
 }
 
@@ -846,31 +838,24 @@ exec /opt/homebrew/opt/jdtls/libexec/bin/jdtls \
         }
     }
 
-    /// The app adds no agent of its own only when the wrapper always passes one.
-    #[test]
-    fn app_agent_is_kept_unless_the_wrapper_always_passes_one() {
-        let managed = PathBuf::from("/managed/lombok.jar");
-        let resolve = || LombokAgent::Found { jar: managed.clone(), version: None };
-        let wrapper = |text: &str| agent_in_script(text).unwrap();
-
-        assert_eq!(app_agent_beside(None, resolve), Some(resolve()));
-        let literal = wrapper("exec jdtls --jvm-arg=-javaagent:/m2/lombok-1.18.46.jar \"$@\"\n");
-        assert_eq!(app_agent_beside(Some(&literal), || unreachable!("not resolved")), None);
-        assert_eq!(app_agent_beside(Some(&wrapper(SH_WRAPPER)), resolve), Some(resolve()));
-        // Its warning still applies: a Lombok project with no jar anywhere.
-        assert_eq!(app_agent_beside(Some(&wrapper(SH_WRAPPER)), || LombokAgent::Missing), Some(LombokAgent::Missing));
+    fn script_agent(agent: &str, conditional: bool) -> ScriptAgent {
+        ScriptAgent { agent: agent.to_owned(), conditional }
     }
 
     #[test]
     fn two_different_lombok_agents_are_reported() {
         let launcher = Path::new("/home/me/.local/bin/jdtls");
-        assert!(duplicate_agents_problem(launcher, "$LOMBOK", Path::new("/opt/lombok-1.18.48.jar")).is_some());
-        let problem =
-            duplicate_agents_problem(launcher, "/m2/lombok-1.18.46.jar", Path::new("/opt/lombok-1.18.48.jar")).unwrap();
+        let app = Path::new("/opt/lombok-1.18.48.jar");
+        assert!(duplicate_agents_problem(launcher, &script_agent("$LOMBOK", false), app).is_some());
+        let problem = duplicate_agents_problem(launcher, &script_agent("/m2/lombok-1.18.46.jar", false), app).unwrap();
         assert!(problem.contains("/home/me/.local/bin/jdtls") && problem.contains("1.18.46"), "{problem}");
-        assert_eq!(duplicate_agents_problem(launcher, "/m2/lombok.jar", Path::new("/m2/lombok.jar")), None);
+        assert!(problem.contains("attaches its own") && problem.contains(&*app.to_string_lossy()), "{problem}");
+        let maybe = duplicate_agents_problem(launcher, &script_agent("$LOMBOK", true), app).unwrap();
+        assert!(maybe.contains("may also attach"), "{maybe}");
+        let same = Path::new("/m2/lombok.jar");
+        assert_eq!(duplicate_agents_problem(launcher, &script_agent("/m2/lombok.jar", false), same), None);
         assert_eq!(
-            duplicate_agents_problem(launcher, "/m2/lombok-1.18.48.jar", Path::new("/opt/lombok-1.18.48.jar")),
+            duplicate_agents_problem(launcher, &script_agent("/m2/lombok-1.18.48.jar", false), app),
             None,
             "the same version"
         );
