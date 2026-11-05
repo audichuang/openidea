@@ -9,7 +9,7 @@ use ide_core::ignored::IgnoredNames;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-#[derive(Default)]
+#[derive(Debug, Default, PartialEq)]
 struct Entry {
     staged: Option<ChangeKind>,
     unstaged: Option<ChangeKind>,
@@ -20,10 +20,14 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
     let ignored = r.ignored.read().unwrap_or_else(|p| p.into_inner()).clone();
     // gitoxide stops at the first IO error (a directory it may not read), where git warns
     // and lists the rest: git answers then.
-    let (map, conflicts) = gix_status(r, &ignored).or_else(|e| {
-        tracing::debug!("status via gitoxide failed, asking git: {}", e.message);
-        cli_status(r, &ignored)
-    })?;
+    let (map, conflicts) = if r.gix().is_ok_and(|repo| needs_git_cli(&repo)) {
+        cli_status(r, &ignored)?
+    } else {
+        gix_status(r, &ignored).or_else(|e| {
+            tracing::debug!("status via gitoxide failed, asking git: {}", e.message);
+            cli_status(r, &ignored)
+        })?
+    };
     let mut disk = r.gix().is_ok_and(|repo| crate::repo::ignores_case(&repo)).then(DiskSpelling::default);
     Ok(map
         .into_iter()
@@ -200,15 +204,28 @@ fn gix_status(r: &Repo, ignored: &IgnoredNames) -> IdeResult<Entries> {
     Ok((map, conflicts))
 }
 
+/// Partial clones lack blobs that gitoxide does not fetch on demand, and sparse
+/// checkouts carry skip-worktree entries it does not honour: git reads both.
+fn needs_git_cli(repo: &gix::Repository) -> bool {
+    let config = repo.config_snapshot();
+    let enabled = |key: &str| config.boolean(key).unwrap_or(false);
+    enabled("core.sparseCheckout")
+        || config.string("extensions.partialClone").is_some()
+        || repo.remote_names().iter().any(|name| enabled(&format!("remote.{name}.promisor")))
+}
+
 /// `git status --porcelain=v2`: what git lists, unreadable directories skipped.
 /// In Restricted Mode git compares content without the repository's clean/process
 /// filters and doesn't ask submodules for their own status (which runs their config).
 fn cli_status(r: &Repo, ignored: &IgnoredNames) -> IdeResult<Entries> {
     let overrides = crate::cli::filter_overrides(r.root(), &ide_core::CancellationToken::new())?;
     let mut args: Vec<&str> = overrides.iter().map(String::as_str).collect();
-    args.extend(["status", "--porcelain=v2", "-z", "--untracked-files=all"]);
+    // No index lock: no stat refresh write-back, so no index change for the watcher to report.
+    args.extend(["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=all"]);
     if !crate::execution_allowed() {
         args.push("--ignore-submodules=dirty");
+        // Restricted git may not fetch missing blobs, and rename detection needs them.
+        args.push("--no-renames");
     }
     let out = crate::cli::run(r.root(), &args, None)?;
     Ok(parse_porcelain_v2(&String::from_utf8_lossy(&out.stdout), ignored))
@@ -297,6 +314,50 @@ mod tests {
     fn commit_all(dir: &Path, msg: &str) {
         git(dir, &["add", "-A"]);
         git(dir, &["commit", "-q", "-m", msg]);
+    }
+
+    fn entry(staged: Option<ChangeKind>, unstaged: Option<ChangeKind>, from: Option<&str>) -> Entry {
+        Entry { staged, unstaged, renamed_from: from.map(str::to_owned) }
+    }
+
+    #[test]
+    fn porcelain_v2_entries_map_like_the_gitoxide_path() {
+        use ChangeKind::*;
+        let hash = "ce013625030ba8dba906f756967f9e9ca394464a";
+        let out = [
+            format!("1 .M N... 100644 100644 100644 {hash} {hash} README.md"),
+            format!("1 A. N... 000000 100644 100644 {hash} {hash} dir/with space.txt"),
+            format!("1 MD N... 100644 100644 000000 {hash} {hash} both.txt"),
+            format!("1 .A N... 000000 000000 100644 {hash} {hash} intent.txt"),
+            format!("2 R. N... 100644 100644 100644 {hash} {hash} R99 new name.txt"),
+            "docs/old name.txt".to_owned(),
+            format!("2 C. N... 100644 100644 100644 {hash} {hash} C100 copy.txt"),
+            "orig.txt".to_owned(),
+            format!("u UU N... 100644 100644 100644 100644 {hash} {hash} {hash} merge me.txt"),
+            "? untracked file.txt".to_owned(),
+            "? nested/".to_owned(),
+            "? node_modules/x.js".to_owned(),
+        ]
+        .join("\0")
+            + "\0";
+        let ignored = IgnoredNames::new(&["node_modules".to_owned()]);
+        let (map, conflicts) = parse_porcelain_v2(&out, &ignored);
+        let got: Vec<(&str, &Entry)> = map.iter().map(|(k, v)| (k.as_str(), v)).collect();
+        assert_eq!(
+            got,
+            [
+                ("README.md", &entry(None, Some(Modified), None)),
+                ("both.txt", &entry(Some(Modified), Some(Deleted), None)),
+                ("copy.txt", &entry(Some(Added), None, None)),
+                ("dir/with space.txt", &entry(Some(Added), None, None)),
+                ("intent.txt", &entry(None, Some(Added), None)),
+                ("merge me.txt", &entry(None, Some(Conflicted), None)),
+                ("nested/", &entry(None, Some(Untracked), None)),
+                ("new name.txt", &entry(Some(Renamed), None, Some("docs/old name.txt"))),
+                ("untracked file.txt", &entry(None, Some(Untracked), None)),
+            ]
+        );
+        assert_eq!(conflicts, HashSet::from(["merge me.txt".to_owned()]));
     }
 
     /// #471: a status run that read the index before an external `git switch`
