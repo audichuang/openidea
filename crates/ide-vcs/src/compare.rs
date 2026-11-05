@@ -138,7 +138,7 @@ impl Repos {
                 let mut overrides = Vec::new();
                 if !crate::execution_allowed() {
                     let config = cli::run_cancellable(repo.root(), &["config", "--null", "--list"], cancel)?;
-                    overrides = cli::filter_overrides(&config.stdout_str())?;
+                    overrides = cli::filter_overrides(&config.stdout)?;
                 }
                 let run = |args: &[&str]| {
                     let mut full: Vec<&str> = overrides.iter().map(String::as_str).collect();
