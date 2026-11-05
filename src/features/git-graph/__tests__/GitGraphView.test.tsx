@@ -45,7 +45,12 @@ vi.mock("@/ui", async (importOriginal) => {
   return { ...real, showContextMenu: (at: unknown, items: MenuItem[]) => showContextMenu(at, items) };
 });
 
-import { provideGitGraphBridge, type GitGraphBridge, type GitGraphRepoState } from "@/workbench/gitGraphBridge";
+import {
+  provideGitGraphBridge,
+  type GitGraphBridge,
+  type GitGraphRepoState,
+  type GraphBranchFilterProps,
+} from "@/workbench/gitGraphBridge";
 import { GitGraphEditor } from "../GitGraphView";
 import { findMatches, logBranches } from "../data";
 import { initialGraphView, useGraphView } from "../viewState";
@@ -102,6 +107,18 @@ const bridge = {
   commitMenu: vi.fn(async () => [{ label: "Commit Item" }] as MenuItem[]),
   branchMenu: vi.fn(async () => [{ label: "Branch Item" }] as MenuItem[]),
   tagMenu: vi.fn(async () => [{ label: "Tag Item" }] as MenuItem[]),
+  BranchFilterPopup: vi.fn((p: GraphBranchFilterProps) => (
+    <div role="dialog" aria-label="Branch filter">
+      {p.branches.map((b) => (
+        <button key={b.name} type="button" onClick={() => p.onSelect(b.name)}>
+          {`pick ${b.name}`}
+        </button>
+      ))}
+      <button type="button" onClick={() => p.onSelectMany(["HEAD", "origin/main"])}>
+        pick many
+      </button>
+    </div>
+  )),
   filesMenu: vi.fn(async () => [{ label: "File Item" }] as MenuItem[]),
   openDiff: vi.fn(async () => {}),
   openRevisionFile: vi.fn(async () => {}),
@@ -219,6 +236,35 @@ describe("Git Graph view", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "v1" }));
     await waitFor(() => expect(bridge.tagMenu).toHaveBeenCalledWith("v1", REPO));
+  });
+
+  it("filters branches through the vcs feature's branch filter popup", async () => {
+    render(<GitGraphEditor />);
+    await screen.findByText("subject a");
+    const button = screen.getByRole("button", { name: "Branches" });
+    expect(screen.queryByRole("dialog", { name: "Branch filter" })).toBeNull();
+    fireEvent.click(button);
+    await screen.findByRole("dialog", { name: "Branch filter" });
+    expect(bridge.BranchFilterPopup).toHaveBeenLastCalledWith(
+      expect.objectContaining({ repo: REPO, selected: [], anchor: button }),
+      undefined,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "pick main" }));
+    expect(useGraphView.getState().branchFilter).toEqual(["main"]);
+    expect(screen.queryByRole("dialog", { name: "Branch filter" })).toBeNull();
+    // Picking a selected branch again takes it out of the filter.
+    fireEvent.click(button);
+    fireEvent.click(await screen.findByRole("button", { name: "pick main" }));
+    expect(useGraphView.getState().branchFilter).toEqual([]);
+    fireEvent.click(button);
+    fireEvent.click(await screen.findByRole("button", { name: "pick many" }));
+    expect(useGraphView.getState().branchFilter).toEqual(["HEAD", "origin/main"]);
+    fireEvent.click(screen.getByRole("button", { name: "Show All Branches" }));
+    expect(useGraphView.getState().branchFilter).toEqual([]);
+    const remotes = screen.getByRole("button", { name: "Show Remote Branches" });
+    expect(remotes.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(remotes);
+    expect(useGraphView.getState().showRemotes).toBe(false);
   });
 
   it("finds commits and steps through the matches", async () => {
