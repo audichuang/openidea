@@ -23,6 +23,7 @@ import styles from "../GitLog.module.css";
 import { LogIdContext } from "../logContext";
 import { canUpdateBranch, useBranchesPane, type BranchTarget } from "../logPaneActions";
 import { reloadLog, scopedLogRepositories, setLogBranches, setLogFilters, useGitLog } from "../logStore";
+import { repoColor } from "../model";
 import { branchesByRepo } from "../multiRoot";
 import { commonBranches } from "../repoBranches";
 import { currentRepo, loadBranches, repoName, useVcs } from "../store";
@@ -332,6 +333,7 @@ export function BranchesPanel() {
                     : "folder"
           }
           getDetail={(n) => branchDetail(n, availableRepositories.length)}
+          getSwatch={(n) => (n.kind === "repository" && n.repo ? repoColor(n.repo, availableRepositories) : null)}
           selected={selected}
           onSelectionChange={(sel) => setSelected(sel)}
           onActivate={(n) => {

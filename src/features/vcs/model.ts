@@ -100,6 +100,24 @@ export function repoLabel(root: string, projectRoot: string | null): string {
   return baseName(root) || root;
 }
 
+/** Colour slots for repositories (IDEA gives every VCS root its own colour), `--project-color-<n>`. */
+export const REPO_COLORS = 9;
+
+/** Colour slot (1-based) of the repository at `index`: distinct for up to `REPO_COLORS` repositories. */
+export function repoColorIndex(index: number): number {
+  return (index % REPO_COLORS) + 1;
+}
+
+/**
+ * Colour of `root` among `roots` (sorted by path, so a repository keeps its colour), the same in
+ * every view that names it; null for a single repository or an unknown root.
+ */
+export function repoColor(root: string, roots: readonly string[]): string | null {
+  if (roots.length < 2) return null;
+  const i = roots.indexOf(root);
+  return i < 0 ? null : `var(--project-color-${repoColorIndex(i)})`;
+}
+
 export function baseName(path: string): string {
   const p = stripSlash(path);
   const i = p.lastIndexOf("/");
