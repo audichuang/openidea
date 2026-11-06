@@ -111,16 +111,11 @@ fn a_components_api_is_the_highest_plugin_interface_version() {
     assert!(component_api(["openidea:plugin/log"]).unwrap_err().contains("unversioned"));
 }
 
-#[test]
-fn shipped_components_are_built_for_this_api() {
-    let engine = PluginEngine::new().unwrap();
+fn shipped_component_is_built_for_this_api(engine: &PluginEngine, component: &Component, wasm: &Path) {
     let host = host_api();
-    for wasm in components() {
-        let component = engine.compile(&wasm).unwrap();
-        let built_for = engine.check_component(&component).unwrap_or_else(|e| panic!("{}: {e}", wasm.display()));
-        let built_for = built_for.unwrap_or_else(|| panic!("{} uses no plugin interface", wasm.display()));
-        assert_eq!((built_for.major, built_for.minor), (host.major, host.minor), "{}", wasm.display());
-    }
+    let built_for = engine.check_component(component).unwrap_or_else(|e| panic!("{}: {e}", wasm.display()));
+    let built_for = built_for.unwrap_or_else(|| panic!("{} uses no plugin interface", wasm.display()));
+    assert_eq!((built_for.major, built_for.minor), (host.major, host.minor), "{}", wasm.display());
 }
 
 // --- a later host, simulated -------------------------------------------------------------
@@ -209,30 +204,36 @@ fn next_minor() -> String {
 }
 
 #[test]
-fn components_link_against_a_later_minor_that_adds_functions_and_interfaces() {
-    let engine = engine();
+fn shipped_components_target_this_api_and_link_against_a_later_minor() {
+    let engine = PluginEngine::new().unwrap();
     let next = next_minor();
+    // nextest runs each test in its own process; share compilation within this test.
     for wasm in components() {
-        let component = Component::from_file(&engine, &wasm).unwrap();
-        let linker = host_at(&engine, &component, &next, Host::Superset);
-        linker.instantiate_pre(&component).unwrap_or_else(|e| panic!("{}: {e:?}", wasm.display()));
+        let component = engine.compile(&wasm).unwrap();
+        shipped_component_is_built_for_this_api(&engine, &component, &wasm);
+        component_links_against_a_later_minor(engine.engine(), &component, &wasm, &next);
+    }
+}
 
-        let exports: Vec<String> = component
-            .component_type()
-            .exports(&engine)
-            .map(|(n, _)| n.to_owned())
-            .filter(|n| n.starts_with("openidea:plugin/"))
-            .collect();
-        assert!(!exports.is_empty(), "{} exports no plugin interface", wasm.display());
-        for name in exports {
-            let iface = name.split_once('@').unwrap().0;
-            let newer = format!("{iface}@{next}");
-            assert!(
-                component.get_export_index(None, &newer).is_some(),
-                "{}: a {next} host can't find export {name}",
-                wasm.display()
-            );
-        }
+fn component_links_against_a_later_minor(engine: &Engine, component: &Component, wasm: &Path, next: &str) {
+    let linker = host_at(engine, component, next, Host::Superset);
+    linker.instantiate_pre(component).unwrap_or_else(|e| panic!("{}: {e:?}", wasm.display()));
+
+    let exports: Vec<String> = component
+        .component_type()
+        .exports(engine)
+        .map(|(n, _)| n.to_owned())
+        .filter(|n| n.starts_with("openidea:plugin/"))
+        .collect();
+    assert!(!exports.is_empty(), "{} exports no plugin interface", wasm.display());
+    for name in exports {
+        let iface = name.split_once('@').unwrap().0;
+        let newer = format!("{iface}@{next}");
+        assert!(
+            component.get_export_index(None, &newer).is_some(),
+            "{}: a {next} host can't find export {name}",
+            wasm.display()
+        );
     }
 }
 

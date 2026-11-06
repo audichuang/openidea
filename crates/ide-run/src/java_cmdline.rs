@@ -391,9 +391,9 @@ mod tests {
 
     #[test]
     fn manifest_lines_are_at_most_72_bytes() {
-        let entries: Vec<PathBuf> = (0..300)
-            .map(|i| PathBuf::from(format!("/home/u/.m2/repository/org/x/lib-{i}/1.0/lib {i}-1.0.jar")))
-            .collect();
+        let dir = tempfile::tempdir().unwrap();
+        let entries: Vec<PathBuf> =
+            (0..300).map(|i| dir.path().join(format!(".m2/repository/org/x/lib-{i}/1.0/lib {i}-1.0.jar"))).collect();
         let m = manifest(&entries);
         assert!(m.starts_with("Manifest-Version: 1.0\r\n"));
         assert!(m.ends_with("\r\n\r\n"));
@@ -405,7 +405,13 @@ mod tests {
         let joined = joined.lines().find_map(|l| l.strip_prefix("Class-Path: ")).unwrap();
         let urls: Vec<&str> = joined.split(' ').collect();
         assert_eq!(urls.len(), 300);
-        assert_eq!(urls[7], "file:/home/u/.m2/repository/org/x/lib-7/1.0/lib%207-1.0.jar");
+        assert_eq!(
+            urls[7],
+            format!(
+                "{}/.m2/repository/org/x/lib-7/1.0/lib%207-1.0.jar",
+                file_url(&dir.path().to_string_lossy(), false)
+            )
+        );
     }
 
     #[test]
