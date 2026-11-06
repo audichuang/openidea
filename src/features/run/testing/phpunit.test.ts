@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { createTestParser, frameworkFor, withTestReporting } from "./index";
 import { phpunitArgs, phpunitFilter, phpunitParser, withTeamcity } from "./phpunit";
