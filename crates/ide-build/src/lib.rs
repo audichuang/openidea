@@ -130,12 +130,12 @@ pub fn maven_external_roots(root: &Path, linked: &[String]) -> Vec<PathBuf> {
     gradle::external_roots(root, owned.iter().map(String::as_str))
 }
 
-/// Source, resource and build folders of the last Gradle sync, absolute.
+/// Absolute source, resource and build folders, with their role and owning project.
 pub fn gradle_source_roots(
     root: &Path,
     cache_dir: &Path,
     settings: &ide_core::settings::GradleSettings,
-) -> Vec<(PathBuf, gradle::ReportedRoot)> {
+) -> Vec<(PathBuf, gradle::ReportedRoot, PathBuf)> {
     let reported = gradle::linked_dirs(root, settings)
         .iter()
         .flat_map(|dir| sync::reported_gradle_projects(&gradle::cache_dir(cache_dir, dir)).as_ref().clone())
