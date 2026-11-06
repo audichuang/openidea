@@ -2292,7 +2292,7 @@ mod tests {
     fn check_group_liveness_helper_closes_stdout_then_hangs_times_out_and_kills() {
         let _s = serial();
         let _inj = InjectionGuard;
-        let timeout = Duration::from_millis(500);
+        let timeout = Duration::from_secs(2);
         TEST_PS_TIMEOUT.set(timeout);
         test_override_ps_helper(Some(vec![
             "sh".to_string(),
