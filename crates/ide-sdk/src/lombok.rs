@@ -88,7 +88,7 @@ pub fn agent_in_script(text: &str) -> Option<ScriptAgent> {
                     tail[end..]
                         .chars()
                         .next()
-                        .is_none_or(|c| c.is_whitespace() || matches!(c, '"' | '\'' | ';' | ',' | ')'))
+                        .is_none_or(|c| c.is_whitespace() || matches!(c, '"' | '\'' | ';' | ',' | ')' | '='))
                 })?;
             let agent = &tail[..end];
             let lombok = agent.rsplit(['/', '\\']).next()?.to_ascii_lowercase().contains("lombok");
@@ -980,6 +980,13 @@ exec jdtls "$ARG""#;
     #[test]
     fn wrapper_agent_does_not_treat_a_jar_directory_as_the_agent_filename() {
         assert_eq!(agent_in_script("jdtls --jvm-arg=-javaagent:/opt/lombok.jar/jacoco.jar"), None);
+    }
+
+    #[test]
+    fn wrapper_agent_stops_before_java_agent_options() {
+        let wrapper = agent_in_script("jdtls --jvm-arg=-javaagent:/opt/lombok-1.18.46.jar=ECJ").unwrap();
+        assert_eq!(wrapper, script_agent("/opt/lombok-1.18.46.jar", false));
+        assert_eq!(agent_version(&wrapper.agent).as_deref(), Some("1.18.46"));
     }
 
     #[test]
