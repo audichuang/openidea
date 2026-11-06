@@ -238,16 +238,24 @@ fn assigned_value<'a>(line: &'a str, name: &str) -> Option<&'a str> {
     key.trim().eq_ignore_ascii_case(name).then_some(value)
 }
 
-/// A Lombok version from an agent's jar name (`…/lombok-1.18.46.jar`), when it shows one.
+/// A Lombok distribution version from an agent's jar name, including an OpenIDEA revision.
 pub fn agent_version(agent: &str) -> Option<String> {
     let name = agent.rsplit(['/', '\\']).next()?;
     let version = name.strip_prefix("lombok-")?.strip_suffix(".jar")?;
-    parse_version(version).is_some().then(|| version.to_owned())
+    let release = if let Some((release, revision)) = version.split_once("-openidea.") {
+        if revision.is_empty() || !revision.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        release
+    } else {
+        version
+    };
+    parse_version(release).is_some().then(|| version.to_owned())
 }
 
 /// Two Lombok agents would run in jdtls: `wrapper`'s (the one the launcher script at
 /// `launcher` passes) and `app`, the jar the app attaches. `None` when they are the same jar
-/// or both names show the same version; a version the wrapper picks at run time may differ.
+/// or both names show the same distribution version; a version the wrapper picks at run time may differ.
 /// A wrapper that passes its agent only on a condition "may" attach it.
 pub fn duplicate_agents_problem(launcher: &Path, wrapper: &ScriptAgent, app: &Path) -> Option<String> {
     let app = app.to_string_lossy();
@@ -832,6 +840,35 @@ exec /opt/homebrew/opt/jdtls/libexec/bin/jdtls \
     }
 
     #[test]
+    fn identical_patched_lombok_distributions_are_not_reported() {
+        let launcher = Path::new("/wrapper/jdtls");
+        for (wrapper, app) in [
+            ("/wrapper/lombok-1.18.48-openidea.2.jar", "/managed/lombok-1.18.48-openidea.2.jar"),
+            (r"C:\wrapper\lombok-1.18.48-openidea.2.jar", r"C:\managed\lombok-1.18.48-openidea.2.jar"),
+        ] {
+            assert_eq!(duplicate_agents_problem(launcher, &script_agent(wrapper, false), Path::new(app)), None);
+        }
+    }
+
+    #[test]
+    fn different_or_unknown_lombok_distributions_are_reported() {
+        let launcher = Path::new("/wrapper/jdtls");
+        let app = Path::new("/managed/lombok-1.18.48-openidea.2.jar");
+        for wrapper in [
+            "/wrapper/lombok-1.18.48.jar",
+            "/wrapper/lombok-1.18.48-openidea.1.jar",
+            "/wrapper/lombok-1.18.48-unknown.jar",
+            "/wrapper/lombok-1.18.48-openidea..jar",
+            "/wrapper/lombok-1.18.48-openidea.two.jar",
+            "/wrapper/lombok-1.18.48-openidea.2-extra.jar",
+            "/wrapper/lombok.jar",
+            "$LOMBOK",
+        ] {
+            assert!(duplicate_agents_problem(launcher, &script_agent(wrapper, false), app).is_some(), "{wrapper}");
+        }
+    }
+
+    #[test]
     fn two_different_lombok_agents_are_reported() {
         let launcher = Path::new("/home/me/.local/bin/jdtls");
         let app = Path::new("/opt/lombok-1.18.48.jar");
@@ -850,7 +887,7 @@ exec /opt/homebrew/opt/jdtls/libexec/bin/jdtls \
         );
         assert_eq!(agent_version("/m2/lombok-1.18.46.jar").as_deref(), Some("1.18.46"));
         assert_eq!(agent_version(r"C:\tools\lombok-1.18.40.jar").as_deref(), Some("1.18.40"));
-        assert_eq!(agent_version("/managed/lombok-1.18.48-openidea.2.jar"), None);
+        assert_eq!(agent_version("/managed/lombok-1.18.48-openidea.2.jar").as_deref(), Some("1.18.48-openidea.2"));
         assert_eq!(agent_version("$LOMBOK"), None);
     }
 
