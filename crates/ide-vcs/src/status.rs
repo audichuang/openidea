@@ -121,7 +121,7 @@ fn parse_porcelain_v2(out: &[u8], ignored: &IgnoredNames) -> Changes {
                 let (x, y) = (xy.next().unwrap_or('.'), xy.next().unwrap_or('.'));
                 let entry = changes.map.entry(fields[count - 1].to_owned()).or_default();
                 entry.staged = staged(x);
-                entry.unstaged = unstaged(y);
+                entry.unstaged = unstaged(y).or(entry.unstaged);
                 if x == 'R' {
                     entry.renamed_from = from.clone();
                 }
@@ -359,6 +359,32 @@ mod tests {
             ]
         );
         assert_eq!(changes.conflicts, HashSet::from(["merge me.txt".to_owned()]));
+    }
+
+    #[test]
+    fn porcelain_v2_worktree_rename_preserves_source_deletion_before_staged_record() {
+        use ChangeKind::*;
+        let hash = "ce013625030ba8dba906f756967f9e9ca394464a";
+        let out = format!(
+            "2 .R N... 100644 100644 100644 {hash} {hash} R100 keep/a.txt\0keep/b.txt\0\
+             1 M. N... 100644 100644 100644 {hash} {hash} keep/b.txt\0"
+        );
+        let changes = parse_porcelain_v2(out.as_bytes(), &IgnoredNames::new(&[]));
+        assert_eq!(changes.map["keep/b.txt"], entry(Some(Modified), Some(Deleted), None));
+        assert_eq!(changes.map["keep/a.txt"], entry(None, Some(Added), None));
+    }
+
+    #[test]
+    fn porcelain_v2_worktree_rename_preserves_source_deletion_after_staged_record() {
+        use ChangeKind::*;
+        let hash = "ce013625030ba8dba906f756967f9e9ca394464a";
+        let out = format!(
+            "1 M. N... 100644 100644 100644 {hash} {hash} keep/b.txt\0\
+             2 .R N... 100644 100644 100644 {hash} {hash} R100 keep/a.txt\0keep/b.txt\0"
+        );
+        let changes = parse_porcelain_v2(out.as_bytes(), &IgnoredNames::new(&[]));
+        assert_eq!(changes.map["keep/b.txt"], entry(Some(Modified), Some(Deleted), None));
+        assert_eq!(changes.map["keep/a.txt"], entry(None, Some(Added), None));
     }
 
     fn commit_all(dir: &Path, msg: &str) {
