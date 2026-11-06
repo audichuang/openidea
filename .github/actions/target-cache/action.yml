@@ -18,6 +18,9 @@ inputs:
   token:
     description: Token with actions:write, used by save to delete superseded entries.
     default: ""
+  artifacts:
+    description: Cargo JSON manifest of live test and clippy artifacts; empty disables pruning.
+    default: ""
 runs:
   using: composite
   steps:
@@ -32,20 +35,78 @@ runs:
         prefix="tgt-${{ inputs.name }}-$RUNNER_OS-$(date -u +%G-%V)-$rustc_hash-"
         echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
 
-    - if: inputs.mode == 'restore'
-      id: restore
+    - name: Look up target cache
+      if: inputs.mode == 'restore'
+      id: lookup
+      continue-on-error: true
       uses: actions/cache/restore@v4
       with:
         path: ${{ inputs.workdir }}/target
         key: ${{ steps.key.outputs.prefix }}${{ github.sha }}
         restore-keys: ${{ steps.key.outputs.prefix }}
+        lookup-only: true
+
+    - name: Download target cache
+      if: inputs.mode == 'restore' && steps.lookup.outputs.cache-matched-key != ''
+      id: restore
+      continue-on-error: true
+      uses: actions/cache/restore@v4
+      env:
+        SEGMENT_DOWNLOAD_TIMEOUT_MINS: "2"
+      with:
+        path: ${{ inputs.workdir }}/target
+        key: ${{ steps.lookup.outputs.cache-matched-key }}
+
+    - name: Discard partial target before retry
+      if: inputs.mode == 'restore' && steps.lookup.outputs.cache-matched-key != '' && steps.restore.outputs.cache-matched-key == ''
+      shell: bash
+      working-directory: ${{ inputs.workdir }}
+      run: |
+        echo '::warning::target cache download failed; retrying the matched key once'
+        rm -rf target
+
+    - name: Retry target cache download
+      if: inputs.mode == 'restore' && steps.lookup.outputs.cache-matched-key != '' && steps.restore.outputs.cache-matched-key == ''
+      id: retry
+      continue-on-error: true
+      uses: actions/cache/restore@v4
+      env:
+        SEGMENT_DOWNLOAD_TIMEOUT_MINS: "2"
+      with:
+        path: ${{ inputs.workdir }}/target
+        key: ${{ steps.lookup.outputs.cache-matched-key }}
+
+    - name: Target cache outcome
+      if: inputs.mode == 'restore'
+      id: outcome
+      shell: bash
+      working-directory: ${{ inputs.workdir }}
+      env:
+        LOOKUP: ${{ steps.lookup.outcome }}
+        MATCHED: ${{ steps.lookup.outputs.cache-matched-key }}
+        RESTORED: ${{ steps.restore.outputs.cache-matched-key || steps.retry.outputs.cache-matched-key }}
+        RETRIED: ${{ steps.retry.outputs.cache-matched-key }}
+      run: |
+        if [ -n "$RESTORED" ]; then
+          attempt=1
+          if [ -n "$RETRIED" ]; then attempt=2; fi
+          echo "::notice::target cache: restored $RESTORED (attempt $attempt)"
+          echo "restored=true" >> "$GITHUB_OUTPUT"
+        elif [ "$LOOKUP" = failure ]; then
+          echo '::warning::target cache: lookup failed; cold build'
+        elif [ -z "$MATCHED" ]; then
+          echo '::notice::target cache: no key; cold build'
+        else
+          echo "::warning::target cache: download failed twice for $MATCHED; cold build"
+          rm -rf target
+        fi
 
     # Cargo rebuilds a crate when a source file is newer than its output. A fresh checkout makes
     # every file new, and a file an older commit changed can predate the cached output, so set
     # mtimes from git instead: unchanged files far in the past, files changed since the commit the
     # cache was built from to now. Without that commit (rebased away, or no cache) every file stays
     # new and cargo rebuilds the workspace, which is always correct.
-    - if: inputs.mode == 'restore' && steps.restore.outputs.cache-matched-key != ''
+    - if: inputs.mode == 'restore' && steps.outcome.outputs.restored == 'true'
       shell: bash
       working-directory: ${{ inputs.workdir }}
       run: |
@@ -59,18 +120,26 @@ runs:
           echo "::notice::target cache source ${src:-unknown} not found: rebuilding the workspace"
         fi
 
-    - if: inputs.mode == 'save'
+    - if: inputs.mode == 'save' && github.ref == 'refs/heads/develop'
       shell: bash
       working-directory: ${{ inputs.workdir }}
+      env:
+        ARTIFACTS: ${{ inputs.artifacts }}
       run: |
+        if [ -n "$ARTIFACTS" ]; then
+          node "$GITHUB_ACTION_PATH/artifacts.mjs" prune target "$ARTIFACTS"
+        fi
         echo "$GITHUB_SHA" > target/.cache-source-sha
         du -sh target
-    - if: inputs.mode == 'save'
+    - if: inputs.mode == 'save' && github.ref == 'refs/heads/develop'
+      id: save
       uses: actions/cache/save@v4
+      env:
+        ZSTD_CLEVEL: "1"
       with:
         path: ${{ inputs.workdir }}/target
         key: ${{ steps.key.outputs.prefix }}${{ github.sha }}
-    - if: inputs.mode == 'save'
+    - if: inputs.mode == 'save' && github.ref == 'refs/heads/develop' && steps.save.outcome == 'success'
       name: Delete superseded target caches
       shell: bash
       env:
@@ -78,6 +147,11 @@ runs:
         KEEP: ${{ steps.key.outputs.prefix }}${{ github.sha }}
         FAMILY: tgt-${{ inputs.name }}-${{ runner.os }}-
       run: |
-        gh cache list -R "$GITHUB_REPOSITORY" --key "$FAMILY" --ref "$GITHUB_REF" --limit 100 --json id,key \
-          --jq ".[] | select(.key != \"$KEEP\") | .id" |
+        caches=$(gh cache list -R "$GITHUB_REPOSITORY" --key "$FAMILY" --ref "$GITHUB_REF" --limit 100 --json id,key)
+        # cache/save can warn and succeed without uploading; retain the old cache in that case.
+        if ! jq -e --arg keep "$KEEP" 'any(.[]; .key == $keep)' <<< "$caches" >/dev/null; then
+          echo '::warning::new target cache not found after save; keeping previous entries'
+          exit 0
+        fi
+        jq -r --arg keep "$KEEP" '.[] | select(.key != $keep) | .id' <<< "$caches" |
           while read -r id; do gh cache delete -R "$GITHUB_REPOSITORY" "$id"; done
