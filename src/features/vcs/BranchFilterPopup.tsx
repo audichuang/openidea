@@ -14,7 +14,7 @@ const ROW_HEIGHT = 24;
 const MAX_LIST_HEIGHT = 320;
 
 /** HEAD, then Local and Remote groups; groups without a match are left out. */
-function buildRows(branches: readonly Branch[], query: string): Row[] {
+function buildRows(branches: readonly Branch[], query: string, favorites: readonly string[] | null): Row[] {
   const q = query.trim();
   const rows: Row[] = [];
   const push = (value: string, label: string, current: boolean, out: Row[]) => {
@@ -28,8 +28,8 @@ function buildRows(branches: readonly Branch[], query: string): Row[] {
     for (const b of list) push(b.name, b.name, b.current, items);
     if (items.length) rows.push({ type: "section", key: `section:${key}`, label }, ...items);
   };
-  group("local", tx("Local"), sortLocal(branches));
-  group("remote", tx("Remote"), sortRemote(branches));
+  group("local", tx("Local"), sortLocal(branches, favorites));
+  group("remote", tx("Remote"), sortRemote(branches, favorites));
   return rows;
 }
 
@@ -42,6 +42,7 @@ export function BranchFilterPopup({
   onSelect,
   onSelectMany,
   onClose,
+  favorites = null,
 }: {
   anchor: HTMLElement;
   branches: readonly Branch[];
@@ -49,10 +50,12 @@ export function BranchFilterPopup({
   onSelect: (branch: string) => void;
   onSelectMany: () => void;
   onClose: () => void;
+  /** Stored favorite branches, listed after the current one; null = the defaults (main / master). */
+  favorites?: readonly string[] | null;
 }) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
-  const rows = useMemo(() => buildRows(branches, query), [branches, query]);
+  const rows = useMemo(() => buildRows(branches, query, favorites), [branches, query, favorites]);
   const activeIndex = rows[active] && !isSection(rows[active]!) ? active : firstSelectable(rows, isSection);
   const activate = (row: Row | undefined) => {
     if (row?.type === "ref") onSelect(row.value);
