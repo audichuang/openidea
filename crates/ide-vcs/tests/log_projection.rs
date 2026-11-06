@@ -79,10 +79,29 @@ fn lazy_summaries_seek_and_index_survive_refresh_and_restart() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     git(dir, &["init", "-q"]);
-    let mut ids = Vec::new();
+    let mut stream = String::new();
     for i in 0..70 {
-        ids.push(commit(dir, "a", &format!("summary {i}\n\nneedle body {i}")));
+        let message = format!("summary {i}\n\nneedle body {i}");
+        stream.push_str(&format!(
+            "commit refs/heads/main\ncommitter Test <test@example.com> {} +0000\ndata {}\n{}\nM 100644 inline a\ndata {}\n{}\n\n",
+            1000 + i,
+            message.len(),
+            message,
+            message.len(),
+            message
+        ));
     }
+    let mut child = Command::new("git")
+        .current_dir(dir)
+        .args(["fast-import", "--quiet"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(stream.as_bytes()).unwrap();
+    assert!(child.wait().unwrap().success());
+    git(dir, &["reset", "--hard", "HEAD"]);
+    let ids: Vec<_> = git(dir, &["rev-list", "--reverse", "HEAD"]).lines().map(str::to_owned).collect();
     let cache = tempfile::tempdir().unwrap();
     let repo = Repo::discover(dir).unwrap().unwrap();
     repo.enable_log_index(cache.path());
