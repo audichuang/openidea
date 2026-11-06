@@ -50,6 +50,8 @@ Mechanical kinds:
 
 Anything else is MANUAL: keep the fork's behaviour, adopt upstream's new structure.
 
+Standing decision: updater endpoint and PAC policy lives in `src-tauri/src/fork_updater.rs`. When rebasing upstream `266e4eeb` (CNB update sources), retain the fork-owned policy and keep both the updater builder and `updates_configured` using its endpoint list. Fork releases use the configured fork endpoint (or `OPENIDEA_UPDATE_ENDPOINT` override), without appending CNB or upstream sources. Apply a PAC decision only when exactly one endpoint is configured: the updater builder shares that decision across all endpoints and the artifact download, so a first-endpoint decision cannot safely cover multiple sources.
+
 Standing decision: on macOS, project window groups keep the fork's AppKit native window tabs, which share one real fullscreen Space. Upstream's simple fullscreen for grouped windows (l0ng-ai/openidea#1218, reverted by the fork's `revert(macos)` commit on v0.1.36) is not taken: it covers the current desktop instead of giving the IDE its own Space. When upstream changes group fullscreen again, resolve toward the native tabs and still take its unrelated window changes.
 
 ## Unattended rebase
