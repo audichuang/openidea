@@ -82,9 +82,8 @@ pub fn agent_in_script(text: &str) -> Option<ScriptAgent> {
     lines.iter().find_map(|(line, conditional_line)| {
         let line = line.as_str();
         line.match_indices("-javaagent:").find_map(|(at, flag)| {
-            let rest = &line[at + flag.len()..];
-            let agent = rest.split_whitespace().next()?;
-            let mut agent = agent.trim_matches(|c| matches!(c, '"' | '\'' | ')' | ';'));
+            let value = script_agent_value(line, at + flag.len());
+            let mut agent = value.trim_matches(|c| matches!(c, ')' | ';'));
             if !agent.contains("${") {
                 // The end of `${LOMBOK:+--jvm-arg=-javaagent:$LOMBOK}`.
                 agent = agent.trim_end_matches('}');
@@ -113,6 +112,28 @@ pub fn agent_in_script(text: &str) -> Option<ScriptAgent> {
             lombok.then(|| ScriptAgent { agent: agent.to_owned(), conditional })
         })
     })
+}
+
+/// Read a quoted argument value, including quotes opened before `value_start`.
+/// Backslashes are literal so Windows jar paths keep their spelling.
+fn script_agent_value(line: &str, value_start: usize) -> String {
+    let mut quote = None;
+    let mut value = String::new();
+    for (at, c) in line.char_indices() {
+        let opens_quote = c == '"'
+            || (c == '\'' && (at == 0 || line[..at].ends_with(|c: char| c.is_whitespace() || matches!(c, '=' | ':'))));
+        if quote == Some(c) || (quote.is_none() && opens_quote) {
+            quote = if quote.is_some() { None } else { Some(c) };
+            continue;
+        }
+        if at >= value_start {
+            if quote.is_none() && c.is_whitespace() {
+                break;
+            }
+            value.push(c);
+        }
+    }
+    value
 }
 
 /// The lines of a script that aren't comments, each with whether it runs only on a
@@ -836,6 +857,52 @@ exec /opt/homebrew/opt/jdtls/libexec/bin/jdtls \
         ] {
             assert_eq!(agent_in_script(none), None, "{none}");
         }
+    }
+
+    #[test]
+    fn quoted_wrapper_agent_paths_are_preserved_and_reported() {
+        for path in
+            [r"C:\Program Files\Lombok\lombok.jar", "/opt/Java Tools/lombok.jar", "/使用者/Java 工具/lombok.jar"]
+        {
+            for quote in ['"', '\''] {
+                for argument in [
+                    format!("{quote}--jvm-arg=-javaagent:{path}{quote}"),
+                    format!("--jvm-arg={quote}-javaagent:{path}{quote}"),
+                    format!("--jvm-arg=-javaagent:{quote}{path}{quote}"),
+                ] {
+                    let script = format!("exec jdtls {argument} --jvm-arg=-Xmx2g \"$@\"");
+                    let wrapper = agent_in_script(&script);
+                    assert_eq!(wrapper, Some(script_agent(path, false)), "{script}");
+                    let problem = duplicate_agents_problem(
+                        Path::new("/bin/jdtls"),
+                        &wrapper.unwrap(),
+                        Path::new("/managed/lombok.jar"),
+                    )
+                    .expect("a different wrapper agent must be reported");
+                    assert!(problem.contains(path), "{problem}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn batch_wrapper_apostrophes_are_literal_inside_paths() {
+        let path = r"C:\Users\O'Connor\lombok-1.18.48.jar";
+        let script = format!("python jdtls.py --jvm-arg=-javaagent:{path} %*");
+        let wrapper = agent_in_script(&script).expect("the wrapper passes Lombok");
+        assert_eq!(wrapper, script_agent(path, false));
+        assert_eq!(
+            duplicate_agents_problem(Path::new("/bin/jdtls"), &wrapper, Path::new("/managed/lombok-1.18.48.jar"),),
+            None,
+            "the same version must not warn"
+        );
+        assert_eq!(
+            agent_in_script(
+                r"python C:\Users\O'Brien\jdtls.py --jvm-arg=-javaagent:C:\agents\jacoco.jar --configuration C:\lombok"
+            ),
+            None,
+            "an apostrophe in the launcher path must not absorb later arguments"
+        );
     }
 
     fn script_agent(agent: &str, conditional: bool) -> ScriptAgent {
