@@ -35,7 +35,7 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
             // missing locally) may still be readable by git itself.
             Err(e) => {
                 tracing::debug!("gitoxide status of {} failed, using git: {e}", r.root().display());
-                cli_changes(r, &repo, &ignored).map_err(|_| e)?
+                cli_changes(r, &repo, &ignored)?
             }
         }
     };
