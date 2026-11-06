@@ -439,7 +439,11 @@ function ShelveDialog({
           <SplitPanel defaultSize="62%" minSize="240px">
             <div className={shelfStyles.preview} data-shelve-preview onKeyDown={keepPreviewKeysOutOfDialog}>
               {previewPath ? (
-                <DiffEditor key={previewPath} input={diffInput({ ...workingDiffData(previewPath), readOnly: true })} />
+                <DiffEditor
+                  key={previewPath}
+                  input={diffInput({ ...workingDiffData(previewPath), readOnly: true })}
+                  allowSourceNavigation={false}
+                />
               ) : (
                 <EmptyState>
                   <T>Select a file to preview its changes</T>
