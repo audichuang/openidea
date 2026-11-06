@@ -106,7 +106,7 @@ impl Watcher {
             // Rather than failing to open the project, keep it in sync a little later.
             Err(e) => {
                 tracing::warn!("{e}; polling {} for changes instead", root.display());
-                (Self::start_polling(&root, filter, emit, mode)?, Some(e.message))
+                (Self::start_polling(&root, filter, emit, mode, POLL_INTERVAL)?, Some(e.message))
             }
         };
         Ok(Self { inner, excludes: shared, rules, polling })
@@ -141,8 +141,14 @@ impl Watcher {
 
     /// Polls per directory unless flat: a recursive poll would rescan
     /// `node_modules` and `target` every round.
-    fn start_polling(root: &Path, filter: EventFilter, emit: Emit, mode: WatchMode) -> IdeResult<Inner> {
-        let config = notify::Config::default().with_poll_interval(POLL_INTERVAL);
+    fn start_polling(
+        root: &Path,
+        filter: EventFilter,
+        emit: Emit,
+        mode: WatchMode,
+        interval: Duration,
+    ) -> IdeResult<Inner> {
+        let config = notify::Config::default().with_poll_interval(interval);
         let mode = if mode == WatchMode::Flat { mode } else { WatchMode::PerDirectory };
         Self::start_queued::<PollWatcher>(root, filter, emit, mode, config)
     }
@@ -1258,7 +1264,8 @@ mod tests {
         let filter = EventFilter::new(root.to_path_buf(), &excludes);
         let (excludes, rules) = (filter.excludes.clone(), filter.gitignore.clone());
         let emit: Emit = Arc::new(move |b: &FsBatch| batches.lock().push(b.clone()));
-        let inner = Watcher::start_polling(root, filter, emit, WatchMode::default()).unwrap();
+        let inner =
+            Watcher::start_polling(root, filter, emit, WatchMode::default(), Duration::from_millis(50)).unwrap();
         Watcher { inner, excludes, rules, polling: Some("cannot start file watcher".into()) }
     }
 
