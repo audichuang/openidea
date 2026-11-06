@@ -212,7 +212,15 @@ function isStrokeOf(e: KeyboardEvent, actionId: string): boolean {
   return !!stroke && bindingsFor(actionId).some((b) => normalizeBinding(b) === stroke);
 }
 
-export function DiffEditor({ input, toolbarActions }: { input: EditorInput; toolbarActions?: ReactNode }) {
+export function DiffEditor({
+  input,
+  toolbarActions,
+  allowSourceNavigation = true,
+}: {
+  input: EditorInput;
+  toolbarActions?: ReactNode;
+  allowSourceNavigation?: boolean;
+}) {
   const data = input.data as DiffData;
   const { path, left, right } = data;
   const [attached, setAttached] = useState<Attached | null>(null);
@@ -702,6 +710,7 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
   const source = fileSource ?? worktreeSource;
 
   const jumpToSource = useCallback(() => {
+    if (!allowSourceNavigation) return;
     const views = viewsRef.current;
     const fileA = sideFile(left, path);
     const fileB = sideFile(right, path);
@@ -725,7 +734,7 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
       const line = mapLine(Chunk.build(from, to), at.number - 1, from, to);
       open(line, to.line(line + 1).text === at.text ? head - at.from : 0);
     });
-  }, [left, right, path, worktreeSource]);
+  }, [allowSourceNavigation, left, right, path, worktreeSource]);
 
   const currentChunk = (): { chunk: Chunk; index: number } | undefined => {
     const v = viewsRef.current?.b;
@@ -994,7 +1003,7 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
     ready && chunkInfo.count === 0 && (attached?.a?.text() ?? statics?.a) === (attached?.b?.text() ?? statics?.b);
   // Staging applies to local changes against HEAD / the index only.
   const canStage = editableB && isWorktree(right) && left.type === "rev" && !!useVcs.getState().root;
-  const hasSource = !!source;
+  const hasSource = allowSourceNavigation && !!source;
 
   return (
     <div
