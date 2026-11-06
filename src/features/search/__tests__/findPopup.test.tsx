@@ -81,7 +81,7 @@ const {
 const { formatBinding } = await import("@/platform/keymap");
 const { usePlatform } = await import("@/platform/platformInfo");
 
-const settle = () => act(() => new Promise((r) => setTimeout(r, 250)));
+const settle = () => act(() => vi.advanceTimersByTimeAsync(150));
 const selectedRows = () =>
   within(screen.getByRole("listbox", { name: "Matches" }))
     .getAllByRole("option")
@@ -89,6 +89,7 @@ const selectedRows = () =>
 const field = () => screen.getByLabelText("Text to find");
 
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   replaced.length = 0;
   confirms.length = 0;
   queries.length = 0;
@@ -117,6 +118,7 @@ afterEach(() => {
     hideFindPopup();
     useProject.setState({ project: null });
   });
+  vi.useRealTimers();
 });
 
 describe("Find in Files popup", () => {
@@ -252,7 +254,8 @@ describe("Find in Files popup", () => {
     act(() => void runFindPopupCommand("previousResult"));
     expect(selectedRows()[0]!.textContent).toContain("a.kt");
     act(() => void runFindPopupCommand("recentSearches"));
-    expect(await screen.findByText("older")).toBeInTheDocument();
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(screen.getByText("older")).toBeInTheDocument();
     act(() => hideFindPopup());
   });
 
