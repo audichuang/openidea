@@ -36,6 +36,19 @@ use std::time::{Duration, Instant};
 
 use crate::gitsrc::GitError;
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ProcessCounts {
+    pub spawns: usize,
+    pub ps_spawns: usize,
+    pub singleton_groups: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static PROCESS_COUNTS: Cell<ProcessCounts> = const { Cell::new(ProcessCounts { spawns: 0, ps_spawns: 0, singleton_groups: 0 }) };
+}
+
 /// Global budget: Git processes alive at once, across all repositories.
 pub const MAX_CONCURRENT_GIT: usize = 2;
 /// Callers allowed to wait for a slot; one more is refused at once
@@ -338,6 +351,10 @@ mod exit_watch {
             }
             Ok(self.exited)
         }
+
+        pub(super) fn has_exited(&self) -> bool {
+            self.exited
+        }
     }
 }
 
@@ -380,6 +397,10 @@ mod exit_watch {
                 self.exited = self.kq.kevent(&[], &mut out, Some(NOW))? > 0;
             }
             Ok(self.exited)
+        }
+
+        pub(super) fn has_exited(&self) -> bool {
+            self.exited
         }
     }
 }
@@ -709,8 +730,10 @@ mod tree {
 
         /// SIGKILL to the group. The caller guarantees the root is
         /// unreaped, so the group id is still ours.
-        pub(super) fn kill_group(&mut self) -> io::Result<()> {
+        pub(super) fn kill_group(&mut self, root_exited: bool) -> io::Result<()> {
             let pgid = i32::try_from(self.child.id()).map_err(io::Error::other)?;
+            #[cfg(not(any(target_os = "macos", test)))]
+            let _ = root_exited;
 
             #[cfg(test)]
             let killpg_res = match super::INJECT_GROUP_KILL_EPERM.get() {
@@ -723,6 +746,15 @@ mod tree {
             match killpg_res {
                 // ESRCH: the group is already empty.
                 Ok(()) | Err(Errno::ESRCH) => Ok(()),
+                #[cfg(any(target_os = "macos", test))]
+                Err(Errno::EPERM) if exited_root_is_only_member(root_exited, pgid) => {
+                    #[cfg(test)]
+                    super::PROCESS_COUNTS.update(|mut counts| {
+                        counts.singleton_groups += 1;
+                        counts
+                    });
+                    Ok(())
+                }
                 // macOS / Darwin: XNU's `killpg1` iterates the process group excluding
                 // zombies (`!(p->p_flag & P_SYSTEM) && p->p_stat != SZOMB`, see XNU
                 // bsd/kern/kern_sig.c). When all processes in the group have exited
@@ -746,6 +778,46 @@ mod tree {
 
         pub(super) fn try_reap(&mut self) -> io::Result<Option<ExitStatus>> {
             self.child.try_wait()
+        }
+    }
+
+    /// The root is still unreaped. A two-PID buffer distinguishes a complete
+    /// singleton from a truncated group. XNU's PROC_PGRP_ONLY scans both
+    /// allproc and zombproc under proc_list_lock (bsd/kern/proc_info.c).
+    #[cfg(any(target_os = "macos", test))]
+    pub(super) fn exited_root_is_only_member(root_exited: bool, pgid: i32) -> bool {
+        if !root_exited {
+            return false;
+        }
+        let (count, pids) = group_members(pgid);
+        count == 1 && pids[0] == pgid
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    fn group_members(pgid: i32) -> (i32, [i32; 2]) {
+        #[cfg(test)]
+        {
+            if let Some(snapshot) = super::TEST_GROUP_MEMBERS.get() {
+                return snapshot;
+            }
+            if super::INJECT_GROUP_KILL_EPERM.get() != super::InjectGroupKillEperm::None {
+                return (0, [0; 2]);
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let mut pids = [0i32; 2];
+            // SAFETY: writable, aligned PID buffer with its exact byte size.
+            // proc_listpgrppids returns the number of PIDs, not bytes.
+            let count = unsafe {
+                nix::libc::proc_listpgrppids(pgid, pids.as_mut_ptr().cast(), std::mem::size_of_val(&pids) as i32)
+            };
+            (count, pids)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = pgid;
+            (0, [0; 2])
         }
     }
 
@@ -915,6 +987,11 @@ mod tree {
         cmd.stdin(std::process::Stdio::null());
 
         let child = cmd.spawn()?;
+        #[cfg(test)]
+        super::PROCESS_COUNTS.update(|mut counts| {
+            counts.ps_spawns += 1;
+            counts
+        });
         let mut guard = HelperGuard::new(child);
 
         let stdout = guard.child.stdout.take().ok_or_else(|| io::Error::other("failed to capture ps stdout"))?;
@@ -1066,6 +1143,7 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
     static TEST_LAST_HELPER_PID: Cell<Option<u32>> = const { Cell::new(None) };
     static INJECT_SETTLING_LOOKS: Cell<usize> = const { Cell::new(0) };
+    static TEST_GROUP_MEMBERS: Cell<Option<(i32, [i32; 2])>> = const { Cell::new(None) };
 }
 
 #[cfg(all(unix, test))]
@@ -1219,13 +1297,18 @@ impl ManagedChild {
         // a missing git.
         let dir_missing = cmd.get_current_dir().is_some_and(|d| !d.is_dir());
         let mut tree = spawned.map_err(|e| if dir_missing { GitError::Io(e) } else { spawn_error(e) })?;
+        #[cfg(test)]
+        PROCESS_COUNTS.update(|mut counts| {
+            counts.spawns += 1;
+            counts
+        });
         #[cfg(unix)]
         let watch = match exit_watch::ExitWatch::new(tree.id()) {
             Ok(w) => w,
             Err(e) => {
                 // No way to observe the root without reaping it: kill the
                 // group now, while the pid is certainly ours.
-                let killed = tree.kill_group();
+                let killed = tree.kill_group(false);
                 let reaped = tree.kill_root().and_then(|()| {
                     let deadline = Instant::now() + GRACE;
                     while tree.try_reap()?.is_none() {
@@ -1301,7 +1384,11 @@ impl ManagedChild {
                         "cannot signal process group after root process was reaped; tree cleanup unconfirmed",
                     ));
                 }
-                match self.tree.kill_group() {
+                #[cfg(unix)]
+                let killed = self.tree.kill_group(self.watch.has_exited());
+                #[cfg(windows)]
+                let killed = self.tree.kill_group();
+                match killed {
                     Ok(()) => {
                         self.tree_cleanup = TreeCleanup::Confirmed;
                         Ok(())
@@ -1677,6 +1764,69 @@ mod tests {
     fn ps_stat(pid: u32) -> String {
         let out = Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output().unwrap();
         String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exited_root_singleton_check_requires_a_complete_owned_snapshot() {
+        for (exited, count, pids, expected) in [
+            (true, 1, [42, 0], true),
+            (false, 1, [42, 0], false),
+            (true, 0, [42, 0], false),
+            (true, -1, [42, 0], false),
+            (true, 2, [42, 43], false),
+            (true, 3, [42, 43], false),
+            (true, 1, [43, 0], false),
+        ] {
+            TEST_GROUP_MEMBERS.set(Some((count, pids)));
+            let clean = tree::exited_root_is_only_member(exited, 42);
+            TEST_GROUP_MEMBERS.set(None);
+            assert_eq!(clean, expected, "exited={exited}, count={count}, pids={pids:?}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn darwin_normal_completion_confirms_group_without_ps() {
+        let _s = serial();
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "exit 3"]);
+        let mut proc = ManagedChild::spawn(cmd, "exit 3", false, &RunOptions::default()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !proc.poll_exit().unwrap() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(TICK);
+        }
+        while !ps_stat(proc.id()).starts_with('Z') {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(TICK);
+        }
+        assert!(tree::exited_root_is_only_member(true, proc.id()));
+        PROCESS_COUNTS.set(Default::default());
+        proc.tree.kill_group(false).unwrap();
+        assert_eq!(PROCESS_COUNTS.get().ps_spawns, 1, "the original EPERM inspection spawns ps");
+        PROCESS_COUNTS.set(Default::default());
+        assert_eq!(proc.finish().unwrap().unwrap().code(), Some(3));
+        let counts = PROCESS_COUNTS.get();
+        assert_eq!(counts.ps_spawns, 0, "{counts:?}");
+        assert_eq!(counts.singleton_groups, 1, "Darwin's zombie-only EPERM: {counts:?}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn darwin_group_snapshot_does_not_hide_a_live_descendant() {
+        let _s = serial();
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 60 </dev/null >/dev/null 2>&1 & exit 0"]);
+        let mut proc = ManagedChild::spawn(cmd, "live descendant", false, &RunOptions::default()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !proc.poll_exit().unwrap() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(TICK);
+        }
+        assert!(!tree::exited_root_is_only_member(true, proc.id()));
+        proc.finish().unwrap();
+        assert!(proc.clean);
     }
 
     /// The root's exit is seen while it is still an unreaped zombie, so
