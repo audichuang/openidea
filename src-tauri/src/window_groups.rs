@@ -123,6 +123,12 @@ pub fn resized(app: &AppHandle, label: &str) {
         std::sync::LazyLock::new(Default::default);
     static RESIZES: AtomicU64 = AtomicU64::new(0);
     let Some(state) = app.try_state::<WindowsState>() else { return };
+    // Quitting closes the tabs one by one, each close resizing the next. A frame set on a tab
+    // about to close leaves WebKit a deferred update that runs after its webview is gone and
+    // trips a release assert (`WebViewImpl::updateWindowAndViewFrames`, #100).
+    if state.quitting() {
+        return;
+    }
     let Some(members) = state.groups.lock().group(label).map(|g| g.members.clone()) else {
         FULLSCREEN.lock().remove(label);
         return;
@@ -135,7 +141,11 @@ pub fn resized(app: &AppHandle, label: &str) {
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         if RESIZES.load(Ordering::SeqCst) == resize {
             let window = settled.clone();
-            let _ = settled.run_on_main_thread(move || crate::macos::match_tab_frames(&window));
+            let _ = settled.run_on_main_thread(move || {
+                if !window.state::<WindowsState>().quitting() {
+                    crate::macos::match_tab_frames(&window);
+                }
+            });
         }
     });
     let fullscreen = crate::macos::in_fullscreen(&window);
