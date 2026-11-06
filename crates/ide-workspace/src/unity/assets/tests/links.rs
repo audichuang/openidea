@@ -46,7 +46,7 @@ fn linked_parent_and_project_root_support_asset_operations_and_undo() {
             )
             .unwrap();
         assert_eq!(id(&to), A);
-        moves.undo(&docs, token).unwrap();
+        moves.undo(&docs, None, token).unwrap();
         assert_eq!(id(&from), A);
         copy(&from, &to).unwrap();
         assert_ne!(id(&to), A);
