@@ -212,8 +212,7 @@ fn reconcile_pairs(defaults: &mut [String], user: &[String]) {
         else {
             continue;
         };
-        // A value this can't read (e.g. hex `0x32`, which the JVM accepts): take it for the
-        // default too, an equal pair is always valid.
+        // A value this can't read: take it for the default too, an equal pair is always valid.
         let user_n = size_value(&user_value);
         for arg in defaults.iter_mut() {
             let Some(value) = arg.strip_prefix(default_prefix) else { continue };
@@ -229,17 +228,20 @@ fn reconcile_pairs(defaults: &mut [String], user: &[String]) {
     }
 }
 
-/// A plain number or a JVM size (`64m`, `2G`) in bytes; plain ratios come out as is.
+/// A decimal or hexadecimal JVM size (`64m`, `0x64m`, `2G`) in bytes; plain ratios come out as is.
 fn size_value(text: &str) -> Option<u64> {
-    let digits = text.trim_end_matches(|c: char| c.is_ascii_alphabetic());
-    let n: u64 = digits.parse().ok()?;
-    let unit = match text[digits.len()..].to_ascii_lowercase().as_str() {
-        "" => 1,
-        "k" => 1 << 10,
-        "m" => 1 << 20,
-        "g" => 1 << 30,
-        "t" => 1 << 40,
-        _ => return None,
+    let unit = match text.as_bytes().last()? {
+        b'k' | b'K' => 1 << 10,
+        b'm' | b'M' => 1 << 20,
+        b'g' | b'G' => 1 << 30,
+        b't' | b'T' => 1 << 40,
+        _ => 1,
+    };
+    let digits = if unit == 1 { text } else { &text[..text.len() - 1] };
+    let n = if let Some(hex) = digits.strip_prefix("0x").or_else(|| digits.strip_prefix("0X")) {
+        u64::from_str_radix(hex, 16).ok()?
+    } else {
+        digits.parse::<u64>().ok()?
     };
     n.checked_mul(unit)
 }
@@ -557,8 +559,60 @@ mod tests {
         // Both from the user: untouched.
         let both = keep(&["-Xms4G", "-Xmx1G"]);
         assert!(!both.iter().any(|a| a.starts_with("-Xm")), "{both:?}");
-        // A value in a form this doesn't read (hex): the default takes it, an equal pair.
+        // Hexadecimal ratios are compared by value too.
         assert!(has(&["-XX:MinHeapFreeRatio=0x32"], "-XX:MaxHeapFreeRatio=0x32"));
+    }
+
+    #[test]
+    fn hexadecimal_heap_options_preserve_compatible_defaults() {
+        for value in [
+            "0x6400000",
+            "0X6400000",
+            "0x64m",
+            "0x64M",
+            "0x640000a",
+            "0x640000b",
+            "0x640000c",
+            "0x640000d",
+            "0x640000e",
+            "0x640000f",
+        ] {
+            for prefix in ["-Xms", "-XX:InitialHeapSize="] {
+                let user = format!("{prefix}{value}");
+                let defaults = default_vm_args(std::slice::from_ref(&user));
+                assert!(defaults.iter().any(|a| a == "-Xmx2G"), "{user}: {defaults:?}");
+                assert!(!defaults.iter().any(|a| a.starts_with("-Xms")), "{user}: {defaults:?}");
+
+                let mut args = vec![format!("--jvm-arg={user}")];
+                add_default_vm_args(&mut args);
+                assert!(args.iter().any(|a| a == "--jvm-arg=-Xmx2G"), "{user}: {args:?}");
+                assert_eq!(args.last(), Some(&format!("--jvm-arg={user}")));
+                let once = args.clone();
+                add_default_vm_args(&mut args);
+                assert_eq!(args, once, "{user}: defaults are idempotent");
+            }
+        }
+    }
+
+    #[test]
+    fn hexadecimal_heap_options_reconcile_only_conflicting_defaults() {
+        let cases = [
+            ("-Xms", "0x100000000", "-Xmx0x100000000"),
+            ("-XX:InitialHeapSize=", "0x1000m", "-Xmx0x1000m"),
+            ("-Xmx", "0x4000000", "-Xms0x4000000"),
+            ("-XX:MaxHeapSize=", "0x40m", "-Xms0x40m"),
+            ("-Xmx", "0x20000000", "-Xms100m"),
+            ("-XX:MaxHeapSize=", "0x200m", "-Xms100m"),
+        ];
+        for (prefix, value, expected) in cases {
+            let user = format!("{prefix}{value}");
+            let defaults = default_vm_args(std::slice::from_ref(&user));
+            assert!(defaults.iter().any(|a| a == expected), "{user}: {defaults:?}");
+            let mut args = vec!["--jvm-arg".to_owned(), user.clone()];
+            add_default_vm_args(&mut args);
+            assert!(args.iter().any(|a| a == &format!("--jvm-arg={expected}")), "{user}: {args:?}");
+            assert_eq!(args[args.len() - 2..], ["--jvm-arg", &user]);
+        }
     }
 
     #[test]

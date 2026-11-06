@@ -83,9 +83,33 @@ fn scheme_of(url: &str) -> String {
     url.split_once("://").map(|(s, _)| s.to_ascii_lowercase()).unwrap_or_else(|| "http".into())
 }
 
+#[cfg(any(target_os = "macos", test))]
+async fn fetch_script(pac: &str) -> Result<String, String> {
+    if let Ok(url) = reqwest::Url::parse(pac)
+        && url.scheme() == "file"
+    {
+        let path = url.to_file_path().map_err(|()| format!("invalid PAC file URL: {pac}"))?;
+        return tokio::fs::read_to_string(path).await.map_err(|e| format!("reading PAC script {pac}: {e}"));
+    }
+    // The PAC host is reached directly: the script is what says which proxy to use.
+    let direct = ide_core::proxy_settings::ProxySettings {
+        mode: ide_core::proxy_settings::ProxyMode::None,
+        ..Default::default()
+    };
+    let client = crate::client::build(&direct).map_err(|e| e.message)?;
+    let response = client
+        .get(pac)
+        .timeout(PAC_FETCH_TIMEOUT)
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .map_err(|e| format!("downloading PAC script {pac}: {}", crate::client::describe(&e)))?;
+    response.text().await.map_err(|e| format!("downloading PAC script {pac}: {e}"))
+}
+
 #[cfg(target_os = "macos")]
 mod platform {
-    use super::{AutoProxy, PAC_FETCH_TIMEOUT, authority};
+    use super::{AutoProxy, authority};
     use objc2_cf_network::{
         CFNetworkCopyProxiesForAutoConfigurationScript, CFNetworkCopyProxiesForURL, CFNetworkCopySystemProxySettings,
         kCFProxyAutoConfigurationJavaScriptKey, kCFProxyAutoConfigurationURLKey, kCFProxyHostNameKey,
@@ -108,7 +132,7 @@ mod platform {
         let script = match first {
             None => return Ok(None),
             Some(First::Script(script)) => script,
-            Some(First::ScriptUrl(pac)) => fetch_script(&pac).await?,
+            Some(First::ScriptUrl(pac)) => super::fetch_script(&pac).await?,
         };
         let target = url.to_owned();
         tokio::task::spawn_blocking(move || evaluate(&script, &target)).await.map_err(|e| e.to_string())?.map(Some)
@@ -154,26 +178,6 @@ mod platform {
                 Ok(None)
             }
         }
-    }
-
-    async fn fetch_script(pac: &str) -> Result<String, String> {
-        if let Some(path) = pac.strip_prefix("file://") {
-            return tokio::fs::read_to_string(path).await.map_err(|e| format!("reading PAC script {pac}: {e}"));
-        }
-        // The PAC host is reached directly: the script is what says which proxy to use.
-        let direct = ide_core::proxy_settings::ProxySettings {
-            mode: ide_core::proxy_settings::ProxyMode::None,
-            ..Default::default()
-        };
-        let client = crate::client::build(&direct).map_err(|e| e.message)?;
-        let response = client
-            .get(pac)
-            .timeout(PAC_FETCH_TIMEOUT)
-            .send()
-            .await
-            .and_then(|r| r.error_for_status())
-            .map_err(|e| format!("downloading PAC script {pac}: {}", crate::client::describe(&e)))?;
-        response.text().await.map_err(|e| format!("downloading PAC script {pac}: {e}"))
     }
 
     /// Runs the PAC `script` for `url` and takes its first choice.
@@ -318,6 +322,29 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn pac_file_urls_read_the_original_script() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = "function FindProxyForURL(url, host) { return \"DIRECT\"; }";
+        for name in ["proxy.pac", "proxy settings.pac", "代理.pac", "100%.pac"] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, script).unwrap();
+            let url = reqwest::Url::from_file_path(&path).unwrap();
+            assert_eq!(fetch_script(url.as_str()).await.unwrap(), script, "{url}");
+        }
+    }
+
+    #[tokio::test]
+    async fn pac_file_urls_accept_localhost() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("proxy settings.pac");
+        let script = "function FindProxyForURL(url, host) { return \"DIRECT\"; }";
+        std::fs::write(&path, script).unwrap();
+        let url = reqwest::Url::from_file_path(&path).unwrap();
+        let url = url.as_str().replacen("file:///", "file://localhost/", 1);
+        assert_eq!(fetch_script(&url).await.unwrap(), script);
+    }
 
     #[test]
     fn a_plain_list_takes_its_first_entry() {
