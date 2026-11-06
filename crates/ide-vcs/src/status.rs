@@ -258,14 +258,21 @@ fn parse_porcelain_v2(out: &str, ignored: &IgnoredNames) -> Entries {
                 let mut parts = rest.splitn(fields, ' ');
                 let xy = parts.next().unwrap_or("..").as_bytes();
                 let Some(path) = parts.nth(fields - 2) else { continue };
+                let worktree = xy.get(1).copied();
                 let e = map.entry(path.to_owned()).or_default();
                 e.staged = xy.first().copied().and_then(kind);
-                // Intent to add shows as `.A`; worktree renames are off, as with gitoxide.
-                e.unstaged = xy.get(1).copied().and_then(kind).filter(|k| *k != ChangeKind::Renamed);
+                // Intent to add shows as `.A`, and a worktree rename (of an intent-to-add
+                // entry) as `.R`: gitoxide reports that as a new file plus a deletion of the
+                // source. The source may have its own record too; keep what either one says.
+                let unstaged = if worktree == Some(b'R') { Some(ChangeKind::Added) } else { worktree.and_then(kind) };
+                e.unstaged = unstaged.or(e.unstaged);
                 if tag == "2" {
                     let from = records.next().unwrap_or_default();
                     if e.staged == Some(ChangeKind::Renamed) {
                         e.renamed_from = Some(from.to_owned());
+                    }
+                    if worktree == Some(b'R') {
+                        map.entry(from.to_owned()).or_default().unstaged = Some(ChangeKind::Deleted);
                     }
                 }
             }
@@ -365,6 +372,32 @@ mod tests {
             ]
         );
         assert_eq!(conflicts, HashSet::from(["merge me.txt".to_owned()]));
+    }
+
+    #[test]
+    fn porcelain_v2_worktree_rename_preserves_source_deletion_before_staged_record() {
+        use ChangeKind::*;
+        let hash = "ce013625030ba8dba906f756967f9e9ca394464a";
+        let out = format!(
+            "2 .R N... 100644 100644 100644 {hash} {hash} R100 keep/a.txt\0keep/b.txt\0\
+             1 M. N... 100644 100644 100644 {hash} {hash} keep/b.txt\0"
+        );
+        let (map, _) = parse_porcelain_v2(&out, &IgnoredNames::new(&[]));
+        assert_eq!(map["keep/b.txt"], entry(Some(Modified), Some(Deleted), None));
+        assert_eq!(map["keep/a.txt"], entry(None, Some(Added), None));
+    }
+
+    #[test]
+    fn porcelain_v2_worktree_rename_preserves_source_deletion_after_staged_record() {
+        use ChangeKind::*;
+        let hash = "ce013625030ba8dba906f756967f9e9ca394464a";
+        let out = format!(
+            "1 M. N... 100644 100644 100644 {hash} {hash} keep/b.txt\0\
+             2 .R N... 100644 100644 100644 {hash} {hash} R100 keep/a.txt\0keep/b.txt\0"
+        );
+        let (map, _) = parse_porcelain_v2(&out, &IgnoredNames::new(&[]));
+        assert_eq!(map["keep/b.txt"], entry(Some(Modified), Some(Deleted), None));
+        assert_eq!(map["keep/a.txt"], entry(None, Some(Added), None));
     }
 
     /// #471: a status run that read the index before an external `git switch`
