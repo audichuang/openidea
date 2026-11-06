@@ -9,6 +9,7 @@ mod commands;
 #[cfg(debug_assertions)]
 mod dev;
 mod events;
+mod fork_updater;
 mod jump_list;
 #[cfg(any(target_os = "linux", test))]
 mod linux_webkit;
