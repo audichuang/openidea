@@ -4985,6 +4985,7 @@ dependencies = [
  "globset",
  "ide-core",
  "ide-text",
+ "ide-vcs",
  "ide-vfs",
  "parking_lot",
  "semver",
