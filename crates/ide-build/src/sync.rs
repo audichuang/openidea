@@ -756,9 +756,9 @@ mod tests {
         assert_eq!(
             gradle::reported_source_roots(&projects),
             [
-                (src("main/java"), gradle::ReportedRoot::Source),
-                (src("main/resources"), gradle::ReportedRoot::Resources),
-                (src("test/java"), gradle::ReportedRoot::Test),
+                (src("main/java"), gradle::ReportedRoot::Source, PathBuf::from(format!("{b}/modules/core"))),
+                (src("main/resources"), gradle::ReportedRoot::Resources, PathBuf::from(format!("{b}/modules/core"))),
+                (src("test/java"), gradle::ReportedRoot::Test, PathBuf::from(format!("{b}/modules/core"))),
             ]
         );
         let mut model = gradle::load(&root).unwrap();
