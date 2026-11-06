@@ -1,0 +1,25 @@
+name: Linux dependencies
+description: Install Ubuntu dependencies with bounded network time.
+inputs:
+  packages:
+    description: Space-separated apt package names.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Download and install dependencies
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        set -euo pipefail
+        # Azure's mirror took 24 minutes at 16-39 kB/s; archive.ubuntu.com finished immediately.
+        sudo find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
+          -exec sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g; s|https://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' {} +
+        opts=(-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=1)
+        read -r -a packages <<< "$PACKAGES"
+        echo '::notice::APT: archive.ubuntu.com; index and package downloads each limited to 180s'
+        sudo timeout --signal=TERM --kill-after=10s 180s apt-get "${opts[@]}" -o APT::Update::Error-Mode=any update
+        # Bound slow transfers as well as idle connections, without interrupting dpkg writes.
+        sudo timeout --signal=TERM --kill-after=10s 180s apt-get "${opts[@]}" install -y --download-only "${packages[@]}"
+        sudo apt-get --no-download install -y "${packages[@]}"
