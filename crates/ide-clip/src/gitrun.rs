@@ -1801,7 +1801,7 @@ mod tests {
             assert!(Instant::now() < deadline);
             std::thread::sleep(TICK);
         }
-        assert!(tree::exited_root_is_only_member(true, proc.id()));
+        assert!(tree::exited_root_is_only_member(true, proc.id().try_into().unwrap()));
         PROCESS_COUNTS.set(Default::default());
         proc.tree.kill_group(false).unwrap();
         assert_eq!(PROCESS_COUNTS.get().ps_spawns, 1, "the original EPERM inspection spawns ps");
@@ -1824,7 +1824,7 @@ mod tests {
             assert!(Instant::now() < deadline);
             std::thread::sleep(TICK);
         }
-        assert!(!tree::exited_root_is_only_member(true, proc.id()));
+        assert!(!tree::exited_root_is_only_member(true, proc.id().try_into().unwrap()));
         proc.finish().unwrap();
         assert!(proc.clean);
     }
