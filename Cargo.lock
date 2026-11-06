@@ -5098,6 +5098,7 @@ dependencies = [
  "globset",
  "ide-core",
  "ide-text",
+ "ide-vcs",
  "ide-vfs",
  "parking_lot 0.12.5",
  "semver",
