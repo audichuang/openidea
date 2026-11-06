@@ -6,8 +6,8 @@ import { currentDetectedRoots, currentRoots } from "./projectRoots";
 /** Package flavour of New › Package (JVM, dotted) / New › Python Package (`__init__.py`). */
 export type PackageKind = "jvm" | "python";
 
-// "Gradle" is what a Gradle sync stamps on the roots it reports (ide-host `with_gradle_roots`).
-const JVM_BUILD = /(^|\/)(pom\.xml|build\.gradle(\.kts)?)$|^Gradle$/;
+// Gradle sync markers retain the owning module directory (ide-host `with_gradle_roots`).
+const JVM_BUILD = /(^|\/)(pom\.xml|build\.gradle(\.kts)?)$|(^|\/)Gradle$/;
 const PY_BUILD = /(^|\/)(pyproject\.toml|setup\.py|setup\.cfg|Pipfile|requirements\.txt)$/;
 const JVM_DIR = /(^|\/)(java|kotlin|scala|groovy)$/;
 
