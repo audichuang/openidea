@@ -21,11 +21,11 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
     // gitoxide stops at the first IO error (a directory it may not read), where git warns
     // and lists the rest: git answers then.
     let (map, conflicts) = if r.gix().is_ok_and(|repo| needs_git_cli(&repo)) {
-        cli_status(r, &ignored, true)?
+        cli_status(r, &ignored)?
     } else {
         gix_status(r, &ignored).or_else(|e| {
             tracing::debug!("status via gitoxide failed, asking git: {}", e.message);
-            cli_status(r, &ignored, false)
+            cli_status(r, &ignored)
         })?
     };
     let mut disk = r.gix().is_ok_and(|repo| crate::repo::ignores_case(&repo)).then(DiskSpelling::default);
@@ -207,33 +207,34 @@ fn gix_status(r: &Repo, ignored: &IgnoredNames) -> IdeResult<Entries> {
 /// Partial clones lack blobs that gitoxide does not fetch on demand, and sparse
 /// checkouts carry skip-worktree entries it does not honour: git reads both.
 fn needs_git_cli(repo: &gix::Repository) -> bool {
+    repo.config_snapshot().boolean("core.sparseCheckout").unwrap_or(false) || is_partial_clone(repo)
+}
+
+fn is_partial_clone(repo: &gix::Repository) -> bool {
     let config = repo.config_snapshot();
     let enabled = |key: &str| config.boolean(key).unwrap_or(false);
-    enabled("core.sparseCheckout")
-        || config.string("extensions.partialClone").is_some()
+    config.string("extensions.partialClone").is_some()
         || repo.remote_names().iter().any(|name| enabled(&format!("remote.{name}.promisor")))
 }
 
 /// `git status --porcelain=v2`: what git lists, unreadable directories skipped.
 /// In Restricted Mode git compares content without the repository's clean/process
 /// filters and doesn't ask submodules for their own status (which runs their config).
-/// `offline`: a partial clone or sparse checkout, where rename detection would read blobs
-/// the clone may not have; git would fetch them from the promisor remote (or fail when it
-/// is unreachable), and a background refresh must never use the network.
-fn cli_status(r: &Repo, ignored: &IgnoredNames, offline: bool) -> IdeResult<Entries> {
+fn cli_status(r: &Repo, ignored: &IgnoredNames) -> IdeResult<Entries> {
     let overrides = crate::cli::filter_overrides(r.root(), &ide_core::CancellationToken::new())?;
     let mut args: Vec<&str> = overrides.iter().map(String::as_str).collect();
     // No index lock: no stat refresh write-back, so no index change for the watcher to report.
     args.extend(["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=all"]);
-    if offline {
+    // Rename detection reads blobs a partial clone may not have; git would fetch them
+    // from the promisor remote (or fail with exit 128 when it is unreachable), and a
+    // background refresh must never use the network.
+    if r.gix().is_ok_and(|repo| is_partial_clone(&repo)) {
         args.push("--no-renames");
     }
     if !crate::execution_allowed() {
         args.push("--ignore-submodules=dirty");
     }
-    let env: &[(&str, &std::ffi::OsStr)] =
-        if offline { &[("GIT_NO_LAZY_FETCH", std::ffi::OsStr::new("1"))] } else { &[] };
-    let out = crate::cli::run_env(r.root(), &args, None, env)?;
+    let out = crate::cli::run_env(r.root(), &args, None, &[("GIT_NO_LAZY_FETCH", std::ffi::OsStr::new("1"))])?;
     Ok(parse_porcelain_v2(&String::from_utf8_lossy(&out.stdout), ignored))
 }
 
@@ -463,7 +464,7 @@ mod tests {
                 .collect();
             (m, c)
         };
-        let from_git = show(cli_status(&repo, &ignored, false).unwrap());
+        let from_git = show(cli_status(&repo, &ignored).unwrap());
         assert_eq!(from_git, show(gix_status(&repo, &ignored).unwrap()));
         assert!(from_git.0.iter().any(|l| l.starts_with("renamed with space.txt: Some(Renamed)")), "{from_git:?}");
         assert_eq!(from_git.1, ["conflict.txt"]);
@@ -496,13 +497,13 @@ mod tests {
         let repo = Repo::discover(dir).unwrap().expect("repository found");
         let entries = {
             let _scope = crate::ExecutionScope::enter(false);
-            cli_status(&repo, &IgnoredNames::default(), false).unwrap()
+            cli_status(&repo, &IgnoredNames::default()).unwrap()
         };
         assert!(entries.0.contains_key("a.txt"), "the change is still listed");
         assert!(!marker.exists(), "Restricted Mode ran the repository's clean filter");
         // Control: a trusted run does use the filter, so the fixture is live.
         let _scope = crate::ExecutionScope::enter(true);
-        cli_status(&repo, &IgnoredNames::default(), false).unwrap();
+        cli_status(&repo, &IgnoredNames::default()).unwrap();
         assert!(marker.exists(), "control: git status did not run the filter");
     }
 }
