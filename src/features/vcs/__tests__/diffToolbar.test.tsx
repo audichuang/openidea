@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within, act } from "@testing-library/react";
 import type { EditorInput } from "@/workbench/contributions";
 import { Chunk, getChunks } from "@codemirror/merge";
 import { Text } from "@codemirror/state";
@@ -47,6 +47,7 @@ vi.mock("@/editor/api", async (importOriginal) => ({
 
 import { DiffEditor, mapLine } from "../DiffEditor";
 import { DiffEditorTab } from "../diff-editor-tab";
+import { focusedDiffNavigator } from "../diffNavigator";
 import { diffInput, withChain, type DiffData } from "../diffInput";
 import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import { useProject } from "@/platform/project";
@@ -429,6 +430,29 @@ describe("mapLine", () => {
 });
 
 describe("Jump to Source of a revision diff", () => {
+  const readOnlyWorkingInput = diffInput({
+    path: "/p/a.ts",
+    left: { type: "rev", rev: "HEAD" },
+    right: { type: "worktree" },
+    readOnly: true,
+  });
+
+  it("keeps source navigation available for ordinary read-only diffs", async () => {
+    render(<DiffEditor input={readOnlyWorkingInput} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Jump to Source" }));
+    await waitFor(() => expect(openFile).toHaveBeenCalled());
+  });
+
+  it("prevents an embedded modal preview from opening a source editor", async () => {
+    const mounted = render(<DiffEditor input={readOnlyWorkingInput} allowSourceNavigation={false} />);
+    await waitFor(() => expect(mounted.container.querySelector(".cm-editor")).not.toBeNull());
+    expect(screen.queryByRole("button", { name: "Jump to Source" })).toBeNull();
+    fireEvent.focus(mounted.container.querySelector(".cm-content")!);
+    expect(focusedDiffNavigator()).not.toBeNull();
+    await act(async () => focusedDiffNavigator()!.jumpToSource());
+    expect(openFile).not.toHaveBeenCalled();
+  });
+
   /** Parent, commit and working copy each add a line above the previous. */
   const setUp = () => {
     texts.HEAD = "a\nb\nc\nd\n";
