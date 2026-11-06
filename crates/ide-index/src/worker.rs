@@ -172,11 +172,22 @@ impl Shared {
         let root = filter.root().to_owned();
         match store.load() {
             Ok(records) => {
+                let loaded = records.len();
                 let entries: Vec<FileEntry> = records
                     .into_par_iter()
                     .filter(|(rel, _)| !filter.is_excluded(&root.join(rel), false))
                     .map(|(rel, rec)| FileEntry::new(root.join(&rel), rel, rec))
                     .collect();
+                tracing::info!("IDXDIAG {} loaded {loaded} records, kept {}", root.display(), entries.len());
+                if let Some(e) = entries.first() {
+                    tracing::info!(
+                        "IDXDIAG sample loaded path={:?} mtime={} size={} ignored={}",
+                        e.path,
+                        e.mtime,
+                        e.size,
+                        e.ignored
+                    );
+                }
                 let mut d = self.data.write();
                 for e in entries {
                     d.insert(e);
@@ -231,6 +242,51 @@ impl Shared {
             return self.end_scan(task);
         }
         let seen: HashSet<&Path> = found.iter().map(|f| f.path.as_path()).collect();
+        {
+            let d = self.data.read();
+            let (mut missing, mut mtime, mut size, mut ignored, mut shown) = (0usize, 0usize, 0usize, 0usize, 0usize);
+            for f in &found {
+                match d.get(&f.path) {
+                    None => {
+                        missing += 1;
+                        if shown < 3 {
+                            shown += 1;
+                            tracing::info!("IDXDIAG missing path={:?}", f.path);
+                        }
+                    }
+                    Some(e) => {
+                        if e.mtime != f.mtime {
+                            mtime += 1;
+                            if shown < 6 {
+                                shown += 1;
+                                tracing::info!("IDXDIAG mtime path={:?} stored={} found={}", f.path, e.mtime, f.mtime);
+                            }
+                        }
+                        if e.size != f.size {
+                            size += 1;
+                        }
+                        if e.ignored != f.ignored {
+                            ignored += 1;
+                            if shown < 9 {
+                                shown += 1;
+                                tracing::info!(
+                                    "IDXDIAG ignored path={:?} stored={} found={}",
+                                    f.path,
+                                    e.ignored,
+                                    f.ignored
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            tracing::info!(
+                "IDXDIAG {} found={} in_memory={} missing={missing} mtime={mtime} size={size} ignored={ignored}",
+                filter.root().display(),
+                found.len(),
+                d.file_count
+            );
+        }
         let (todo, stale): (Vec<&Found>, Vec<PathBuf>) = {
             let d = self.data.read();
             let todo = found.iter().filter(|f| d.get(&f.path).is_none_or(|e| e.stale_for(f))).collect();
