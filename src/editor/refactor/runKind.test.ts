@@ -7,7 +7,10 @@ let answer: () => unknown = () => ({ status: "ok", data: [] });
 const lspCodeActions = vi.fn(async () => answer());
 // applyCodeAction resolves the picked action, then executes it (interactive command support).
 const lspResolveCodeAction = vi.fn(async (_doc: number, action: CodeAction) => ({ status: "ok", data: action }));
-const lspExecuteCodeAction = vi.fn(async () => ({ status: "ok", data: [] }));
+const lspExecuteCodeAction = vi.fn(async () => {
+  view!.dispatch({ changes: { from: 10, to: 11, insert: "extracted" } });
+  return { status: "ok", data: [] };
+});
 
 vi.mock("@/platform/ipc", async (orig) => {
   const actual = await orig<typeof import("@/platform/ipc")>();
@@ -64,6 +67,7 @@ describe("runKindAction fallback", () => {
     await run(fallback);
     expect(fallback).not.toHaveBeenCalled();
     expect(lspExecuteCodeAction).toHaveBeenCalledOnce();
+    expect(view!.state.doc.toString()).toBe("const a = extracted;");
   });
 
   it("falls back when the server is not ready or fails", async () => {

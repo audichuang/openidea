@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { evaluate } from "./report.ts";
 import { frameSummary, keySummary, percentile, totalBlockingTime } from "./stats.ts";
