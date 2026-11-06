@@ -48,7 +48,12 @@ impl Store {
         let stamp = format!("{SCHEMA}\n{fingerprint}\n{}", root.display());
         match store.meta("stamp") {
             Ok(Some(v)) if v == stamp.as_bytes() => {}
-            _ => {
+            other => {
+                tracing::info!(
+                    "IDXDIAG store reset {} stored_stamp={:?}",
+                    file.display(),
+                    other.map(|v| v.map(|b| String::from_utf8_lossy(&b).into_owned()))
+                );
                 if let Err(e) = store.reset(&stamp) {
                     tracing::warn!("index cache reset failed: {e}");
                     return None;
@@ -120,7 +125,16 @@ impl Store {
                 table.remove(rel.as_str()).map_err(err)?;
             }
         }
-        txn.commit().map_err(err)
+        let r = txn.commit().map_err(err);
+        if durable || puts.len() > 1000 || deletes.len() > 1000 {
+            tracing::info!(
+                "IDXDIAG apply puts={} deletes={} durable={durable} ok={}",
+                puts.len(),
+                deletes.len(),
+                r.is_ok()
+            );
+        }
+        r
     }
 
     /// Reclaims free pages in the database file; `true` if anything was compacted.
