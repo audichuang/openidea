@@ -24,10 +24,11 @@ pub use ide_host::ops::project::ProjectInfo;
 
 #[tauri::command]
 #[specta::specta]
-pub fn app_info(state: State<'_, AppState>) -> AppInfo {
+pub fn app_info(app: tauri::AppHandle, state: State<'_, AppState>) -> AppInfo {
     state.note_ipc();
     AppInfo {
-        version: env!("CARGO_PKG_VERSION").into(),
+        // The bundle's version: a fork release overrides it, the crate version stays upstream's.
+        version: app.package_info().version.to_string(),
         platform: std::env::consts::OS.into(),
         windows_build_number: ide_core::platform::windows_build_number(),
         config_dir: state.config_dir.clone().into(),
