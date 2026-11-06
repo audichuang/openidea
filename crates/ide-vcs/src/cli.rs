@@ -253,7 +253,8 @@ pub(crate) fn command(root: &Path) -> IdeResult<Command> {
         ] {
             cmd.arg("-c").arg(setting);
         }
-        cmd.env_remove("GIT_EXTERNAL_DIFF").env("GIT_NO_LAZY_FETCH", "1");
+        // Older Git ignores GIT_NO_LAZY_FETCH; exclude standard transports as well.
+        cmd.env_remove("GIT_EXTERNAL_DIFF").env("GIT_NO_LAZY_FETCH", "1").env("GIT_ALLOW_PROTOCOL", "none");
     }
     cmd.current_dir(root)
         .arg("-c")
