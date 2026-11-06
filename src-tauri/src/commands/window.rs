@@ -401,7 +401,8 @@ pub struct BuildInfo {
 #[specta::specta]
 pub fn app_build_info(app: AppHandle) -> BuildInfo {
     BuildInfo {
-        version: env!("CARGO_PKG_VERSION").into(),
+        // The bundle's version: a fork release overrides it, the crate version stays upstream's.
+        version: app.package_info().version.to_string(),
         build: option_env!("OPENIDEA_BUILD").unwrap_or("dev").into(),
         profile: if cfg!(debug_assertions) { "debug" } else { "release" }.into(),
         os: std::env::consts::OS.into(),
