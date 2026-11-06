@@ -66,6 +66,7 @@ impl Default for Retention {
 pub struct LocalHistory {
     dir: PathBuf,
     state: Mutex<HistoryState>,
+    file_operations: Mutex<()>,
 }
 
 #[derive(Default)]
@@ -134,7 +135,7 @@ impl LocalHistory {
         if !root_file.exists() {
             let _ = fs::write(&root_file, project_root.to_string_lossy().as_bytes());
         }
-        let history = Self { dir, state: Mutex::default() };
+        let history = Self { dir, state: Mutex::default(), file_operations: Mutex::default() };
         *history.state.lock() = HistoryState::from_entries(history.read_index()?);
         Ok(history)
     }
@@ -214,6 +215,27 @@ impl LocalHistory {
     /// ("Deleted", "Before refactoring: Move") shows in the history.
     pub fn record_event(&self, path: &Path, content: &str, label: &str) -> IdeResult<()> {
         self.store(path, content, label, true)
+    }
+
+    /// Keeps watcher snapshots out of an IDE move, including its edits and rollback.
+    pub(crate) fn file_move_guard(&self) -> parking_lot::MutexGuard<'_, ()> {
+        self.file_operations.lock()
+    }
+
+    /// Records a watcher batch after any IDE move has finished updating history.
+    pub fn record_external_changes(&self, changed: &[PathBuf], removed: &[PathBuf], limit: usize) {
+        // Acquire before reading files: a move may change both their path and content.
+        let _operation = self.file_operations.lock();
+        for path in changed.iter().take(limit) {
+            if let Err(e) = self.record_file(path, "External change", false) {
+                tracing::debug!("local history: {e}");
+            }
+        }
+        if !removed.is_empty()
+            && let Err(e) = self.note_removed(removed)
+        {
+            tracing::debug!("local history: {e}");
+        }
     }
 
     /// Snapshots the file on disk (small text files only); `force` as in [`record_event`](Self::record_event).
