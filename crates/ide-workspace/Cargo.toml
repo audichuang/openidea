@@ -10,6 +10,7 @@ dunce.workspace = true
 ide-core.workspace = true
 ide-text.workspace = true
 ide-vfs.workspace = true
+ide-vcs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 specta.workspace = true
