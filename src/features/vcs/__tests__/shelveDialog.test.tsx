@@ -95,6 +95,42 @@ describe("Shelve Changes dialog", () => {
     await waitFor(() => expect(mocks.shelve).toHaveBeenCalledWith("Uncommitted changes", ["/repo/README.md"]));
   });
 
+  it("keeps spaces in speed search without changing which files are included", async () => {
+    const files = [fs("/repo/a b.ts"), fs("/repo/other.ts")];
+    useVcs.setState({ status: files });
+    render(<VcsDialogHost />);
+    act(() => shelveChanges(files.map((f) => f.path)));
+    const tree = await screen.findByRole("tree", { name: "Files to shelve" });
+    const included = screen.getByRole("checkbox", { name: "Include a b.ts" });
+    try {
+      fireEvent.keyDown(tree, { key: "a" });
+      fireEvent.keyDown(tree, { key: " " });
+      expect(screen.getByRole("status").textContent).toBe("a ");
+      expect(included.getAttribute("aria-checked")).toBe("true");
+      fireEvent.keyDown(tree, { key: "b" });
+      expect(screen.getByRole("status").textContent).toBe("a b");
+      expect(included.getAttribute("aria-checked")).toBe("true");
+    } finally {
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    }
+  });
+
+  it("toggles inclusion with Space when speed search is empty", async () => {
+    render(<VcsDialogHost />);
+    act(() => shelveChanges(status.map((f) => f.path)));
+    const tree = await screen.findByRole("tree", { name: "Files to shelve" });
+    try {
+      const included = screen.getByRole("checkbox", { name: "Include a.ts" });
+      fireEvent.keyDown(tree, { key: " " });
+      expect(included.getAttribute("aria-checked")).toBe("false");
+      fireEvent.keyDown(tree, { key: " " });
+      expect(included.getAttribute("aria-checked")).toBe("true");
+      expect(screen.queryByRole("status")).toBeNull();
+    } finally {
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    }
+  });
+
   it("remounts the preview editor per file so a late result cannot leak into the next file", async () => {
     render(<VcsDialogHost />);
     act(() => shelveChanges(status.map((f) => f.path)));
