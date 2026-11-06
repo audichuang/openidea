@@ -80,6 +80,7 @@ const { isRemoteWindow, connectRemote } = await import("@/platform/remote");
 const { ask } = await import("@/workbench/messages");
 const { confirmProjectTrust } = await import("@/platform/projectTrust");
 const { IpcError } = await import("@/platform/ipc");
+const { provideProjectTrustPrompt } = await import("@/platform/projectTrust");
 provideNotificationService({ notify });
 
 const opened: string[] = [];
@@ -115,7 +116,8 @@ beforeEach(() => {
   workspaceAttach.mockReset();
   workspaceUpdate.mockReset();
   projectCurrent.mockReset();
-  for (const f of [windowOpenProject, windowOpenFiles, windowTakeLaunch, wslResolve]) f.mockReset();
+  for (const f of [windowOpenProject, windowOpenProjectTab, windowOpenFiles, windowTakeLaunch, wslResolve])
+    f.mockReset();
   windowTakeLaunch.mockResolvedValue(null);
   windowCompleteLaunch.mockReset().mockResolvedValue(ok(null));
   wslResolve.mockResolvedValue(null);
@@ -214,6 +216,30 @@ describe("replacing a project in this window", () => {
     expect(windowOpenProject).not.toHaveBeenCalled();
     expect(openProject).not.toHaveBeenCalled();
     expect(useProject.getState().project?.root).toBe("/a");
+  });
+
+  it("asks about trust here before a new tab or window exists, and opens neither when declined", async () => {
+    const asked: string[] = [];
+    let answer = false;
+    const off = provideProjectTrustPrompt(async (path) => (asked.push(path), answer));
+    try {
+      windowOpenProjectTab.mockResolvedValue(ok({ kind: "opened", label: "project-1" }));
+      windowOpenProject.mockResolvedValue(ok({ kind: "opened", label: "project-2" }));
+      useProject.setState({ ...projectState("/a"), settings: { general: { openProjectIn: "tab" } } } as never);
+      await openProjectWithPolicy("/b");
+      useProject.setState({ settings: { general: { openProjectIn: "new" } } } as never);
+      await openProjectWithPolicy("/c");
+      expect(asked).toEqual(["/b", "/c"]);
+      expect(windowOpenProjectTab).not.toHaveBeenCalled();
+      expect(windowOpenProject).not.toHaveBeenCalled();
+      expect(notify).not.toHaveBeenCalled();
+
+      answer = true;
+      await openProjectWithPolicy("/c");
+      expect(windowOpenProject).toHaveBeenCalledWith("/c", true, []);
+    } finally {
+      off();
+    }
   });
 });
 
