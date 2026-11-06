@@ -410,9 +410,15 @@ fn stop_command_runs_first_with_the_run_environment() {
 /// (JDK 8) or an `@argfile` (JDK 9+), which is deleted once the JVM exits.
 #[test]
 fn long_java_classpath_is_shortened() {
-    let Some(home) = std::env::var_os("JAVA_HOME").map(PathBuf::from) else { return };
+    let Some(home) = std::env::var_os("JAVA_HOME").map(PathBuf::from) else {
+        assert!(std::env::var_os("CI").is_none(), "JDK required in CI: JAVA_HOME is not set");
+        eprintln!("skipped: no JDK (JAVA_HOME is not set)");
+        return;
+    };
     let (java, javac) = (home.join("bin/java"), home.join("bin/javac"));
     if !javac.is_file() {
+        assert!(std::env::var_os("CI").is_none(), "JDK required in CI: {} is missing", javac.display());
+        eprintln!("skipped: no JDK ({} is missing)", javac.display());
         return;
     }
     let h = harness();
