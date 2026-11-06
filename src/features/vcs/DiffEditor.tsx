@@ -229,6 +229,7 @@ export function DiffEditor({
   toolbarActions,
   onNeighbour,
   onJumpToSource,
+  allowSourceNavigation = true,
 }: {
   input: EditorInput;
   toolbarActions?: ReactNode;
@@ -240,6 +241,7 @@ export function DiffEditor({
   onNeighbour?: (data: DiffData) => void;
   /** Called as Jump to Source opens the file in an editor: a modal host closes, or the editor stays hidden behind it. */
   onJumpToSource?: () => void;
+  allowSourceNavigation?: boolean;
 }) {
   const data = input.data as DiffData;
   const { path, left, right } = data;
@@ -871,6 +873,7 @@ export function DiffEditor({
   const source = fileSource ?? worktreeSource;
 
   const jumpToSource = useCallback(() => {
+    if (!allowSourceNavigation) return;
     const views = viewsRef.current;
     const fileA = sideFile(left, path);
     const fileB = sideFile(right, path);
@@ -896,7 +899,7 @@ export function DiffEditor({
       const line = mapLine(Chunk.build(from, to), at.number - 1, from, to);
       open(line, to.line(line + 1).text === at.text ? head - at.from : 0);
     });
-  }, [left, right, path, worktreeSource, onJumpToSource]);
+  }, [allowSourceNavigation, left, right, path, worktreeSource, onJumpToSource]);
 
   const currentChunk = (): { chunk: Chunk; index: number } | undefined => {
     const v = viewsRef.current?.b;
@@ -1188,7 +1191,7 @@ export function DiffEditor({
       : null;
   // Staging applies to local changes against HEAD / the index only.
   const canStage = editableB && isWorktree(right) && left.type === "rev" && !!useVcs.getState().root;
-  const hasSource = !!source;
+  const hasSource = allowSourceNavigation && !!source;
 
   /** IDEA's title of a revision: its short commit id (HEAD resolved) and the file's path in the repository. */
   const revTitle = (s: DiffSide): { label: string; file: string | null } => {

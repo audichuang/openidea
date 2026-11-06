@@ -6,13 +6,20 @@ const mocks = vi.hoisted(() => ({ ipc: vi.fn(), shelve: vi.fn(), mounts: 0 }));
 vi.mock("../DiffEditor", async () => {
   const React = await import("react");
   return {
-    DiffEditor: ({ input }: { input: { path: string; data: { readOnly?: boolean } } }) => {
+    DiffEditor: ({
+      input,
+      allowSourceNavigation = true,
+    }: {
+      input: { path: string; data: { readOnly?: boolean } };
+      allowSourceNavigation?: boolean;
+    }) => {
       const [id] = React.useState(() => ++mocks.mounts);
       return (
         <div
           data-testid="diff-preview"
           data-mount={id}
           data-readonly={String(!!input.data.readOnly)}
+          data-source-navigation={String(allowSourceNavigation)}
           tabIndex={0}
           onKeyDown={(e) => {
             if (e.key === "Escape") e.preventDefault();
@@ -76,6 +83,7 @@ describe("Shelve Changes dialog", () => {
     act(() => shelveChanges(status.map((f) => f.path)));
     await screen.findByText("src");
     expect(screen.getByTestId("diff-preview").getAttribute("data-readonly")).toBe("true");
+    expect(screen.getByTestId("diff-preview").getAttribute("data-source-navigation")).toBe("false");
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   });
 
