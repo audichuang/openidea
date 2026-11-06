@@ -1009,7 +1009,11 @@ mod tree {
         let mut pipes = super::pipes::Pipes::default();
         pipes.attach_stdout(stdout)?;
 
-        let deadline = std::time::Instant::now() + PS_TIMEOUT;
+        #[cfg(not(test))]
+        let timeout = PS_TIMEOUT;
+        #[cfg(test)]
+        let timeout = super::TEST_PS_TIMEOUT.get();
+        let deadline = std::time::Instant::now() + timeout;
         let mut output = Vec::new();
 
         // Phase 1: Read stdout non-blockingly while pipes are open and deadline not exceeded
@@ -1151,6 +1155,7 @@ thread_local! {
         const { Cell::new(InjectGroupKillEperm::None) };
     static TEST_PS_HELPER_OVERRIDE: std::cell::RefCell<Option<Vec<String>>> =
         const { std::cell::RefCell::new(None) };
+    static TEST_PS_TIMEOUT: Cell<Duration> = const { Cell::new(tree::PS_TIMEOUT) };
     static TEST_LAST_HELPER_PID: Cell<Option<u32>> = const { Cell::new(None) };
     static INJECT_SETTLING_LOOKS: Cell<usize> = const { Cell::new(0) };
     static TEST_GROUP_MEMBERS: Cell<Option<(i32, [i32; 2])>> = const { Cell::new(None) };
@@ -1926,6 +1931,7 @@ mod tests {
             {
                 test_inject_group_kill_eperm(InjectGroupKillEperm::None);
                 test_override_ps_helper(None);
+                TEST_PS_TIMEOUT.set(tree::PS_TIMEOUT);
                 TEST_LAST_HELPER_PID.set(None);
             }
         }
@@ -2262,6 +2268,8 @@ mod tests {
     fn check_group_liveness_timeout_kills_helper_and_fails() {
         let _s = serial();
         let _inj = InjectionGuard;
+        let timeout = Duration::from_millis(500);
+        TEST_PS_TIMEOUT.set(timeout);
         test_override_ps_helper(Some(vec!["sh".to_string(), "-c".to_string(), format!("exec {HANG_HELPER}")]));
         let start = Instant::now();
         let res = tree::check_group_liveness(12345);
@@ -2269,8 +2277,10 @@ mod tests {
         assert!(res.is_err(), "hanging helper must return Err");
         let err = res.unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::TimedOut, "{err}");
+        assert_eq!(err.to_string(), "ps inspection timed out reading output");
+        assert!(elapsed >= timeout, "helper returned before its deadline: {elapsed:?}");
         assert!(
-            elapsed < tree::PS_TIMEOUT + tree::HELPER_CLEANUP_GRACE + SPAWN_SLACK,
+            elapsed < timeout + tree::HELPER_CLEANUP_GRACE + SPAWN_SLACK,
             "helper must be timed out quickly, took {elapsed:?}"
         );
         let pid = test_last_helper_pid().expect("helper PID must be recorded");
@@ -2282,6 +2292,8 @@ mod tests {
     fn check_group_liveness_helper_closes_stdout_then_hangs_times_out_and_kills() {
         let _s = serial();
         let _inj = InjectionGuard;
+        let timeout = Duration::from_millis(500);
+        TEST_PS_TIMEOUT.set(timeout);
         test_override_ps_helper(Some(vec![
             "sh".to_string(),
             "-c".to_string(),
@@ -2293,8 +2305,10 @@ mod tests {
         assert!(res.is_err(), "helper closing stdout then hanging must return Err");
         let err = res.unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::TimedOut, "{err}");
+        assert_eq!(err.to_string(), "ps inspection timed out waiting for process exit");
+        assert!(elapsed >= timeout, "helper returned before its deadline: {elapsed:?}");
         assert!(
-            elapsed < tree::PS_TIMEOUT + tree::HELPER_CLEANUP_GRACE + SPAWN_SLACK,
+            elapsed < timeout + tree::HELPER_CLEANUP_GRACE + SPAWN_SLACK,
             "helper must be timed out within deadline, took {elapsed:?}"
         );
         let pid = test_last_helper_pid().expect("helper PID must be recorded");
