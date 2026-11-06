@@ -66,7 +66,7 @@ pub fn agent_in_args<'a>(args: impl IntoIterator<Item = &'a str>) -> Option<Path
 /// A Lombok `-javaagent:` a jdtls launcher wrapper passes itself.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScriptAgent {
-    /// As written in the script: a jar path, or a variable (`$LOMBOK`, `%AGENT%`).
+    /// The jar path as written in the script.
     pub agent: String,
     /// Passed only when a condition holds at run time (`${LOMBOK:+…}`, inside an `if`):
     /// the launch may get no agent from the wrapper at all.
@@ -74,35 +74,22 @@ pub struct ScriptAgent {
 }
 
 /// The Lombok `-javaagent:` a jdtls launcher wrapper (a shell or batch script) passes
-/// itself: a jar path, or a variable named after Lombok or set to a Lombok jar. Comment
-/// lines don't count.
+/// itself: a literal jar path whose filename contains Lombok. Comment lines and
+/// agent values without a jar suffix do not count.
 pub fn agent_in_script(text: &str) -> Option<ScriptAgent> {
     let lines = script_lines(text);
     let jumps = lines.iter().any(|(line, _)| jumps_over_lines(line));
     lines.iter().find_map(|(line, conditional_line)| {
         let line = line.as_str();
         line.match_indices("-javaagent:").find_map(|(at, flag)| {
-            let value = script_agent_value(line, at + flag.len());
-            let mut agent = value.trim_matches(|c| matches!(c, ')' | ';'));
-            if !agent.contains("${") {
-                // The end of `${LOMBOK:+--jvm-arg=-javaagent:$LOMBOK}`.
-                agent = agent.trim_end_matches('}');
-            }
-            let lombok = agent.to_ascii_lowercase().contains("lombok")
-                || script_variable(agent).is_some_and(|name| {
-                    lines
-                        .iter()
-                        .filter_map(|(l, _)| assigned_value(l, name))
-                        .any(|value| value.to_ascii_lowercase().contains("lombok"))
-                });
+            let tail = line[at + flag.len()..].trim_start_matches(['\'', '"']);
+            let end = tail.to_ascii_lowercase().find(".jar")? + 4;
+            let agent = &tail[..end];
+            let lombok = agent.rsplit(['/', '\\']).next()?.to_ascii_lowercase().contains("lombok");
             let prefix = &line[..at];
             // Another launch without the agent: the script chooses between them.
-            let other_launch = is_launch_line(line)
-                && lines.iter().any(|(l, _)| {
-                    is_launch_line(l)
-                        && !l.contains("-javaagent:")
-                        && !script_variable(agent).is_some_and(|name| l.contains(name))
-                });
+            let other_launch =
+                is_launch_line(line) && lines.iter().any(|(l, _)| is_launch_line(l) && !l.contains("-javaagent:"));
             let conditional = *conditional_line
                 || jumps
                 || other_launch
@@ -112,28 +99,6 @@ pub fn agent_in_script(text: &str) -> Option<ScriptAgent> {
             lombok.then(|| ScriptAgent { agent: agent.to_owned(), conditional })
         })
     })
-}
-
-/// Read a quoted argument value, including quotes opened before `value_start`.
-/// Backslashes are literal so Windows jar paths keep their spelling.
-fn script_agent_value(line: &str, value_start: usize) -> String {
-    let mut quote = None;
-    let mut value = String::new();
-    for (at, c) in line.char_indices() {
-        let opens_quote = c == '"'
-            || (c == '\'' && (at == 0 || line[..at].ends_with(|c: char| c.is_whitespace() || matches!(c, '=' | ':'))));
-        if quote == Some(c) || (quote.is_none() && opens_quote) {
-            quote = if quote.is_some() { None } else { Some(c) };
-            continue;
-        }
-        if at >= value_start {
-            if quote.is_none() && c.is_whitespace() {
-                break;
-            }
-            value.push(c);
-        }
-    }
-    value
 }
 
 /// The lines of a script that aren't comments, each with whether it runs only on a
@@ -233,35 +198,9 @@ fn is_script_comment(line: &str) -> bool {
         || lower.starts_with("@rem")
 }
 
-/// `NAME` of `$NAME`, `${NAME}`, `${NAME:-…}` or `%NAME%`.
-fn script_variable(agent: &str) -> Option<&str> {
-    let name = if let Some(rest) = agent.strip_prefix("${") {
-        rest.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).next()?
-    } else if let Some(rest) = agent.strip_prefix('$') {
-        rest.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).next()?
-    } else {
-        agent.strip_prefix('%')?.split('%').next()?
-    };
-    (!name.is_empty()).then_some(name)
-}
-
-/// The value of `name=…`, `export name=…` or `set name=…` / `set "name=…"` on `line`.
-fn assigned_value<'a>(line: &'a str, name: &str) -> Option<&'a str> {
-    let lower = line.to_ascii_lowercase();
-    let rest = if lower.starts_with("export ") {
-        &line["export ".len()..]
-    } else if lower.starts_with("set ") {
-        line["set ".len()..].trim_start().trim_start_matches('"')
-    } else {
-        line
-    };
-    let (key, value) = rest.split_once('=')?;
-    key.trim().eq_ignore_ascii_case(name).then_some(value)
-}
-
 /// A Lombok distribution version from an agent's jar name, including an OpenIDEA revision.
 pub fn agent_version(agent: &str) -> Option<String> {
-    let name = agent.rsplit(['/', '\\']).next()?;
+    let name = agent.rsplit(['/', '\\']).next()?.to_ascii_lowercase();
     let version = name.strip_prefix("lombok-")?.strip_suffix(".jar")?;
     let release = if let Some((release, revision)) = version.split_once("-openidea.") {
         if revision.is_empty() || !revision.bytes().all(|b| b.is_ascii_digit()) {
@@ -800,19 +739,19 @@ exec /opt/homebrew/opt/jdtls/libexec/bin/jdtls \
         let literal = "#!/bin/sh\nexec /opt/jdtls/bin/jdtls --jvm-arg=\"-javaagent:/m2/lombok-1.18.46.jar\" \"$@\"\n";
         assert_eq!(agent_in_script(literal), always("/m2/lombok-1.18.46.jar"));
         let variable = "AGENT=/opt/agents/lombok.jar\nexec jdtls --jvm-arg=-javaagent:${AGENT} \"$@\"\n";
-        assert_eq!(agent_in_script(variable), always("${AGENT}"));
+        assert_eq!(agent_in_script(variable), None, "a variable without a jar suffix is not resolved");
         let batch = "@echo off\r\nset \"AGENT=C:\\tools\\lombok.jar\"\r\n\
                      python C:\\jdtls\\bin\\jdtls.py --jvm-arg=-javaagent:%AGENT% %*\r\n";
-        assert_eq!(agent_in_script(batch), always("%AGENT%"));
+        assert_eq!(agent_in_script(batch), None, "a variable without a jar suffix is not resolved");
         let after_block = "if [ -z \"$JAVA_HOME\" ]; then\n  JAVA_HOME=/opt/jdk\nfi\n\
                            exec jdtls --jvm-arg=-javaagent:/m2/lombok.jar \"$@\"\n";
         assert_eq!(agent_in_script(after_block), always("/m2/lombok.jar"));
 
-        // Passed only when the jar was found: with no Lombok in ~/.m2 the launch gets none.
-        assert_eq!(agent_in_script(SH_WRAPPER), maybe("$LOMBOK"));
+        // Dynamic agent variables have no literal jar suffix to inspect.
+        assert_eq!(agent_in_script(SH_WRAPPER), None);
         let sh_if = "LOMBOK=$(ls ~/.m2/repository/org/projectlombok/lombok/*/lombok-*.jar | head -1)\n\
-                     if [ -n \"$LOMBOK\" ]; then\n  set -- --jvm-arg=-javaagent:$LOMBOK \"$@\"\nfi\nexec jdtls \"$@\"\n";
-        assert_eq!(agent_in_script(sh_if), maybe("$LOMBOK"));
+                     if [ -n \"$LOMBOK\" ]; then\n  set -- --jvm-arg=-javaagent:/m2/lombok.jar \"$@\"\nfi\nexec jdtls \"$@\"\n";
+        assert_eq!(agent_in_script(sh_if), maybe("/m2/lombok.jar"));
         let sh_and =
             "[ -f /m2/lombok.jar ] && exec jdtls --jvm-arg=-javaagent:/m2/lombok.jar \"$@\"\nexec jdtls \"$@\"\n";
         assert_eq!(agent_in_script(sh_and), maybe("/m2/lombok.jar"));
@@ -821,7 +760,9 @@ exec /opt/homebrew/opt/jdtls/libexec/bin/jdtls \
                         python jdtls.py %*\r\n)\r\n";
         assert_eq!(agent_in_script(batch_if), maybe(r"C:\tools\lombok.jar"));
         let batch_one_line = "@echo off\r\nif defined LOMBOK python jdtls.py --jvm-arg=-javaagent:%LOMBOK% %*\r\n";
-        assert_eq!(agent_in_script(batch_one_line), maybe("%LOMBOK%"));
+        assert_eq!(agent_in_script(batch_one_line), None);
+        let batch_one_line = batch_one_line.replace("%LOMBOK%", r"C:\tools\lombok.jar");
+        assert_eq!(agent_in_script(&batch_one_line), maybe(r"C:\tools\lombok.jar"));
         // A guard on the line before, a skip, or another launch without the agent.
         let continued =
             "[ -f /m2/lombok.jar ] && \\\n  exec jdtls --jvm-arg=-javaagent:/m2/lombok.jar \"$@\"\nexec jdtls \"$@\"\n";
@@ -858,9 +799,12 @@ exec /opt/homebrew/opt/jdtls/libexec/bin/jdtls \
 
     #[test]
     fn quoted_wrapper_agent_paths_are_preserved_and_reported() {
-        for path in
-            [r"C:\Program Files\Lombok\lombok.jar", "/opt/Java Tools/lombok.jar", "/使用者/Java 工具/lombok.jar"]
-        {
+        for path in [
+            r"C:\Program Files\Lombok\lombok.jar",
+            "/opt/Java Tools/lombok.jar",
+            "/opt/Java - Tools/lombok.jar",
+            "/使用者/Java 工具/lombok.jar",
+        ] {
             for quote in ['"', '\''] {
                 for argument in [
                     format!("{quote}--jvm-arg=-javaagent:{path}{quote}"),
@@ -904,6 +848,139 @@ exec /opt/homebrew/opt/jdtls/libexec/bin/jdtls \
 
     fn script_agent(agent: &str, conditional: bool) -> ScriptAgent {
         ScriptAgent { agent: agent.to_owned(), conditional }
+    }
+
+    fn assert_wrapper_version(script: &str, path: &str) {
+        let wrapper = agent_in_script(script).expect("the script contains a literal Lombok jar");
+        assert_eq!(wrapper, script_agent(path, false), "{script}");
+        assert_eq!(agent_version(&wrapper.agent).as_deref(), Some("1.18.48"), "{script}");
+        assert_eq!(
+            duplicate_agents_problem(Path::new("/bin/jdtls"), &wrapper, Path::new("/managed/lombok-1.18.48.jar")),
+            None,
+            "the same version must not warn: {script}"
+        );
+    }
+
+    #[test]
+    fn batch_argument_assignment_does_not_absorb_lombok_configuration_path() {
+        let script = r#"set "ARGS=--jvm-arg=-javaagent:C:\agents\jacoco.jar --configuration C:\lombok-config""#;
+        assert_eq!(agent_in_script(script), None);
+    }
+
+    #[test]
+    fn shell_argument_assignment_does_not_absorb_lombok_configuration_path() {
+        let script = r#"ARGS="--jvm-arg=-javaagent:/opt/jacoco.jar --configuration /opt/lombok-config""#;
+        assert_eq!(agent_in_script(script), None);
+    }
+
+    #[test]
+    fn shell_argument_assignment_preserves_lombok_jar_version_and_suppression() {
+        let script = r#"JDTLS_ARGS="--jvm-arg=-javaagent:/opt/lombok-1.18.48.jar --jvm-arg=-Xmx2g""#;
+        assert_wrapper_version(script, "/opt/lombok-1.18.48.jar");
+    }
+
+    #[test]
+    fn batch_argument_assignment_preserves_lombok_jar_version_and_suppression() {
+        let script = r#"set "JDTLS_ARGS=--jvm-arg=-javaagent:C:\agents\lombok-1.18.48.jar --jvm-arg=-Xmx2g""#;
+        assert_wrapper_version(script, r"C:\agents\lombok-1.18.48.jar");
+    }
+
+    #[test]
+    fn escaped_shell_quotes_do_not_absorb_lombok_configuration_paths() {
+        let script = r#"exec jdtls --jvm-arg=-Dmessage=a\"b --jvm-arg=-javaagent:/opt/jacoco.jar --configuration /opt/lombok "$@""#;
+        assert_eq!(agent_in_script(script), None);
+    }
+
+    #[test]
+    fn prefixed_argument_assignments_do_not_absorb_lombok_configuration_paths() {
+        for script in [
+            r#"export ARGS="--jvm-arg=-javaagent:/opt/jacoco.jar --configuration /opt/lombok-config"
+exec jdtls $ARGS "$@""#,
+            r#"set ARGS="--jvm-arg=-javaagent:C:\agents\jacoco.jar --configuration C:\lombok-config""#,
+        ] {
+            assert_eq!(agent_in_script(script), None, "{script}");
+        }
+    }
+
+    #[test]
+    fn prefixed_argument_assignments_preserve_lombok_jar_version_and_suppression() {
+        for (script, path) in [
+            (
+                r#"export JDTLS_ARGS="--jvm-arg=-javaagent:/opt/lombok-1.18.48.jar --jvm-arg=-Xmx2g"
+exec jdtls $JDTLS_ARGS "$@""#,
+                "/opt/lombok-1.18.48.jar",
+            ),
+            (
+                r#"set JDTLS_ARGS="--jvm-arg=-javaagent:C:\agents\lombok-1.18.48.jar --jvm-arg=-Xmx2g""#,
+                r"C:\agents\lombok-1.18.48.jar",
+            ),
+        ] {
+            assert_wrapper_version(script, path);
+        }
+    }
+
+    #[test]
+    fn argument_assignment_preserves_a_quoted_jar_path_containing_a_dash() {
+        let script = r#"ARG="--jvm-arg=-javaagent:/opt/Java - Tools/lombok.jar"
+exec jdtls "$ARG""#;
+        assert_eq!(agent_in_script(script), Some(script_agent("/opt/Java - Tools/lombok.jar", false)));
+    }
+
+    #[test]
+    fn argument_assignment_preserves_a_home_relative_jar_path_containing_a_dash() {
+        for path in ["$HOME/Java - Tools/lombok.jar", "$HOME/Java - Tools/lombok-1.18.48.jar"] {
+            let script = format!("ARG=\"--jvm-arg=-javaagent:{path}\"\nexec jdtls \"$ARG\"");
+            let wrapper = agent_in_script(&script).expect("the assignment contains a literal jar path");
+            assert_eq!(wrapper, script_agent(path, false));
+            if path.ends_with("lombok-1.18.48.jar") {
+                assert_wrapper_version(&script, path);
+            }
+        }
+    }
+
+    #[test]
+    fn silent_batch_argument_assignment_does_not_absorb_lombok_configuration_path() {
+        let script = r#"@set "ARGS=--jvm-arg=-javaagent:C:\agents\jacoco.jar --configuration C:\lombok-config""#;
+        assert_eq!(agent_in_script(script), None);
+    }
+
+    #[test]
+    fn wrapper_agent_requires_lombok_in_the_jar_filename() {
+        for script in [
+            "exec jdtls --jvm-arg=-javaagent:/opt/lombok/jacoco.jar",
+            r"python jdtls.py --jvm-arg=-javaagent:C:\lombok\jacoco.jar",
+        ] {
+            assert_eq!(agent_in_script(script), None, "{script}");
+        }
+    }
+
+    #[test]
+    fn wrapper_agent_accepts_an_uppercase_jar_suffix() {
+        let path = "/opt/lombok.JAR";
+        assert_eq!(
+            agent_in_script(&format!("exec jdtls --jvm-arg=-javaagent:{path}")),
+            Some(script_agent(path, false))
+        );
+    }
+
+    #[test]
+    fn uppercase_wrapper_agent_preserves_jar_version_and_suppression() {
+        for path in ["/opt/lombok-1.18.48.JAR", "/opt/LOMBOK-1.18.48.JAR"] {
+            assert_wrapper_version(&format!("exec jdtls --jvm-arg=-javaagent:{path}"), path);
+        }
+    }
+
+    #[test]
+    fn wrapper_agent_without_a_jar_suffix_is_ignored() {
+        for value in ["/opt/lombok", "$LOMBOK", "${AGENT}", "%LOMBOK%"] {
+            assert_eq!(agent_in_script(&format!("exec jdtls --jvm-arg=-javaagent:{value}")), None, "{value}");
+        }
+    }
+
+    #[test]
+    fn wrapper_agent_finds_lombok_after_another_javaagent() {
+        let script = "exec jdtls --jvm-arg=-javaagent:/opt/jacoco.jar --jvm-arg=-javaagent:/opt/lombok-1.18.48.jar";
+        assert_eq!(agent_in_script(script), Some(script_agent("/opt/lombok-1.18.48.jar", false)));
     }
 
     #[test]
