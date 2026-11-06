@@ -245,7 +245,8 @@ pub fn restrict(cmd: &mut Command) {
         setting.push(no_program());
         cmd.arg("-c").arg(setting);
     }
-    cmd.env_remove("GIT_EXTERNAL_DIFF").env("GIT_NO_LAZY_FETCH", "1");
+    // Older Git ignores GIT_NO_LAZY_FETCH; exclude standard transports as well.
+    cmd.env_remove("GIT_EXTERNAL_DIFF").env("GIT_NO_LAZY_FETCH", "1").env("GIT_ALLOW_PROTOCOL", "none");
 }
 
 /// Builds a `git` command with the environment every invocation needs.
