@@ -27,7 +27,7 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
     let repo = r.gix()?;
     let ignored = r.ignored.read().unwrap_or_else(|p| p.into_inner()).clone();
     let changes = if needs_git_cli(&repo) {
-        cli_changes(r, &ignored)?
+        cli_changes(r, &repo, &ignored)?
     } else {
         match gix_changes(&repo, &ignored) {
             Ok(changes) => changes,
@@ -35,7 +35,7 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
             // missing locally) may still be readable by git itself.
             Err(e) => {
                 tracing::debug!("gitoxide status of {} failed, using git: {e}", r.root().display());
-                cli_changes(r, &ignored).map_err(|_| e)?
+                cli_changes(r, &repo, &ignored)?
             }
         }
     };
@@ -45,16 +45,19 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
 /// Partial clones lack blobs that gitoxide does not fetch on demand, and sparse
 /// checkouts carry skip-worktree entries it does not honour: git reads both.
 fn needs_git_cli(repo: &gix::Repository) -> bool {
+    repo.config_snapshot().boolean("core.sparseCheckout").unwrap_or(false) || is_partial_clone(repo)
+}
+
+fn is_partial_clone(repo: &gix::Repository) -> bool {
     let config = repo.config_snapshot();
     let enabled = |key: &str| config.boolean(key).unwrap_or(false);
-    enabled("core.sparseCheckout")
-        || config.string("extensions.partialClone").is_some()
+    config.string("extensions.partialClone").is_some()
         || repo.remote_names().iter().any(|name| enabled(&format!("remote.{name}.promisor")))
 }
 
 /// Status through `git status --porcelain=v2`, without taking the index lock (no
 /// stat refresh write-back, so no index change for the watcher to report).
-fn cli_changes(r: &Repo, ignored: &IgnoredNames) -> IdeResult<Changes> {
+fn cli_changes(r: &Repo, repo: &gix::Repository, ignored: &IgnoredNames) -> IdeResult<Changes> {
     let restricted = !crate::execution_allowed();
     // Restricted Mode: status compares content through the repository's clean
     // filters, and checks dirty submodules with their own configuration.
@@ -65,10 +68,13 @@ fn cli_changes(r: &Repo, ignored: &IgnoredNames) -> IdeResult<Changes> {
         Vec::new()
     };
     let mut args: Vec<&str> = overrides.iter().map(String::as_str).collect();
+    args.extend(["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=all"]);
     // Rename detection reads blobs a partial clone may not have; git would fetch them
     // from the promisor remote (or fail with exit 128 when it is unreachable), and a
     // background refresh must never use the network.
-    args.extend(["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=all", "--no-renames"]);
+    if restricted || is_partial_clone(repo) {
+        args.push("--no-renames");
+    }
     if restricted {
         args.push("--ignore-submodules=dirty");
     }
@@ -115,7 +121,7 @@ fn parse_porcelain_v2(out: &[u8], ignored: &IgnoredNames) -> Changes {
                 let (x, y) = (xy.next().unwrap_or('.'), xy.next().unwrap_or('.'));
                 let entry = changes.map.entry(fields[count - 1].to_owned()).or_default();
                 entry.staged = staged(x);
-                entry.unstaged = unstaged(y);
+                entry.unstaged = unstaged(y).or(entry.unstaged);
                 if x == 'R' {
                     entry.renamed_from = from.clone();
                 }
@@ -353,6 +359,32 @@ mod tests {
             ]
         );
         assert_eq!(changes.conflicts, HashSet::from(["merge me.txt".to_owned()]));
+    }
+
+    #[test]
+    fn porcelain_v2_worktree_rename_preserves_source_deletion_before_staged_record() {
+        use ChangeKind::*;
+        let hash = "ce013625030ba8dba906f756967f9e9ca394464a";
+        let out = format!(
+            "2 .R N... 100644 100644 100644 {hash} {hash} R100 keep/a.txt\0keep/b.txt\0\
+             1 M. N... 100644 100644 100644 {hash} {hash} keep/b.txt\0"
+        );
+        let changes = parse_porcelain_v2(out.as_bytes(), &IgnoredNames::new(&[]));
+        assert_eq!(changes.map["keep/b.txt"], entry(Some(Modified), Some(Deleted), None));
+        assert_eq!(changes.map["keep/a.txt"], entry(None, Some(Added), None));
+    }
+
+    #[test]
+    fn porcelain_v2_worktree_rename_preserves_source_deletion_after_staged_record() {
+        use ChangeKind::*;
+        let hash = "ce013625030ba8dba906f756967f9e9ca394464a";
+        let out = format!(
+            "1 M. N... 100644 100644 100644 {hash} {hash} keep/b.txt\0\
+             2 .R N... 100644 100644 100644 {hash} {hash} R100 keep/a.txt\0keep/b.txt\0"
+        );
+        let changes = parse_porcelain_v2(out.as_bytes(), &IgnoredNames::new(&[]));
+        assert_eq!(changes.map["keep/b.txt"], entry(Some(Modified), Some(Deleted), None));
+        assert_eq!(changes.map["keep/a.txt"], entry(None, Some(Added), None));
     }
 
     fn commit_all(dir: &Path, msg: &str) {
