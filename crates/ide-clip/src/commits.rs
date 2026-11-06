@@ -1301,6 +1301,8 @@ impl PlannedLayout {
     /// A layout for planning or replaying in `git`'s worktree.
     fn new(git: &Git, opts: &RunOptions) -> Result<Self, GitError> {
         let fold_case = crate::transfer::fs_is_case_insensitive(git.root());
+        #[cfg(test)]
+        let fold_case = fold_case || tests::FORCE_FOLD_CASE.get();
         Ok(Self {
             fold_case,
             tracked: if fold_case { TrackedSpellings::read(git, opts)? } else { TrackedSpellings::default() },
@@ -1571,6 +1573,44 @@ impl TrackedSpellings {
     }
 }
 
+// Count real key comparisons in the scaling regression test.
+#[derive(Eq)]
+struct CaseSpelling(PathBuf);
+
+impl std::hash::Hash for CaseSpelling {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
+impl PartialEq for CaseSpelling {
+    fn eq(&self, other: &Self) -> bool {
+        #[cfg(test)]
+        tests::CASE_ALIAS_COMPARISONS.update(|n| n + 1);
+        self.0 == other.0
+    }
+}
+
+struct CaseChildren {
+    exact: std::collections::HashSet<CaseSpelling>,
+    folded: std::collections::HashSet<CaseSpelling>,
+}
+
+impl CaseChildren {
+    fn read(layout: &PlannedLayout, parent: &Path) -> Self {
+        let mut out = Self { exact: Default::default(), folded: Default::default() };
+        for (path, _) in layout.children(parent) {
+            out.folded.insert(CaseSpelling(layout.key(&path)));
+            out.exact.insert(CaseSpelling(path));
+        }
+        out
+    }
+
+    fn aliases(&self, path: &Path, key: PathBuf) -> bool {
+        !self.exact.contains(&CaseSpelling(path.to_path_buf())) && self.folded.contains(&CaseSpelling(key))
+    }
+}
+
 /// Whether `abs` (repo-relative `rel`) or one of its folders differs only in
 /// case from an entry on disk or in the index, as the batch's earlier commits
 /// left them. An entry spelled exactly as `rel` wins. This commit's own
@@ -1582,7 +1622,7 @@ fn case_alias(
     abs: &Path,
     rel: &str,
     layout: &PlannedLayout,
-    children: &mut std::collections::HashMap<PathBuf, Vec<(PathBuf, Node)>>,
+    children: &mut std::collections::HashMap<PathBuf, CaseChildren>,
 ) -> bool {
     let on_disk = abs
         .ancestors()
@@ -1592,9 +1632,8 @@ fn case_alias(
             let Some(parent) = a.parent() else {
                 return false;
             };
-            let entries = children.entry(parent.to_path_buf()).or_insert_with(|| layout.children(parent));
-            let key = layout.key(a);
-            !entries.iter().any(|(p, _)| p == a) && entries.iter().any(|(p, _)| layout.key(p) == key)
+            let entries = children.entry(parent.to_path_buf()).or_insert_with(|| CaseChildren::read(layout, parent));
+            entries.aliases(a, layout.key(a))
         });
     on_disk || layout.tracked.aliases(rel)
 }
@@ -2089,6 +2128,37 @@ mod tests {
     use crate::gitsrc::SHA256_EMPTY_TREE;
     use std::process::Command;
     use std::time::Duration;
+
+    thread_local! {
+        pub(super) static FORCE_FOLD_CASE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        pub(super) static CASE_ALIAS_COMPARISONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    #[test]
+    fn case_children_index_preserves_exact_spelling_and_virtual_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("MiXeD"), b"x").unwrap();
+        fs::write(dir.path().join("removed"), b"x").unwrap();
+        let mut layout = PlannedLayout { fold_case: true, ..Default::default() };
+        layout.set(&dir.path().join("removed"), Node::Absent);
+        layout.set(&dir.path().join("Added"), Node::File);
+        let entries = layout.children(dir.path());
+        let indexed = CaseChildren::read(&layout, dir.path());
+        for (name, expected) in [
+            ("MiXeD", false),
+            ("mixed", true),
+            ("Added", false),
+            ("added", true),
+            ("REMOVED", false),
+            ("missing", false),
+        ] {
+            let path = dir.path().join(name);
+            let key = layout.key(&path);
+            let linear = !entries.iter().any(|(p, _)| p == &path) && entries.iter().any(|(p, _)| layout.key(p) == key);
+            assert_eq!(linear, expected, "{name}");
+            assert_eq!(indexed.aliases(&path, key), linear, "{name}");
+        }
+    }
 
     struct Repo {
         dir: tempfile::TempDir,
@@ -3139,10 +3209,38 @@ mod tests {
             ],
         };
         let g = dst.open();
-        let started = std::time::Instant::now();
-        let plan = plan_commit_replay(&g, &payload);
-        assert_eq!(plan.commits[1].refused_by(), None, "big is emptied");
-        assert!(started.elapsed() < std::time::Duration::from_secs(10), "planning took {:?}", started.elapsed());
+        let insensitive = crate::transfer::fs_is_case_insensitive(g.root());
+        let mut original: Option<CommitReplayPlan> = None;
+        for force_fold_case in [false, true] {
+            if force_fold_case && insensitive {
+                continue;
+            }
+            FORCE_FOLD_CASE.set(force_fold_case);
+            CASE_ALIAS_COMPARISONS.set(0);
+            crate::gitrun::PROCESS_COUNTS.set(Default::default());
+            let started = std::time::Instant::now();
+            let plan = plan_commit_replay(&g, &payload);
+            let elapsed = started.elapsed();
+            FORCE_FOLD_CASE.set(false);
+            let comparisons = CASE_ALIAS_COMPARISONS.get();
+            let counts = crate::gitrun::PROCESS_COUNTS.get();
+            eprintln!(
+                "replay planning: {elapsed:?}, force_fold_case={force_fold_case}, {comparisons} comparisons, git_spawns={}, ps_spawns={}, singleton_groups={}",
+                counts.spawns, counts.ps_spawns, counts.singleton_groups
+            );
+            assert_eq!(plan.commits[1].refused_by(), None, "big is emptied");
+            assert!(elapsed < Duration::from_secs(10), "planning took {elapsed:?}");
+            assert!(comparisons < n * 20, "quadratic case-alias search: {comparisons} comparisons for {n} files");
+            assert!(counts.spawns <= 1, "planning must not spawn Git per file: {counts:?}");
+            if insensitive || force_fold_case {
+                assert_eq!(counts.spawns, 1, "read the index once for the whole plan");
+            }
+            if let Some(original) = &original {
+                assert!(original.same_operations(&plan));
+            } else {
+                original = Some(plan);
+            }
+        }
     }
 
     #[test]
