@@ -165,7 +165,7 @@ fn nested_read(shim: &Shim, repo: &Path, source: GitSource, phase: &str, timeout
     let cancel = CancelToken::new();
     let opts = RunOptions {
         cancel: Some(cancel.clone()),
-        timeout: Duration::from_secs(if timeout { 1 } else { 20 }),
+        timeout: if timeout { Duration::from_millis(500) } else { Duration::from_secs(20) },
         ..RunOptions::preview(None)
     };
     let (tx, rx) = mpsc::channel();
@@ -193,7 +193,7 @@ fn nested_read(shim: &Shim, repo: &Path, source: GitSource, phase: &str, timeout
         .unwrap_or_else(|_| panic!("{phase} ignored nested cancellation/deadline"));
     let err = result.unwrap_err();
     if timeout {
-        assert!(matches!(err, GitError::Timeout { .. }), "{phase}: {err}");
+        assert!(matches!(&err, GitError::Timeout { args, .. } if args.contains(phase)), "{phase}: {err}");
     } else {
         assert!(matches!(err, GitError::Cancelled { .. }), "{phase}: {err}");
     }
@@ -236,7 +236,7 @@ fn replay_index_options(shim: &Shim, repo: &Path) {
         let cancel = CancelToken::new();
         let opts = RunOptions {
             cancel: Some(cancel.clone()),
-            timeout: Duration::from_secs(if timeout { 1 } else { 20 }),
+            timeout: if timeout { Duration::from_millis(500) } else { Duration::from_secs(20) },
             ..RunOptions::default()
         };
         let git = git.clone();
@@ -259,7 +259,7 @@ fn replay_index_options(shim: &Shim, repo: &Path) {
             .expect("replay ls-files ignored cancellation/deadline")
             .unwrap_err();
         assert!(
-            matches!(err, CommitError::Git(GitError::Timeout { .. })) && timeout
+            matches!(&err, CommitError::Git(GitError::Timeout { args, .. }) if args == "ls-files -z") && timeout
                 || matches!(err, CommitError::Git(GitError::Cancelled { .. })) && !timeout,
             "{err}"
         );
