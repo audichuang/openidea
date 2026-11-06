@@ -57,6 +57,16 @@ describe("renamesFileInstead", () => {
     expect(renamesFileInstead(q)).toBe(true);
   });
 
+  it.each([
+    ["kotlin", "object_declaration"],
+    ["scala", "trait_definition"],
+    ["rust", "struct_item"],
+    ["csharp", "class_declaration"],
+    ["typescript", "class_declaration"],
+  ])("does not rename a %s file for a matching top-level type", (language, kind) => {
+    expect(renamesFileInstead({ ...q, language, at: at(n("identifier", "name"), kind) })).toBe(false);
+  });
+
   it("keeps the refusal when the name differs from the file", () => {
     expect(renamesFileInstead({ ...q, name: "Bar" })).toBe(false);
     expect(renamesFileInstead({ ...q, name: "foo" })).toBe(false);
