@@ -702,6 +702,61 @@ describe("rename wiring", () => {
     expect(document.querySelector(".cm-lsp-hint")).toBeNull();
   });
 
+  it.each([
+    ["protocol", "jdtls: request timed out"],
+    ["internal", "internal error"],
+    ["protocol", "jdtls: invalid response"],
+    ["protocol", "other: Renaming this element is not supported."],
+    ["internal", "jdtls: Renaming this element is not supported."],
+    ["cancelled", "cancelled"],
+    ["unavailable", "jdtls doesn't support rename"],
+  ])("does not rename the file after %s: %s", async (kind, message) => {
+    executeAction.mockClear();
+    cmd.lspPrepareRename.mockReturnValueOnce(
+      Promise.resolve({ status: "error", error: { kind, message } as IdeError }),
+    );
+    cmd.syntaxNodeAt.mockReturnValue(topLevelName(13, 3));
+    const view = editor("public class Foo {}", "java", 14, "/p/src/Foo.java");
+    await startRename(view);
+    expect(executeAction).not.toHaveBeenCalled();
+    expect(cmd.syntaxLocals).toHaveBeenCalledTimes(kind === "cancelled" ? 0 : 1);
+    if (kind !== "cancelled") expect(document.querySelector(".cm-lsp-hint")?.textContent).toContain(message);
+    cmd.syntaxNodeAt.mockImplementation(() => ok(null));
+  });
+
+  it.each([
+    ["kotlin", "object_declaration", "kt"],
+    ["scala", "trait_definition", "scala"],
+    ["rust", "struct_item", "rs"],
+    ["csharp", "class_declaration", "cs"],
+    ["typescript", "class_declaration", "ts"],
+  ])("does not rename a %s file after a null prepare response", async (language, kind, extension) => {
+    executeAction.mockClear();
+    cmd.lspPrepareRename.mockReturnValueOnce(ok(null));
+    cmd.syntaxNodeAt.mockReturnValueOnce(
+      ok({ node: node("identifier", r(0, 6, 9), "name"), ancestors: [node(kind, r(0, 0, 12))] }),
+    );
+    const view = editor("class Foo {}", language, 7, `/p/Foo.${extension}`);
+    await startRename(view);
+    expect(executeAction).not.toHaveBeenCalled();
+    expect(document.querySelector(".cm-lsp-hint")?.textContent).toBe("This element can't be renamed");
+  });
+
+  it("accepts the known jdtls refusal without a trailing period", async () => {
+    executeAction.mockClear();
+    cmd.lspPrepareRename.mockReturnValueOnce(
+      Promise.resolve({
+        status: "error",
+        error: { kind: "protocol", message: "jdtls: Renaming this element is not supported" } as IdeError,
+      }),
+    );
+    cmd.syntaxNodeAt.mockReturnValueOnce(topLevelName(13, 3));
+    executeAction.mockResolvedValueOnce(true);
+    const view = editor("public class Foo {}", "java", 14, "/p/src/Foo.java");
+    await startRename(view);
+    expect(executeAction).toHaveBeenCalledWith("project.rename", "/p/src/Foo.java");
+  });
+
   it("renames the file when the server answers nothing for that type", async () => {
     executeAction.mockClear();
     cmd.lspPrepareRename.mockReturnValueOnce(ok(null));
