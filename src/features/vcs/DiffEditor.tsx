@@ -216,6 +216,7 @@ export function DiffEditor({
   input,
   toolbarActions,
   onNeighbour,
+  allowSourceNavigation = true,
 }: {
   input: EditorInput;
   toolbarActions?: ReactNode;
@@ -225,6 +226,7 @@ export function DiffEditor({
    * own content, as a modal dialog hides the editor area.
    */
   onNeighbour?: (data: DiffData) => void;
+  allowSourceNavigation?: boolean;
 }) {
   const data = input.data as DiffData;
   const { path, left, right } = data;
@@ -717,6 +719,7 @@ export function DiffEditor({
   const source = fileSource ?? worktreeSource;
 
   const jumpToSource = useCallback(() => {
+    if (!allowSourceNavigation) return;
     const views = viewsRef.current;
     const fileA = sideFile(left, path);
     const fileB = sideFile(right, path);
@@ -740,7 +743,7 @@ export function DiffEditor({
       const line = mapLine(Chunk.build(from, to), at.number - 1, from, to);
       open(line, to.line(line + 1).text === at.text ? head - at.from : 0);
     });
-  }, [left, right, path, worktreeSource]);
+  }, [allowSourceNavigation, left, right, path, worktreeSource]);
 
   const currentChunk = (): { chunk: Chunk; index: number } | undefined => {
     const v = viewsRef.current?.b;
@@ -1009,7 +1012,7 @@ export function DiffEditor({
     ready && chunkInfo.count === 0 && (attached?.a?.text() ?? statics?.a) === (attached?.b?.text() ?? statics?.b);
   // Staging applies to local changes against HEAD / the index only.
   const canStage = editableB && isWorktree(right) && left.type === "rev" && !!useVcs.getState().root;
-  const hasSource = !!source;
+  const hasSource = allowSourceNavigation && !!source;
 
   return (
     <div
