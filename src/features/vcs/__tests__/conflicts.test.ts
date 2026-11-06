@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { blockAt, mergeTitles, parseConflicts, resolveAll, resolutionText } from "../conflicts";
 
