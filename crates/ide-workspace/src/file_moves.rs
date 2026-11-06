@@ -107,7 +107,9 @@ impl FileMoves {
 
     /// Applies `edit` (paths as before the move, as `workspace/willRenameFiles`
     /// returns them), then performs `moves`. Edited files are snapshotted in
-    /// Local History first. On failure everything done so far is rolled back.
+    /// Local History first. `apply_edit` must be transactional: on error it must
+    /// leave none of its own changes behind. A failed file move rolls back the
+    /// successfully applied edits; a rejected edit preserves external changes.
     /// `sync_git_index` is false for untrusted projects: no git command runs then.
     /// Returns the id for [`undo`](Self::undo).
     #[allow(clippy::too_many_arguments)]
@@ -135,6 +137,7 @@ impl FileMoves {
             }
         }
         let _history_operation = history.map(LocalHistory::file_move_guard);
+        let index = if sync_git_index { crate::git_index::plan(moves) } else { Vec::new() };
         let paths = edited_paths(edit);
         let mut before = Vec::with_capacity(paths.len());
         for p in &paths {
@@ -146,12 +149,8 @@ impl FileMoves {
             }
             before.push(text);
         }
-        let index = if sync_git_index { crate::git_index::plan(moves) } else { Vec::new() };
-        if !paths.is_empty()
-            && let Err(e) = apply_edit(edit)
-        {
-            restore(documents, &paths, &before);
-            return Err(e);
+        if !paths.is_empty() {
+            apply_edit(edit)?;
         }
         if let Err(e) = crate::file_ops::move_files(moves) {
             restore(documents, &paths, &before);
@@ -616,6 +615,7 @@ mod tests {
         assert_eq!(index(), before);
         assert_eq!(git(root, &["ls-files"]), "t.txt\n");
     }
+
     #[test]
     fn move_history_waits_for_reference_edits_before_watcher_reads() {
         use std::sync::mpsc;
@@ -727,5 +727,144 @@ mod tests {
         let labels: Vec<_> = history.list(&to).unwrap().into_iter().map(|entry| entry.label).collect();
         println!("native watcher during move: {labels:?}");
         assert_eq!(labels, vec!["Renaming a.txt to b.txt", "Saved"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn index_planning_precedes_snapshots_and_preserves_external_edits() {
+        use std::cell::Cell;
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
+
+        const MODE: &str = "OPENIDEA_TEST_INDEX_SNAPSHOT_MODE";
+        let Ok(mode) = std::env::var(MODE) else {
+            // Keep OPENIDEA_GIT local to each child: other tests can run in parallel.
+            let tmp = tempfile::tempdir().unwrap();
+            let shim = tmp.path().join("git-shim");
+            fs::write(
+                &shim,
+                r##"#!/bin/sh
+for arg in "$@"; do
+    if [ "$arg" = "ls-files" ] && [ -f MUTATE_REFERENCE ]; then
+        if [ "$OPENIDEA_TEST_INDEX_SNAPSHOT_MODE" = "remove" ]; then
+            rm main.ts
+        else
+            printf 'external edit\n' > main.ts
+        fi
+        rm MUTATE_REFERENCE
+    fi
+done
+exec git "$@"
+"##,
+            )
+            .unwrap();
+            fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+            let test = format!(
+                "{}::index_planning_precedes_snapshots_and_preserves_external_edits",
+                module_path!().split_once("::").unwrap().1
+            );
+            for mode in ["write", "remove"] {
+                let output = Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", &test, "--nocapture"])
+                    .env(MODE, mode)
+                    .env("OPENIDEA_GIT", &shim)
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{mode}: {}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            }
+            return;
+        };
+        let tmp = repo();
+        let root = tmp.path();
+        fs::write(root.join("source.ts"), "source\n").unwrap();
+        fs::write(root.join("main.ts"), "old\n").unwrap();
+        git(root, &["add", "source.ts", "main.ts"]);
+        let index_before = fs::read(root.join(".git/index")).unwrap();
+        let docs = documents();
+        let mut edit = WorkspaceEdit {
+            files: vec![FileEdit::Edit {
+                path: root.join("main.ts").into(),
+                version: None,
+                edits: vec![TextEdit { range: Range::new(Pos::new(0, 0), Pos::new(0, 3)), new_text: "updated".into() }],
+            }],
+            ..Default::default()
+        };
+        docs.prepare_workspace_edit(&mut edit).unwrap();
+        fs::write(root.join("MUTATE_REFERENCE"), "").unwrap();
+        let called = Cell::new(false);
+        let apply_edit = |edit: &WorkspaceEdit| {
+            called.set(true);
+            let result = docs.apply_file_move_edits(edit);
+            assert_eq!(result.as_ref().unwrap_err().kind, ide_core::error::ErrorKind::OutOfSync);
+            if mode == "write" {
+                assert_eq!(fs::read_to_string(root.join("main.ts")).unwrap(), "external edit\n");
+            }
+            result
+        };
+        let moves = FileMoves::new();
+        let mv = vec![FileMove { from: root.join("source.ts").into(), to: root.join("renamed.ts").into() }];
+        let error = moves.perform(&docs, None, &mv, &edit, "Move", true, &apply_edit).unwrap_err();
+        if mode == "write" {
+            assert!(called.get());
+            assert_eq!(error.kind, ide_core::error::ErrorKind::OutOfSync);
+            assert_eq!(fs::read_to_string(root.join("main.ts")).unwrap(), "external edit\n");
+        } else {
+            assert!(!called.get(), "snapshot must observe the removal before invoking the edit callback");
+            assert_eq!(error.kind, ide_core::error::ErrorKind::NotFound);
+            assert!(!root.join("main.ts").exists());
+        }
+        assert!(!root.join("MUTATE_REFERENCE").exists(), "index planning must trigger the external change");
+        assert_eq!(fs::read_to_string(root.join("source.ts")).unwrap(), "source\n");
+        assert!(!root.join("renamed.ts").exists());
+        assert_eq!(fs::read(root.join(".git/index")).unwrap(), index_before);
+        assert_eq!(moves.last(), None);
+    }
+
+    #[test]
+    fn rejected_reference_edits_preserve_changes_after_the_snapshot() {
+        use std::cell::Cell;
+
+        let tmp = repo();
+        let root = tmp.path();
+        fs::write(root.join("source.ts"), "source\n").unwrap();
+        fs::write(root.join("main.ts"), "old\n").unwrap();
+        git(root, &["add", "source.ts", "main.ts"]);
+        let index_before = fs::read(root.join(".git/index")).unwrap();
+        let docs = documents();
+        let mut edit = WorkspaceEdit {
+            files: vec![FileEdit::Edit {
+                path: root.join("main.ts").into(),
+                version: None,
+                edits: vec![TextEdit { range: Range::new(Pos::new(0, 0), Pos::new(0, 3)), new_text: "updated".into() }],
+            }],
+            ..Default::default()
+        };
+        docs.prepare_workspace_edit(&mut edit).unwrap();
+        let called = Cell::new(false);
+        let apply_edit = |edit: &WorkspaceEdit| {
+            called.set(true);
+            // Model an external writer after perform has captured its rollback text.
+            fs::write(root.join("main.ts"), "external edit after snapshot\n").unwrap();
+            let result = docs.apply_file_move_edits(edit);
+            assert_eq!(result.as_ref().unwrap_err().kind, ide_core::error::ErrorKind::OutOfSync);
+            assert_eq!(fs::read_to_string(root.join("main.ts")).unwrap(), "external edit after snapshot\n");
+            result
+        };
+        let moves = FileMoves::new();
+        let mv = vec![FileMove { from: root.join("source.ts").into(), to: root.join("renamed.ts").into() }];
+        let error = moves.perform(&docs, None, &mv, &edit, "Move", true, &apply_edit).unwrap_err();
+        assert!(called.get());
+        assert_eq!(error.kind, ide_core::error::ErrorKind::OutOfSync);
+        assert_eq!(fs::read_to_string(root.join("main.ts")).unwrap(), "external edit after snapshot\n");
+        assert_eq!(fs::read_to_string(root.join("source.ts")).unwrap(), "source\n");
+        assert!(!root.join("renamed.ts").exists());
+        assert_eq!(fs::read(root.join(".git/index")).unwrap(), index_before);
+        assert_eq!(moves.last(), None);
     }
 }
