@@ -764,6 +764,20 @@ impl Drop for InstallingGuard {
     }
 }
 
+async fn prepare_update(
+    initializer: impl std::future::Future<Output = IdeResult<Option<tauri_plugin_updater::Updater>>>,
+    token: &ide_core::CancellationToken,
+) -> IdeResult<tauri_plugin_updater::Update> {
+    tokio::select! {
+        result = async {
+            let updater = initializer.await?.ok_or_else(|| IdeError::unavailable("updates are not configured"))?;
+            updater.check().await.map_err(|e| IdeError::unavailable(e.to_string()))?
+                .ok_or_else(|| IdeError::not_found("no update available"))
+        } => result,
+        _ = token.cancelled() => Err(IdeError::cancelled()),
+    }
+}
+
 /// Downloads and installs the available update, streaming progress to `on_progress`.
 /// Cancellable through `request` until the download completes; the UI then restarts
 /// with `app_restart`. One install runs at a time.
@@ -782,12 +796,7 @@ pub async fn app_install_update(
         InstallingGuard::acquire().ok_or_else(|| IdeError::unavailable("an update is already being installed"))?;
     let token = state.host.begin_request(request);
     let result = async {
-        let updater = updater(&app).await?.ok_or_else(|| IdeError::unavailable("updates are not configured"))?;
-        let update = tokio::select! {
-            r = updater.check() => r.map_err(|e| IdeError::unavailable(e.to_string()))?,
-            _ = token.cancelled() => return Err(IdeError::cancelled()),
-        }
-        .ok_or_else(|| IdeError::not_found("no update available"))?;
+        let update = prepare_update(updater(&app), &token).await?;
         let mut throttle = ProgressThrottle::default();
         let progress = on_progress.clone();
         let mut done = 0u64;
@@ -984,6 +993,26 @@ mod tests {
             debug.contains(&format!("connect_timeout: {:?}", UPDATER_CONNECT_TIMEOUT)),
             "the updater must not wait forever on an unreachable CDN address: {debug}"
         );
+    }
+
+    #[tokio::test]
+    async fn cancel_update_while_initializing() {
+        let token = ide_core::CancellationToken::new();
+        let (started, initialized) = tokio::sync::oneshot::channel();
+        let initializer = async {
+            started.send(()).unwrap();
+            std::future::pending::<IdeResult<Option<tauri_plugin_updater::Updater>>>().await
+        };
+        let cancel = async {
+            initialized.await.unwrap();
+            token.cancel();
+        };
+        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            tokio::join!(prepare_update(initializer, &token), cancel)
+        })
+        .await
+        .expect("cancelling an update must interrupt initialization");
+        assert!(matches!(result, Err(error) if error.kind == ide_core::error::ErrorKind::Cancelled));
     }
 
     #[test]
