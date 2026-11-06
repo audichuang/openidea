@@ -127,13 +127,14 @@ impl Syntax {
         SPECS.iter().map(|s| s.name)
     }
 
-    /// Changes whenever extraction output may change (grammar set, queries,
-    /// crate version); persistent caches of [`Syntax::tags`] key on it.
+    /// Changes whenever extraction output may change (grammar set, queries, the
+    /// syntax module's source, tree-sitter crate versions; see `build.rs`), not on
+    /// a mere version bump; persistent caches of [`Syntax::tags`] key on it.
     pub fn fingerprint(&self) -> String {
         static FP: OnceLock<String> = OnceLock::new();
         FP.get_or_init(|| {
             let mut h = blake3::Hasher::new();
-            h.update(env!("CARGO_PKG_VERSION").as_bytes());
+            h.update(env!("EXTRACTOR_HASH").as_bytes());
             // Bump when web definitions (`.class`, `#id`, `--var` tags) change.
             h.update(b"web-definitions-1");
             for s in SPECS {
