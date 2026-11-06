@@ -259,8 +259,8 @@ function ShelveDialog({
           <SplitPanel defaultSize="38%" minSize="200px">
             <div
               className={shelfStyles.tree}
-              onKeyDownCapture={(e) => {
-                if (e.key !== " " || e.metaKey || e.ctrlKey || !focusedNode) return;
+              onKeyDown={(e) => {
+                if (e.defaultPrevented || e.key !== " " || e.metaKey || e.ctrlKey || !focusedNode) return;
                 e.preventDefault();
                 e.stopPropagation();
                 setSelected((cur) => toggleNode(focusedNode, cur));
