@@ -379,31 +379,9 @@ pub struct UpdateCheck {
     pub update: Option<UpdateInfo>,
 }
 
-fn update_endpoint_env() -> Option<String> {
-    std::env::var("OPENIDEA_UPDATE_ENDPOINT").ok().filter(|s| !s.trim().is_empty())
-}
-
-/// The update endpoint: `OPENIDEA_UPDATE_ENDPOINT`, else the first of
-/// `plugins.updater.endpoints` in tauri.conf.json.
-fn update_endpoint<R: tauri::Runtime>(app: &AppHandle<R>) -> Option<String> {
-    update_endpoint_env().or_else(|| {
-        app.config()
-            .plugins
-            .0
-            .get("updater")
-            .and_then(|u| u.get("endpoints"))
-            .and_then(|e| e.as_array())
-            .and_then(|e| e.first())
-            .and_then(|e| e.as_str())
-            .map(str::to_owned)
-    })
-}
-
-/// Whether an update endpoint is configured: `plugins.updater.endpoints` in
-/// tauri.conf.json, or the `OPENIDEA_UPDATE_ENDPOINT` environment variable. Empty by
-/// default, and "Check for Updates…" is hidden then.
+/// Whether a fork update endpoint is configured.
 pub fn updates_configured<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
-    !config_endpoints(app).is_empty() || update_endpoint_env().is_some()
+    !crate::fork_updater::UpdateEndpoints::configured(app.config()).urls.is_empty()
 }
 
 /// Where updates are downloaded from (System Settings › Updates).
@@ -417,33 +395,6 @@ pub enum UpdateSource {
     Cnb,
 }
 
-const CNB_ENDPOINT: &str = "https://cnb.cool/l0ng-ai/openidea/-/releases/latest/download/latest.json";
-
-fn config_endpoints<R: tauri::Runtime>(app: &AppHandle<R>) -> Vec<String> {
-    app.config()
-        .plugins
-        .0
-        .get("updater")
-        .and_then(|u| u.get("endpoints"))
-        .and_then(|e| e.as_array())
-        .map(|e| e.iter().filter_map(|u| u.as_str().map(String::from)).collect())
-        .unwrap_or_default()
-}
-
-/// The endpoints tried in order: `source` first, the other source when it fails or has
-/// no manifest. Bundles are signed, so either source's manifest and downloads verify.
-/// No official endpoint (a build without updates) means no mirror either.
-fn source_endpoints(official: Vec<String>, source: UpdateSource) -> Vec<String> {
-    if official.is_empty() {
-        return official;
-    }
-    let mirror = vec![CNB_ENDPOINT.to_string()];
-    match source {
-        UpdateSource::Github => [official, mirror].concat(),
-        UpdateSource::Cnb => [mirror, official].concat(),
-    }
-}
-
 /// How long the automatic proxy configuration (PAC download, WPAD) may hold up an update check.
 const AUTO_PROXY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -451,20 +402,23 @@ async fn updater(app: &AppHandle) -> IdeResult<Option<tauri_plugin_updater::Upda
     use ide_core::proxy_settings::ProxyMode;
     use ide_http::system_proxy::{AutoProxy, auto_proxy_for};
     use tauri_plugin_updater::UpdaterExt;
-    let Some(endpoint) = update_endpoint(app) else {
+    let endpoints = crate::fork_updater::UpdateEndpoints::configured(app.config());
+    if endpoints.urls.is_empty() {
         return Ok(None);
-    };
+    }
     let proxy = ide_core::proxy_settings::proxy();
     let auto = proxy.mode == ProxyMode::Auto;
     let mut builder = app.updater_builder().configure_client(move |b| ide_http::client::with_proxy(b, &proxy));
-    if let Some(url) = update_endpoint_env() {
-        let url = url.parse().map_err(|e| IdeError::invalid(format!("OPENIDEA_UPDATE_ENDPOINT: {e}")))?;
-        builder = builder.endpoints(vec![url]).map_err(|e| IdeError::invalid(e.to_string()))?;
-    }
-    // reqwest's system proxy misses PAC scripts and WPAD, the usual corporate setup. The
-    // choice for the endpoint holds for the download too (its redirect to GitHub's asset host).
-    if auto {
-        match tokio::time::timeout(AUTO_PROXY_TIMEOUT, auto_proxy_for(&endpoint)).await {
+    let urls = endpoints
+        .urls
+        .iter()
+        .map(|url| url.parse().map_err(|e| IdeError::invalid(format!("update endpoint: {e}"))))
+        .collect::<IdeResult<Vec<_>>>()?;
+    builder = builder.endpoints(urls).map_err(|e| IdeError::invalid(e.to_string()))?;
+    // reqwest's system proxy misses PAC scripts and WPAD. The updater builder reuses one
+    // decision for all endpoints and the artifact download, so only resolve a single endpoint.
+    if let Some(endpoint) = endpoints.auto_proxy_target().filter(|_| auto) {
+        match tokio::time::timeout(AUTO_PROXY_TIMEOUT, auto_proxy_for(endpoint)).await {
             Ok(Some(AutoProxy::Via(via))) => {
                 tracing::info!("updates: proxy {via} from the automatic proxy configuration");
                 let via = via.parse().map_err(|e| IdeError::invalid(format!("proxy {via}: {e}")))?;
@@ -648,15 +602,6 @@ mod tests {
         assert_eq!(downloading(t.chunk(256 * 1024, None)), Some(((256 * 1024 + 1034) as f64, None)));
         // A zero length is treated as unknown, not divided by.
         assert!(ProgressThrottle::default().chunk(1, Some(0)).is_some());
-    }
-
-    #[test]
-    fn chosen_source_is_tried_first_and_the_other_after_it() {
-        let github = "https://github.com/l0ng-ai/openidea/releases/latest/download/latest.json".to_string();
-        assert_eq!(source_endpoints(vec![github.clone()], UpdateSource::Github), [github.clone(), CNB_ENDPOINT.into()]);
-        assert_eq!(source_endpoints(vec![github.clone()], UpdateSource::Cnb), [CNB_ENDPOINT.into(), github]);
-        // A build without an update endpoint stays without one.
-        assert!(source_endpoints(Vec::new(), UpdateSource::Cnb).is_empty());
     }
 
     #[test]
