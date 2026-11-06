@@ -39,6 +39,7 @@ beforeEach(() => {
 afterEach(() => {
   setProjectFsForTests(null);
   initProjectTree(null);
+  vi.useRealTimers();
 });
 
 const childLabels = (key: string) => (currentModel().children.get(key) ?? []).map((n) => n.label);
@@ -77,16 +78,18 @@ describe("lazy loading", () => {
   });
 
   it("restores the persisted expansion state per project", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     setExpanded(new Set([ROOT, "/p/docs"]));
-    await new Promise((r) => setTimeout(r, 350));
+    await vi.advanceTimersByTimeAsync(300);
     initProjectTree(null);
     initProjectTree(ROOT, "proj");
     expect([...useProjectTree.getState().expanded].sort()).toEqual(["/p", "/p/docs"]);
   });
 
   it("keeps a collapsed project root collapsed and an expanded node outside it open", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     setExpanded(new Set(["/other/lib"]));
-    await new Promise((r) => setTimeout(r, 350));
+    await vi.advanceTimersByTimeAsync(300);
     initProjectTree(null);
     initProjectTree(ROOT, "proj");
     expect([...useProjectTree.getState().expanded]).toEqual(["/other/lib"]);

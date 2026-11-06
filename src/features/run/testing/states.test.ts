@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TestResults } from "./results";
 import { clearTestStates, onTestStatesChanged, recordTestStates, testState } from "./states";
