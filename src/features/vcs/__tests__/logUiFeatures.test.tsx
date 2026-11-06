@@ -98,10 +98,12 @@ afterEach(async () => {
   hideContextMenu();
   api.commits = [];
   await reloadLog();
+  vi.useRealTimers();
 });
 
 describe("log controls", () => {
   it("keeps a pending text edit with its original view when focus changes before the debounce", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const other = openLogTab("log", "Other");
     selectGitTab("log");
     render(
@@ -117,13 +119,12 @@ describe("log controls", () => {
     const [main, second] = screen.getAllByRole("textbox", { name: "Filter by message" });
     fireEvent.change(main!, { target: { value: "pending" } });
     fireEvent.pointerDown(second!);
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 350));
-    });
+    await act(() => vi.advanceTimersByTimeAsync(300));
     expect(useGitLog.getState().shownLog).toBe(other);
     expect(useGitLog.getState().filters.text).toBe("");
     fireEvent.pointerDown(main!);
-    await waitFor(() => expect(useGitLog.getState().filters.text).toBe("pending"));
+    await act(() => vi.advanceTimersByTimeAsync(300));
+    expect(useGitLog.getState().filters.text).toBe("pending");
   });
 
   it("expands a single collapsed fragment from its node without changing the global option", async () => {
