@@ -2065,3 +2065,68 @@ fn a_case_only_directory_rename_keeps_status_and_head_content() {
     assert_eq!(status_of(&st, "src/financial/table/index.vue").staged, Some(ChangeKind::Modified));
     assert_eq!(fx.git(&["diff", "--cached", "--name-only"]), "src/financial/table/index.vue");
 }
+
+#[cfg(unix)]
+fn missing_promisor_object(revision: &str) -> Fixture {
+    let f = Fixture::new();
+    f.write(".gitattributes", "* text=auto\n");
+    f.write("file", "aaaa\n");
+    f.commit_all("initial");
+    let oid = f.git(&["rev-parse", revision]);
+    f.git(&["config", "extensions.partialClone", "origin"]);
+    f.git(&["config", "remote.origin.promisor", "true"]);
+    f.git(&["config", "remote.origin.url", "ssh://invalid.example/repo"]);
+    f.git(&["config", "protocol.ssh.allow", "always"]);
+    f.git(&["config", "core.sshCommand", "touch execution.marker; exit 1"]);
+    std::fs::remove_file(f.path(&format!(".git/objects/{}/{}", &oid[..2], &oid[2..]))).unwrap();
+    f.write("file", "bbbb\n");
+    f
+}
+
+#[cfg(unix)]
+#[test]
+fn restricted_status_does_not_execute_promisor_transport() {
+    for revision in [":file", "HEAD^{tree}"] {
+        let f = missing_promisor_object(revision);
+        // Positive control: Git can reach this repository's transport command.
+        let _ = Command::new(detected_git_executable().unwrap())
+            .current_dir(&f.dir)
+            .env("GIT_NO_LAZY_FETCH", "0")
+            .env_remove("GIT_ALLOW_PROTOCOL")
+            .args(["--no-optional-locks", "status", "--porcelain=v2", "--no-renames"])
+            .output()
+            .unwrap();
+        assert!(f.path("execution.marker").exists(), "fixture did not fetch missing {revision}");
+        std::fs::remove_file(f.path("execution.marker")).unwrap();
+        let repo = f.repo();
+        repo.set_execution_allowed(false);
+        let result = repo.status();
+        assert!(!f.path("execution.marker").exists(), "status fetched missing {revision}");
+        if revision == ":file" {
+            let status = result.unwrap();
+            assert!(status.iter().any(|file| file.rel_path == "file" && file.unstaged == Some(ChangeKind::Modified)));
+        } else {
+            assert!(result.is_err());
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn restricted_blob_read_does_not_execute_promisor_transport() {
+    let f = missing_promisor_object(":file");
+    // Positive control exercises the same missing blob through unrestricted Git.
+    let _ = Command::new(detected_git_executable().unwrap())
+        .current_dir(&f.dir)
+        .env("GIT_NO_LAZY_FETCH", "0")
+        .env_remove("GIT_ALLOW_PROTOCOL")
+        .args(["show", ":file"])
+        .output()
+        .unwrap();
+    assert!(f.path("execution.marker").exists());
+    std::fs::remove_file(f.path("execution.marker")).unwrap();
+    let repo = f.repo();
+    repo.set_execution_allowed(false);
+    assert!(repo.file_bytes_at(&f.path("file"), Some(":0")).is_err());
+    assert!(!f.path("execution.marker").exists());
+}
