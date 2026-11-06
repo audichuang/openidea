@@ -69,4 +69,22 @@ describe("branch filter popup", () => {
     fireEvent.keyDown(input, { key: "Enter", keyCode: 13 });
     expect(onSelect).toHaveBeenCalled();
   });
+
+  it("lists favorite branches after the current one, before the rest", () => {
+    render(
+      <BranchFilterPopup
+        anchor={document.body}
+        branches={[branch("alpha"), branch("main"), branch("zeta"), branch("origin/beta", { remote: true })]}
+        selected={[]}
+        favorites={["zeta"]}
+        onSelect={vi.fn()}
+        onSelectMany={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    const names = [...document.querySelectorAll("li, [role='option']")].map((el) => el.textContent?.trim());
+    const order = ["zeta", "alpha", "main"].map((n) => names.indexOf(n));
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+  });
 });
