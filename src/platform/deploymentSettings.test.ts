@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { connectionSecretKey, deploymentConnection, validateDeployment } from "./remoteSettings";
 
