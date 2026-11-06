@@ -5,6 +5,7 @@ import { useProjectRoots } from "@/platform/projectRoots";
 import type { MenuItem } from "@/ui";
 import { menuGroupItems } from "@/workbench/contributions";
 import { BUILTIN_FILE_TEMPLATES } from "../files/builtins";
+import type { FileTemplate } from "../files/model";
 import { newMenuTemplates } from "../files/newMenu";
 import { registerNewMenuGroups } from "../index";
 
@@ -42,6 +43,27 @@ describe("New menu templates by directory kind", () => {
     expect(primary).toEqual([]);
     expect(other).toEqual([]);
     expect(ids(common)).toEqual(ids(MENU_TEMPLATES).filter((id) => id !== "package-info"));
+  });
+
+  it.each(["php", "PHP"])("moves custom %s templates aside only in a language package", (extension) => {
+    const templates: FileTemplate[] = ["php", "php-class"].map((id) => ({
+      id,
+      name: id,
+      icon: "file",
+      extension,
+      nameStyle: "asis",
+      kinds: [],
+    }));
+    for (const kind of ["jvm", "python"] as const) {
+      const { primary, common, other } = newMenuTemplates(templates, kind);
+      expect(primary).toEqual([]);
+      expect(common).toEqual([]);
+      expect(ids(other)).toEqual(["php", "php-class"]);
+    }
+    const { primary, common, other } = newMenuTemplates(templates, null);
+    expect(primary).toEqual([]);
+    expect(ids(common)).toEqual(["php", "php-class"]);
+    expect(other).toEqual([]);
   });
 
   it("classifies user templates by their extension", () => {
