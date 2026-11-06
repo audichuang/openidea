@@ -244,6 +244,7 @@ describe("applying completions", () => {
   afterEach(() => {
     view?.destroy();
     view = null;
+    vi.useRealTimers();
   });
 
   /** `|` marks the caret where completion was requested; `typed` is typed afterwards. */
@@ -359,6 +360,7 @@ describe("applying completions", () => {
 
   for (const mode of ["insert", "replace"] as const) {
     it(`${mode} accepts a cached lookup requested before typing Print`, async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
       const { view, req, pos } = setup("System.out.|Suffix");
       const c = makeCompletion(
         item({
@@ -385,7 +387,7 @@ describe("applying completions", () => {
         userEvent: "input.type",
       });
       await vi.waitFor(() => expect(currentCompletions(view.state)[0]).toBe(c));
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await vi.advanceTimersByTimeAsync(100);
       expect(
         mode === "insert"
           ? acceptCompletion(view)
@@ -398,6 +400,7 @@ describe("applying completions", () => {
 
   for (const template of [false, true]) {
     it(`replaces mixed-case prefixes in contributed ${template ? "snippet" : "word"} completions`, async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
       const { view } = setup("Print|");
       const source: CompletionSource = () => ({
         from: 0,
@@ -411,7 +414,7 @@ describe("applying completions", () => {
       });
       startCompletion(view);
       await vi.waitFor(() => expect(currentCompletions(view.state)).toHaveLength(1));
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await vi.advanceTimersByTimeAsync(100);
       expect(acceptCompletion(view)).toBe(true);
       expect(view.state.doc.toString()).toBe(template ? "print()" : "print");
     });
@@ -519,6 +522,7 @@ describe("lookup commit characters", () => {
 });
 
 describe("explicit completion", () => {
+  afterEach(() => vi.useRealTimers());
   function editor(labels: string[]) {
     const source: CompletionSource = (ctx) => {
       const word = ctx.matchBefore(/\w*/);
@@ -543,19 +547,23 @@ describe("explicit completion", () => {
   });
 
   it("keeps a sole candidate in the list when auto-insert is off", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     useProject.setState({ settings: { editor: { completion: { autoInsertSingle: false } } } as unknown as Settings });
     const view = editor(["println"]);
     explicitCompletion(view);
-    await new Promise((r) => setTimeout(r, 300));
+    await vi.waitFor(() => expect(currentCompletions(view.state)).toHaveLength(1));
+    await vi.advanceTimersByTimeAsync(80);
     expect(view.state.doc.toString()).toBe("pri");
     view.destroy();
     useProject.setState({ settings: null });
   });
 
   it("shows the list when there are several candidates", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const view = editor(["println", "print"]);
     explicitCompletion(view);
-    await new Promise((r) => setTimeout(r, 300));
+    await vi.waitFor(() => expect(currentCompletions(view.state)).toHaveLength(2));
+    await vi.advanceTimersByTimeAsync(80);
     expect(view.state.doc.toString()).toBe("pri");
     view.destroy();
   });
