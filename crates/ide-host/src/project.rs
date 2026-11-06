@@ -141,6 +141,7 @@ impl Host {
             let build_cache = self.local_data_dir.join("cache").join(&project_key).join("build");
             let sink = sink.clone();
             let formatter_problem = std::sync::Mutex::new(None);
+            let lombok_problem = std::sync::Mutex::new(None::<String>);
             lsp.set_config_hook(Box::new(move |cfg, server_root| {
                 let member = ide_workspace::workspace::Workspace::load(&root).ok().flatten().and_then(|w| {
                     w.projects.into_iter().filter(|p| server_root.starts_with(p)).max_by_key(|p| p.components().count())
@@ -199,15 +200,37 @@ impl Host {
                         .collect();
                     let min_java = ide_sdk::java::jdtls_min_java(cfg);
                     let jdks = ide_sdk::java::jdtls_jdks(min_java, &data_dir);
+                    let own_lombok = ide_sdk::lombok::agent_in_args(cfg.args.iter().map(String::as_str));
+                    // The app always attaches its agent: what is parsed out of a wrapper script
+                    // (shell logic, variables, PATH differences) only feeds the warning below.
                     let lombok = ide_sdk::lombok::lombok_agent(
                         server_root,
-                        ide_sdk::lombok::agent_in_args(cfg.args.iter().map(String::as_str)),
+                        own_lombok,
                         ide_tools::managed_bundle(&data_dir, "lombok"),
                         ide_sdk::apply::maven_local_repository(root, &effective),
                     );
                     if let Some(problem) = lombok.problem() {
                         tracing::warn!("{problem}");
                     }
+                    let lombok = lombok.jar().map(Path::to_path_buf);
+                    // `cfg.env` already carries the language server's PATH here, which
+                    // `wrapper_lombok_agent` searches like the launch does.
+                    let duplicate = ide_sdk::jdtls::wrapper_lombok_agent(cfg).zip(lombok.as_deref()).and_then(
+                        |((script, agent), app)| ide_sdk::lombok::duplicate_agents_problem(&script, &agent, app),
+                    );
+                    let mut previous = lombok_problem.lock().unwrap();
+                    if duplicate != *previous {
+                        if let Some(body) = &duplicate {
+                            tracing::warn!("{body}");
+                            sink.emit(IdeEvent::Notify {
+                                level: ide_core::event::NotifyLevel::Warning,
+                                title: "Two Lombok agents in the Java language server".into(),
+                                body: Some(body.clone()),
+                            });
+                        }
+                        *previous = duplicate;
+                    }
+                    drop(previous);
                     let server_jdk = ide_sdk::apply::jdtls_jdk(root, &effective).unwrap_or_else(|e| {
                         cfg.launch_error = Some(e);
                         None
@@ -222,7 +245,7 @@ impl Host {
                         server_jdk.as_ref(),
                         min_java,
                         &bundles,
-                        lombok.jar(),
+                        lombok.as_deref(),
                     );
                     ide_sdk::jdtls::launch_directly(cfg);
                 }
