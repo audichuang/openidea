@@ -134,6 +134,7 @@ impl FileMoves {
                 return Err(IdeError::invalid(format!("cannot move {} into itself", m.from.display())));
             }
         }
+        let _history_operation = history.map(LocalHistory::file_move_guard);
         let paths = edited_paths(edit);
         let mut before = Vec::with_capacity(paths.len());
         for p in &paths {
@@ -215,6 +216,7 @@ impl FileMoves {
                 .ok_or_else(|| IdeError::not_found("the refactoring can no longer be undone"))?;
             records.remove(i)
         };
+        let _history_operation = history.map(LocalHistory::file_move_guard);
         let back: Vec<_> =
             record.moves.iter().rev().map(|m| FileMove { from: m.to.clone(), to: m.from.clone() }).collect();
         let index: Vec<_> = if sync_git_index {
@@ -621,5 +623,117 @@ mod tests {
         moves.undo(&docs, None, false, id).unwrap();
         assert_eq!(index(), before);
         assert_eq!(git(root, &["ls-files"]), "t.txt\n");
+    }
+    #[test]
+    fn move_history_waits_for_reference_edits_before_watcher_reads() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let from = root.join("a.txt");
+        let to = root.join("b.txt");
+        fs::write(&from, "before").unwrap();
+        let docs = documents();
+        let history = Arc::new(LocalHistory::open(&root.join(".history"), root).unwrap());
+        history.record(&from, "before", "Saved").unwrap();
+        let edit = WorkspaceEdit {
+            files: vec![FileEdit::Edit {
+                path: from.as_path().into(),
+                version: None,
+                edits: vec![TextEdit { range: Range::new(Pos::new(0, 0), Pos::new(0, 6)), new_text: "after".into() }],
+            }],
+            ..Default::default()
+        };
+        let (start, ready) = mpsc::channel();
+        let (entered, entering) = mpsc::channel();
+        let (done, finished) = mpsc::channel();
+        let watcher_history = history.clone();
+        let watcher_from = from.clone();
+        let watcher = std::thread::spawn(move || {
+            ready.recv().unwrap();
+            entered.send(()).unwrap();
+            watcher_history.record_external_changes(&[watcher_from], &[], 500);
+            done.send(()).unwrap();
+        });
+        let moves = FileMoves::new();
+        moves
+            .perform(
+                &docs,
+                Some(&history),
+                &[FileMove { from: from.as_path().into(), to: to.as_path().into() }],
+                &edit,
+                "Rename",
+                false,
+                &|edit| {
+                    docs.apply_file_move_edits(edit)?;
+                    start.send(()).unwrap();
+                    entering.recv().unwrap();
+                    // The watcher has begun processing the edit, while the move
+                    // deliberately stays in its intermediate state.
+                    let _ = finished.recv_timeout(Duration::from_millis(250));
+                    Ok(())
+                },
+            )
+            .unwrap();
+        watcher.join().unwrap();
+        assert!(history.list(&from).unwrap().is_empty());
+        let labels: Vec<_> = history.list(&to).unwrap().into_iter().map(|entry| entry.label).collect();
+        println!("watcher during perform edits: {labels:?}");
+        assert_eq!(fs::read_to_string(&to).unwrap(), "after");
+        assert!(!labels.iter().any(|label| label == "Deleted" || label == "External change"));
+    }
+
+    #[test]
+    fn native_watcher_waits_for_move_history_before_snapshotting() {
+        use ide_vfs::Watcher;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        fs::create_dir(&root).unwrap();
+        let root = dunce::canonicalize(&root).unwrap();
+        let history = Arc::new(LocalHistory::open(&tmp.path().join("history"), &root).unwrap());
+        let from = root.join("a.txt");
+        let to = root.join("b.txt");
+        fs::write(&from, "content").unwrap();
+        history.record(&from, "content", "Saved").unwrap();
+        let (entered, entering) = mpsc::channel();
+        let (done, finished) = mpsc::channel();
+        let callback_history = history.clone();
+        let callback_from = from.clone();
+        let watcher = Watcher::start(
+            &root,
+            Vec::new(),
+            Arc::new(|_| {}),
+            Box::new(move |batch| {
+                let changed: Vec<_> = batch.created.iter().chain(&batch.modified).cloned().collect();
+                let moved = batch.removed.contains(&callback_from);
+                if moved {
+                    entered.send(()).unwrap();
+                }
+                callback_history.record_external_changes(&changed, &batch.removed, 500);
+                if moved {
+                    done.send(()).unwrap();
+                }
+            }),
+        )
+        .unwrap();
+        assert!(watcher.polling().is_none(), "requires real native watcher");
+        let moving = history.file_move_guard();
+        fs::rename(&from, &to).unwrap();
+        entering.recv_timeout(Duration::from_secs(5)).unwrap();
+        let completed = finished.recv_timeout(Duration::from_millis(250)).is_ok();
+        history.follow_moves(&[FileMove { from: from.as_path().into(), to: to.as_path().into() }]).unwrap();
+        drop(moving);
+        if !completed {
+            finished.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+        drop(watcher);
+        assert!(history.list(&from).unwrap().is_empty());
+        let labels: Vec<_> = history.list(&to).unwrap().into_iter().map(|entry| entry.label).collect();
+        println!("native watcher during move: {labels:?}");
+        assert_eq!(labels, vec!["Renaming a.txt to b.txt", "Saved"]);
     }
 }
