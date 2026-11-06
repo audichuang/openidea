@@ -57,11 +57,40 @@ const cmd = () => (isMacHost() ? { metaKey: true } : { ctrlKey: true });
 beforeEach(() => {
   writeText.mockClear();
   Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
-  useVcs.setState({ root: "/p", repo: "/p", branches, branchesLoaded: true, branch: head });
-  useGitLog.setState({ filters: emptyFilters() });
+  useVcs.setState({ root: "/p", roots: ["/p"], repo: "/p", branches, branchesLoaded: true, branch: head });
+  useGitLog.setState({ filters: emptyFilters(), logTabs: [], shownLog: "log" });
 });
 
 describe("Git Log branches pane", () => {
+  it.each<[string[], string[], (string | null)[]]>([
+    [
+      ["/A", "/B", "/C"],
+      ["/B", "/C"],
+      ["var(--project-color-2)", "var(--project-color-3)"],
+    ],
+    [
+      ["/A", "/B", "/C"],
+      ["/X", "/Y"],
+      ["var(--project-color-1)", "var(--project-color-2)"],
+    ],
+    [["/A"], ["/A", "/X"], [null, "var(--project-color-2)"]],
+  ])("keeps repository colors consistent for workspace %j and log scope %j", (workspace, repositories, colors) => {
+    useVcs.setState({ roots: workspace });
+    useGitLog.setState({
+      shownLog: "scoped",
+      logTabs: [{ id: "scoped", kind: "external", target: "", repositories }],
+    });
+    render(<BranchesPanel />);
+    for (const [index, repo] of repositories.entries()) {
+      const row = screen
+        .getAllByText(repo.slice(1))
+        .map((label) => label.closest("[data-row]"))
+        .find(Boolean)!;
+      const swatch = row.querySelector<HTMLElement>('span[style*="background"]');
+      expect(swatch?.style.background ?? null).toBe(colors[index]);
+    }
+  });
+
   it("offers Manage Remotes… on the Remote node and on each remote, like IDEA", async () => {
     useVcs.setState({ branches: [...branches, b("origin/main", { remote: true, commit: "1" })] });
     render(
