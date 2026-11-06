@@ -2027,6 +2027,7 @@ impl HostApi for PluginApi {
 
     fn vcs_status(&self, root: &Path) -> Result<Option<RepositoryStatus>, HostError> {
         let Some(repo) = ide_vcs::Repo::discover(root).map_err(failed)? else { return Ok(None) };
+        repo.set_execution_allowed(self.shared.workspace().is_some_and(|w| w.trusted(root)));
         let info = repo.branch_info().map_err(failed)?;
         let changed = repo.status().map_err(failed)?.len();
         Ok(Some(RepositoryStatus {
@@ -2043,6 +2044,7 @@ impl HostApi for PluginApi {
 
     fn vcs_remotes(&self, root: &Path) -> Result<Vec<(String, String)>, HostError> {
         let Some(repo) = ide_vcs::Repo::discover(root).map_err(failed)? else { return Ok(Vec::new()) };
+        repo.set_execution_allowed(self.shared.workspace().is_some_and(|w| w.trusted(root)));
         let remotes = repo.remotes().map_err(failed)?;
         Ok(remotes.into_iter().map(|r| (r.name, without_credentials(&r.url))).collect())
     }
@@ -3411,6 +3413,107 @@ mod tests {
         assert!(state.stdout.is_empty() && state.stderr.is_empty());
         drop(state);
         api.release_process(id);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plugin_vcs_reads_respect_workspace_trust() {
+        for method in ["status", "remotes"] {
+            for trust in ["none", "false", "true"] {
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "plugins::api::tests::plugin_vcs_trust_child", "--ignored", "--nocapture"])
+                    .env("PLUGIN_VCS_METHOD", method)
+                    .env("PLUGIN_VCS_TRUST", trust)
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{method}/{trust}: {}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "isolated process for the Git executable override"]
+    fn plugin_vcs_trust_child() {
+        use std::os::unix::fs::PermissionsExt;
+        struct Workspace(bool, PathBuf);
+        impl PluginWorkspace for Workspace {
+            fn projects(&self) -> Vec<PathBuf> {
+                Vec::new()
+            }
+            fn buffer_text(&self, _: &Path) -> Option<String> {
+                None
+            }
+            fn document(&self, _: &Path) -> Option<(u64, String)> {
+                None
+            }
+            fn apply_edits(&self, _: &Path, _: u64, _: &[TextEdit]) -> Result<u64, HostError> {
+                unreachable!()
+            }
+            fn trusted(&self, root: &Path) -> bool {
+                assert_eq!(root, self.1);
+                self.0
+            }
+            fn project_of(&self, _: &str) -> Option<PathBuf> {
+                None
+            }
+            fn publish_diagnostics(&self, _: &str, _: &Path, _: Vec<ide_core::Diagnostic>) -> Result<(), HostError> {
+                unreachable!()
+            }
+        }
+        let method = std::env::var("PLUGIN_VCS_METHOD").unwrap();
+        let trust = std::env::var("PLUGIN_VCS_TRUST").unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git").current_dir(&root).args(args).output().unwrap();
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(&["init", "-q"]);
+        std::fs::write(root.join("tracked"), "original\n").unwrap();
+        git(&["add", "tracked"]);
+        git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "initial",
+        ]);
+        git(&["remote", "add", "origin", "https://user:secret@example.com/repo.git"]);
+        git(&["config", "core.sparseCheckout", "true"]);
+        let filter_marker = tmp.path().join("filter-marker");
+        let filter = tmp.path().join("clean-filter");
+        std::fs::write(&filter, format!("#!/bin/sh\nprintf x >> '{}'\ncat\n", filter_marker.display())).unwrap();
+        std::fs::set_permissions(&filter, std::fs::Permissions::from_mode(0o755)).unwrap();
+        git(&["config", "filter.test.clean", filter.to_str().unwrap()]);
+        std::fs::write(root.join(".gitattributes"), "tracked filter=test\n").unwrap();
+        std::fs::write(root.join("tracked"), "modified\n").unwrap();
+        let marker = tmp.path().join("git-marker");
+        let wrapper = tmp.path().join("git-wrapper");
+        std::fs::write(&wrapper, format!("#!/bin/sh\nprintf x >> '{}'\nexec git \"$@\"\n", marker.display())).unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        ide_vcs::set_git_executable(Some(&wrapper));
+        let api = api(&root, Arc::default());
+        if trust != "none" {
+            *api.shared.workspace.write() = Some(Arc::new(Workspace(trust == "true", root.clone())));
+        }
+        if method == "status" {
+            assert!(api.vcs_status(&root).unwrap().unwrap().changed_files > 0);
+            assert_eq!(filter_marker.exists(), trust == "true", "clean filter execution");
+        } else {
+            assert_eq!(api.vcs_remotes(&root).unwrap(), [("origin".into(), "https://example.com/repo.git".into())]);
+        }
+        assert_eq!(marker.exists(), trust == "true", "configured Git executable execution");
     }
 
     #[test]
