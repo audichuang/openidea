@@ -386,7 +386,9 @@ impl Documents {
         self.apply_workspace_edit_inner(edit, true, &mut |_| Ok(()))
     }
 
-    /// File moves already own a combined move/reference undo record.
+    /// Apply transactionally without a separate undo record: file moves own the
+    /// combined move/reference undo. Preconditions are checked before writes;
+    /// application failures roll back this edit's changes.
     pub fn apply_file_move_edits(&self, edit: &WorkspaceEdit) -> IdeResult<()> {
         self.apply_workspace_edit_inner(edit, false, &mut |_| Ok(()))
     }
