@@ -189,6 +189,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
+          # Why: the target cache carries bundle/ over from earlier versions' builds.
+          rm -rf "target/$TARGET/release/bundle"
           config=$(jq -cn --arg v "$VERSION" --arg k "$UPDATER_PUBKEY" --arg e "$UPDATER_ENDPOINT" \
             '{version: $v, bundle: {createUpdaterArtifacts: true}, plugins: {updater: {pubkey: $k, endpoints: [$e]}}}')
           pnpm tauri build --target "$TARGET" --bundles "${{ matrix.bundles }}" --config "$config"
@@ -219,8 +221,7 @@ jobs:
             cp $b/macos/OpenIDEA.app.tar.gz "$out/openidea-fork-macos-arm64.app.tar.gz"
             cp $b/macos/OpenIDEA.app.tar.gz.sig "$out/openidea-fork-macos-arm64.app.tar.gz.sig"
           else
-            exe=$(ls $b/nsis/*-setup.exe)
-            case "$exe" in *"$VERSION"*) ;; *) echo "::error::installer $exe is not version $VERSION"; exit 1 ;; esac
+            exe="$b/nsis/OpenIDEA_${VERSION}_x64-setup.exe"
             cp "$exe" "$out/openidea-fork-windows-x64-setup.exe"
             cp "$exe.sig" "$out/openidea-fork-windows-x64-setup.exe.sig"
           fi
