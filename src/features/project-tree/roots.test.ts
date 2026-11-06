@@ -66,6 +66,25 @@ describe("New › Package", () => {
     expect(packageKindAt("src/gen/com/x", gen("build.gradle"))).toBe("jvm");
   });
 
+  it("preserves nested Gradle ownership in a Python project", () => {
+    const mixed = [
+      root("src", "source", "pyproject.toml"),
+      root("app/custom/code", "source", "app/Gradle"),
+      root("app/generated/resources", "resources", "app/Gradle"),
+      root("app/tools/src", "source", "app/tools/pyproject.toml"),
+    ];
+    expect(packageKindAt("app", mixed)).toBeNull();
+    expect(packageKindAt("app/docs", mixed)).toBeNull();
+    expect(packageKindAt("app/generated/resources", mixed)).toBeNull();
+    expect(packageKindAt("app/custom/code/com", mixed)).toBe("jvm");
+    expect(packageKindAt("scripts", mixed)).toBe("python");
+    expect(packageKindAt("app/tools/scripts", mixed)).toBe("python");
+    expect(packageKindAt("app/docs", [], mixed)).toBeNull();
+    expect(packageKindAt("docs", [root("code", "source", "Gradle"), root("py", "source", "pyproject.toml")])).toBe(
+      "python",
+    );
+  });
+
   it("validates dotted package names", () => {
     expect(packageSegments("com.acme.util", "jvm")).toEqual({ segments: ["com", "acme", "util"], error: null });
     expect(packageSegments("com..x", "jvm").error).toMatch(/Not a valid package name/);
