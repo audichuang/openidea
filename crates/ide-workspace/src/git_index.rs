@@ -125,7 +125,7 @@ fn apply_repository(root: &Path, moves: &[&IndexMove]) -> std::io::Result<()> {
     let failed = || Error::other("git index update failed");
     let out = run(root, &["rev-parse", "--git-path", "index"], None).ok_or_else(failed)?;
     let path = String::from_utf8(out.stdout).map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
-    let index = root.join(path.trim_end_matches(['\n', '\r']));
+    let index = dunce::canonicalize(root.join(path.trim_end_matches(['\n', '\r'])))?;
     let mut lock_path = index.as_os_str().to_os_string();
     lock_path.push(".lock");
     let lock_path = PathBuf::from(lock_path);
@@ -133,7 +133,10 @@ fn apply_repository(root: &Path, moves: &[&IndexMove]) -> std::io::Result<()> {
     let mut lock = std::fs::OpenOptions::new().write(true).create_new(true).open(&lock_path)?;
     let mut guard = IndexLock(Some(lock_path.clone()));
     let temporary = tempfile::NamedTempFile::new_in(index.parent().ok_or_else(failed)?)?;
+    let metadata = std::fs::metadata(&index)?;
     std::fs::copy(&index, temporary.path())?;
+    // Git uses the index timestamp to detect entries that need a racy-clean check.
+    temporary.as_file().set_times(std::fs::FileTimes::new().set_modified(metadata.modified()?))?;
     let mut input = Vec::new();
     for m in moves {
         for (_, oid, old, _) in &m.entries {
@@ -331,6 +334,86 @@ mod transaction_tests {
         assert_eq!(git(root, &["ls-files", "-v", "--", "keep/flagged"]), "h keep/flagged\n");
         assert!(git(root, &["ls-files", "--debug", "--", "keep/new-ita"]).contains("flags: 20004000"));
         assert_eq!(git(root, &["ls-files", "--", "keep/base", "keep/ita"]), "");
+        assert!(!root.join(".git/index.lock").exists());
+    }
+
+    #[test]
+    fn transaction_keeps_unrelated_racy_file_visible_to_git_diff() {
+        use std::fs::{File, FileTimes};
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+        let temporary = repo();
+        let root = temporary.path();
+        git(root, &["config", "core.trustctime", "false"]);
+        git(root, &["config", "core.checkStat", "minimal"]);
+        let seconds = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() - 10;
+        let modified = UNIX_EPOCH + Duration::from_secs(seconds);
+        let file = root.join("keep/racy");
+        std::fs::write(&file, "staged!!").unwrap();
+        File::options().write(true).open(&file).unwrap().set_times(FileTimes::new().set_modified(modified)).unwrap();
+        git(root, &["add", "keep/racy"]);
+        // Equal file/index timestamps require Git's racy-entry content check.
+        File::options()
+            .write(true)
+            .open(root.join(".git/index"))
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(modified))
+            .unwrap();
+        std::fs::write(&file, "changed!").unwrap();
+        File::options().write(true).open(&file).unwrap().set_times(FileTimes::new().set_modified(modified)).unwrap();
+        assert_eq!(git(root, &["diff", "--name-only", "--", "keep/racy"]), "keep/racy\n");
+        perform(root, &[("keep/base", "keep/renamed")]);
+        assert_eq!(git(root, &["show", ":keep/racy"]), "staged!!");
+        assert_eq!(git(root, &["diff", "--name-only", "--", "keep/racy"]), "keep/racy\n");
+        assert_eq!(git(root, &["show", ":keep/renamed"]), "base");
+        assert!(!root.join(".git/index.lock").exists());
+    }
+
+    #[cfg(unix)]
+    fn symlink_index(root: &Path) -> std::path::PathBuf {
+        use std::os::unix::fs::symlink;
+
+        let target = root.join(".git/actual-index");
+        std::fs::rename(root.join(".git/index"), &target).unwrap();
+        std::fs::create_dir(root.join(".git/links")).unwrap();
+        symlink("../actual-index", root.join(".git/links/hop")).unwrap();
+        symlink("links/hop", root.join(".git/index")).unwrap();
+        target
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn transaction_updates_symlink_index_target_and_preserves_relative_link_chain() {
+        let temporary = repo();
+        let root = temporary.path();
+        let target = symlink_index(root);
+        let before = std::fs::read(&target).unwrap();
+        perform(root, &[("keep/base", "keep/renamed")]);
+        assert_eq!(std::fs::read_link(root.join(".git/index")).unwrap(), Path::new("links/hop"));
+        assert_eq!(std::fs::read_link(root.join(".git/links/hop")).unwrap(), Path::new("../actual-index"));
+        assert_ne!(std::fs::read(&target).unwrap(), before);
+        assert_eq!(git(root, &["show", ":keep/renamed"]), "base");
+        assert_eq!(git(root, &["ls-files", "--", "keep/base"]), "");
+        assert!(!root.join(".git/actual-index.lock").exists());
+        assert!(!root.join(".git/index.lock").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_index_target_lock_prevents_any_index_change() {
+        let temporary = repo();
+        let root = temporary.path();
+        let target = symlink_index(root);
+        let before = std::fs::read(&target).unwrap();
+        let lock = root.join(".git/actual-index.lock");
+        std::fs::write(&lock, "other git process").unwrap();
+        perform(root, &[("keep/base", "keep/renamed")]);
+        assert_eq!(std::fs::read_link(root.join(".git/index")).unwrap(), Path::new("links/hop"));
+        assert_eq!(std::fs::read_link(root.join(".git/links/hop")).unwrap(), Path::new("../actual-index"));
+        assert_eq!(std::fs::read(&target).unwrap(), before);
+        assert_eq!(std::fs::read_to_string(&lock).unwrap(), "other git process");
+        assert_eq!(git(root, &["show", ":keep/base"]), "base");
+        assert_eq!(git(root, &["ls-files", "--", "keep/renamed"]), "");
         assert!(!root.join(".git/index.lock").exists());
     }
 
