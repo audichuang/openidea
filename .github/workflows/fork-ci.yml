@@ -238,6 +238,7 @@ jobs:
       - run: cargo nextest run --workspace --no-fail-fast ${{ matrix.partition && format('--partition slice:{0}', matrix.partition) || '' }} ${{ matrix.threads && format('--test-threads {0}', matrix.threads) || '' }}
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
       - name: Measure live target artifacts
+        if: ${{ !cancelled() }}
         id: artifacts
         shell: bash
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
