@@ -27,7 +27,7 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
     let repo = r.gix()?;
     let ignored = r.ignored.read().unwrap_or_else(|p| p.into_inner()).clone();
     let changes = if needs_git_cli(&repo) {
-        cli_changes(r, &ignored)?
+        cli_changes(r, &repo, &ignored)?
     } else {
         match gix_changes(&repo, &ignored) {
             Ok(changes) => changes,
@@ -35,7 +35,7 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
             // missing locally) may still be readable by git itself.
             Err(e) => {
                 tracing::debug!("gitoxide status of {} failed, using git: {e}", r.root().display());
-                cli_changes(r, &ignored).map_err(|_| e)?
+                cli_changes(r, &repo, &ignored).map_err(|_| e)?
             }
         }
     };
@@ -45,16 +45,19 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
 /// Partial clones lack blobs that gitoxide does not fetch on demand, and sparse
 /// checkouts carry skip-worktree entries it does not honour: git reads both.
 fn needs_git_cli(repo: &gix::Repository) -> bool {
+    repo.config_snapshot().boolean("core.sparseCheckout").unwrap_or(false) || is_partial_clone(repo)
+}
+
+fn is_partial_clone(repo: &gix::Repository) -> bool {
     let config = repo.config_snapshot();
     let enabled = |key: &str| config.boolean(key).unwrap_or(false);
-    enabled("core.sparseCheckout")
-        || config.string("extensions.partialClone").is_some()
+    config.string("extensions.partialClone").is_some()
         || repo.remote_names().iter().any(|name| enabled(&format!("remote.{name}.promisor")))
 }
 
 /// Status through `git status --porcelain=v2`, without taking the index lock (no
 /// stat refresh write-back, so no index change for the watcher to report).
-fn cli_changes(r: &Repo, ignored: &IgnoredNames) -> IdeResult<Changes> {
+fn cli_changes(r: &Repo, repo: &gix::Repository, ignored: &IgnoredNames) -> IdeResult<Changes> {
     let restricted = !crate::execution_allowed();
     // Restricted Mode: status compares content through the repository's clean
     // filters, and checks dirty submodules with their own configuration.
@@ -65,10 +68,13 @@ fn cli_changes(r: &Repo, ignored: &IgnoredNames) -> IdeResult<Changes> {
         Vec::new()
     };
     let mut args: Vec<&str> = overrides.iter().map(String::as_str).collect();
+    args.extend(["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=all"]);
     // Rename detection reads blobs a partial clone may not have; git would fetch them
     // from the promisor remote (or fail with exit 128 when it is unreachable), and a
     // background refresh must never use the network.
-    args.extend(["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=all", "--no-renames"]);
+    if restricted || is_partial_clone(repo) {
+        args.push("--no-renames");
+    }
     if restricted {
         args.push("--ignore-submodules=dirty");
     }

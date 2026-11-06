@@ -248,6 +248,27 @@ fn status_matrix() {
 }
 
 #[test]
+fn sparse_checkout_status_preserves_staged_renames() {
+    let fx = Fixture::new();
+    fx.write("keep/old.txt", "stable content for rename detection\n");
+    fx.write("omit/other.txt", "outside the sparse checkout\n");
+    fx.commit_all("base");
+    fx.git(&["sparse-checkout", "init", "--cone"]);
+    fx.git(&["sparse-checkout", "set", "keep"]);
+    assert!(!fx.path("omit/other.txt").exists());
+    fx.git(&["mv", "keep/old.txt", "keep/new.txt"]);
+
+    let repo = fx.repo();
+    repo.set_execution_allowed(true);
+    let status = repo.status().unwrap();
+    let renamed = status_of(&status, "keep/new.txt");
+    assert_eq!(renamed.staged, Some(ChangeKind::Renamed), "{status:#?}");
+    assert_eq!(renamed.unstaged, None);
+    assert_eq!(renamed.renamed_from.as_deref(), Some("keep/old.txt"));
+    assert!(!status.iter().any(|s| s.rel_path == "keep/old.txt"), "rename source listed: {status:#?}");
+}
+
+#[test]
 fn merge_conflict_and_versions() {
     let fx = Fixture::new();
     fx.write("c.txt", "base\n");
