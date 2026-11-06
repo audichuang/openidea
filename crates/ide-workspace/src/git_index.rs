@@ -3,6 +3,8 @@
 //! staged content stays staged and unstaged edits stay unstaged. Paths git doesn't
 //! track, moves across repositories, and folders outside a repository are left alone.
 
+use crate::FileMove;
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -17,53 +19,107 @@ pub(crate) struct IndexMove {
     intent_to_add: Vec<String>,
 }
 
-/// The index edits that would move the entries at `from` to `to`, or `None` when
-/// there is nothing to move (untracked, no repository, different repositories) or when
-/// any entry is skip-worktree (sparse checkout) or assume-unchanged: rewriting those
-/// entries would drop the flag, so such a move leaves the index alone.
+/// Plans a batch with bounded index reads per repository. Sparse / assume-unchanged
+/// entries leave their own move alone, without suppressing sibling moves.
 ///
 /// Known unhandled race: `plan` reads the entries and `apply` writes them back later, so
 /// a concurrent `git add` on the same paths in between can be overwritten (rare, not fixed).
-pub(crate) fn plan(from: &Path, to: &Path) -> Option<IndexMove> {
-    let (root, old) = locate(from)?;
-    let (to_root, new) = locate(to)?;
-    if root != to_root {
-        return None;
-    }
-    let pathspec = format!(":(literal){old}");
-    // `--debug` prints each entry's flags straight from the index, so intent-to-add is
-    // read without touching the worktree (a diff would run the project's clean filters).
-    let out = run(&root, &["ls-files", "--stage", "--debug", "-z", "--", pathspec.as_str()], None)?;
-    let mut intent_to_add = Vec::new();
-    let text = String::from_utf8(out.stdout).ok()?;
-    let parsed = parse_entries(&text);
-    if parsed.iter().any(|(_, _, flags)| flags & (SKIP_WORKTREE | ASSUME_UNCHANGED) != 0) {
-        return None;
-    }
-    let entries: Vec<_> = parsed
-        .into_iter()
-        .filter_map(|(meta, path, flags)| {
-            let ita = flags & INTENT_TO_ADD != 0;
-            let mut meta = meta.split(' ');
-            let (mode, oid, stage) = (meta.next()?, meta.next()?, meta.next()?);
-            // Conflicted entries (stages 1-3) can't be written back as one; a gitlink
-            // moves with its `.gitmodules` entry, which this doesn't edit.
-            if stage != "0" || mode == "160000" {
-                return None;
-            }
-            let rest = path.strip_prefix(old.as_str())?;
-            if !(rest.is_empty() || rest.starts_with('/')) {
-                return None;
-            }
-            let target = format!("{new}{rest}");
-            if ita {
-                intent_to_add.push(target.clone());
-            }
-            Some((mode.to_owned(), oid.to_owned(), path.to_owned(), target))
-        })
-        .collect();
-    (!entries.is_empty()).then_some(IndexMove { root, entries, intent_to_add })
+pub(crate) fn plan(moves: &[FileMove]) -> Vec<IndexMove> {
+    plan_with(moves, &mut |dir, args| run(dir, args, None).map(|out| out.stdout))
 }
+
+fn plan_with(moves: &[FileMove], run: &mut impl FnMut(&Path, &[&str]) -> Option<Vec<u8>>) -> Vec<IndexMove> {
+    let mut roots = HashMap::new();
+    type LocatedMove = (usize, String, String);
+    let mut groups: Vec<(PathBuf, Vec<LocatedMove>)> = Vec::new();
+    for (i, m) in moves.iter().enumerate() {
+        let Some((root, old)) = locate(&m.from, &mut roots, run) else { continue };
+        let Some((to_root, new)) = locate(&m.to, &mut roots, run) else { continue };
+        if root != to_root {
+            continue;
+        }
+        let group = match groups.iter().position(|(r, _)| r == &root) {
+            Some(i) => &mut groups[i].1,
+            None => {
+                groups.push((root, Vec::new()));
+                &mut groups.last_mut().expect("group was inserted").1
+            }
+        };
+        group.push((i, old, new));
+    }
+    let mut planned = Vec::new();
+    'repositories: for (root, group) in groups {
+        let pathspecs: Vec<_> = group.iter().map(|(_, old, _)| format!(":(literal){old}")).collect();
+        let mut outputs = Vec::new();
+        let mut remaining = pathspecs.as_slice();
+        while !remaining.is_empty() {
+            // Reserve room for Git's executable and fixed arguments. Paths use `/`,
+            // so two quotes and a separator cover their Windows argument overhead.
+            let mut units = FIXED_COMMAND_UNITS;
+            let count = remaining
+                .iter()
+                .take_while(|pathspec| {
+                    units += pathspec.encode_utf16().count() + 3;
+                    units <= COMMAND_UNIT_BUDGET
+                })
+                .count()
+                .max(1);
+            let mut args = vec!["ls-files", "--stage", "--debug", "-z", "--"];
+            args.extend(remaining[..count].iter().map(String::as_str));
+            // Reading flags directly avoids worktree diffs and their clean filters.
+            let Some(bytes) = run(&root, &args) else { continue 'repositories };
+            outputs.push(bytes);
+            remaining = &remaining[count..];
+        }
+        let parsed: Vec<_> = outputs.iter().flat_map(|bytes| parse_entries(bytes)).collect();
+        for (i, old, new) in group {
+            let selected: Vec<_> = parsed
+                .iter()
+                .filter(|(_, path, _)| {
+                    path.strip_prefix(old.as_bytes()).is_some_and(|rest| rest.is_empty() || rest.starts_with(b"/"))
+                })
+                .collect();
+            // One invalid path suppresses only its own move, as with separate reads.
+            let Some(selected): Option<Vec<_>> = selected
+                .into_iter()
+                .map(|(meta, path, flags)| {
+                    Some((std::str::from_utf8(meta).ok()?, std::str::from_utf8(path).ok()?, *flags))
+                })
+                .collect()
+            else {
+                continue;
+            };
+            if selected.iter().any(|(_, _, flags)| flags & (SKIP_WORKTREE | ASSUME_UNCHANGED) != 0) {
+                continue;
+            }
+            let mut intent_to_add = Vec::new();
+            let entries: Vec<_> = selected
+                .into_iter()
+                .filter_map(|(meta, path, flags)| {
+                    let mut meta = meta.split(' ');
+                    let (mode, oid, stage) = (meta.next()?, meta.next()?, meta.next()?);
+                    // Conflicted entries and gitlinks retain the existing per-entry exclusion.
+                    if stage != "0" || mode == "160000" {
+                        return None;
+                    }
+                    let target = format!("{new}{}", &path[old.len()..]);
+                    if flags & INTENT_TO_ADD != 0 {
+                        intent_to_add.push(target.clone());
+                    }
+                    Some((mode.to_owned(), oid.to_owned(), path.to_owned(), target))
+                })
+                .collect();
+            if !entries.is_empty() {
+                planned.push((i, IndexMove { root: root.clone(), entries, intent_to_add }));
+            }
+        }
+    }
+    planned.sort_by_key(|(i, _)| *i);
+    planned.into_iter().map(|(_, m)| m).collect()
+}
+
+const COMMAND_UNIT_BUDGET: usize = 16 * 1024;
+const FIXED_COMMAND_UNITS: usize = 1024;
 
 const INTENT_TO_ADD: u32 = 0x2000_0000;
 const SKIP_WORKTREE: u32 = 0x4000_0000;
@@ -72,24 +128,29 @@ const ASSUME_UNCHANGED: u32 = 0x8000;
 /// Splits `ls-files --stage --debug -z` output into `(meta, path, flags)`.
 /// Each entry is `meta\tpath\0` followed by indented stat lines ending in
 /// `size: N\tflags: HEX\n`, which run into the next entry's `meta`.
-fn parse_entries(text: &str) -> Vec<(&str, &str, u32)> {
-    let mut out: Vec<(&str, &str, u32)> = Vec::new();
-    let mut rest = text;
+fn parse_entries(bytes: &[u8]) -> Vec<(&[u8], &[u8], u32)> {
+    let mut out = Vec::new();
+    let mut rest = bytes;
     while !rest.is_empty() {
-        let Some((record, tail)) = rest.split_once('\0') else { break };
-        let Some((meta, path)) = record.split_once('\t') else { break };
+        let Some((record, tail)) = split_once_bytes(rest, b"\0") else { break };
+        let Some((meta, path)) = split_once_bytes(record, b"\t") else { break };
         let mut flags_bits = 0;
         rest = tail;
-        if tail.starts_with("  ctime:")
-            && let Some((_, flags)) = tail.split_once("\tflags: ")
-            && let Some((flags, next)) = flags.split_once('\n')
+        if tail.starts_with(b"  ctime:")
+            && let Some((_, flags)) = split_once_bytes(tail, b"\tflags: ")
+            && let Some((flags, next)) = split_once_bytes(flags, b"\n")
         {
-            flags_bits = u32::from_str_radix(flags, 16).unwrap_or(0);
+            flags_bits = std::str::from_utf8(flags).ok().and_then(|s| u32::from_str_radix(s, 16).ok()).unwrap_or(0);
             rest = next;
         }
         out.push((meta, path, flags_bits));
     }
     out
+}
+
+fn split_once_bytes<'a>(bytes: &'a [u8], separator: &[u8]) -> Option<(&'a [u8], &'a [u8])> {
+    let i = bytes.windows(separator.len()).position(|part| part == separator)?;
+    Some((&bytes[..i], &bytes[i + separator.len()..]))
 }
 
 /// Applies all moves in each repository as one index transaction.
@@ -172,7 +233,11 @@ fn apply_repository(root: &Path, moves: &[&IndexMove]) -> std::io::Result<()> {
 /// The repository root containing `path` and `path` relative to it (`/`-separated).
 /// `path` and any of its parent folders need not exist yet (a move creates them), so
 /// this resolves from the nearest existing ancestor.
-fn locate(path: &Path) -> Option<(PathBuf, String)> {
+fn locate(
+    path: &Path,
+    roots: &mut HashMap<PathBuf, Option<PathBuf>>,
+    run: &mut impl FnMut(&Path, &[&str]) -> Option<Vec<u8>>,
+) -> Option<(PathBuf, String)> {
     let mut missing = vec![path.file_name()?.to_str()?];
     let mut dir = path.parent()?;
     let base = loop {
@@ -182,9 +247,14 @@ fn locate(path: &Path) -> Option<(PathBuf, String)> {
         missing.push(dir.file_name()?.to_str()?);
         dir = dir.parent()?;
     };
-    let out = run(&base, &["rev-parse", "--show-toplevel"], None)?;
-    let top = String::from_utf8(out.stdout).ok()?;
-    let root = dunce::canonicalize(top.trim_end_matches(['\n', '\r'])).ok()?;
+    // Cache only the exact existing ancestor: descendants can contain nested repos.
+    let root = roots
+        .entry(base.clone())
+        .or_insert_with(|| {
+            let top = String::from_utf8(run(&base, &["rev-parse", "--show-toplevel"])?).ok()?;
+            dunce::canonicalize(top.trim_end_matches(['\n', '\r'])).ok()
+        })
+        .clone()?;
     let mut parts = Vec::new();
     for part in base.strip_prefix(&root).ok()?.components() {
         parts.push(part.as_os_str().to_str()?);
@@ -442,5 +512,142 @@ mod transaction_tests {
         perform(root, &[("keep/base", "keep/renamed")]);
         assert_eq!(std::fs::read(root.join(".git/index")).unwrap(), before);
         assert_eq!(std::fs::read_to_string(root.join(".git/index.lock")).unwrap(), "other git process");
+    }
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+
+    fn git(root: &Path, args: &[&str]) {
+        assert!(Command::new("git").current_dir(root).args(args).output().unwrap().status.success());
+    }
+
+    fn mv(root: &Path, from: &str, to: &str) -> FileMove {
+        FileMove { from: root.join(from).into(), to: root.join(to).into() }
+    }
+
+    #[test]
+    fn batch_reads_each_repository_once_and_preserves_move_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        git(root, &["init", "-q"]);
+        for name in ["a", "b", "ita", "untracked"] {
+            std::fs::write(root.join(name), "content\n").unwrap();
+        }
+        git(root, &["add", "a", "b"]);
+        git(root, &["add", "-N", "ita"]);
+        let mut calls = Vec::new();
+        let result = plan_with(
+            &[
+                mv(root, "b", "new/b"),
+                mv(root, "ita", "new/ita"),
+                mv(root, "a", "new/a"),
+                mv(root, "untracked", "new/u"),
+            ],
+            &mut |dir, args| {
+                calls.push(args[0].to_owned());
+                run(dir, args, None).map(|out| out.stdout)
+            },
+        );
+        assert_eq!(calls, ["rev-parse", "ls-files"]);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].entries[0].2, "b");
+        assert_eq!(result[0].entries[0].3, "new/b");
+        assert_eq!(result[1].intent_to_add, ["new/ita"]);
+        assert_eq!(result[2].entries[0].2, "a");
+    }
+
+    #[test]
+    fn large_batch_bounds_arguments_without_losing_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let names: Vec<_> = (0..1000).map(|i| format!("module-{i:04}-abcdefghijklmnopqrstuvwxyz.ts")).collect();
+        let moves: Vec<_> = names.iter().map(|name| mv(&root, name, &format!("new-{name}"))).collect();
+        let mut reads = 0;
+        let result = plan_with(&moves, &mut |_, args| {
+            if args[0] == "rev-parse" {
+                return Some(format!("{}\n", root.display()).into_bytes());
+            }
+            assert_eq!(args[0], "ls-files");
+            reads += 1;
+            let units: usize = args.iter().map(|arg| arg.encode_utf16().count() + 3).sum();
+            assert!(units <= COMMAND_UNIT_BUDGET, "command arguments use {units} units");
+            let mut text = String::new();
+            for pathspec in &args[5..] {
+                let path = pathspec.strip_prefix(":(literal)").unwrap();
+                text.push_str(&format!("100644 {} 0\t{path}\0  ctime: 0:0\n  size: 1\tflags: 0\n", "1".repeat(40)));
+            }
+            Some(text.into_bytes())
+        });
+        assert!(reads > 1, "large batches need multiple bounded reads");
+        assert_eq!(result.len(), names.len());
+        for (planned, name) in result.iter().zip(&names) {
+            assert_eq!(planned.entries.len(), 1);
+            assert_eq!(&planned.entries[0].2, name);
+            assert_eq!(planned.entries[0].3, format!("new-{name}"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn invalid_utf8_child_suppresses_its_move_but_not_valid_siblings() {
+        use std::io::Write;
+        use std::process::Stdio;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        git(root, &["init", "-q"]);
+        let output = Command::new("git")
+            .current_dir(root)
+            .args(["hash-object", "-w", "--stdin"])
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let oid = String::from_utf8(output.stdout).unwrap();
+        let mut input = Vec::new();
+        for path in [b"folder/bad-\xff".as_slice(), b"folder/valid", b"ok", "replacement-\u{fffd}".as_bytes()] {
+            input.extend_from_slice(format!("100644 {}\t", oid.trim()).as_bytes());
+            input.extend_from_slice(path);
+            input.push(0);
+        }
+        let mut child = Command::new("git")
+            .current_dir(root)
+            .args(["update-index", "-z", "--index-info"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(&input).unwrap();
+        assert!(child.wait().unwrap().success());
+        let planned = plan(&[
+            mv(root, "folder", "newfolder"),
+            mv(root, "ok", "renamed"),
+            mv(root, "replacement-\u{fffd}", "new-replacement"),
+        ]);
+        assert_eq!(planned.len(), 2);
+        assert_eq!(planned[0].entries[0].2, "ok");
+        assert_eq!(planned[0].entries[0].3, "renamed");
+        assert_eq!(planned[1].entries[0].2, "replacement-\u{fffd}");
+    }
+
+    #[test]
+    fn excluded_moves_do_not_suppress_siblings_or_cross_repository_gate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        git(root, &["init", "-q"]);
+        std::fs::create_dir(root.join("dir")).unwrap();
+        for name in ["dir/skip", "dir/normal", "assumed", "ok"] {
+            std::fs::write(root.join(name), "content\n").unwrap();
+        }
+        git(root, &["add", "."]);
+        git(root, &["update-index", "--skip-worktree", "dir/skip"]);
+        git(root, &["update-index", "--assume-unchanged", "assumed"]);
+        let other = tempfile::tempdir().unwrap();
+        git(other.path(), &["init", "-q"]);
+        let cross = FileMove { from: root.join("ok").into(), to: other.path().join("other").into() };
+        let result = plan(&[mv(root, "dir", "new"), mv(root, "assumed", "renamed"), cross, mv(root, "ok", "good")]);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].entries[0].3, "good");
     }
 }
