@@ -165,7 +165,7 @@ fn nested_read(shim: &Shim, repo: &Path, source: GitSource, phase: &str, timeout
     let cancel = CancelToken::new();
     let opts = RunOptions {
         cancel: Some(cancel.clone()),
-        timeout: if timeout { Duration::from_millis(500) } else { Duration::from_secs(20) },
+        timeout: Duration::from_secs(if timeout { 1 } else { 20 }),
         ..RunOptions::preview(None)
     };
     let (tx, rx) = mpsc::channel();
@@ -236,7 +236,7 @@ fn replay_index_options(shim: &Shim, repo: &Path) {
         let cancel = CancelToken::new();
         let opts = RunOptions {
             cancel: Some(cancel.clone()),
-            timeout: if timeout { Duration::from_millis(500) } else { Duration::from_secs(20) },
+            timeout: Duration::from_secs(if timeout { 1 } else { 20 }),
             ..RunOptions::default()
         };
         let git = git.clone();
