@@ -1307,7 +1307,8 @@ fn independent_eclipse_projects(root: &Path) -> Vec<PathBuf> {
 }
 
 /// The detected roots with the last Gradle sync's source sets first: Gradle evaluated what
-/// static detection guesses. Folders outside the project keep their absolute path, which
+/// static detection guesses. Provenance retains the owning model project as `Gradle`
+/// at the root or `<owner>/Gradle` for nested projects. Folders outside the project keep their absolute path, which
 /// `normalize` turns into the same form the UI compares (`Users/me/svc/src/main/java`).
 fn with_gradle_roots(
     root: &Path,
@@ -1318,7 +1319,7 @@ fn with_gradle_roots(
     use ide_build::gradle::ReportedRoot;
     use ide_workspace::roots::RootKind;
     let mut out: Vec<SourceFolder> = Vec::new();
-    for (dir, kind) in ide_build::gradle_source_roots(root, build_cache, settings) {
+    for (dir, kind, owner) in ide_build::gradle_source_roots(root, build_cache, settings) {
         if !dir.is_dir() {
             continue;
         }
@@ -1331,7 +1332,9 @@ fn with_gradle_roots(
             ReportedRoot::Excluded => RootKind::Excluded,
         };
         if !out.iter().any(|f| f.path == path) {
-            out.push(SourceFolder { path, kind, detected_from: Some("Gradle".into()) });
+            let owner = ide_workspace::roots::normalize(&owner.strip_prefix(root).unwrap_or(&owner).to_string_lossy());
+            let detected_from = if owner.is_empty() { "Gradle".into() } else { format!("{owner}/Gradle") };
+            out.push(SourceFolder { path, kind, detected_from: Some(detected_from) });
         }
     }
     out.extend(detected.iter().filter(|d| !out.iter().any(|o| o.path == d.path)).cloned().collect::<Vec<_>>());
@@ -1597,6 +1600,32 @@ mod gradle_roots_tests {
     use ide_workspace::RootKind;
 
     #[test]
+    fn gradle_sync_keeps_the_model_owner_of_custom_and_shared_roots() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let cache = root.join("cache");
+        let app = root.join("app");
+        let shared = root.join("custom/code");
+        for dir in [&cache, &app, &shared, &app.join("build")] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(root.join("build.gradle"), "").unwrap();
+        let json = serde_json::json!({ "hash": "", "at_ms": 1.0, "error": null, "tasks": [], "projects": [
+            { "path": ":app", "dir": app, "buildDir": app.join("build"), "sourceSets": [
+                { "name": "main", "test": false, "src": [shared], "res": [] } ] },
+            { "path": ":", "dir": root, "sourceSets": [
+                { "name": "main", "test": false, "src": [shared], "res": [] } ] }
+        ]});
+        std::fs::write(cache.join("gradle.json"), json.to_string()).unwrap();
+        let out = with_gradle_roots(&root, &cache, &Default::default(), &[]);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].path, "custom/code");
+        assert_eq!(out[0].detected_from.as_deref(), Some("app/Gradle"));
+        assert_eq!(out[1].path, "app/build");
+        assert_eq!(out[1].detected_from.as_deref(), Some("app/Gradle"));
+    }
+
+    #[test]
     fn gradle_sync_roots_win_and_reach_outside_the_project() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = dunce::canonicalize(tmp.path()).unwrap();
@@ -1619,14 +1648,14 @@ mod gradle_roots_tests {
         std::fs::write(root.join("build.gradle"), "").unwrap();
         let out = with_gradle_roots(&root, &cache, &Default::default(), &[guessed, other.clone()]);
         let abs = |p: PathBuf| ide_workspace::roots::normalize(&s(p));
-        let got: Vec<(String, RootKind)> = out.iter().map(|f| (f.path.clone(), f.kind)).collect();
+        let got: Vec<_> = out.iter().map(|f| (f.path.clone(), f.kind, f.detected_from.clone())).collect();
         assert_eq!(
             got,
             [
-                ("src/it/java".into(), RootKind::Test),
-                (abs(svc.join("src/main/java")), RootKind::Source),
-                (abs(svc.join("build")), RootKind::Excluded),
-                ("web".into(), RootKind::Source),
+                ("src/it/java".into(), RootKind::Test, Some("Gradle".into())),
+                (abs(svc.join("src/main/java")), RootKind::Source, Some(format!("{}/Gradle", abs(svc.clone())))),
+                (abs(svc.join("build")), RootKind::Excluded, Some(format!("{}/Gradle", abs(svc.clone())))),
+                ("web".into(), RootKind::Source, None),
             ]
         );
     }
