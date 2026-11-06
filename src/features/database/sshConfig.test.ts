@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from "vitest";
 import type { DbSsh } from "@/platform/ipc";
 import { DEFAULT_SSH_CONFIG, type SshConfigValid } from "@/platform/remoteSettings";
