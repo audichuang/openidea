@@ -1109,16 +1109,7 @@ fn ignored_changes(batch: &ide_vfs::FsBatch) -> (Vec<PathBuf>, Vec<PathBuf>) {
 }
 
 fn record_external_changes(history: &LocalHistory, changed: &[PathBuf], removed: &[PathBuf]) {
-    for path in changed.iter().take(HISTORY_BATCH_LIMIT) {
-        if let Err(e) = history.record_file(path, "External change", false) {
-            tracing::debug!("local history: {e}");
-        }
-    }
-    if !removed.is_empty()
-        && let Err(e) = history.note_removed(removed)
-    {
-        tracing::debug!("local history: {e}");
-    }
+    history.record_external_changes(changed, removed, HISTORY_BATCH_LIMIT);
 }
 
 pub fn history_retention(settings: &ide_core::settings::Settings) -> ide_workspace::Retention {
