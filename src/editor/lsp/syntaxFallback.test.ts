@@ -566,6 +566,48 @@ describe("rename wiring", () => {
     expect(document.querySelector(".cm-lsp-hint")?.textContent).toContain("jdtls doesn't support rename");
   });
 
+  const refused = () =>
+    Promise.resolve({
+      status: "error" as const,
+      error: { kind: "protocol", message: "jdtls: Renaming this element is not supported." } as IdeError,
+    });
+  const topLevelName = (col: number, len: number) =>
+    ok({ node: node("identifier", r(0, col, col + len), "name"), ancestors: [node("class_declaration", r(0, 0, 20))] });
+
+  it("renames the file when the server refuses to rename the top-level type named after it", async () => {
+    executeAction.mockClear();
+    cmd.lspPrepareRename.mockReturnValueOnce(refused());
+    cmd.syntaxNodeAt.mockReturnValueOnce(topLevelName(13, 3));
+    executeAction.mockResolvedValueOnce(true);
+    const view = editor("public class Foo {}", "java", 14, "/p/src/Foo.java");
+    await startRename(view);
+    expect(executeAction).toHaveBeenCalledWith("project.rename", "/p/src/Foo.java");
+    expect(cmd.syntaxLocals).not.toHaveBeenCalled();
+    expect(document.querySelector(".cm-lsp-hint")).toBeNull();
+  });
+
+  it("renames the file when the server answers nothing for that type", async () => {
+    executeAction.mockClear();
+    cmd.lspPrepareRename.mockReturnValueOnce(ok(null));
+    cmd.syntaxNodeAt.mockReturnValueOnce(topLevelName(13, 3));
+    executeAction.mockResolvedValueOnce(true);
+    const view = editor("public class Foo {}", "java", 14, "/p/src/Foo.java");
+    await startRename(view);
+    expect(executeAction).toHaveBeenCalledWith("project.rename", "/p/src/Foo.java");
+  });
+
+  it("keeps the server's refusal for other elements", async () => {
+    executeAction.mockClear();
+    cmd.lspPrepareRename.mockReturnValueOnce(refused());
+    cmd.syntaxNodeAt.mockReturnValueOnce(
+      ok({ node: node("identifier", r(0, 13, 16), "name"), ancestors: [node("class_declaration", r(0, 0, 20))] }),
+    );
+    const view = editor("public class Bar {}", "java", 14, "/p/src/Foo.java");
+    await startRename(view);
+    expect(executeAction).not.toHaveBeenCalledWith("project.rename", expect.anything());
+    expect(document.querySelector(".cm-lsp-hint")?.textContent).toContain("Renaming this element is not supported");
+  });
+
   it("respects a server refusal over valid code, but falls back over broken code", async () => {
     cmd.lspPrepareRename.mockReturnValueOnce(ok(null));
     const view = editor("const x = 1;", "typescript", 6);
