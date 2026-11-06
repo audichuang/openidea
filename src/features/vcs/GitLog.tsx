@@ -371,6 +371,7 @@ export function BranchesPanel() {
   const logGeneration = useGitLog((s) => s.generation);
   const selectedBranches = useVcs((s) => s.branches);
   const repositories = useLogRepositories();
+  const workspaceRoots = useVcs((s) => s.roots);
   const readOnly = useReadOnlyLog();
   const version = useVcs((s) => s.version);
   const [allBranches, setAllBranches] = useState<Record<string, Branch[]>>({});
@@ -574,7 +575,11 @@ export function BranchesPanel() {
                     : "folder"
           }
           getDetail={branchDetail}
-          getSwatch={(n) => (n.kind === "repository" && n.repo ? repoColor(n.repo, repositories) : null)}
+          getSwatch={(n) =>
+            n.kind === "repository" && n.repo
+              ? repoColor(n.repo, workspaceRoots.includes(n.repo) ? workspaceRoots : repositories)
+              : null
+          }
           selected={selected}
           onSelectionChange={(sel) => setSelected(sel)}
           onActivate={(n) => {
