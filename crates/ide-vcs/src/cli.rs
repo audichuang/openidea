@@ -205,6 +205,35 @@ pub(crate) fn run_paths(root: &Path, args: &[&str], paths: &[String]) -> IdeResu
     run_paths_env(root, args, paths, None, &[])
 }
 
+/// `-c` overrides that switch off every filter driver in `git config --null --list`
+/// output, so a worktree read in Restricted Mode cannot run a repository-defined
+/// clean or process filter (the `-c` defaults in [`command`] cannot name drivers).
+/// The key is matched on raw bytes: a lossy decode would name a different driver and
+/// leave the real one active. `-c` splits at the first `=` and argv holds only UTF-8,
+/// so a driver whose name holds an `=` or is not UTF-8 cannot be overridden and is
+/// refused instead.
+pub(crate) fn filter_overrides(config: &[u8]) -> IdeResult<Vec<String>> {
+    let mut overrides = Vec::new();
+    for record in config.split(|b| *b == 0) {
+        let key = record.split(|b| *b == b'\n').next().unwrap_or_default();
+        let suffixes: [&[u8]; 3] = [b".clean", b".process", b".required"];
+        if key.starts_with(b"filter.") && suffixes.iter().any(|s| key.ends_with(s)) {
+            let Ok(key) = std::str::from_utf8(key) else {
+                return Err(IdeError::unavailable(format!(
+                    "filter driver {:?} cannot be disabled",
+                    String::from_utf8_lossy(key)
+                )));
+            };
+            if key.contains('=') {
+                return Err(IdeError::unavailable(format!("filter driver {key:?} cannot be disabled")));
+            }
+            overrides.push("-c".to_owned());
+            overrides.push(format!("{key}={}", if key.ends_with(".required") { "false" } else { "" }));
+        }
+    }
+    Ok(overrides)
+}
+
 /// Builds a `git` command with the environment every invocation needs.
 pub(crate) fn command(root: &Path) -> IdeResult<Command> {
     let restricted = !crate::execution_allowed();
@@ -668,6 +697,35 @@ mod command_session_tests {
         let events = events.lock().unwrap();
         let ours: Vec<_> = events.iter().filter(|(id, _, _)| *id == first_id || *id == second_id).cloned().collect();
         assert_eq!(ours, vec![(second_id, false, String::new()), (first_id, true, "done".into())]);
+    }
+}
+
+#[cfg(test)]
+mod filter_override_tests {
+    use super::filter_overrides;
+
+    #[test]
+    fn every_filter_driver_is_switched_off() {
+        let config = "core.bare\nfalse\0filter.lfs.clean\ngit-lfs clean\0filter.Odd Name.process\nx\0\
+                      filter.lfs.required\ntrue\0filter.lfs.smudge\ny\0diff.lfs.textconv\nz\0";
+        assert_eq!(
+            filter_overrides(config.as_bytes()).unwrap(),
+            ["-c", "filter.lfs.clean=", "-c", "filter.Odd Name.process=", "-c", "filter.lfs.required=false"]
+        );
+    }
+
+    #[test]
+    fn a_driver_name_with_an_equals_sign_is_refused() {
+        // `-c filter.a=b.clean=` would set `filter.a` and leave driver `a=b` active.
+        assert!(filter_overrides(b"filter.a=b.clean\nevil\0").is_err());
+    }
+
+    #[test]
+    fn a_non_utf8_driver_name_is_refused() {
+        // A lossy decode would override `filter.\u{fffd}.clean` and leave driver `\xff` active.
+        assert!(filter_overrides(b"filter.\xff.clean\nevil\0").is_err());
+        assert!(filter_overrides(b"filter.\xff.process\nevil\0").is_err());
+        assert!(filter_overrides(b"filter.\xff.smudge\nevil\0").unwrap().is_empty());
     }
 }
 
