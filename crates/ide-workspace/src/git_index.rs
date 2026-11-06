@@ -203,20 +203,13 @@ fn run_with_index(dir: &Path, args: &[&str], stdin: Option<&[u8]>, index: Option
     let mut cmd = Command::new(git);
     // A project's own config must not run commands here (untrusted projects included).
     cmd.current_dir(dir)
-        .args([
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            "core.hooksPath=",
-            "-c",
-            "submodule.recurse=false",
-            "-c",
-            "protocol.allow=never",
-        ])
+        .args(["-c", "core.fsmonitor=false", "-c", "core.hooksPath=", "-c", "submodule.recurse=false"])
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         // A partial clone's lazy fetch would run the repo's own transport command.
         .env("GIT_NO_LAZY_FETCH", "1")
+        // Older Git ignores GIT_NO_LAZY_FETCH; exclude standard transports as well.
+        .env("GIT_ALLOW_PROTOCOL", "none")
         .env("LC_ALL", "C")
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
@@ -251,12 +244,36 @@ mod tests {
     use super::run;
 
     #[test]
-    fn git_runs_without_lazy_fetch_or_transports() {
+    fn git_runs_without_lazy_fetch() {
         let tmp = tempfile::tempdir().unwrap();
         let out = run(tmp.path(), &["-c", "alias.probe=!printf '%s|' \"$GIT_NO_LAZY_FETCH\"", "probe"], None).unwrap();
         assert_eq!(String::from_utf8(out.stdout).unwrap(), "1|");
-        let out = run(tmp.path(), &["-c", "alias.probe=!git config protocol.allow", "probe"], None).unwrap();
-        assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "never");
+    }
+
+    #[test]
+    fn git_does_not_execute_repository_transport() {
+        let tmp = tempfile::tempdir().unwrap();
+        let git = ide_vcs::detected_git_executable().unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "remote.origin.url", "ssh://invalid.example/repo"],
+            vec!["config", "protocol.ssh.allow", "always"],
+            vec!["config", "core.sshCommand", "touch execution.marker; exit 1"],
+        ] {
+            assert!(std::process::Command::new(&git).current_dir(tmp.path()).args(args).status().unwrap().success());
+        }
+        // Positive control proves the SSH command is executable without the sandbox.
+        let out = std::process::Command::new(git)
+            .current_dir(tmp.path())
+            .env_remove("GIT_ALLOW_PROTOCOL")
+            .args(["ls-remote", "origin"])
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        assert!(tmp.path().join("execution.marker").exists());
+        std::fs::remove_file(tmp.path().join("execution.marker")).unwrap();
+        assert!(run(tmp.path(), &["ls-remote", "origin"], None).is_none());
+        assert!(!tmp.path().join("execution.marker").exists());
     }
 }
 
