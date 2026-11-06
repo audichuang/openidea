@@ -460,7 +460,7 @@ async fn file_moves_sync_the_git_index_only_in_trusted_projects() {
     let before = index();
     let mv = |from: &str, to: &str| vec![FileMove { from: root.join(from).into(), to: root.join(to).into() }];
 
-    let id = ops::refactor::refactor_move_files(
+    let id = ide_host::ops::refactor::refactor_move_files(
         &host,
         "main",
         mv("a.txt", "b.txt"),
@@ -471,14 +471,20 @@ async fn file_moves_sync_the_git_index_only_in_trusted_projects() {
     .unwrap();
     assert_eq!(index(), before, "restricted project: no git index sync");
     assert_eq!(git(&root, &["ls-files"]), "a.txt\n");
-    ops::refactor::refactor_undo_file_move(&host, "main", id).await.unwrap();
+    ide_host::ops::refactor::refactor_undo_file_move(&host, "main", id).await.unwrap();
     assert_eq!(index(), before);
 
     host.set_project_trust(&project.root, true, false).await.unwrap();
     assert!(project.is_trusted());
-    ops::refactor::refactor_move_files(&host, "main", mv("a.txt", "b.txt"), WorkspaceEdit::default(), "Rename".into())
-        .await
-        .unwrap();
+    ide_host::ops::refactor::refactor_move_files(
+        &host,
+        "main",
+        mv("a.txt", "b.txt"),
+        WorkspaceEdit::default(),
+        "Rename".into(),
+    )
+    .await
+    .unwrap();
     assert_eq!(git(&root, &["ls-files"]), "b.txt\n");
     host.shutdown().await;
 }
