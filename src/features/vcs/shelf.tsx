@@ -259,8 +259,8 @@ function ShelveDialog({
           <SplitPanel defaultSize="38%" minSize="200px">
             <div
               className={shelfStyles.tree}
-              onKeyDownCapture={(e) => {
-                if (e.key !== " " || e.metaKey || e.ctrlKey || !focusedNode) return;
+              onKeyDown={(e) => {
+                if (e.defaultPrevented || e.key !== " " || e.metaKey || e.ctrlKey || !focusedNode) return;
                 e.preventDefault();
                 e.stopPropagation();
                 setSelected((cur) => toggleNode(focusedNode, cur));
@@ -302,7 +302,11 @@ function ShelveDialog({
           <SplitPanel defaultSize="62%" minSize="240px">
             <div className={shelfStyles.preview} data-shelve-preview onKeyDown={keepPreviewKeysOutOfDialog}>
               {previewPath ? (
-                <DiffEditor key={previewPath} input={diffInput({ ...workingDiffData(previewPath), readOnly: true })} />
+                <DiffEditor
+                  key={previewPath}
+                  input={diffInput({ ...workingDiffData(previewPath), readOnly: true })}
+                  allowSourceNavigation={false}
+                />
               ) : (
                 <EmptyState>
                   <T>Select a file to preview its changes</T>
