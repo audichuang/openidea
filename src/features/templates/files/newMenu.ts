@@ -7,7 +7,7 @@ import type { PackageKind } from "@/platform/packageKind";
 import type { FileTemplate } from "./model";
 
 /** Language a template belongs to; null for language-neutral files (HTML, JSON, Dockerfile…). */
-type TemplateLanguage = PackageKind | "rust" | "go" | "web";
+type TemplateLanguage = PackageKind | "rust" | "go" | "web" | "php";
 
 const LANGUAGE_BY_EXTENSION: Record<string, TemplateLanguage> = {
   java: "jvm",
@@ -16,6 +16,7 @@ const LANGUAGE_BY_EXTENSION: Record<string, TemplateLanguage> = {
   groovy: "jvm",
   scala: "jvm",
   py: "python",
+  php: "php",
   rs: "rust",
   go: "go",
   mod: "go",
