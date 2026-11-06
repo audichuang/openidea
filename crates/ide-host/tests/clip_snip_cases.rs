@@ -23,11 +23,11 @@ struct Fix {
 }
 
 impl Fix {
-    fn new() -> Self {
+    fn new(parts: &[&str]) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let base = dunce::canonicalize(tmp.path()).unwrap().join("round");
         let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/clip-fixture.sh");
-        let out = Command::new("sh").arg(&script).arg(&base).output().unwrap();
+        let out = Command::new("sh").arg(&script).arg(&base).args(parts).output().unwrap();
         assert!(out.status.success(), "fixture: {}", String::from_utf8_lossy(&out.stderr));
         Self { _tmp: tmp, root: base.join("fixtures") }
     }
@@ -91,7 +91,7 @@ fn ws_dst_repos(f: &Fix) -> Vec<PathBuf> {
 
 #[test]
 fn t03_t04_multi_repo_changes_land_in_their_repositories() {
-    let f = Fix::new();
+    let f = Fix::new(&["workspace"]);
     let src = f.p("ws-src");
     let repos = ws_dst_repos(&f);
     let other_status = git(&f.p("ws-dst/repo08"), &["status", "--porcelain"]);
@@ -145,7 +145,7 @@ fn t03_t04_multi_repo_changes_land_in_their_repositories() {
 
 #[test]
 fn t05_staged_changes_restore_with_their_labels() {
-    let f = Fix::new();
+    let f = Fix::new(&["files-src", "files-dst"]);
     let src = f.p("files-src");
     let copied =
         copy(&src, ClipCopySource::Changes { paths: vec![src.clone()], side: ClipChangeSide::Staged }, &cli()).unwrap();
@@ -169,7 +169,7 @@ fn t05_staged_changes_restore_with_their_labels() {
 
 #[test]
 fn t06_the_index_and_the_working_tree_copy_different_bytes() {
-    let f = Fix::new();
+    let f = Fix::new(&["files-src"]);
     let src = f.p("files-src");
     let staged =
         copy(&src, ClipCopySource::Changes { paths: vec![src.join("both.txt")], side: ClipChangeSide::Staged }, &cli())
@@ -181,7 +181,7 @@ fn t06_the_index_and_the_working_tree_copy_different_bytes() {
 
 #[test]
 fn t07_t08_t09_t10_t11_t12_folder_binary_size_empty_unicode_and_selection() {
-    let f = Fix::new();
+    let f = Fix::new(&["files-src", "files-dst"]);
     let src = f.p("files-src");
     let dst = f.p("files-dst");
 
@@ -254,7 +254,7 @@ fn t07_t08_t09_t10_t11_t12_folder_binary_size_empty_unicode_and_selection() {
 
 #[test]
 fn t13_t15_stale_destination_and_invalid_clipboard() {
-    let f = Fix::new();
+    let f = Fix::new(&["files-src", "files-dst"]);
     let src = f.p("files-src");
     let dst = f.p("files-dst");
     let copied = copy(&src, ClipCopySource::Files { paths: vec![src.join("folder/a.txt")] }, &cli()).unwrap();
@@ -269,7 +269,7 @@ fn t13_t15_stale_destination_and_invalid_clipboard() {
 
 #[test]
 fn t17_commits_must_form_one_first_parent_chain() {
-    let f = Fix::new();
+    let f = Fix::new(&["commits-src"]);
     let repo = f.p("commits-src");
     let side = sha(&repo, "SIDE");
     let c2 = sha(&repo, "C2 rename delete emoji");
@@ -291,7 +291,7 @@ fn c1_to_c3(f: &Fix) -> (PathBuf, String) {
 
 #[test]
 fn t18_t23_t30_replay_over_existing_files_needs_consent_and_keeps_local_state() {
-    let f = Fix::new();
+    let f = Fix::new(&["commits-src", "commits-dst-overwrite"]);
     let (_, text) = c1_to_c3(&f);
     let dst = f.p("commits-dst-overwrite");
     let before = git(&dst, &["rev-parse", "HEAD"]);
@@ -320,7 +320,7 @@ fn t18_t23_t30_replay_over_existing_files_needs_consent_and_keeps_local_state() 
 
 #[test]
 fn t19_t20_t21_t22_replay_keeps_metadata_merges_and_renames() {
-    let f = Fix::new();
+    let f = Fix::new(&["commits-src", "commits-dst-clean"]);
     let (src, text) = c1_to_c3(&f);
     let dst = f.p("commits-dst-clean");
     let before = git(&dst, &["rev-parse", "HEAD"]);
@@ -358,7 +358,7 @@ fn t19_t20_t21_t22_replay_keeps_metadata_merges_and_renames() {
 
 #[test]
 fn t24_replay_runs_no_hooks() {
-    let f = Fix::new();
+    let f = Fix::new(&["commits-src", "commits-dst-hooks"]);
     let repo = f.p("commits-src");
     let c4 = sha(&repo, "C4 text and binary");
     let copied = copy(&repo, commits(&repo, &c4, &[&c4]), &cli()).unwrap();
@@ -371,7 +371,7 @@ fn t24_replay_runs_no_hooks() {
 
 #[test]
 fn t25_binary_changes_are_not_copied_and_deletions_replay() {
-    let f = Fix::new();
+    let f = Fix::new(&["commits-src", "commits-dst-present"]);
     let repo = f.p("commits-src");
     let c2 = sha(&repo, "C2 rename delete emoji");
     let copied = copy(&repo, commits(&repo, &c2, &[&c2]), &cli()).unwrap();
@@ -390,7 +390,7 @@ fn t25_binary_changes_are_not_copied_and_deletions_replay() {
 
 #[test]
 fn t26_t27_t28_binary_additions_repeat_replays_and_empty_commits() {
-    let f = Fix::new();
+    let f = Fix::new(&["commits-src", "commits-dst-clean"]);
     let repo = f.p("commits-src");
     let c4 = sha(&repo, "C4 text and binary");
     let copied = copy(&repo, commits(&repo, &c4, &[&c4]), &cli()).unwrap();
@@ -425,7 +425,7 @@ fn t26_t27_t28_binary_additions_repeat_replays_and_empty_commits() {
 
 #[test]
 fn t13b_a_moved_head_refuses_the_replay() {
-    let f = Fix::new();
+    let f = Fix::new(&["commits-src", "commits-dst-clean"]);
     let (_, text) = c1_to_c3(&f);
     let dst = f.p("commits-dst-clean");
     let p = paste_preview(&dst, &text, false, &[], &cli()).unwrap();
@@ -437,7 +437,7 @@ fn t13b_a_moved_head_refuses_the_replay() {
 
 #[test]
 fn t32_b42_commit_files_carry_deletions_with_their_old_content() {
-    let f = Fix::new();
+    let f = Fix::new(&["commits-src", "commits-dst-present", "basket-src"]);
     // T32: one deleted file of C2.
     let repo = f.p("commits-src");
     let c2 = sha(&repo, "C2 rename delete emoji");
@@ -476,7 +476,7 @@ fn t32_b42_commit_files_carry_deletions_with_their_old_content() {
 
 #[test]
 fn c_nonutf8_non_utf8_files_are_neither_written_nor_deleted() {
-    let f = Fix::new();
+    let f = Fix::new(&["nonutf8-src", "nonutf8-dst", "commits-src"]);
     let src = f.p("nonutf8-src");
     let n1 = sha(&src, "N1 modify latin1 add ok");
     let n2 = sha(&src, "N2 delete latin1");
@@ -502,7 +502,7 @@ fn c_nonutf8_non_utf8_files_are_neither_written_nor_deleted() {
 
 #[test]
 fn c_blocked_a_layout_conflict_refuses_the_whole_commit() {
-    let f = Fix::new();
+    let f = Fix::new(&["blocked-src", "ws-dst/repo04"]);
     let src = f.p("blocked-src");
     let b1 = sha(&src, "B1 blocked dir and fresh");
     let copied = copy(&src, commits(&src, &b1, &[&b1]), &cli()).unwrap();
@@ -549,7 +549,7 @@ mod against_snip_cli {
     #[test]
     fn copies_are_byte_identical() {
         let Some(snip) = snip() else { return };
-        let f = Fix::new();
+        let f = Fix::new(&["files-src", "commits-src"]);
         let files = f.p("files-src");
         let repo = f.p("commits-src");
         let base = sha(&repo, "commit base");
@@ -604,7 +604,7 @@ mod against_snip_cli {
     #[test]
     fn each_restores_the_others_payload() {
         let Some(snip) = snip() else { return };
-        let f = Fix::new();
+        let f = Fix::new(&["commits-src", "commits-dst-clean", "files-src", "files-dst"]);
         let repo = f.p("commits-src");
         let c1 = sha(&repo, "多行中文");
         let c2 = sha(&repo, "C2 rename delete emoji");
