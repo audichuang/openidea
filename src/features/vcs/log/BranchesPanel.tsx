@@ -87,6 +87,7 @@ export function BranchesPanel() {
     [availableRepositories, filters],
   );
   const scopedRepo = availableRepositories.length > 1 && repositories.length === 1 ? repositories[0] : undefined;
+  const workspaceRoots = useVcs((s) => s.roots);
   const readOnly = useReadOnlyLog();
   const version = useVcs((s) => s.version);
   const [allBranches, setAllBranches] = useState<Record<string, Branch[]>>({});
@@ -333,7 +334,11 @@ export function BranchesPanel() {
                     : "folder"
           }
           getDetail={(n) => branchDetail(n, availableRepositories.length)}
-          getSwatch={(n) => (n.kind === "repository" && n.repo ? repoColor(n.repo, availableRepositories) : null)}
+          getSwatch={(n) =>
+            n.kind === "repository" && n.repo
+              ? repoColor(n.repo, workspaceRoots.includes(n.repo) ? workspaceRoots : availableRepositories)
+              : null
+          }
           selected={selected}
           onSelectionChange={(sel) => setSelected(sel)}
           onActivate={(n) => {
