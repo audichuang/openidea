@@ -146,17 +146,13 @@ impl FileMoves {
             }
             before.push(text);
         }
+        let index = if sync_git_index { crate::git_index::plan(moves) } else { Vec::new() };
         if !paths.is_empty()
             && let Err(e) = apply_edit(edit)
         {
             restore(documents, &paths, &before);
             return Err(e);
         }
-        let index: Vec<_> = if sync_git_index {
-            moves.iter().filter_map(|m| crate::git_index::plan(&m.from, &m.to)).collect()
-        } else {
-            Vec::new()
-        };
         if let Err(e) = crate::file_ops::move_files(moves) {
             restore(documents, &paths, &before);
             return Err(e);
@@ -219,11 +215,7 @@ impl FileMoves {
         let _history_operation = history.map(LocalHistory::file_move_guard);
         let back: Vec<_> =
             record.moves.iter().rev().map(|m| FileMove { from: m.to.clone(), to: m.from.clone() }).collect();
-        let index: Vec<_> = if sync_git_index {
-            back.iter().filter_map(|m| crate::git_index::plan(&m.from, &m.to)).collect()
-        } else {
-            Vec::new()
-        };
+        let index = if sync_git_index { crate::git_index::plan(&back) } else { Vec::new() };
         if let Err(e) = crate::file_ops::move_files(&back) {
             self.records.lock().push(record);
             return Err(e);
