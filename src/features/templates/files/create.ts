@@ -41,7 +41,7 @@ async function siblingGoPackage(directory: string): Promise<string | null> {
   }
 }
 
-const JVM_BUILD = /(^|\/)(pom\.xml|build\.gradle(\.kts)?)$/;
+const JVM_BUILD = /(^|\/)(pom\.xml|build\.gradle(\.kts)?|Gradle)$/;
 
 /** JVM source and test roots (project-relative) that packages are counted from. */
 function packageRoots(): string[] {
