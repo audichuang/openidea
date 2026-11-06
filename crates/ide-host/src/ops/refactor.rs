@@ -45,9 +45,11 @@ pub async fn refactor_move_files(
     let project = host.project(window)?;
     let p = project.clone();
     let moved = moves.clone();
+    // Restricted Mode: no git command may run for the index sync.
+    let trusted = project.is_trusted();
     let id = blocking(move || {
         let apply = |e: &WorkspaceEdit| p.documents.apply_file_move_edits(e);
-        p.moves.perform(&p.documents, Some(&p.history), &moved, &edit, &label, &apply)
+        p.moves.perform(&p.documents, Some(&p.history), &moved, &edit, &label, trusted, &apply)
     })
     .await?;
     project.lsp.did_rename_files(&pairs(&moves));
@@ -58,7 +60,8 @@ pub async fn refactor_move_files(
 pub async fn refactor_undo_file_move(host: &Host, window: &str, id: u32) -> IdeResult<UndoOutcome> {
     let project = host.project(window)?;
     let p = project.clone();
-    let outcome = blocking(move || p.moves.undo(&p.documents, Some(&p.history), id)).await?;
+    let trusted = project.is_trusted();
+    let outcome = blocking(move || p.moves.undo(&p.documents, Some(&p.history), trusted, id)).await?;
     project.lsp.did_rename_files(&pairs(&outcome.moves));
     Ok(outcome)
 }
