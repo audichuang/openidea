@@ -47,11 +47,11 @@ fn rename_preserves_metadata_and_undo_retries_after_conflict() {
     assert_eq!(id(&dst), A);
     assert!(!meta_path(&src).exists());
     fs::write(meta_path(&src), "conflict").unwrap();
-    assert!(stack.undo(&docs, token).is_err());
+    assert!(stack.undo(&docs, None, token).is_err());
     assert!(stack.can_undo(token));
     assert!(dst.exists());
     fs::remove_file(meta_path(&src)).unwrap();
-    let undone = stack.undo(&docs, token).unwrap();
+    let undone = stack.undo(&docs, None, token).unwrap();
     assert_eq!(undone.moves.len(), 2);
     assert_eq!(id(&src), A);
     assert!(!dst.exists());
