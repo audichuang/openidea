@@ -43,15 +43,15 @@ fn rename_preserves_metadata_and_undo_retries_after_conflict() {
     let docs = Documents::new(Arc::new(|_| {}), Box::new(|_: &Path, _: Option<&str>| LanguageId::new("plaintext")));
     let stack = FileMoves::new();
     let moves = [FileMove { from: src.clone().into(), to: dst.clone().into() }];
-    let token = stack.perform(&docs, None, &moves, &WorkspaceEdit::default(), "Rename", &|_| Ok(())).unwrap();
+    let token = stack.perform(&docs, None, &moves, &WorkspaceEdit::default(), "Rename", false, &|_| Ok(())).unwrap();
     assert_eq!(id(&dst), A);
     assert!(!meta_path(&src).exists());
     fs::write(meta_path(&src), "conflict").unwrap();
-    assert!(stack.undo(&docs, None, token).is_err());
+    assert!(stack.undo(&docs, None, false, token).is_err());
     assert!(stack.can_undo(token));
     assert!(dst.exists());
     fs::remove_file(meta_path(&src)).unwrap();
-    let undone = stack.undo(&docs, None, token).unwrap();
+    let undone = stack.undo(&docs, None, false, token).unwrap();
     assert_eq!(undone.moves.len(), 2);
     assert_eq!(id(&src), A);
     assert!(!dst.exists());
