@@ -9,6 +9,7 @@ pub mod file_defaults;
 pub mod file_moves;
 pub mod file_ops;
 pub mod file_refs;
+mod git_index;
 pub mod history;
 pub mod memory;
 pub mod process;
