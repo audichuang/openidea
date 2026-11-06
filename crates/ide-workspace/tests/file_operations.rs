@@ -106,7 +106,7 @@ fn mixed_move_and_undo_apply_rules_only_to_unity_assets() {
     assert!(destination.exists() && metadata_path(&destination).exists());
     assert!(ordinary_to.exists() && !metadata_path(&ordinary_to).exists());
     assert!(metadata_path(&ordinary).exists());
-    moves.undo(&docs, token).unwrap();
+    moves.undo(&docs, None, token).unwrap();
     assert!(source.exists() && metadata_path(&source).exists());
     assert!(ordinary.exists() && metadata_path(&ordinary).exists());
     assert!(!destination.exists() && !metadata_path(&destination).exists());
