@@ -83,7 +83,13 @@ pub fn agent_in_script(text: &str) -> Option<ScriptAgent> {
         let line = line.as_str();
         line.match_indices("-javaagent:").find_map(|(at, flag)| {
             let tail = line[at + flag.len()..].trim_start_matches(['\'', '"']);
-            let end = tail.to_ascii_lowercase().find(".jar")? + 4;
+            let end =
+                tail.to_ascii_lowercase().match_indices(".jar").map(|(at, suffix)| at + suffix.len()).find(|&end| {
+                    tail[end..]
+                        .chars()
+                        .next()
+                        .is_none_or(|c| c.is_whitespace() || matches!(c, '"' | '\'' | ';' | ',' | ')'))
+                })?;
             let agent = &tail[..end];
             let lombok = agent.rsplit(['/', '\\']).next()?.to_ascii_lowercase().contains("lombok");
             let prefix = &line[..at];
@@ -952,6 +958,28 @@ exec jdtls "$ARG""#;
         ] {
             assert_eq!(agent_in_script(script), None, "{script}");
         }
+    }
+
+    #[test]
+    fn windows_wrapper_agent_preserves_a_jar_prefix_in_a_directory_name() {
+        let path = r"C:\Users\john.jarvis\tools\lombok-1.18.46.jar";
+        let script = format!("jdtls \"--jvm-arg=-javaagent:{path}\"");
+        let wrapper = agent_in_script(&script).unwrap();
+        assert_eq!(wrapper, script_agent(path, false));
+        assert_eq!(agent_version(&wrapper.agent).as_deref(), Some("1.18.46"));
+    }
+
+    #[test]
+    fn linux_wrapper_agent_preserves_a_jar_prefix_in_a_directory_name() {
+        let path = "/home/dev/.jars/lombok-1.18.46.jar";
+        let wrapper = agent_in_script(&format!("jdtls --jvm-arg=-javaagent:{path}")).unwrap();
+        assert_eq!(wrapper, script_agent(path, false));
+        assert_eq!(agent_version(&wrapper.agent).as_deref(), Some("1.18.46"));
+    }
+
+    #[test]
+    fn wrapper_agent_does_not_treat_a_jar_directory_as_the_agent_filename() {
+        assert_eq!(agent_in_script("jdtls --jvm-arg=-javaagent:/opt/lombok.jar/jacoco.jar"), None);
     }
 
     #[test]
