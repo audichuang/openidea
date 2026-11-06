@@ -269,6 +269,19 @@ fn sparse_checkout_status_preserves_staged_renames() {
 }
 
 #[test]
+fn status_reports_git_error_when_fallback_fails() {
+    let fx = Fixture::new();
+    fx.write("file.txt", "committed content\n");
+    fx.commit_all("base");
+    let tree = fx.git(&["rev-parse", "HEAD^{tree}"]);
+    let repo = fx.repo();
+    std::fs::remove_file(fx.path(&format!(".git/objects/{}/{}", &tree[..2], &tree[2..]))).unwrap();
+
+    let err = repo.status().unwrap_err();
+    assert!(err.message.contains("bad tree object HEAD"), "unexpected status error: {err:?}");
+}
+
+#[test]
 fn merge_conflict_and_versions() {
     let fx = Fixture::new();
     fx.write("c.txt", "base\n");
