@@ -16,30 +16,69 @@ if (mode === "record") {
 } else if (mode === "report" || mode === "prune") {
   const root = path.resolve(target);
   const profiles = new Map();
+  const unhashed = [];
   let artifacts = 0;
   function mark(filename) {
     const relative = path.relative(root, filename);
     if (relative.startsWith("..") || path.isAbsolute(relative)) return;
     const parts = relative.split(path.sep);
-    const index = parts.findIndex((part) => part === "deps" || part === "build");
-    if (index < 1) return;
-    const profile = parts.slice(0, index).join(path.sep);
-    const hashes = profiles.get(profile) ?? new Set();
-    const hash = parts[index + 1]?.match(/-([a-f0-9]{16})(?:\.|$)/)?.[1];
-    if (hash) hashes.add(hash);
-    profiles.set(profile, hashes);
+    for (let index = parts.length - 1; index > 0; index--) {
+      const profile = parts.slice(0, index).join(path.sep);
+      if (!fs.existsSync(path.join(root, profile, ".fingerprint"))) continue;
+      const hashes = profiles.get(profile) ?? new Set();
+      const hash = parts[index + 1]?.match(/-([a-f0-9]{16})(?:\.|$)/)?.[1];
+      if (hash) hashes.add(hash);
+      profiles.set(profile, hashes);
+      return { profile, hash };
+    }
   }
   for (const line of fs.readFileSync(manifest, "utf8").trim().split("\n")) {
     const message = JSON.parse(line);
     if (message.reason === "compiler-artifact") {
       artifacts++;
-      for (const filename of message.filenames) mark(filename);
+      const units = message.filenames.map(mark).filter(Boolean);
+      if (!units.some((unit) => unit.hash)) {
+        for (const profile of new Set(units.map((unit) => unit.profile))) {
+          unhashed.push({ profile, message });
+        }
+      }
     } else if (message.reason === "build-script-executed") {
       mark(message.out_dir);
     }
   }
   // Never prune from an empty or failed build's manifest.
   if (!artifacts || !profiles.size) throw new Error("No live Cargo artifacts recorded");
+  for (const { profile, message } of unhashed) {
+    const id = new URL(message.package_id);
+    const spec = decodeURIComponent(id.hash.slice(1));
+    const pkg = spec.includes("@")
+      ? spec.slice(0, spec.lastIndexOf("@"))
+      : path.posix.basename(decodeURIComponent(id.pathname));
+    const { kind, name } = message.target;
+    const testPrefix = message.profile.test ? "test-" : "";
+    let prefix;
+    if (kind.includes("bin")) prefix = `${testPrefix}bin`;
+    else if (kind.includes("example")) prefix = `${testPrefix}example`;
+    else if (kind.includes("test")) prefix = "test-integration-test";
+    else if (kind.includes("bench")) prefix = "test-bench";
+    else if (kind.includes("custom-build")) prefix = "build-script";
+    else if (kind.some((value) => ["lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"].includes(value))) {
+      prefix = `${testPrefix}lib`;
+    } else {
+      throw new Error(`Unknown Cargo target kind: ${kind}`);
+    }
+    // Unhashed outputs cannot select a unit: keep matching package/target fingerprints and outputs.
+    const fingerprints = path.join(root, profile, ".fingerprint");
+    let matched = false;
+    for (const entry of fs.readdirSync(fingerprints)) {
+      const match = entry.match(/^(.*)-([a-f0-9]{16})$/);
+      if (match?.[1] === pkg && fs.existsSync(path.join(fingerprints, entry, `${prefix}-${name}.json`))) {
+        profiles.get(profile).add(match[2]);
+        matched = true;
+      }
+    }
+    if (!matched) throw new Error(`No fingerprint for live Cargo target ${pkg}/${prefix}-${name}`);
+  }
   function bytes(filename) {
     const stat = fs.lstatSync(filename);
     if (stat.isSymbolicLink()) return 0;
