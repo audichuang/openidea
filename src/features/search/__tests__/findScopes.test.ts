@@ -43,6 +43,36 @@ describe("Find in Files module and custom scopes", () => {
     expect(resolveFindScope({ ...base, scopeTab: "module", module: "" }, inputs)).toEqual({ kind: "project" });
   });
 
+  it.each([
+    ["C:/work/svc", "C:/work/svc"],
+    ["C:\\work\\svc", "C:\\work\\svc"],
+    ["//server/share/svc", "//server/share/svc"],
+    ["/work/svc", "/work/svc"],
+    ["svc", "C:/work/p/svc"],
+  ])("resolves module %s from a Windows project root", (module, path) => {
+    expect(resolveFindScope({ ...base, scopeTab: "module", module }, { ...inputs, root: "C:/work/p" })).toEqual({
+      kind: "directory",
+      path,
+    });
+  });
+
+  it("keeps the empty module scoped to the Windows project", () => {
+    expect(resolveFindScope({ ...base, scopeTab: "module", module: "" }, { ...inputs, root: "C:/work/p" })).toEqual({
+      kind: "project",
+    });
+  });
+
+  it.each([
+    [" svc", "/work/p/ svc"],
+    ["svc ", "/work/p/svc "],
+    ["/work/svc ", "/work/svc "],
+  ])("preserves whitespace in module %s", (module, path) => {
+    expect(resolveFindScope({ ...base, scopeTab: "module", module }, { ...inputs, root: "/work/p" })).toEqual({
+      kind: "directory",
+      path,
+    });
+  });
+
   it("named scopes resolve to file sets, files and custom patterns", () => {
     useCustomScopes.setState({ root: null, scopes: [{ name: "No tests", pattern: "!file:*test*" }] });
     const scope = (namedScope: NamedScope) => resolveFindScope({ ...base, scopeTab: "scope", namedScope }, inputs);
