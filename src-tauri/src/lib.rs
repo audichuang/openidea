@@ -8,6 +8,7 @@ mod commands;
 #[cfg(debug_assertions)]
 mod dev;
 mod events;
+mod fork_updater;
 #[cfg(any(target_os = "linux", test))]
 mod linux_window_state;
 mod logging;
