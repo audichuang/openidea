@@ -1082,6 +1082,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
 mod tests {
     use super::*;
     use std::fs;
+    use std::io::Write;
     use std::process::Command;
 
     /// A path as ClipCode headers spell it: `/` on every OS (`C:/x` on Windows).
@@ -1104,9 +1105,12 @@ mod tests {
     fn repo(dir: &Path) -> PathBuf {
         fs::create_dir_all(dir).unwrap();
         git(dir, &["init", "-q", "-b", "main"]);
-        git(dir, &["config", "user.name", "Tester"]);
-        git(dir, &["config", "user.email", "t@example.com"]);
-        git(dir, &["config", "commit.gpgsign", "false"]);
+        fs::OpenOptions::new()
+            .append(true)
+            .open(dir.join(".git/config"))
+            .unwrap()
+            .write_all(b"[user]\n\tname = Tester\n\temail = t@example.com\n[commit]\n\tgpgsign = false\n")
+            .unwrap();
         fs::write(dir.join("README.md"), "base\n").unwrap();
         git(dir, &["add", "-A"]);
         git(dir, &["commit", "-q", "-m", "init"]);
@@ -1153,10 +1157,11 @@ mod tests {
             let text = copied(&m, source.clone());
             assert!(text.starts_with("// clipcode-root: M\n"), "{source:?}:\n{text}");
             assert!(text.contains(header), "{source:?}:\n{text}");
+            if matches!(source, ClipCopySource::RootRange { .. }) {
+                // The root range carries the repository's other files under its folder too.
+                assert!(text.contains("// file: [NEW] repo/README.md\n"), "{text}");
+            }
         }
-        // The root range carries the repository's other files under its folder too.
-        let text = copied(&m, ClipCopySource::RootRange { repo: r.clone(), tip: c2, paths: vec![] });
-        assert!(text.contains("// file: [NEW] repo/README.md\n"), "{text}");
 
         fs::write(&file, "a3\n").unwrap();
         for side in [ClipChangeSide::Working, ClipChangeSide::Unstaged] {
