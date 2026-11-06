@@ -110,8 +110,14 @@ export async function startRename(view: EditorView) {
       reportLspError(view, e, true);
       return;
     }
-    // A server error (not a missing server or feature) is a refusal: a top-level type renames its file.
-    if (!isUnavailable(e) && (await renameFileInstead(view, doc))) return;
+    // Only this known jdtls refusal allows a top-level type to rename its file.
+    if (
+      e instanceof IpcError &&
+      e.kind === "protocol" &&
+      /^jdtls: Renaming this element is not supported\.?$/.test(e.message) &&
+      (await renameFileInstead(view, doc))
+    )
+      return;
     if (await startSyntaxRename(view, doc, pos, e, current)) return;
     // No server covers this file (a plain text file): Shift+F6 renames the file, like IDEA.
     if (isNoServer(e) && (await executeAction("project.rename"))) return;
