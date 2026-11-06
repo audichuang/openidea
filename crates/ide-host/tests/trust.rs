@@ -407,3 +407,55 @@ async fn revocation_still_applies_when_a_project_folder_was_removed() {
     assert!(!project.is_trusted());
     host.shutdown().await;
 }
+
+fn git(dir: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .current_dir(dir)
+        .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8(out.stdout).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn file_moves_sync_the_git_index_only_in_trusted_projects() {
+    use ide_core::WorkspaceEdit;
+    use ide_workspace::FileMove;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("project");
+    std::fs::create_dir(&root).unwrap();
+    git(&root, &["init", "-q"]);
+    std::fs::write(root.join("a.txt"), "a\n").unwrap();
+    git(&root, &["add", "a.txt"]);
+    git(&root, &["commit", "-q", "-m", "init"]);
+    let host = host(&tmp.path().join("app"), false);
+    let project = host.open_project("main", &root).unwrap();
+    assert!(!project.is_trusted());
+    let index = || std::fs::read(root.join(".git/index")).unwrap();
+    let before = index();
+    let mv = |from: &str, to: &str| vec![FileMove { from: root.join(from).into(), to: root.join(to).into() }];
+
+    let id = ops::refactor::refactor_move_files(
+        &host,
+        "main",
+        mv("a.txt", "b.txt"),
+        WorkspaceEdit::default(),
+        "Rename".into(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(index(), before, "restricted project: no git index sync");
+    assert_eq!(git(&root, &["ls-files"]), "a.txt\n");
+    ops::refactor::refactor_undo_file_move(&host, "main", id).await.unwrap();
+    assert_eq!(index(), before);
+
+    host.set_project_trust(&project.root, true, false).await.unwrap();
+    assert!(project.is_trusted());
+    ops::refactor::refactor_move_files(&host, "main", mv("a.txt", "b.txt"), WorkspaceEdit::default(), "Rename".into())
+        .await
+        .unwrap();
+    assert_eq!(git(&root, &["ls-files"]), "b.txt\n");
+    host.shutdown().await;
+}
