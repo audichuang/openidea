@@ -213,6 +213,7 @@ describe("plugin actions", () => {
   });
 
   it("reports actions to on-event:action-performed plugins once the project opens and when plugins change", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     // Like `authorize_command`: refused until the window's project is open and trusted.
     let kinds: Awaited<ReturnType<PluginsBackend["eventKinds"]>> = [];
     const posted: unknown[] = [];
@@ -236,30 +237,35 @@ describe("plugin actions", () => {
     const stop = startPluginBridge();
     try {
       // Asked at startup, before the project is open: refused.
-      await new Promise((r) => setTimeout(r, 20));
+      await vi.advanceTimersByTimeAsync(0);
       await executeActionFrom("menu", "test.columnMode");
-      await new Promise((r) => setTimeout(r, 600));
+      await vi.advanceTimersByTimeAsync(600);
       expect(posted).toEqual([]);
 
       useProject.setState({ project: { root: "/p", trusted: true } as never });
-      await new Promise((r) => setTimeout(r, 20));
+      await vi.advanceTimersByTimeAsync(0);
       await executeActionFrom("menu", "test.columnMode");
-      await waitFor(() => expect(posted).toEqual(performed(1)));
+      await vi.advanceTimersByTimeAsync(500);
+      expect(posted).toEqual(performed(1));
 
       // Declared kinds change with the installed plugins (`commandsChanged`).
       kinds = [];
       handlePluginEvent({ type: "commandsChanged" });
-      await new Promise((r) => setTimeout(r, 60));
+      await vi.advanceTimersByTimeAsync(30);
       await executeActionFrom("menu", "test.columnMode");
+      await vi.advanceTimersByTimeAsync(500);
+      expect(posted).toEqual(performed(1));
       kinds = ["action-performed"];
       handlePluginEvent({ type: "commandsChanged" });
-      await new Promise((r) => setTimeout(r, 60));
+      await vi.advanceTimersByTimeAsync(30);
       await executeActionFrom("menu", "test.columnMode");
-      await waitFor(() => expect(posted).toEqual(performed(2)));
+      await vi.advanceTimersByTimeAsync(500);
+      expect(posted).toEqual(performed(2));
     } finally {
       stop();
       offAction();
       useProject.setState({ project: null });
+      vi.useRealTimers();
     }
   });
 });

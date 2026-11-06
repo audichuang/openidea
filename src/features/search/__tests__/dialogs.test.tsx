@@ -67,9 +67,10 @@ const { FindInFilesOverlay } = await import("../find/FindInFiles");
 const { showFindPopup, hideFindPopup } = await import("../find/store");
 const { defaultPreset, useKeymap } = await import("@/platform/keymap");
 
-const tick = () => act(() => new Promise((r) => setTimeout(r, 100)));
+const tick = () => act(() => vi.advanceTimersByTimeAsync(60));
 
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   findFiles = defaultFindFiles;
   findSymbols = async () => [];
   settings = async () => [];
@@ -82,6 +83,7 @@ afterEach(() => {
     hideFindPopup();
     hideRecentPopup();
   });
+  vi.useRealTimers();
 });
 
 describe("Search Everywhere dialog", () => {
@@ -518,7 +520,7 @@ describe("Find in Files dialog", () => {
   it("streams results and highlights the matches while replacing, as IDEA", async () => {
     render(<FindInFilesOverlay />);
     act(() => showFindPopup(true, { query: "order" }));
-    await act(() => new Promise((r) => setTimeout(r, 250)));
+    await act(() => vi.advanceTimersByTimeAsync(150));
     expect(screen.getByText("1 match in 1 file")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Replace with"), { target: { value: "item" } });
     const matches = screen.getByRole("listbox", { name: "Matches" });
