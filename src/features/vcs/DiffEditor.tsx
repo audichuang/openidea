@@ -257,6 +257,7 @@ export function DiffEditor({
   onJumpToSource,
   onClose,
   fit = false,
+  allowSourceNavigation = true,
 }: {
   input: EditorInput;
   toolbarActions?: ReactNode;
@@ -275,6 +276,7 @@ export function DiffEditor({
    * toolbar, side-by-side panes always aligned, and not taking the editor tab's focus.
    */
   fit?: boolean;
+  allowSourceNavigation?: boolean;
 }) {
   const input_ = input.data as DiffData;
   // Swap Sides shows the request's sides the other way round; another request starts unswapped.
@@ -953,6 +955,7 @@ export function DiffEditor({
   const source = fileSource ?? worktreeSource;
 
   const jumpToSource = useCallback(() => {
+    if (!allowSourceNavigation) return;
     const views = viewsRef.current;
     const fileA = sideFile(left, path);
     const fileB = sideFile(right, path);
@@ -978,7 +981,7 @@ export function DiffEditor({
       const line = mapLine(Chunk.build(from, to), at.number - 1, from, to);
       open(line, to.line(line + 1).text === at.text ? head - at.from : 0);
     });
-  }, [left, right, path, worktreeSource, onJumpToSource]);
+  }, [allowSourceNavigation, left, right, path, worktreeSource, onJumpToSource]);
 
   const currentChunk = (): { chunk: Chunk; index: number } | undefined => {
     const v = viewsRef.current?.b;
@@ -1354,7 +1357,7 @@ export function DiffEditor({
       : null;
   // Staging applies to local changes against HEAD / the index only.
   const canStage = editableB && isWorktree(right) && left.type === "rev" && !!useVcs.getState().root;
-  const hasSource = !!source;
+  const hasSource = allowSourceNavigation && !!source;
 
   /** IDEA's title of a revision: its short commit id (HEAD resolved) and the file's path in the repository. */
   const revTitle = (s: DiffSide): { label: string; file: string | null } => {
