@@ -8,9 +8,6 @@ import type { Text } from "@codemirror/state";
 import type { NodeAt, Range, SyntaxNode } from "@/bindings";
 import { offsetToPos } from "./positions";
 
-/** Languages whose top-level type is named after its file (used when the syntax tree can't tell). */
-const TYPE_PER_FILE = new Set(["java"]);
-
 const TYPE_DECLARATION = /^(class|interface|enum|record|annotation_type|object|trait|struct)_(declaration|definition)$/;
 /** Ancestors that make a type declaration nested rather than top-level. */
 const ENCLOSING =
@@ -43,9 +40,9 @@ export interface FileRenameQuery {
 
 /** Whether a refused rename of `name` should rename the file instead. */
 export function renamesFileInstead({ path, language, name, at }: FileRenameQuery): boolean {
-  if (!name || name !== fileStem(path)) return false;
+  if (language !== "java" || !name || name !== fileStem(path)) return false;
   if (at) return isTopLevelTypeName(at);
-  return TYPE_PER_FILE.has(language);
+  return true;
 }
 
 /**
