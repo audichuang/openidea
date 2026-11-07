@@ -2,7 +2,7 @@
 
 ## Sub-features
 
-Paste into editor, terminal and inputs from: right-click menu, command palette, ⌘V. Text is read through the `clipboard_text` command, not WebKit's clipboard API.
+Paste into editor, terminal and inputs from: right-click menu, command palette, ⌘V (native Edit → Paste, a WebKit paste event). Menu and command-palette pastes read text through the `clipboard_text` command instead of WebKit's clipboard API, which would show the "Paste" callout.
 
 ## How to get to it (user POV)
 
