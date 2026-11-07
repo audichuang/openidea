@@ -43,7 +43,7 @@ export function stagedFiles(status: readonly FileStatus[]): FileStatus[] {
 
 /** Commit with the staging area: the index as it is — nothing staged or unstaged first. */
 export function stagingPlan(status: readonly FileStatus[]): CommitPlan {
-  return { stage: [], unstage: [], included: stagedFiles(status), partial: [] };
+  return { stage: [], exclude: [], included: stagedFiles(status), partial: [] };
 }
 
 const ORDER: GroupId[] = ["conflicts", "staged", "unstaged", "unversioned"];
