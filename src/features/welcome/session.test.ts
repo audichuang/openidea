@@ -10,8 +10,8 @@ const win = vi.hoisted(() => ({
   listeners: new Map<string, () => void>(),
   /** While set, `listen` registers its handler only once this settles. */
   listenGate: null as Promise<void> | null,
-  /** Stands in for `startupProjectKnown`. */
-  known: Promise.resolve(),
+  /** Stands in for `startupProjectKnown`; `null` uses the real one. */
+  known: Promise.resolve() as Promise<void> | null,
 }));
 
 vi.mock("@/platform/ipc", async (orig) => {
@@ -48,13 +48,14 @@ vi.mock("@/platform/project", async (orig) => {
     ...real,
     openProject: (p: string) => openProject(p),
     closeProject: () => closeProject(),
-    startupProjectKnown: () => win.known,
+    startupProjectKnown: () => win.known ?? real.startupProjectKnown(),
   };
 });
 
 const { cancelReopen, lastSessionProject, reopenLastProject, trackSession, useSession, _resetSessionForTests } =
   await import("./session");
-const { provideStartupLaunch, useProject } = await import("@/platform/project");
+const { _resetStartupProjectForTests, provideStartupLaunch, startupProjectKnown, useProject } =
+  await import("@/platform/project");
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
@@ -163,6 +164,30 @@ describe("reopenLastProject", () => {
     resolveOpen();
     await promise;
     expect(closeProject).not.toHaveBeenCalled();
+  });
+
+  // Window groups wait for main's startup project: Cancel must release them at once, not when the
+  // abandoned SSH attempt finally times out.
+  it("decides the startup project as soon as the user cancels a hanging remote reopen", async () => {
+    // A fresh startup-project gate: earlier tests already settled this module's one.
+    _resetStartupProjectForTests();
+    win.known = null;
+    localStorage.setItem("openidea.session.openProject", UNC);
+    connectRemote.mockImplementation(() => new Promise(() => {}));
+    provideStartupLaunch(Promise.resolve());
+    let known = false;
+    void startupProjectKnown().then(() => (known = true));
+
+    void reopenLastProject();
+    await flush();
+    expect(connectRemote).toHaveBeenCalledOnce();
+    expect(known).toBe(false);
+
+    cancelReopen();
+    await flush();
+    expect(known).toBe(true);
+    expect(lastSessionProject()).toBeNull();
+    expect(useSession.getState().reopening).toBeNull();
   });
 });
 
