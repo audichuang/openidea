@@ -23,6 +23,8 @@ export interface ReferenceInput {
  */
 export function copyReferenceToClipboard(
   reference: Promise<string>,
+  // The app passes the backend clipboard (actions.ts, fork); this default is unused there.
+  // oxlint-disable-next-line no-restricted-properties
   clipboard: Clipboard = navigator.clipboard,
   Item: typeof ClipboardItem | null = globalThis.ClipboardItem ?? null,
 ): Promise<void> {
