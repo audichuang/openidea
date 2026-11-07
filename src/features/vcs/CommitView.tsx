@@ -82,7 +82,15 @@ import type { FileStatus } from "@/bindings";
 import { OperationBanner } from "./operations";
 import { ShelfPanel, loadShelves, useShelf } from "./shelf";
 import { runOp } from "./ops";
-import { buildStagingTree, stagePaths, stagedFiles, stagingDiffData, unstagePaths, useStagingArea } from "./staging";
+import {
+  buildStagingTree,
+  isStagingArea,
+  stagePaths,
+  stagedFiles,
+  stagingDiffData,
+  unstagePaths,
+  useStagingArea,
+} from "./staging";
 import { RepoHeadChip } from "./RepoHeadChip";
 import { RepoSwatch } from "./RepoSwatch";
 import { fitPathDetail } from "./pathDetail";
@@ -286,13 +294,18 @@ export function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuIte
           { kind: "separator" as const },
         ]
       : []),
-    {
-      label: "Commit File…",
-      icon: "commit",
-      disabled: !files.some((f) => groupOf(f) === "changes"),
-      run: () => commitFiles(paths),
-    },
-    { kind: "separator" },
+    // With the staging area a commit takes the whole index, so it cannot commit only these files.
+    ...(isStagingArea()
+      ? []
+      : [
+          {
+            label: "Commit File…",
+            icon: "commit" as const,
+            disabled: !files.some((f) => groupOf(f) === "changes"),
+            run: () => commitFiles(paths),
+          },
+          { kind: "separator" as const },
+        ]),
     { kind: "action", action: "vcs.showDiff", arg: first?.path },
     {
       label: "Jump to Source",
