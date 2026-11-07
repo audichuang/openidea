@@ -74,6 +74,22 @@ describe("Commit tool window Preview Diff with the staging area", () => {
     expect(preview().right).toMatchObject({ type: "worktree" });
   });
 
+  it("shows the empty state once Stage moves the selected Unstaged file away", () => {
+    selectRow(rowIndex("a.ts", 1));
+    act(() => useVcs.setState({ status: [{ ...A, unstaged: null }, B] }));
+    expect(screen.queryByTestId("diff-preview")).toBeNull();
+    expect(screen.getByText("Select a file to preview its changes")).toBeTruthy();
+    expect(useCommit.getState().selectedFile).toBeNull();
+  });
+
+  it("shows the empty state once Unstage moves the selected Staged file away", () => {
+    selectRow(rowIndex("b.ts", 0));
+    act(() => useVcs.setState({ status: [A, { ...B, staged: null, unstaged: "modified" }] }));
+    expect(screen.queryByTestId("diff-preview")).toBeNull();
+    expect(screen.getByText("Select a file to preview its changes")).toBeTruthy();
+    expect(useCommit.getState().selectedFile).toBeNull();
+  });
+
   it("shows the empty state for a group header, even with a single file under it", () => {
     selectRow(rowIndex("Unstaged"));
     expect(screen.queryByTestId("diff-preview")).toBeNull();
