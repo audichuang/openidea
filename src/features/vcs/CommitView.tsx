@@ -58,6 +58,7 @@ import {
   planCommit,
   toggledCheck,
   type ChangeNode,
+  type GroupId,
 } from "./changes";
 import { applyStash, commitChanges, deleteFiles, dropStash, showUnstashDialog, stashChanges } from "./changeOps";
 import { CommitOptionsPopup } from "./CommitOptions";
@@ -92,6 +93,7 @@ import {
   vcsDiffInFront,
   withChain,
   workingDiffData,
+  type DiffData,
 } from "./diffInput";
 import { DiffEditor } from "./DiffEditor";
 import { KIND_COLOR, KIND_LABEL, fileCount, formatTime, stashLabel, stripSlash } from "./model";
@@ -229,8 +231,28 @@ const bottomLeft = (el: HTMLElement) => {
 function openNode(n: ChangeNode, roots: readonly ChangeNode[], staging: boolean) {
   if (n.type !== "file" || !n.path) return;
   const nodes = groupFileNodes(roots, n);
-  const items = nodes.map((f) => (staging && f.files[0] && stagingDiffData(f.files[0], f.group)) || changeNodeDiff(f));
+  const items = nodes.map((f) => fileDiffData(f.path!, f.files[0], f.group, staging));
   void openVcsDiff(withChain(items, Math.max(0, nodes.indexOf(n))), { preview: true });
+}
+
+/** The diff of a file under `group`: with the staging area, that side of the index. */
+function fileDiffData(path: string, fs: FileStatus | undefined, group: GroupId, staging: boolean): DiffData {
+  return (
+    (staging && fs && stagingDiffData(fs, group)) || workingDiffData(path, undefined, fs && stagingSide(group, fs))
+  );
+}
+
+/**
+ * What a Preview Diff pane shows: the single selected file's diff. With the staging area
+ * it is the selected node's side of the index, so a group header shows nothing.
+ */
+function usePreviewData(): DiffData | null {
+  const staging = useStagingArea();
+  const path = useCommit((s) => (s.selection.length === 1 ? s.selection[0] : null));
+  const selectedFile = useCommit((s) => s.selectedFile);
+  const fs = useVcs((s) => (selectedFile ? s.status.find((f) => f.path === selectedFile.path) : undefined));
+  if (!staging) return path ? workingDiffData(path) : null;
+  return selectedFile && fs ? fileDiffData(selectedFile.path, fs, selectedFile.group, true) : null;
 }
 
 /** Context menu of a change list's header: the list's own actions, then the bulk ones on its files. */
@@ -527,7 +549,7 @@ const NO_OVERRIDES: ReadonlyMap<string, boolean> = new Map();
 function ChangesPanel() {
   const included = useIncludedCount();
   const preview = useCommit((s) => s.commitDiffPreview);
-  const path = useCommit((s) => (s.selection.length === 1 ? s.selection[0] : null));
+  const data = usePreviewData();
   const hasChanges = useVcs((s) => s.status.length > 0);
   return (
     <SplitGroup orientation="horizontal" className={styles.split}>
@@ -546,8 +568,8 @@ function ChangesPanel() {
         <>
           <SplitHandle />
           <SplitPanel defaultSize="38%" minSize="120px">
-            {path ? (
-              <DiffEditor input={diffInput(workingDiffData(path))} />
+            {data ? (
+              <DiffEditor input={diffInput(data)} />
             ) : (
               <EmptyState>
                 <T>{hasChanges ? "Select a file to preview its changes" : "No changes to preview"}</T>
@@ -566,7 +588,7 @@ function ChangesPanel() {
  */
 export function LocalChangesView() {
   const preview = useCommit((s) => s.diffPreview);
-  const path = useCommit((s) => (s.selection.length === 1 ? s.selection[0] : null));
+  const data = usePreviewData();
   const anchor = useToolWindowLayout((s) => s.placements.git?.anchor ?? "bottom");
   return (
     <SplitGroup orientation={anchor === "bottom" ? "horizontal" : "vertical"} className={styles.split}>
@@ -577,8 +599,8 @@ export function LocalChangesView() {
         <>
           <SplitHandle />
           <SplitPanel defaultSize="50%" minSize="120px">
-            {path ? (
-              <DiffEditor input={diffInput(workingDiffData(path))} />
+            {data ? (
+              <DiffEditor input={diffInput(data)} />
             ) : (
               <EmptyState>
                 <T>Select a file to preview its changes</T>
@@ -855,6 +877,10 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
             useCommit.setState({
               selection: filesOf(nodes).map((f) => f.path),
               selectionKeys: [...sel],
+              selectedFile:
+                nodes.length === 1 && nodes[0]!.type === "file" && nodes[0]!.files[0]
+                  ? { path: nodes[0]!.files[0].path, group: nodes[0]!.group }
+                  : null,
               selectedList: nodes.find((n) => n.changelist)?.changelist ?? null,
             });
           }}
