@@ -9,7 +9,7 @@
 ## How to get to it (user POV)
 
 - Right-click the editor line-number gutter → "Annotate with Git Blame".
-- Right-click a file in the Project tree → "Annotate with Git Blame" (`src/features/project-tree/contextMenu.ts`; exact submenu not yet driven).
+- Right-click a single file in the Project tree → Git → "Annotate with Git Blame" (`src/features/project-tree/contextMenu.ts`).
 - VCS actions / Search Everywhere: "Annotate with Git Blame".
 - Click the author hint above a declaration (code vision, `src/editor/lsp/codeLens.ts`) → toggles annotations for that file. On by default (Settings › Editor › Inlay Hints › Code Vision › Code author). It only shows on declarations the outline finds in a git-tracked file, so not on the plain-text `app.txt` fixture below; not yet driven.
 
