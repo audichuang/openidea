@@ -153,5 +153,6 @@ runs:
           echo '::warning::new target cache not found after save; keeping previous entries'
           exit 0
         fi
-        jq -r --arg keep "$KEEP" '.[] | select(.key != $keep) | .id' <<< "$caches" |
+        # Windows jq.exe writes CRLF; strip it so the ids reach gh intact.
+        jq -r --arg keep "$KEEP" '.[] | select(.key != $keep) | .id' <<< "$caches" | tr -d '\r' |
           while read -r id; do gh cache delete -R "$GITHUB_REPOSITORY" "$id"; done
