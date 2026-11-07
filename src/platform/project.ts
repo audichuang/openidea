@@ -54,18 +54,9 @@ export function startupLaunchHandled(): Promise<void> {
 }
 
 let decideStartupProject: () => void = () => {};
-let startupProject = startupProjectGate();
-
-function startupProjectGate(): Promise<void> {
-  return new Promise<void>((resolve) => {
-    decideStartupProject = resolve;
-  });
-}
-
-/** Tests only. */
-export function _resetStartupProjectForTests() {
-  startupProject = startupProjectGate();
-}
+const startupProject = new Promise<void>((resolve) => {
+  decideStartupProject = resolve;
+});
 
 /** Called once this window knows the project it starts with: launched, reopened, or none (welcome). */
 export function startupProjectDecided(): void {
