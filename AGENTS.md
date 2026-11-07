@@ -20,10 +20,14 @@ This overrides the upstream guidance below (Issues & PRs, Parallel worktrees) an
 Where the machine's own agent rules say where to run Cargo or how to handle its build output, follow them
 instead of any Cargo advice below or in a skill. On the Mac mini, Cargo checks, clippy and tests go to the
 ubuntu host through `rust-remote`; nextest runs as `rust-remote nextest run --workspace --profile ubuntu-remote`
-(the profile skips tests that fail there for environment reasons), and `pnpm gen:bindings` becomes
+(copy the plugin wasm up first, `FORK.md` Merge gate), and `pnpm gen:bindings` becomes
 `rust-remote --pull src/bindings.ts test -p openidea --test export_bindings`. `cargo fmt --all` rewrites files
-and `rust-remote` brings no sources back, so run it locally (`PATH="$HOME/.cargo/bin:$PATH" cargo fmt --all`); only `fmt --all --check` goes remote.
+and `rust-remote` brings back only `Cargo.lock` and `--pull` paths, so run it locally (`PATH="$HOME/.cargo/bin:$PATH" cargo fmt --all`); only `fmt --all --check` goes remote.
 The macOS app itself builds locally (`pnpm dev:app`), only when a UI test needs it.
+macOS-only code (`cfg(target_os = "macos")`) is invisible to a plain remote check. Crates without Objective-C
+build scripts check remotely with `--target aarch64-apple-darwin` (`ide-clip` does); `openidea` does not
+(`objc2-exception-helper` needs Apple's `cc`), so `src-tauri`'s macOS code first compiles in Fork CI's macOS job
+or `pnpm dev:app`. A local `cargo check -p openidea` at every macOS stop of a rebase needs the user's OK.
 If `PATH="$HOME/.cargo/bin:$PATH" cargo -V` mentions `huacnlee`, never run `cargo clean`: that cargo deletes the
 build directory every worktree of this repo shares, without a lock, and breaks builds running in other
 worktrees. Delete only `./target` instead.

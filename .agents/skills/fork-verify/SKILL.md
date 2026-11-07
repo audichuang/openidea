@@ -5,7 +5,7 @@ description: Entry point for proving any OpenIDEA change in the running app in t
 
 # Verify OpenIDEA in the real app (fork, macOS)
 
-Upstream's `verify` skill (`.agents/skills/verify`) is the base: launch and session reuse, `mcp__tauri__*` basics, CodeMirror/xterm input quirks, `fixtures/`, evidence naming. Read it first. Where the two differ, this skill wins (scratch paths, targeting, evidence, cleanup). It adds when synthetic Tauri MCP input is not enough and how to send real OS input instead, what broke on this app, and the fork's feature map (`features/`).
+Upstream's `verify` skill (`.agents/skills/verify`) is the base: launch and session reuse, `mcp__tauri__*` basics, CodeMirror/xterm input quirks, `fixtures/`, evidence naming. Read it first. Where the two differ, this skill wins (launch with `pnpm dev:app`, scratch paths, targeting, evidence, cleanup; a Settings window is `settings-<parent label>`, e.g. `settings-project-2`). It adds when synthetic Tauri MCP input is not enough and how to send real OS input instead, what broke on this app, and the fork's feature map (`features/`).
 
 ## Verify a change, in order
 
@@ -75,12 +75,12 @@ osascript -e "tell application \"System Events\" to tell (first process whose un
 osascript -e "tell application \"System Events\" to tell (first process whose unix id is $P) to get {name, position, size} of windows"
 # real click / drag / move (screen points)
 cliclick c:X,Y          # click
-cliclick dd:X1,Y1 dm:X2,Y2 du:X2,Y2   # drag
+swift .agents/skills/fork-verify/scripts/drag.swift X1 Y1 X2 Y2   # drag (cliclick `du:` sends an extra buttonless move that cancels tab drags)
 cliclick m:X,Y          # hover
 ```
 
 - **Bring the target window forward first**: `manage_window action=focus windowId=project-N`. A window in a tab group, or on another Space (fullscreen), is invisible to System Events until then; only the selected tab of a group is an AX window.
-- **Coordinates**: screen point = window origin (from `osascript ... position`) + the element's CSS rect center (from `webview_find_element` or `getBoundingClientRect`). The webview fills the window (the toolbar is web content), so no title-bar offset. Verified with the window at (0,0) in fullscreen; recheck the offset once in windowed mode.
+- **Coordinates**: screen point = window origin (from `osascript ... position`) + the element's CSS rect center (from `webview_find_element` or `getBoundingClientRect`). The webview fills the window (`titleBarStyle: Overlay`; the native `NSToolbar` from `src-tauri/src/titlebar.rs` is empty and only places the traffic lights), so no title-bar offset; recheck it once in windowed mode. In fullscreen keep the pointer off the top edge: there the menu bar and the 76pt native toolbar slide down over the page toolbar and tab row, and a click or capture lands on them.
 - Before a paste test, put a fresh sentinel on the clipboard (`printf 'SENTINEL-%s' $RANDOM | pbcopy`) and read the result through Tauri MCP. Copying inside OpenIDEA hides clipboard bugs.
 - `osascript`/`cliclick` drive the real screen: say so to the user first, and don't touch other apps' dialogs (e.g. a "claude wants to control Codex Computer Use" prompt): leave them for the user.
 
@@ -92,7 +92,7 @@ Registered on this Mac at local scope (2026-11-04):
 claude mcp add tauri --scope local -- npx -y @hypothesi/tauri-mcp-server@0.13
 ```
 
-Keep the minor version equal to the crate (`tauri-plugin-mcp-bridge = "0.13"` in `src-tauri/Cargo.toml`). If the tools are missing or the server dropped, ask the user to run `/mcp` to reconnect; there is no other driver.
+Keep the minor version equal to the crate (`tauri-plugin-mcp-bridge = "0.13"` in `src-tauri/Cargo.toml`). If the server dropped, ask the user to run `/mcp` to reconnect. A session that never had the tools (a subagent, `codex exec`) talks to the same bridge directly: `node .agents/skills/fork-verify/scripts/bridge-js.mjs <port> <windowLabel> '<script>'` runs `webview_execute_js`'s job; read the DOM through it and keep real input on osascript/cliclick.
 
 Workflow:
 
@@ -155,7 +155,7 @@ Shell state does not carry over between Bash calls: start every call that uses `
 - Pixels: `screencapture -x "$S/evidence/<task>/after-1.png"`. Drags: `cliclick dd:x,y dm:x,y du:x,y` in screen points.
 - Run against the `pnpm dev:app` process itself. A plain `cargo build` binary lacks `devUrl` (blank window), and copying the binary into a `.app` needs `codesign --force --sign -` (else POSIX 162) plus your own Vite; past wrappers cost more time than they saved.
 - AppKit view trees: lldb attach hangs (Developer mode off). Temporarily `eprintln!` `_subtreeDescription` behind an env var; remove before committing.
-- Private-API behavior (e.g. `_setTabBarAccessoryViewController:`) can only be judged live: AppKit re-applies state on its run loop. Recheck after a resize, a tab switch, entering and leaving fullscreen.
+- Private-API behavior (`_setTabBarAccessoryViewController:` in `macos.rs`, the wrapped `window:willUseFullScreenPresentationOptions:` in `titlebar.rs`) can only be judged live: AppKit re-applies state on its run loop. Recheck after a resize, a tab switch, entering and leaving fullscreen.
 - When something looks broken, `git stash` and check the baseline before blaming your change.
 
 ## Evidence
