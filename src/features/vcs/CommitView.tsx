@@ -316,13 +316,18 @@ export function nodeMenu(
           { kind: "separator" as const },
         ]
       : []),
-    {
-      label: "Commit File…",
-      icon: "commit",
-      disabled: !files.some((f) => groupOf(f) === "changes"),
-      run: () => commitFiles(paths),
-    },
-    { kind: "separator" },
+    // With the staging area a commit takes the whole index, so it cannot commit only these files.
+    ...(isStagingArea()
+      ? []
+      : [
+          {
+            label: "Commit File…",
+            icon: "commit" as const,
+            disabled: !files.some((f) => groupOf(f) === "changes"),
+            run: () => commitFiles(paths),
+          },
+          { kind: "separator" as const },
+        ]),
     // In `dialog` mode an editor tab would sit behind the modal Commit dialog (#1863):
     // open the diff in a front dialog, like double-click does.
     opts?.mode === "dialog" && opts.roots && first
