@@ -2,7 +2,7 @@
 import { create } from "zustand";
 import { call, commands } from "@/platform/ipc";
 import type { Commit } from "@/bindings";
-import type { CheckState } from "./changes";
+import type { CheckState, GroupId } from "./changes";
 import type { CommitProblem } from "./commitChecks";
 import { currentRepo, useVcs } from "./store";
 
@@ -34,6 +34,8 @@ interface CommitState {
   selection: string[];
   /** Keys of the selected tree nodes: which staging side of a partially staged file. */
   selectionKeys: string[];
+  /** The selected node when it is a single file node: its group picks the index side the preview shows. */
+  selectedFile: { path: string; group: GroupId } | null;
   /** Bumped to focus the message field. */
   focusTick: number;
   /** Bumped to open the commit message history popup. */
@@ -67,6 +69,7 @@ export const useCommit = create<CommitState>(() => ({
   excludedHunks: new Map(),
   selection: [],
   selectionKeys: [],
+  selectedFile: null,
   focusTick: 0,
   historyTick: 0,
   checkProblems: [],
@@ -309,6 +312,7 @@ export function installPreparedMessage(): () => void {
         excludedHunks: new Map(),
         selection: [],
         selectionKeys: [],
+        selectedFile: null,
         tab: "changes",
         selectedList: null,
         selectedShelf: null,
