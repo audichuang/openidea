@@ -22,6 +22,7 @@ import { lazyComponent } from "@/ui";
 import { commitWindowFocused, registerVcsActions } from "./actions";
 import { installChangelists } from "./changelists";
 import { registerHistoryActions, trackOperationContext } from "./historyActions";
+import { trackStagingContext } from "./staging";
 import { registerClipActions } from "./clip";
 import { registerLogPaneActions } from "./logPaneActions";
 import {
@@ -279,6 +280,7 @@ export function activate(): () => void {
     registerLocalHistoryActions(),
     installChangelists(),
     trackOperationContext(),
+    trackStagingContext(),
     registerCompareActions(),
     registerMergeActions(),
     trackTitleItem(),
