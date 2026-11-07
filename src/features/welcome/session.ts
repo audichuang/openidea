@@ -156,6 +156,9 @@ export function cancelReopen() {
   rememberSession(null);
   windowProject(null);
   useSession.setState({ reopening: null });
+  // This window now starts on welcome: window groups waiting for that need not wait for the
+  // abandoned attempt (an unreachable SSH host only gives up after its timeout).
+  startupProjectDecided();
   // A local open can't be interrupted; `reopen` closes it again once it finishes.
   if (useRemoteProgress.getState().location) {
     useRemoteProgress.setState({ progress: null, location: null });
