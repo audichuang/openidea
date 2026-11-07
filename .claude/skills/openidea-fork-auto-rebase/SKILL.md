@@ -94,7 +94,7 @@ develop 一移動（含已在 HEAD 不重推的情況）就列出這次 rebase �
 
 ## 6. 發版
 
-1. 先查要發的 sha 是否已有 tag：`git ls-remote --tags fork "refs/tags/vNEW-fork.*"` 裡有指向它的（annotated tag 看 `^{}` 那行），代表前一次 run 推完 tag 後死了：沿用那個 tag，跳到第 4 點看它的 fork-release run（失敗就 `gh run rerun <id>`；找不到這個 tag 的 run 就寫進通知交人；fork-release 也會在 develop push 與每週排程跑候選版，那些 run 不算這個 tag 的發版），不要再發新 N。沒有才算 N：最大的 N 加一，沒有就 1。
+1. 先查要發的 sha 是否已有 tag：`git ls-remote --tags fork "refs/tags/vNEW-fork.*"` 裡有指向它的（annotated tag 看 `^{}` 那行），代表前一次 run 推完 tag 後死了：沿用那個 tag，先做第 3 點結尾的 workflow 檢查（前一次 run 可能死在 disable 之前），再跳到第 4 點看它的 fork-release run（失敗就 `gh run rerun <id>`；找不到這個 tag 的 run 就寫進通知交人；fork-release 也會在 develop push 與每週排程跑候選版，那些 run 不算這個 tag 的發版），不要再發新 N。沒有才算 N：最大的 N 加一，沒有就 1。
 2. 寫 release notes（繁體中文，使用者看得到的變化；不寫 commit 雜訊）存成 `$MAIN/.rebase-review/notes.md`：
    - 第一行：`基於上游 vNEW（上一版基於 vOLD）`
    - 上游這次的重點：讀 `gh release view <tag> -R l0ng-ai/openidea --json body` 裡 vOLD 之後到 vNEW 的每一版，挑使用者看得到的改動，每項一行
