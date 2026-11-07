@@ -1812,6 +1812,33 @@ mod tests {
         assert_eq!(counts.singleton_groups, 1, "Darwin's zombie-only EPERM: {counts:?}");
     }
 
+    /// Registering the exit watch fails with ESRCH as soon as the root starts
+    /// exiting, while another of its threads may still be spawning a child
+    /// into the group. That is not a NOTE_EXIT, so EPERM must still go
+    /// through the `ps` inspection instead of the singleton snapshot.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn darwin_registration_esrch_does_not_skip_the_ps_inspection() {
+        let _s = serial();
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "exit 3"]);
+        let mut proc = ManagedChild::spawn(cmd, "exit 3", false, &RunOptions::default()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ps_stat(proc.id()).starts_with('Z') {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(TICK);
+        }
+        // Re-register on the zombie: the kernel answers ESRCH, the state a
+        // watch registered mid-exit is left in.
+        proc.watch = exit_watch::ExitWatch::new(proc.id()).unwrap();
+        assert!(proc.watch.exited().unwrap(), "registration on a zombie reports it exited");
+        PROCESS_COUNTS.set(Default::default());
+        assert_eq!(proc.finish().unwrap().unwrap().code(), Some(3));
+        let counts = PROCESS_COUNTS.get();
+        assert_eq!(counts.singleton_groups, 0, "registration ESRCH took the fast path: {counts:?}");
+        assert_eq!(counts.ps_spawns, 1, "{counts:?}");
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn darwin_group_snapshot_does_not_hide_a_live_descendant() {
