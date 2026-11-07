@@ -16,7 +16,17 @@ describe("New menu templates by directory kind", () => {
   it("leads with the JVM templates in a Java package and moves other languages aside", () => {
     const { primary, common, other } = newMenuTemplates(MENU_TEMPLATES, "jvm");
     expect(ids(primary)).toEqual(["java", "kotlin", "package-info"]);
-    expect(ids(other)).toEqual(["rust", "typescript", "tsx", "javascript", "python", "go", "go-mod"]);
+    expect(ids(other)).toEqual([
+      "rust",
+      "typescript",
+      "tsx",
+      "javascript",
+      "python",
+      "go",
+      "go-mod",
+      "php",
+      "php-class",
+    ]);
     expect(ids(common)).toEqual([
       "html",
       "markdown",
@@ -34,7 +44,18 @@ describe("New menu templates by directory kind", () => {
   it("leads with Python File in a Python package and hides package-info", () => {
     const { primary, common, other } = newMenuTemplates(MENU_TEMPLATES, "python");
     expect(ids(primary)).toEqual(["python"]);
-    expect(ids(other)).toEqual(["rust", "typescript", "tsx", "javascript", "go", "go-mod", "java", "kotlin"]);
+    expect(ids(other)).toEqual([
+      "rust",
+      "typescript",
+      "tsx",
+      "javascript",
+      "go",
+      "go-mod",
+      "php",
+      "php-class",
+      "java",
+      "kotlin",
+    ]);
     expect(ids(common)).not.toContain("package-info");
   });
 
