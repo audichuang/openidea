@@ -20,12 +20,13 @@ ws.onmessage = (event) => {
   const reply = JSON.parse(String(event.data));
   if (reply.id !== "1") return;
   clearTimeout(timer);
+  // process.exit right after console.log truncates a large reply on a piped stdout; exit once it is flushed.
   if (!reply.success) {
-    console.log("ERROR", reply.error);
-    process.exit(1);
+    process.stdout.write(`ERROR ${reply.error}\n`, () => process.exit(1));
+    return;
   }
-  console.log(typeof reply.data === "string" ? reply.data : JSON.stringify(reply.data));
-  process.exit(0);
+  const text = typeof reply.data === "string" ? reply.data : JSON.stringify(reply.data);
+  process.stdout.write(`${text}\n`, () => process.exit(0));
 };
 ws.onerror = (event) => {
   console.error("websocket error", event.message ?? "");
