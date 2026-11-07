@@ -296,19 +296,30 @@ describe("Agents settings page", () => {
     const backend = new FakeBackend();
     const onChanged = vi.fn();
     backend.registry = { agents: [{ ...AMP, installing: true }, CLINE], warning: null };
-    renderRegistry(<AgentRegistryPage onChanged={onChanged} backend={backend} />);
-    await waitFor(() => expect(row("Amp")).toBeInTheDocument());
-    expect(within(row("Amp")).getByText("Installing Amp in the background…")).toBeInTheDocument();
-    // It is stopped from the background tasks, and nothing else starts meanwhile.
-    for (const name of ["Cancel", "Install", "Remove"]) {
-      expect(within(row("Amp")).queryByRole("button", { name })).toBeNull();
-    }
-    expect(within(row("Cline")).getByRole("button", { name: "Update" })).toBeDisabled();
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const { unmount } = renderRegistry(<AgentRegistryPage onChanged={onChanged} backend={backend} />);
+    try {
+      await act(async () => {});
+      expect(row("Amp")).toBeInTheDocument();
+      expect(within(row("Amp")).getByText("Installing Amp in the background…")).toBeInTheDocument();
+      // It is stopped from the background tasks, and nothing else starts meanwhile.
+      for (const name of ["Cancel", "Install", "Remove"]) {
+        expect(within(row("Amp")).queryByRole("button", { name })).toBeNull();
+      }
+      expect(within(row("Cline")).getByRole("button", { name: "Update" })).toBeDisabled();
 
-    backend.registry = { agents: [{ ...AMP, installed: AMP.version }, CLINE], warning: null };
-    await waitFor(() => expect(within(row("Amp")).getByText("Installed")).toBeInTheDocument(), { timeout: 4000 });
-    expect(onChanged).toHaveBeenCalledTimes(1);
-    expect(within(row("Cline")).getByRole("button", { name: "Update" })).toBeEnabled();
+      backend.registry = { agents: [{ ...AMP, installed: AMP.version }, CLINE], warning: null };
+      await act(() => vi.advanceTimersByTimeAsync(1499));
+      expect(within(row("Amp")).getByText("Installing Amp in the background…")).toBeInTheDocument();
+      expect(onChanged).not.toHaveBeenCalled();
+      await act(() => vi.advanceTimersByTimeAsync(1));
+      expect(within(row("Amp")).getByText("Installed")).toBeInTheDocument();
+      expect(onChanged).toHaveBeenCalledTimes(1);
+      expect(within(row("Cline")).getByRole("button", { name: "Update" })).toBeEnabled();
+    } finally {
+      unmount();
+      vi.useRealTimers();
+    }
   });
 
   it("removes an installed agent", async () => {
