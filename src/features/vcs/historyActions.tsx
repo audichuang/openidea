@@ -509,10 +509,10 @@ export function registerHistoryActions(): () => void {
       title: "Commit Changelist…",
       category: "Git",
       icon: "commit",
-      when: VCS,
+      // With the staging area a commit takes the whole index, not one list's changes.
+      when: "vcsAvailable && !vcsStagingArea",
       run: ({ arg }) => {
-        commitChangelist(listArg(arg) ?? useChangelists.getState().state.active);
-        openCommit();
+        if (commitChangelist(listArg(arg) ?? useChangelists.getState().state.active)) openCommit();
       },
     },
 
