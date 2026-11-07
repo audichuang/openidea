@@ -2292,7 +2292,9 @@ mod tests {
     fn check_group_liveness_helper_closes_stdout_then_hangs_times_out_and_kills() {
         let _s = serial();
         let _inj = InjectionGuard;
-        let timeout = Duration::from_secs(2);
+        // The deadline starts at spawn: sh must reach `exec 1>&-` first, which
+        // has taken seconds on loaded macOS runners.
+        let timeout = Duration::from_secs(5);
         TEST_PS_TIMEOUT.set(timeout);
         test_override_ps_helper(Some(vec![
             "sh".to_string(),
