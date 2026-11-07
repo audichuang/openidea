@@ -89,7 +89,7 @@ describe("staging area commit", () => {
   it("commits the index as it is: no staging or unstaging, only staged files", () => {
     const plan = stagingPlan(status);
     expect(plan.stage).toEqual([]);
-    expect(plan.unstage).toEqual([]);
+    expect(plan.exclude).toEqual([]);
     expect(plan.partial).toEqual([]);
     expect(plan.included.map((f) => f.relPath)).toEqual(["src/Partial.kt", "src/New.kt", "Gone.kt"]);
     expect(stagedFiles([fs("x", null, "modified")])).toEqual([]);
