@@ -108,6 +108,7 @@ import {
   stagePaths,
   stagedFiles,
   stagingDiffData,
+  stagingGroups,
   unstagePaths,
   useStagingArea,
 } from "./staging";
@@ -250,9 +251,12 @@ function usePreviewData(): DiffData | null {
   const staging = useStagingArea();
   const path = useCommit((s) => (s.selection.length === 1 ? s.selection[0] : null));
   const selectedFile = useCommit((s) => s.selectedFile);
+  const untrackedInUnstaged = useCommit((s) => s.untrackedInUnstaged);
   const fs = useVcs((s) => (selectedFile ? s.status.find((f) => f.path === selectedFile.path) : undefined));
   if (!staging) return path ? workingDiffData(path) : null;
-  return selectedFile && fs ? fileDiffData(selectedFile.path, fs, selectedFile.group, true) : null;
+  // The node must still be there: after Stage / Unstage the file sits under the other group.
+  const live = selectedFile && fs && stagingGroups(fs, untrackedInUnstaged).includes(selectedFile.group);
+  return live ? fileDiffData(selectedFile.path, fs, selectedFile.group, true) : null;
 }
 
 /** Context menu of a change list's header: the list's own actions, then the bulk ones on its files. */
@@ -672,6 +676,28 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
     return [m, up] as const;
   }, [roots]);
 
+  const applySelection = (sel: Set<string>) => {
+    setSelected(sel);
+    const nodes = [...sel].map((k) => byKey.get(k)).filter((n): n is ChangeNode => !!n);
+    useCommit.setState({
+      selection: filesOf(nodes).map((f) => f.path),
+      selectionKeys: [...sel],
+      selectedFile:
+        nodes.length === 1 && nodes[0]!.type === "file" && nodes[0]!.files[0]
+          ? { path: nodes[0]!.files[0].path, group: nodes[0]!.group }
+          : null,
+      selectedList: nodes.find((n) => n.changelist)?.changelist ?? null,
+    });
+  };
+
+  // With the staging area Stage / Unstage moves a file to the other group: drop the rows
+  // that are gone, so the preview does not keep showing the side the file left.
+  useEffect(() => {
+    if (!staging || [...selected].every((k) => byKey.has(k))) return;
+    applySelection(new Set([...selected].filter((k) => byKey.has(k))));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only a new tree removes rows
+  }, [byKey]);
+
   const [nodeToReveal, setNodeToReveal] = useState<{ key: string } | null>(null);
   const revealNode = useCallback(
     (node: ChangeNode) => {
@@ -871,19 +897,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
           expanded={expanded}
           onExpandedChange={(_next, node, open) => override([node.key], open)}
           selected={selected}
-          onSelectionChange={(sel) => {
-            setSelected(sel);
-            const nodes = [...sel].map((k) => byKey.get(k)).filter((n): n is ChangeNode => !!n);
-            useCommit.setState({
-              selection: filesOf(nodes).map((f) => f.path),
-              selectionKeys: [...sel],
-              selectedFile:
-                nodes.length === 1 && nodes[0]!.type === "file" && nodes[0]!.files[0]
-                  ? { path: nodes[0]!.files[0].path, group: nodes[0]!.group }
-                  : null,
-              selectedList: nodes.find((n) => n.changelist)?.changelist ?? null,
-            });
-          }}
+          onSelectionChange={applySelection}
           onActivate={(n) => openNode(n, roots, staging)}
           onContextMenu={(node, sel, e: MouseEvent) => {
             if (!node) return;
