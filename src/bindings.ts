@@ -225,6 +225,18 @@ export const commands = {
 	clipCopyBranchSeries: (repo: string, branch: string, base: string | null, full: boolean) => typedError<ClipBranchSeries, IdeError>(__TAURI_INVOKE("clip_copy_branch_series", { repo, branch, base, full })),
 	/**  Paste Branch Commits: restores an mbox as the new branch `name` (`git am --3way`). */
 	clipPasteBranchSeries: (repo: string, text: string, name: string, onHead: boolean) => typedError<ClipBranchRestore, IdeError>(__TAURI_INVOKE("clip_paste_branch_series", { repo, text, name, onHead })),
+	/**  Stash entries with the commit each records and the commit it was made on. */
+	graphStashes: (repo: string | null) => typedError<GraphStash[], IdeError>(__TAURI_INVOKE("graph_stashes", { repo })),
+	/**  Staged, unstaged, untracked and conflicted counts of `repo`'s working tree. */
+	graphWorkingState: (repo: string | null) => typedError<GraphWorkingState, IdeError>(__TAURI_INVOKE("graph_working_state", { repo })),
+	graphReflog: (repo: string | null, reference: string, limit: number) => typedError<GraphReflogEntry[], IdeError>(__TAURI_INVOKE("graph_reflog", { repo, reference, limit })),
+	graphAuthorStats: (repo: string | null) => typedError<GraphAuthorStat[], IdeError>(__TAURI_INVOKE("graph_author_stats", { repo })),
+	/**  Every file of `rev` (`git ls-tree -r`). */
+	graphTree: (repo: string | null, rev: string) => typedError<GraphTreeEntry[], IdeError>(__TAURI_INVOKE("graph_tree", { repo, rev })),
+	graphBisectState: (repo: string | null) => typedError<GraphBisectState, IdeError>(__TAURI_INVOKE("graph_bisect_state", { repo })),
+	graphBisect: (repo: string | null, op: GraphBisectOp) => typedError<GraphBisectState, IdeError>(__TAURI_INVOKE("graph_bisect", { repo, op })),
+	/**  Tag deletion and push, and a branch's upstream. */
+	graphRefOp: (repo: string | null, op: GraphRefOp) => typedError<null, IdeError>(__TAURI_INVOKE("graph_ref_op", { repo, op })),
 	/**  Absolute paths on the clipboard, empty when it holds no file list. */
 	clipboardFileList: () => typedError<string[], IdeError>(__TAURI_INVOKE("clipboard_file_list")),
 	/**  Whether the clipboard holds files: cheap, for the Paste item's enabled state. */
@@ -4376,6 +4388,62 @@ export type GradleTask = {
 	/**  Lower-case group (`build`, `build setup`, `other`). */
 	group: string,
 	description: string | null,
+};
+
+export type GraphAuthorStat = {
+	name: string,
+	email: string,
+	commits: number,
+};
+
+export type GraphBisectOp = { op: "start"; bad: string; good: string } | { op: "good"; rev: string } | { op: "bad"; rev: string } | { op: "skip"; rev: string } | { op: "reset" };
+
+export type GraphBisectState = {
+	active: boolean,
+	/**  The commit git checked out for the next verdict. */
+	current: string | null,
+	/**  Set once git names the first bad commit. */
+	culprit: string | null,
+	/**  git's last message. */
+	output: string,
+};
+
+export type GraphRefOp = { op: "deleteTag"; name: string } | { op: "pushTag"; remote: string; name: string } | { op: "deleteRemoteTag"; remote: string; name: string } | { op: "setUpstream"; branch: string; upstream: string } | { op: "unsetUpstream"; branch: string };
+
+export type GraphReflogEntry = {
+	id: string,
+	/**  `HEAD@{0}`. */
+	selector: string,
+	/**  `commit: message`, `checkout: moving from a to b`… */
+	action: string,
+	timeMs: number | null,
+};
+
+/**  A stash entry with the commit it records and the commit it was made on. */
+export type GraphStash = {
+	index: number,
+	id: string,
+	/**  The commit HEAD pointed at when the stash was made. */
+	base: string,
+	message: string,
+	timeMs: number | null,
+};
+
+export type GraphTreeEntry = {
+	/**  Repository-relative, `/`-separated. */
+	path: string,
+	/**  `blob`, `commit` (submodule) or `tree`. */
+	kind: string,
+	/**  Bytes; null for submodules. */
+	size: number | null,
+};
+
+/**  Counts for the graph's uncommitted-changes row. */
+export type GraphWorkingState = {
+	staged: number,
+	unstaged: number,
+	untracked: number,
+	conflicted: number,
 };
 
 /**  HEAD before and after a history rewrite, for its Undo. */
