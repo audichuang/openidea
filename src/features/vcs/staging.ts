@@ -5,7 +5,13 @@
  * and Commit commits exactly what is staged.
  */
 import type { ChangeKind, FileStatus } from "@/bindings";
-import { useWorkflowSettings, workflowSettings, type WorkflowSettings } from "@/platform/workflowSettings";
+import { clearContext, setContext } from "@/platform/context";
+import {
+  onWorkflowSettingsChange,
+  useWorkflowSettings,
+  workflowSettings,
+  type WorkflowSettings,
+} from "@/platform/workflowSettings";
 import { GROUP_LABEL, renamedFromPath, repoNodes, type ChangeNode, type CommitPlan, type GroupId } from "./changes";
 import type { DiffData, DiffSide } from "./diffInput";
 import { effectiveKind, kindOf, stripSlash } from "./model";
@@ -15,6 +21,18 @@ const stagingOn = (w: WorkflowSettings) => w.vcs.git.stagingArea && w.vcs.commit
 
 export const isStagingArea = () => stagingOn(workflowSettings());
 export const useStagingArea = () => useWorkflowSettings(stagingOn);
+
+const STAGING_CONTEXT = "vcsStagingArea";
+
+/** Keeps `vcsStagingArea` in sync for `when` clauses (actions that narrow a commit are off with it). */
+export function trackStagingContext(): () => void {
+  setContext(STAGING_CONTEXT, isStagingArea());
+  const off = onWorkflowSettingsChange(stagingOn, (on) => setContext(STAGING_CONTEXT, on));
+  return () => {
+    off();
+    clearContext(STAGING_CONTEXT);
+  };
+}
 
 /** Changes the index can hold on either side (not conflicts, untracked or ignored files). */
 const indexed = (k: ChangeKind | null) => !!k && k !== "untracked" && k !== "ignored" && k !== "conflicted";
