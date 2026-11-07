@@ -352,7 +352,9 @@ mod exit_watch {
             Ok(self.exited)
         }
 
-        pub(super) fn has_exited(&self) -> bool {
+        /// Exit seen by `waitid`, which reports only once every thread is
+        /// gone, so no member can still be spawned into the group.
+        pub(super) fn exit_notified(&self) -> bool {
             self.exited
         }
     }
@@ -370,6 +372,8 @@ mod exit_watch {
     pub(super) struct ExitWatch {
         kq: Kqueue,
         exited: bool,
+        /// A NOTE_EXIT was delivered, as opposed to registration failing.
+        notified: bool,
     }
 
     const NOW: timespec = timespec { tv_sec: 0, tv_nsec: 0 };
@@ -384,23 +388,28 @@ mod exit_watch {
             let add = event(pid as usize, EventFlag::EV_ADD | EventFlag::EV_ONESHOT, FilterFlag::NOTE_EXIT);
             let exited = match kq.kevent(&[add], &mut [], Some(NOW)) {
                 Ok(_) => false,
-                // Already a zombie: exited, still unreaped.
+                // Exiting or already a zombie, still unreaped. ESRCH comes as
+                // soon as the exit starts, while another thread may still be
+                // spawning into the group, so it is not a NOTE_EXIT.
                 Err(Errno::ESRCH) => true,
                 Err(e) => return Err(e.into()),
             };
-            Ok(Self { kq, exited })
+            Ok(Self { kq, exited, notified: false })
         }
 
         pub(super) fn exited(&mut self) -> io::Result<bool> {
             if !self.exited {
                 let mut out = [event(0, EventFlag::empty(), FilterFlag::empty())];
-                self.exited = self.kq.kevent(&[], &mut out, Some(NOW))? > 0;
+                self.notified = self.kq.kevent(&[], &mut out, Some(NOW))? > 0;
+                self.exited = self.notified;
             }
             Ok(self.exited)
         }
 
-        pub(super) fn has_exited(&self) -> bool {
-            self.exited
+        /// NOTE_EXIT fires only once every thread is gone, so no member can
+        /// still be spawned into the group.
+        pub(super) fn exit_notified(&self) -> bool {
+            self.notified
         }
     }
 }
@@ -729,7 +738,8 @@ mod tree {
         }
 
         /// SIGKILL to the group. The caller guarantees the root is
-        /// unreaped, so the group id is still ours.
+        /// unreaped, so the group id is still ours. `root_exited`: the
+        /// root's exit was notified (NOTE_EXIT / `waitid`), not just begun.
         pub(super) fn kill_group(&mut self, root_exited: bool) -> io::Result<()> {
             let pgid = i32::try_from(self.child.id()).map_err(io::Error::other)?;
             #[cfg(not(any(target_os = "macos", test)))]
@@ -1385,7 +1395,7 @@ impl ManagedChild {
                     ));
                 }
                 #[cfg(unix)]
-                let killed = self.tree.kill_group(self.watch.has_exited());
+                let killed = self.tree.kill_group(self.watch.exit_notified());
                 #[cfg(windows)]
                 let killed = self.tree.kill_group();
                 match killed {
