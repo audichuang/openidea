@@ -1800,8 +1800,11 @@ mod tests {
     fn darwin_normal_completion_confirms_group_without_ps() {
         let _s = serial();
         let mut cmd = Command::new("sh");
-        cmd.args(["-c", "exit 3"]);
-        let mut proc = ManagedChild::spawn(cmd, "exit 3", false, &RunOptions::default()).unwrap();
+        // Blocks on stdin so the exit watch is registered before the root
+        // exits: an early exit hits ESRCH and rightly takes the ps path.
+        cmd.args(["-c", "read -r line; exit 3"]);
+        let mut proc = ManagedChild::spawn(cmd, "exit 3", true, &RunOptions::default()).unwrap();
+        drop(proc.take_stdin());
         let deadline = Instant::now() + Duration::from_secs(10);
         while !proc.poll_exit().unwrap() {
             assert!(Instant::now() < deadline);
@@ -1874,8 +1877,11 @@ mod tests {
     fn root_is_observed_exited_but_stays_unreaped_until_the_group_kill() {
         let _s = serial();
         let mut cmd = Command::new("sh");
-        cmd.args(["-c", "exit 3"]);
-        let mut proc = ManagedChild::spawn(cmd, "sh", false, &RunOptions::default()).unwrap();
+        // Exits only once stdin closes, after the exit watch is registered,
+        // so the exit is observed when it completes, not as it starts.
+        cmd.args(["-c", "read -r line; exit 3"]);
+        let mut proc = ManagedChild::spawn(cmd, "sh", true, &RunOptions::default()).unwrap();
+        drop(proc.take_stdin());
         let pid = proc.id();
         let deadline = Instant::now() + Duration::from_secs(10);
         while !proc.poll_exit().unwrap() {
