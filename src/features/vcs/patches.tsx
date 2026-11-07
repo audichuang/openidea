@@ -59,9 +59,7 @@ export async function copyChangesAsPatch(paths: readonly string[]) {
     tx("Create patch"),
     async () => {
       const source: PatchSource = { from: "changes", paths: files.map((f) => stripSlash(f.path)), reverse: false };
-      // Upstream #1701 Copy as Patch; moving it to the backend clipboard is a fork follow-up.
-      // oxlint-disable-next-line no-restricted-properties
-      await navigator.clipboard.writeText(await call(commands.vcsCreatePatch(currentRepoRoot(), source)));
+      await writePlainText(await call(commands.vcsCreatePatch(currentRepoRoot(), source)));
     },
     { success: "Patch copied to the clipboard", refresh: false },
   );
