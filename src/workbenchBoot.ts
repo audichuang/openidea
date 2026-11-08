@@ -5,7 +5,6 @@ import { installKeyboardDispatcher } from "./platform/keymap";
 import { loadSettings, useProject } from "./platform/project";
 import { mountWindowRoot } from "./windowBoot";
 import { activateWorkbench } from "./workbench/activate";
-import { installFullscreenEscapeGuard } from "./workbench/fullscreenEscape";
 import { Workbench } from "./workbench/Workbench";
 
 export async function bootWorkbenchWindow(): Promise<void> {
@@ -17,8 +16,6 @@ export async function bootWorkbenchWindow(): Promise<void> {
       console.warn("cannot load startup settings", error);
     }
   }
-  // Before the features' and the dispatcher's key handlers: it wraps the Escape they see.
-  installFullscreenEscapeGuard();
   activateWorkbench();
   // `vite build --mode perf` is a production bundle for the performance harness (`perf/`).
   const perfBuild = import.meta.env.MODE === "perf";
