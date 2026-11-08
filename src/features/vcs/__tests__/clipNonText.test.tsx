@@ -111,7 +111,7 @@ describe("copyClip non-text decision", () => {
     expect(call).toHaveBeenCalledTimes(2);
     expect(call.mock.calls[1]![0]).toMatchObject({ nonText: "include" });
     expect(copied).toHaveBeenCalledWith("INCLUDED");
-    expect(notify.mock.calls[0]![0].title).toContain("2 non-text files copied as Base64");
+    expect(notify.mock.calls[0]![0].title).toContain("Non-text files copied as Base64: 2");
   });
 
   it("Exclude with only a size placeholder left is Nothing to copy", async () => {
@@ -152,25 +152,41 @@ describe("NonTextDialog", () => {
         onChoose={() => {}}
       />,
     );
-    expect(screen.getByText("14 non-text files, raw 28 KB")).toBeTruthy();
+    expect(screen.getByText("Non-text files: 14, raw 28 KB")).toBeTruthy();
     expect(screen.getAllByRole("listitem")).toHaveLength(10);
     expect(screen.getByText("and 4 more")).toBeTruthy();
-    expect(screen.getByText("3 non-text files are over the size limit and will not be copied.")).toBeTruthy();
+    expect(screen.getByText("Non-text files over the size limit (not copied): 3")).toBeTruthy();
   });
 
   it("pads its summary lines and mentions unread files over both limits", () => {
     const { container } = render(
       <NonTextDialog summary={summary({ ...found, unreadOverLimitCount: 2 })} onChoose={() => {}} />,
     );
-    expect(screen.getByText("2 files over 2.0 MB were not read and are copied as size placeholders.")).toBeTruthy();
-    const body = screen.getByText("2 non-text files, raw 4.9 KB").parentElement!;
+    expect(screen.getByText("Not read, over 2.0 MB (copied as size placeholders): 2")).toBeTruthy();
+    const body = screen.getByText("Non-text files: 2, raw 4.9 KB").parentElement!;
     expect(body.className).toMatch(/nonText/);
     expect(container.ownerDocument.body.contains(body)).toBe(true);
     // CSS modules are not applied in jsdom: the body rule itself must pad it.
     const css = readFileSync(`${process.cwd()}/src/features/vcs/clip.module.css`, "utf8");
     expect(/\.nonText \{[^}]*padding: 0 var\(--space-2\)/.test(css)).toBe(true);
     render(<NonTextDialog summary={found} onChoose={() => {}} />);
-    expect(screen.getAllByText(/were not read/)).toHaveLength(1);
+    expect(screen.getAllByText(/Not read, over/)).toHaveLength(1);
+  });
+
+  it("focuses Exclude when Include is unavailable, Include otherwise", () => {
+    const { unmount } = render(
+      <NonTextDialog summary={summary({ ...found, exceedsPayloadCap: true })} onChoose={() => {}} />,
+    );
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Exclude" }));
+    unmount();
+    render(<NonTextDialog summary={found} onChoose={() => {}} />);
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Include" }));
+  });
+
+  it("keeps the size on one line and the file name from shrinking (CSS)", () => {
+    const css = readFileSync(`${process.cwd()}/src/features/vcs/clip.module.css`, "utf8");
+    expect(/\.nonTextRow > \.note \{[^}]*flex: none;[^}]*white-space: nowrap/.test(css)).toBe(true);
+    expect(/\.nodeName \{[^}]*flex: 0 0 auto;[^}]*max-width: 70%/.test(css)).toBe(true);
   });
 
   it("reports the button pressed", () => {
