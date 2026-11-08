@@ -191,6 +191,9 @@ pub fn copy_selection_detailed(
         }
         limit = limit.saturating_mul(2);
     };
+    let mut plan = plan;
+    // The walk stopped at the limit: files it never listed are left out too.
+    plan.non_text.limit_left_out_lower_bound = expanded.truncated;
     let skipped = plan.skipped_unreadable_count + plan.skipped_file_size_count + expanded.skipped;
     let unreadable_paths: Vec<String> = plan
         .skipped_unreadable_paths
