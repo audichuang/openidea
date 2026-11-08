@@ -241,8 +241,8 @@ export function NonTextDialog({
         {summary.headerCannotBeEscaped && (
           <div className={styles.warn} role="alert">
             <T>
-              Include is not available: the header format has no fixed text before $FILE_PATH, so Base64 lines would be
-              read as file headers.
+              Include is not available: the header format matches the placeholder or Base64 lines even when escaped, so
+              they would be read as file headers.
             </T>
           </div>
         )}
