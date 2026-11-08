@@ -1,4 +1,5 @@
 import clsx from "clsx";
+import { useLayoutEffect, useRef, useState } from "react";
 import styles from "./clip.module.css";
 
 /** How much of a long file name's end stays visible when its middle is elided. */
@@ -34,11 +35,30 @@ export function splitFirstSegment(dir: string): [string, string] {
  */
 export function NameText({ name }: { name: string }) {
   const [head, tail] = splitTail(name);
+  const headRef = useRef<HTMLSpanElement>(null);
+  const [clipped, setClipped] = useState(false);
+  // The head's own `text-overflow` ellipsis leaves a blank of up to one character before the tail. While the
+  // head is cut, it is clipped at the pixel instead and the tail draws the ellipsis, so the name reads as one.
+  useLayoutEffect(() => {
+    const el = headRef.current;
+    if (!el) return;
+    const measure = () => setClipped(el.scrollWidth > el.clientWidth);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [head, tail]);
   if (!tail) return <>{name}</>;
+  const flag = clipped ? "" : undefined;
   return (
     <>
-      <span className={styles.nameHead}>{head}</span>
-      <span className={styles.nameTail}>{tail}</span>
+      <span ref={headRef} className={styles.nameHead} data-clipped={flag}>
+        {head}
+      </span>
+      <span className={styles.nameTail} data-clipped={flag}>
+        {tail}
+      </span>
     </>
   );
 }
