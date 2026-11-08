@@ -231,6 +231,7 @@ fn build_cases() {
                     content: f.content,
                     skipped_reason: f.skipped_reason,
                     change_type: f.change_type.map(|t| ChangeType::from_label(&t).expect("known label")),
+                    non_text: None,
                 })
                 .collect(),
         };
