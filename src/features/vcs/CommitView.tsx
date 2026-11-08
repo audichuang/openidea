@@ -1017,6 +1017,9 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                   },
                 }),
             };
+            // IDEA's staging area: a repository's staged changes can be left out of the commit.
+            const stagingRootCheck =
+              staging && mode !== "local" && n.group === "staged" && n.type === "dir" && !!n.repo;
             return (
               <span
                 className={clsx(styles.nodeRow, n.type === "group" && dropTarget === n.changelist && styles.dropTarget)}
@@ -1030,8 +1033,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                     onToggle={() => toggle(selected.has(n.key) && selected.size > 1 ? selectedNodes() : [n])}
                   />
                 )}
-                {/* IDEA's staging area: a repository's staged changes can be left out of the commit. */}
-                {staging && mode !== "local" && n.group === "staged" && n.type === "dir" && n.repo && (
+                {stagingRootCheck && (
                   <CheckMark
                     checked={!excludedRoots.has(n.repo)}
                     indeterminate={false}
@@ -1043,7 +1045,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                   <Icon
                     name={n.type === "dir" ? (st.expanded ? "folder-open" : "folder") : fileIconName(n.label)}
                     size={16}
-                    className={styles.icon}
+                    className={clsx(styles.icon, stagingRootCheck && styles.repoIcon)}
                   />
                 )}
                 {n.repo && <RepoSwatch root={n.repo} />}
