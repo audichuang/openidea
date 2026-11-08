@@ -1876,25 +1876,6 @@ fn staged_index_spec(toplevel_rel: String) -> String {
     format!(":0:{toplevel_rel}")
 }
 
-/// What [`format::write_payload_file`] adds for `file` after a written line.
-fn payload_file_len(
-    file: &PayloadFile,
-    settings: &Settings,
-    custom: Option<&format::HeaderPattern>,
-) -> Result<usize, TransferError> {
-    let mut counter = format::CountingWriter::default();
-    let mut writer = format::PayloadLineWriter::new_with_written(&mut counter, true);
-    format::write_payload_file(
-        &mut writer,
-        file,
-        &settings.header_format,
-        settings.add_extra_line_between_files,
-        custom,
-    )
-    .map_err(|_| TransferError::UnsafePath("formatting error".into()))?;
-    Ok(counter.count)
-}
-
 fn make_payload_opts<'a, 'f>(
     settings: &'a Settings,
     source_root: Option<&'a str>,
@@ -2020,6 +2001,32 @@ pub fn plan_export(
 /// Cancellation returns `TransferError::Git(GitError::Cancelled)` and never a
 /// partially usable plan.
 pub fn plan_export_with(
+    selection: &ExportSelection,
+    settings: &Settings,
+    max_payload_bytes: Option<usize>,
+    opts: &RunOptions,
+) -> Result<ExportPlan, TransferError> {
+    let mut plan = plan_export_once(selection, settings, max_payload_bytes, opts)?;
+    // What the copy dialog shows is what Include would put on the clipboard: take it from the Include plan
+    // of the same selection, never from an estimate kept while Exclude runs (the two count size
+    // placeholders, unreadable items and the file-count limit alike only because they are one code path).
+    if selection.non_text == NonTextMode::Exclude && (plan.non_text.count() > 0 || plan.non_text.over_limit_count > 0) {
+        let include = selection.clone().with_non_text(NonTextMode::Include);
+        match plan_export_once(&include, settings, max_payload_bytes, opts) {
+            Ok(include) => plan.non_text = include.non_text,
+            // Include cannot be built under the whole-payload limit: the dialog disables it, so only the
+            // size it needs to say so is known; the rest keeps what the Exclude walk found.
+            Err(TransferError::PayloadLimitExceeded { limit, actual, .. }) => {
+                plan.non_text.estimated_include_payload_bytes = actual.max(limit.saturating_add(1));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(plan)
+}
+
+/// One planning pass in the selection's own non-text mode (see [`plan_export_with`]).
+fn plan_export_once(
     selection: &ExportSelection,
     settings: &Settings,
     max_payload_bytes: Option<usize>,
@@ -2166,27 +2173,16 @@ pub fn plan_export_with(
         let mut non_text_file_count = 0usize;
         let mut non_text_summary = NonTextSummary::default();
         let mut skipped_unreadable_paths: Vec<String> = Vec::new();
-        // Exclude: what the non-text entries would add to the payload.
-        let mut include_extra = 0isize;
         let non_text_max = settings.max_non_text_file_bytes();
         non_text_summary.unread_limit_bytes = non_text_max.max((settings.max_file_size_kb * 1024.0) as u64);
 
-        // What an Include copy would do with the same selection, tracked while Exclude runs: non-text files
-        // do not use up the file-count limit under Exclude, so Exclude walks on past Include's cutoff.
-        let mut include_count = 0usize;
-        let mut include_cut_idx: Option<usize> = None;
+        // Where the file-count limit stopped this pass: the files left out start here.
+        let mut limit_cut_idx: Option<usize> = None;
 
         for (idx, item) in selection.items.iter().enumerate() {
             cancelled_err(opts, "plan-export")?;
             let wire_path = wire_path_of(selection, primary.as_ref(), anchor.as_ref(), item);
             let absolute = item.root.path().join(&item.relative_path);
-            if include_cut_idx.is_none()
-                && settings.set_max_file_count
-                && include_count as f64 >= settings.file_count_limit
-            {
-                include_cut_idx = Some(idx);
-            }
-            let past_cut = include_cut_idx.is_some();
 
             // Parity check:
             // File mode (copy.rs): count limit checked BEFORE filtering candidate.
@@ -2194,6 +2190,7 @@ pub fn plan_export_with(
             if matches!(item.source, SourceKind::File) {
                 if settings.set_max_file_count && copied_file_count as f64 >= settings.file_count_limit {
                     file_limit_reached = true;
+                    limit_cut_idx = Some(idx);
                     break;
                 }
                 if !item_passes_filters(selection, settings, primary.as_ref(), anchor.as_ref(), item) {
@@ -2205,6 +2202,7 @@ pub fn plan_export_with(
                 }
                 if settings.set_max_file_count && copied_file_count as f64 >= settings.file_count_limit {
                     file_limit_reached = true;
+                    limit_cut_idx = Some(idx);
                     break;
                 }
             }
@@ -2477,7 +2475,7 @@ pub fn plan_export_with(
                             });
                         }
                     } else if over_per_file {
-                        if file_size > non_text_max && !past_cut {
+                        if file_size > non_text_max {
                             non_text_summary.unread_over_limit_count += 1;
                         }
                         (None, Some(format!("size exceeds limit ({file_size} bytes)")), None, None, None)
@@ -2549,43 +2547,19 @@ pub fn plan_export_with(
             // `content`/`skipped_reason` are today's (Exclude) result. A
             // non-text file is reported either way; Include swaps in its
             // bytes, or a size placeholder when it is over its limit.
-            let mut include_len: Option<usize> = None;
-            // Include would copy this non-text file (it is within its limit).
-            let mut include_copies_non_text = false;
+            let mut excluded_non_text = false;
             let (content, skipped_reason, non_text) = match fact {
                 None => (content, skipped_reason, None),
                 Some(fact) => {
-                    include_copies_non_text = fact.within;
                     let over_reason = format!("size exceeds limit ({} bytes)", fact.size);
-                    let include_file = |skipped_reason: Option<String>| PayloadFile {
-                        path: wire_path.clone(),
-                        change_type: item.change_type,
-                        skipped_reason,
-                        ..Default::default()
-                    };
-                    // Past Include's file-count cutoff the file is not in what Include would copy.
-                    if !past_cut {
-                        if fact.within {
-                            non_text_summary.found(&wire_path, fact.size);
-                        } else {
-                            non_text_summary.over_limit_count += 1;
-                        }
+                    if fact.within {
+                        non_text_summary.found(&wire_path, fact.size);
+                    } else {
+                        non_text_summary.over_limit_count += 1;
                     }
                     match selection.non_text {
                         NonTextMode::Exclude => {
-                            include_len = Some(if past_cut {
-                                0
-                            } else if fact.within {
-                                format::non_text_entry_len(
-                                    &settings.header_format,
-                                    &wire_path,
-                                    item.change_type,
-                                    settings.add_extra_line_between_files,
-                                    fact.size,
-                                )
-                            } else {
-                                payload_file_len(&include_file(Some(over_reason)), settings, custom)?
-                            });
+                            excluded_non_text = true;
                             (content, skipped_reason, None)
                         }
                         NonTextMode::Include if !fact.within => (None, Some(over_reason), None),
@@ -2615,15 +2589,9 @@ pub fn plan_export_with(
 
             // Drop unreadable/binary files (matching copy.rs and gitsrc.rs)
             if skipped_reason.is_none() && content.is_none() && non_text.is_none() {
-                if let Some(len) = include_len {
-                    include_extra += len as isize;
-                }
-                if include_copies_non_text {
-                    include_count += 1;
-                }
                 skipped_unreadable_count += 1;
                 // An excluded non-text file is counted here too, but it is not unreadable.
-                if include_len.is_none() && skipped_unreadable_paths.len() < SKIPPED_PATHS_SHOWN {
+                if !excluded_non_text && skipped_unreadable_paths.len() < SKIPPED_PATHS_SHOWN {
                     skipped_unreadable_paths.push(wire_path.clone());
                 }
                 continue;
@@ -2638,19 +2606,14 @@ pub fn plan_export_with(
             } else if non_text.is_some() {
                 non_text_file_count += 1;
                 copied_file_count += 1;
-                include_count += 1;
             } else if content.as_deref() == Some(UNREADABLE_FILE_MARKER) {
                 skipped_unreadable_count += 1;
-                if include_copies_non_text {
-                    include_count += 1;
-                }
                 // A staged non-text file excluded by the mode carries the marker too, but it is not unreadable.
-                if include_len.is_none() && skipped_unreadable_paths.len() < SKIPPED_PATHS_SHOWN {
+                if !excluded_non_text && skipped_unreadable_paths.len() < SKIPPED_PATHS_SHOWN {
                     skipped_unreadable_paths.push(wire_path.clone());
                 }
             } else {
                 copied_file_count += 1;
-                include_count += 1;
             }
 
             let payload_file =
@@ -2669,12 +2632,6 @@ pub fn plan_export_with(
             .map_err(|_| TransferError::UnsafePath("formatting error".into()))?;
 
             let file_delta = file_counter.count;
-            if past_cut {
-                // Exclude carries it; Include stopped before it.
-                include_extra -= file_delta as isize;
-            } else if let Some(len) = include_len {
-                include_extra += len as isize - file_delta as isize;
-            }
 
             if let Some(max_bytes) = max_payload_bytes {
                 if current_total_bytes + file_delta > max_bytes {
@@ -2693,7 +2650,7 @@ pub fn plan_export_with(
             files.push(payload_file);
         }
 
-        non_text_summary.limit_left_out = include_cut_idx.map_or(0, |i| {
+        non_text_summary.limit_left_out = limit_cut_idx.map_or(0, |i| {
             selection.items[i..]
                 .iter()
                 .filter(|it| item_passes_filters(selection, settings, primary.as_ref(), anchor.as_ref(), it))
@@ -2727,7 +2684,7 @@ pub fn plan_export_with(
 
         let stats = payload_stats(&payload);
         cancelled_err(opts, "serialize-export")?;
-        non_text_summary.estimated_include_payload_bytes = payload.len().saturating_add_signed(include_extra);
+        non_text_summary.estimated_include_payload_bytes = payload.len();
 
         Ok(ExportPlan {
             files,
