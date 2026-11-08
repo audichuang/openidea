@@ -7771,6 +7771,7 @@
   "Non-text file · {size}": "非文本文件 · {size}",
   "Different": "不同",
   "Corrupt non-text file": "损坏的非文本文件",
+  "Corrupt": "已损坏",
   "Copy non-text files?": "要复制非文本文件吗？",
   "The payload with non-text files is over the clipboard size limit": "包含非文本文件的内容超过剪贴板大小上限",
   "Non-text files: {count}, raw {raw}": "非文本文件：{count}，原始大小 {raw}",
