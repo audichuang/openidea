@@ -169,6 +169,11 @@ describe("the file name has layout priority over folders, notes and badges", () 
     expect(container.querySelector("[title]")!.textContent).toBe(`${dir}${name}`);
   });
 
+  it("a cut head is clipped and the tail draws the ellipsis, so the halves read as one name", () => {
+    expect(rule(".nameHead[data-clipped]")).toMatch(/text-overflow:\s*clip/);
+    expect(css).toMatch(/\.nameTail\[data-clipped\]::before\s*\{\s*content:\s*"…"/);
+  });
+
   it("elides a name longer than 20 characters in the middle and keeps a short one whole", () => {
     const long = "alpha-readable-name-28chars.png";
     expect(splitTail(long)).toEqual([long.slice(0, -14), long.slice(-14)]);
@@ -187,10 +192,18 @@ describe("the file name has layout priority over folders, notes and badges", () 
     expect(rule(".nameTail")).toMatch(/flex:\s*none/);
   });
 
-  it("a note and then a badge shrink before the name in a preview row", () => {
-    expect(shrink(".nodeNote")).toBeGreaterThan(shrink(".nodeRow > .badge"));
-    expect(shrink(".nodeRow > .badge")).toBeGreaterThanOrEqual(shrink(".nodeName") * 1_000_000);
-    expect(rule(".nodeRow > .badge")).toMatch(/min-width:\s*0/);
+  it("a badge and a note show whole or not at all in a preview row", () => {
+    // The row wraps and clips its second line: an item that does not fit moves there whole, so none is ever
+    // squeezed (no clipped word, partial number or sliver of padding). The name part is the first item and
+    // the only one that shrinks; the badge comes before the note, so the note drops first.
+    expect(rule(".nodeRow")).toMatch(/flex-wrap:\s*wrap/);
+    expect(rule(".nodeRow")).toMatch(/overflow:\s*hidden/);
+    expect(rule(".nodeMain")).toMatch(/min-width:\s*0/);
+    for (const part of [".nodeRow > .badge", ".nodeNote"]) {
+      expect(rule(part)).toMatch(/flex:\s*none/);
+      expect(rule(part)).toMatch(/white-space:\s*nowrap/);
+      expect(rule(part)).not.toMatch(/overflow/);
+    }
     // No floor above the head and tail: the name may not keep a fixed width that clips its end.
     expect(rule(".nodeName")).toMatch(/min-width:\s*0/);
   });

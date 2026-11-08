@@ -104,8 +104,25 @@
 .treePane > * {
   flex: 1;
 }
+/*
+ * A badge or a size note shows whole or not at all. The row wraps and clips its second line: the check mark
+ * and name (`.nodeMain`, always the first item, so it shrinks and elides) come first, then the badge, then
+ * the note; an item that does not fit whole wraps to the hidden second line instead of being squeezed.
+ */
 .nodeRow {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  align-items: center;
+  column-gap: 6px;
+  row-gap: 40px;
+  height: 22px;
+  overflow: hidden;
+}
+.nodeMain {
+  flex: 0 1 auto;
   min-width: 0;
   display: flex;
   align-items: center;
@@ -127,10 +144,7 @@
   display: flex;
 }
 .nodeNote {
-  flex: 0 1000000000 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex: none;
   white-space: nowrap;
   color: var(--fg-subtle);
 }
@@ -145,6 +159,13 @@
 .nameTail {
   flex: none;
   white-space: nowrap;
+}
+/* While the head is cut it is clipped, not ellipsized, and the tail carries the ellipsis: no blank in between. */
+.nameHead[data-clipped] {
+  text-overflow: clip;
+}
+.nameTail[data-clipped]::before {
+  content: "…";
 }
 /* A path: the folders elide first, down to the first segment and an ellipsis; then the name's head; the tail stays. */
 .pathText {
@@ -174,11 +195,12 @@
 }
 .nodeRow > .badge {
   margin-left: auto;
-  /* A badge drops before the name loses a character, after the note has gone. */
-  flex: 0 1000000 auto;
-  min-width: 0;
-  overflow: hidden;
+  /* Whole or wrapped away (see .nodeRow); the note is the first thing to go. */
+  flex: none;
   white-space: nowrap;
+}
+.nodeRow > .count {
+  margin-left: auto;
 }
 .nodeName[data-action="skip"] {
   color: var(--fg-subtle);
