@@ -419,7 +419,7 @@ describe("Git Graph PR view", () => {
   const openPr = async () => {
     render(<GitGraphEditor />);
     fireEvent.click(screen.getByRole("tab", { name: "PR" }));
-    return screen.findByText(/commits ahead/);
+    return screen.findByText(/ ahead, /);
   };
 
   it("switches between the graph and the PR view, keeping the shared toolbar actions", async () => {
@@ -440,7 +440,7 @@ describe("Git Graph PR view", () => {
 
   it("compares the current branch into main by default, three-dot from the merge base", async () => {
     const summary = await openPr();
-    expect(summary.textContent).toBe("2 commits ahead, 1 behind main");
+    expect(summary.textContent).toBe("Commits: 2 ahead, 1 behind main");
     expect(screen.getByRole("button", { name: "Base Branch" }).textContent).toBe("main");
     expect(screen.getByRole("button", { name: "Head Branch" }).textContent).toBe("feature");
     expect(vcsMergeBase).toHaveBeenCalledWith(REPO, "main", "feature");
