@@ -4849,20 +4849,18 @@ fn test_selection_from_paths_labels_and_explicit_dir_symlink() {
     assert!(plan_file.payload.contains("// clipcode-root: repo_alias"));
     assert!(plan_file.payload.contains("// file: linkdir/s.txt"));
 
-    // 2. Explicitly passed directory symlink `linkdir`:
-    let res_dir = selection_from_paths(&alias_path, &alias_path, &[PathBuf::from("linkdir")]).unwrap();
+    // 2. Explicitly passed directory symlink `linkdir` is never followed: it is named as a symlinked folder
+    // (docs/clipcode/non-text-files.md), next to a file that is carried.
+    let res_dir =
+        selection_from_paths(&alias_path, &alias_path, &[PathBuf::from("linkdir"), PathBuf::from("sub/s.txt")])
+            .unwrap();
     assert_eq!(res_dir.sel.source_root, Some("repo_alias".to_string()));
-    assert_eq!(res_dir.sel.items.len(), 1);
-    assert_eq!(res_dir.sel.items[0].relative_path, "linkdir");
-
-    let expanded_dir = expand_folder_items(res_dir.sel, 100, &cancel).unwrap();
-    assert_eq!(expanded_dir.sel.source_root, Some("repo_alias".to_string()));
-    let dir_rels: Vec<_> = expanded_dir.sel.items.iter().map(|it| it.relative_path.as_str()).collect();
-    assert_eq!(dir_rels, vec!["linkdir/s.txt"]);
-
-    let plan_dir = plan_export(&expanded_dir.sel, &Settings::default(), None).unwrap();
-    assert!(plan_dir.payload.contains("// clipcode-root: repo_alias"));
-    assert!(plan_dir.payload.contains("// file: linkdir/s.txt"));
+    let rels: Vec<_> = res_dir.sel.items.iter().map(|it| it.relative_path.as_str()).collect();
+    assert_eq!(rels, vec!["sub/s.txt"]);
+    assert_eq!((res_dir.skipped, res_dir.detail.symlink_dirs), (1, 1));
+    assert_eq!(res_dir.detail.symlink_dir_paths, vec!["linkdir"]);
+    let alone = selection_from_paths(&alias_path, &alias_path, &[PathBuf::from("linkdir")]);
+    assert!(matches!(alone, Err(TransferError::EmptySelection)));
 }
 
 // ---------------------------------------------------------------------------
