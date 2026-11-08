@@ -336,6 +336,30 @@ describe("Git Graph pseudo rows and panels", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Statistics" }));
     expect(await screen.findByText("Commits: 3, authors: 1")).toBeTruthy();
   });
+
+  it("filters the repository dropdown by typing and picks with Enter", async () => {
+    const roots = ["/work/app", "/work/billing-api", "/work/billing-web"];
+    state = { ...state, roots, repo: roots[0]!, heads: { [roots[0]!]: state.heads[REPO]! } };
+    render(<GitGraphEditor />);
+    await screen.findByText("subject a");
+    fireEvent.click(screen.getByRole("button", { name: "Repository" }));
+    const search = await screen.findByRole("textbox", { name: "Search repositories" });
+    const list = screen.getByRole("listbox", { name: "Repositories" });
+    expect(
+      within(list)
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual(["app", "billing-api", "billing-web"]);
+    fireEvent.change(search, { target: { value: "bweb" } });
+    expect(
+      within(list)
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual(["billing-web"]);
+    fireEvent.keyDown(search, { key: "Enter" });
+    await waitFor(() => expect(useGraphView.getState().repo).toBe("/work/billing-web"));
+    expect(screen.queryByRole("listbox", { name: "Repositories" })).toBeNull();
+  });
 });
 
 describe("graph data helpers", () => {
