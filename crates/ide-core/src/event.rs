@@ -31,8 +31,6 @@ pub enum IdeEvent {
     },
     /// Project window membership or selection changed.
     WindowGroupsChanged,
-    /// A window entered or left full screen, itself or as a member of a full-screen window group.
-    WindowFullscreenChanged,
     ProjectTrustChanged {
         root: crate::IpcPath,
         trusted: bool,
