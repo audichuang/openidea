@@ -592,11 +592,11 @@ impl ExportPlan {
     }
 }
 
-/// Single copy cap for CLI and GUI (32 MiB).
+/// Single copy cap for CLI and GUI (50 MiB).
 ///
 /// Guaranteed to not exceed GUI paste preview budget; exceeding the cap
 /// is a strict error, never silent truncation.
-pub const CLIPBOARD_PAYLOAD_MAX: usize = 32 * 1024 * 1024;
+pub const CLIPBOARD_PAYLOAD_MAX: usize = 50 * 1024 * 1024;
 
 /// Explicit destination mapping for a specific entry path.
 #[derive(Debug, Clone, PartialEq, Eq)]
