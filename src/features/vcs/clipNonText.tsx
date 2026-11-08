@@ -121,6 +121,8 @@ export function skipReasonText(code: string | null | undefined): string {
       return tx("Placeholder, no file content");
     case "TARGET_NOT_FILE":
       return tx("Target is a folder; not replaced");
+    case "TARGET_COLLISION":
+      return tx("Another entry maps to the same file; not applied");
     case "the renamed-from path is a directory":
       return tx("The renamed-from path is a folder");
     case "the path to delete is a directory":
