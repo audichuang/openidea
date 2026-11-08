@@ -2962,7 +2962,12 @@ pub fn plan_import_parsed_with(
         planned_entries.push((
             target_root.clone(),
             unlabelled,
-            ParsedEntry { path: sanitized, content: entry.content, change_types: entry.change_types },
+            ParsedEntry {
+                path: sanitized,
+                content: entry.content,
+                change_types: entry.change_types,
+                escaped_placeholder: entry.escaped_placeholder,
+            },
             entry.path,
             entry_index,
         ));
