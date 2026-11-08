@@ -87,6 +87,7 @@ describe("long names keep their end visible", () => {
       exceedsPayloadCap: false,
       limitLeftOut: 10,
       limitLeftOutAtLeast: false,
+      headerCannotBeEscaped: false,
     };
     const dialog = render(<NonTextDialog summary={summary} onChoose={() => {}} />);
     expect(dialog.getAllByText("Files left out by the file limit: 10")).toHaveLength(1);
