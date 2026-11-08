@@ -1,10 +1,11 @@
 /** The Git Graph tab's toolbar: repository, branch filter, find, and the remote / commit actions. */
-import { useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useState } from "react";
 import type { Branch } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
-import { Icon, IconButton, SearchField, showContextMenu, Spinner, T } from "@/ui";
+import { Icon, IconButton, SearchField, Spinner, T } from "@/ui";
 import { gitGraphBridge } from "@/workbench/gitGraphBridge";
+import { PickerPopup } from "./PickerPopup";
 import styles from "./GitGraph.module.css";
 
 interface ToolbarProps {
@@ -43,18 +44,7 @@ export function Toolbar(p: ToolbarProps) {
     const color = repoColor(root);
     return color ? <span className={styles.repoSwatch} style={{ background: color }} aria-hidden="true" /> : null;
   };
-  const repoMenu = (e: ReactMouseEvent<HTMLElement>) => {
-    const r = e.currentTarget.getBoundingClientRect();
-    showContextMenu(
-      { x: r.left, y: r.bottom + 2 },
-      p.roots.map((root) => ({
-        label: repoName(root),
-        verbatim: true,
-        checked: root === p.repo,
-        run: () => p.onRepo(root),
-      })),
-    );
-  };
+  const [repoAnchor, setRepoAnchor] = useState<HTMLElement | null>(null);
   const branchLabel = p.branchFilter.length
     ? p.branchFilter.length === 1
       ? p.branchFilter[0]!
@@ -63,11 +53,33 @@ export function Toolbar(p: ToolbarProps) {
   return (
     <div className={styles.toolbar} role="toolbar" aria-label={tx("Git Graph")}>
       {p.roots.length > 1 && p.repo ? (
-        <button type="button" className={styles.dropdown} onClick={repoMenu} aria-label={tx("Repository")}>
+        <button
+          type="button"
+          className={styles.dropdown}
+          onClick={(e) => setRepoAnchor(e.currentTarget)}
+          aria-label={tx("Repository")}
+          aria-haspopup="dialog"
+        >
           {swatch(p.repo) ?? <Icon name="folder" size={14} />}
           <span>{repoName(p.repo)}</span>
           <Icon name="chevron-down" size={12} />
         </button>
+      ) : null}
+      {repoAnchor ? (
+        <PickerPopup
+          anchor={repoAnchor}
+          items={p.roots.map((root) => ({
+            value: root,
+            label: repoName(root),
+            icon: swatch(root) ?? <Icon name="folder" size={14} />,
+            checked: root === p.repo,
+          }))}
+          onPick={p.onRepo}
+          onClose={() => setRepoAnchor(null)}
+          label="Repositories"
+          placeholder="Search repositories"
+          emptyLabel="No matching repositories"
+        />
       ) : null}
       <button
         type="button"
