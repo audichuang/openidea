@@ -119,18 +119,10 @@ pub(crate) fn folder_file_rel(root: &Path, path: &Path) -> Option<String> {
     Some(rel)
 }
 
-/// A symlink at `path` that a browser or a copy may treat as a folder: it
-/// resolves to a directory inside `root`, and not to `.git` or inside one.
-pub fn is_safe_dir_symlink(root: &Path, path: &Path) -> bool {
-    if let Ok(meta) = std::fs::metadata(path) {
-        if meta.is_dir() {
-            if let Ok(canonical) = dunce::canonicalize(path) {
-                return !paths::escapes_all_roots(&[root], &canonical)
-                    && !canonical.components().any(|c| c.as_os_str() == ".git");
-            }
-        }
-    }
-    false
+/// A symlink at `path` that resolves to a directory. A copy never follows it, whether it is selected
+/// directly or found while a folder is expanded: it is counted and named as a symlinked folder.
+pub fn is_dir_symlink(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.is_symlink()) && std::fs::metadata(path).is_ok_and(|m| m.is_dir())
 }
 
 /// What one copy produced: the payload and the counts its status line
@@ -362,20 +354,10 @@ fn expand_folder_items_inner(
         let Ok(sym_meta) = std::fs::symlink_metadata(&path) else {
             return false;
         };
-        if sym_meta.is_dir() {
-            return true;
-        }
-        if sym_meta.is_symlink() {
-            return is_safe_dir_symlink(item.root.path(), &path);
-        }
-        false
+        sym_meta.is_dir()
     };
     let is_refused_dir = |item: &ExportItem| {
-        if item.source != SourceKind::File {
-            return false;
-        }
-        let path = item.root.path().join(&item.relative_path);
-        std::fs::metadata(&path).is_ok_and(|m| m.is_dir())
+        item.source == SourceKind::File && is_dir_symlink(&item.root.path().join(&item.relative_path))
     };
     if !input_order_dedupe && !sel.items.iter().any(|item| is_folder(item) || is_refused_dir(item)) {
         return Ok(FolderExpansion {
@@ -404,7 +386,7 @@ fn expand_folder_items_inner(
         if !is_folder(&item) {
             if is_refused_dir(&item) {
                 skipped += 1;
-                note_skipped(&mut skipped_paths, item.relative_path.clone());
+                detail.symlink_dir(item.relative_path.clone());
                 continue;
             }
             if input_order_dedupe {
@@ -599,7 +581,10 @@ fn collect_root_children(
                 continue;
             }
         };
-        if child_sym_meta.is_dir() {
+        if child_sym_meta.is_symlink() && is_dir_symlink(&child_path) {
+            *skipped += 1;
+            detail.symlink_dir(name_str.to_string());
+        } else if child_sym_meta.is_dir() {
             if seen.insert(name_str.to_string()) {
                 items.push(ExportItem {
                     root: canonical_root.clone(),
@@ -627,8 +612,26 @@ fn collect_root_children(
     Ok(())
 }
 
+/// What a path list left when every path was refused: the counts and names a notice reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusedPaths {
+    pub skipped: usize,
+    pub skipped_paths: Vec<String>,
+    pub detail: WalkRefusals,
+}
+
 /// Creates an export selection from user-specified path arguments, resolving relative paths against `cwd`.
 pub fn selection_from_paths(root: &Path, cwd: &Path, paths: &[PathBuf]) -> Result<PathSelection, TransferError> {
+    selection_from_paths_or_refused(root, cwd, paths)?.map_err(|_| TransferError::EmptySelection)
+}
+
+/// [`selection_from_paths`], except that a list whose every path was refused comes back as the refusals
+/// (`Ok(Err(..))`) instead of [`TransferError::EmptySelection`], so a caller can name them.
+pub fn selection_from_paths_or_refused(
+    root: &Path,
+    cwd: &Path,
+    paths: &[PathBuf],
+) -> Result<Result<PathSelection, RefusedPaths>, TransferError> {
     let canonical_root = CanonicalRootId::new(root)?;
     canonical_root.validate()?;
 
@@ -732,9 +735,13 @@ pub fn selection_from_paths(root: &Path, cwd: &Path, paths: &[PathBuf]) -> Resul
             Err(e) => return Err(TransferError::Io(e)),
         };
 
-        let is_dir_symlink = sym_meta.is_symlink() && is_safe_dir_symlink(canonical_root.path(), &entry_path);
+        if sym_meta.is_symlink() && is_dir_symlink(&entry_path) {
+            skipped += 1;
+            detail.symlink_dir(rel_str);
+            continue;
+        }
 
-        if sym_meta.is_dir() || is_dir_symlink {
+        if sym_meta.is_dir() {
             if seen.insert(rel_str.clone()) {
                 items.push(ExportItem {
                     root: canonical_root.clone(),
@@ -761,14 +768,14 @@ pub fn selection_from_paths(root: &Path, cwd: &Path, paths: &[PathBuf]) -> Resul
     }
 
     if items.is_empty() {
-        return Err(TransferError::EmptySelection);
+        return Ok(Err(RefusedPaths { skipped, skipped_paths, detail }));
     }
 
     let sel = ExportSelection::new(vec![root.to_path_buf()], Some(root.to_path_buf()), items)?
         .with_source_root(source_root)
         .with_spelled_root(Some(lexical_root));
 
-    Ok(PathSelection { sel, skipped, skipped_paths, detail })
+    Ok(Ok(PathSelection { sel, skipped, skipped_paths, detail }))
 }
 
 #[cfg(test)]
