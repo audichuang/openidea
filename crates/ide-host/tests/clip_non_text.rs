@@ -228,3 +228,24 @@ fn exclude_with_only_a_size_placeholder_is_nothing_to_copy() {
     let err = copy(&root, source, &settings).unwrap_err();
     assert!(err.to_string().contains("Nothing to copy"), "{err}");
 }
+
+/// The 50 MiB cap is measured on the LF payload the copy side capped, so CRLF line ends added by a
+/// clipboard pipe do not turn a payload that fit into a refusal.
+#[test]
+fn paste_cap_ignores_crlf_growth() {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (_tmp, root) = dir();
+    let cap = ide_clip::transfer::CLIPBOARD_PAYLOAD_MAX;
+    let lines = cap / 76;
+    let crlf = format!("{}\r\n", "a".repeat(75)).repeat(lines);
+    assert!(crlf.len() > cap);
+    let settings = Settings::default();
+
+    let res = paste_preview_into(&root, None, &[], &crlf, false, &[], &settings);
+    if let Err(e) = res {
+        assert!(!e.to_string().contains("more than 50 MiB"), "{e}");
+    }
+    let lf = "a".repeat(cap + 1);
+    let e = paste_preview_into(&root, None, &[], &lf, false, &[], &settings).unwrap_err();
+    assert!(e.to_string().contains("more than 50 MiB"), "{e}");
+}
