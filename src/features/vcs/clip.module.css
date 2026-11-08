@@ -64,7 +64,8 @@
   background: color-mix(in srgb, var(--vcs-deleted) 14%, transparent);
   color: var(--vcs-deleted);
 }
-.badge[data-action="skip"] {
+.badge[data-action="skip"],
+.badge[data-action="unchanged"] {
   background: none;
   color: var(--fg-subtle);
 }
@@ -103,10 +104,23 @@
   gap: 6px;
 }
 .nodeName {
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* The secondary label gives way first: the file name keeps its room. */
+.nodeNote {
+  flex: 0 100 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-subtle);
+}
+.nodeRow > .badge {
+  margin-left: auto;
 }
 .nodeName[data-action="skip"] {
   color: var(--fg-subtle);
@@ -169,6 +183,7 @@
   flex-direction: column;
   gap: 6px;
   min-width: 0;
+  padding: 0 var(--space-2);
 }
 .nonTextList {
   margin: 0;
