@@ -25,15 +25,16 @@ use crate::blob::{BlobRead, BlobReader, DeletedContent};
 use crate::commits::{self, CommitError, CommitExport, CommitsPayload};
 use crate::filter;
 use crate::format::{self, BorrowedPayloadOptions, ChangeType, ParsedEntry, PayloadFile};
-use crate::fsutil::decode_utf8_or_skip;
+use crate::fsutil::{FileBody, decode_utf8_or_bytes, decode_utf8_or_skip};
 use crate::gitrun::{CancelToken, RunOptions, RunOutput};
 use crate::gitsrc::{DELETED_FILE_MARKER, Git, GitError, UNREADABLE_FILE_MARKER};
+use crate::nontext::NonTextSummary;
 use crate::paths::{self, escapes_all_roots, sanitize_relative_path};
 use crate::restore::{
     self, CreateOperation, DeleteOperation, RestoreExecutionResult, RestorePlan, RestoreSelection, SkipReason,
     SkippedOperation,
 };
-use crate::settings::Settings;
+use crate::settings::{NonTextMode, Settings};
 use crate::stats::{PayloadStats, payload_stats};
 use crate::workspace::{HeavyGuard, RepoIdentity, lock_heavy};
 
@@ -236,6 +237,10 @@ pub struct ExportSelection {
     /// content roots): with the anchor they are ClipCode's project roots, which
     /// label the paths and decide whether a `clipcode-root` line is written.
     pub project_roots: Vec<CanonicalRootId>,
+    /// Whether non-text files are carried. Exclude (the default) writes
+    /// today's payload and still reports in [`ExportPlan::non_text`] what
+    /// Include would add, so the copy dialog can ask first.
+    pub non_text: NonTextMode,
 }
 
 impl ExportSelection {
@@ -313,6 +318,7 @@ impl ExportSelection {
             absolute_roots: Vec::new(),
             anchor_root,
             project_roots,
+            non_text: NonTextMode::Exclude,
         };
         if !absolute.is_empty() {
             sel = sel.with_absolute_roots(absolute)?;
@@ -323,6 +329,12 @@ impl ExportSelection {
 
     pub fn with_source_root(mut self, source_root: Option<String>) -> Self {
         self.source_root = source_root;
+        self
+    }
+
+    /// See [`ExportSelection::non_text`].
+    pub fn with_non_text(mut self, mode: NonTextMode) -> Self {
+        self.non_text = mode;
         self
     }
 
@@ -553,8 +565,14 @@ pub struct ExportPlan {
     pub freshness: SourceFreshnessSnapshot,
     pub copied_file_count: usize,
     pub skipped_file_size_count: usize,
+    /// Files left out as unreadable, or as non-text under
+    /// [`NonTextMode::Exclude`] (today's meaning).
     pub skipped_unreadable_count: usize,
     pub file_limit_reached: bool,
+    /// Non-text files carried as Base64 (Include only); also in `copied_file_count`.
+    pub non_text_file_count: usize,
+    /// What the copy dialog shows: see [`NonTextSummary`].
+    pub non_text: NonTextSummary,
 }
 
 impl ExportPlan {
@@ -1715,14 +1733,44 @@ pub fn validate_export_selection(selection: &ExportSelection) -> Result<(), Tran
     Ok(())
 }
 
-/// Content (`None`: not UTF-8) and why it was skipped, if it was.
-type ReadContent = (Option<String>, Option<String>);
+/// What reading one item found out about a non-text file, whatever the mode.
+struct NonTextFact {
+    size: u64,
+    /// Within `maxNonTextFileSizeKB`.
+    within: bool,
+    /// The bytes, when within the limit and read; `None` when the file did not
+    /// fit the remaining payload budget and so was not retained.
+    bytes: Option<Vec<u8>>,
+}
+
+impl NonTextFact {
+    fn new(bytes: Vec<u8>, max: u64) -> Self {
+        let size = bytes.len() as u64;
+        let within = size <= max;
+        Self { size, within, bytes: within.then_some(bytes) }
+    }
+
+    fn unread(size: u64, max: u64) -> Self {
+        Self { size, within: size <= max, bytes: None }
+    }
+}
+
+/// Today's (Exclude) content (`None`: not UTF-8) and size-skip reason, plus
+/// what was learned about a non-text file.
+type ReadContent = (Option<String>, Option<String>, Option<NonTextFact>);
+
+/// One item's read in `plan_export_with`: [`ReadContent`] plus whether to
+/// record freshness (the inner `None` = absent) and the freshness of a file
+/// read only to carry it as non-text.
+type ItemRead =
+    (Option<String>, Option<String>, Option<Option<FileFreshness>>, Option<NonTextFact>, Option<FileFreshness>);
 
 struct BlobBudget {
     remaining_budget: Option<usize>,
     max_payload_bytes: Option<usize>,
     current_total_bytes: usize,
     max_file_size_kb: f64,
+    max_non_text_bytes: u64,
 }
 
 impl BlobBudget {
@@ -1734,9 +1782,17 @@ impl BlobBudget {
         self.remaining_budget.map_or(u64::MAX, |b| b as u64).min(per_file)
     }
 
+    /// How much of a blob is read before classifying: the larger per-file
+    /// limit, bounded by the payload budget. [`blob_content`] then holds a
+    /// text body to [`Self::cap`].
+    fn read_cap(&self) -> u64 {
+        let per_file = ((self.max_file_size_kb * 1024.0) as u64).max(self.max_non_text_bytes);
+        self.remaining_budget.map_or(u64::MAX, |b| b as u64).min(per_file)
+    }
+
     fn over_cap(&self, size: u64, cap: u64, wire_path: &str) -> Result<ReadContent, TransferError> {
         if size as f64 > self.max_file_size_kb * 1024.0 {
-            return Ok((None, Some(format!("size exceeds limit ({size} bytes)"))));
+            return Ok((None, Some(format!("size exceeds limit ({size} bytes)")), None));
         }
         Err(TransferError::PayloadLimitExceeded {
             limit: self.max_payload_bytes.unwrap_or(cap as usize),
@@ -1748,6 +1804,8 @@ impl BlobBudget {
 
 /// The header fixes OID and size before any body byte; a tree or commit is
 /// an error, not a missing file (blobs_only reader).
+/// `read` came from [`BlobBudget::read_cap`]; a text body is held to `cap`
+/// ([`BlobBudget::cap`]) exactly as a read capped there would be.
 fn blob_content(
     read: BlobRead,
     spec: &str,
@@ -1755,12 +1813,15 @@ fn blob_content(
     wire_path: &str,
     budget: &BlobBudget,
 ) -> Result<Option<ReadContent>, TransferError> {
+    let max = budget.max_non_text_bytes;
     match read {
         BlobRead::Missing => Ok(None),
         BlobRead::NotABlob { kind } => Err(TransferError::Git(crate::blob::not_a_file(spec, &kind))),
-        BlobRead::Text(s) => Ok(Some((Some(s), None))),
-        BlobRead::NotText(_) => Ok(Some((None, None))),
-        BlobRead::TooLarge { not_text: Some(_), .. } => Ok(Some((None, None))),
+        BlobRead::Text(s) if s.len() as u64 > cap => budget.over_cap(s.len() as u64, cap, wire_path).map(Some),
+        BlobRead::Text(s) => Ok(Some((Some(s), None, None))),
+        BlobRead::NonText { bytes, .. } => Ok(Some((None, None, Some(NonTextFact::new(bytes, max))))),
+        BlobRead::NotText(_) => Ok(Some((None, None, None))),
+        BlobRead::TooLarge { size, not_text: Some(_) } => Ok(Some((None, None, Some(NonTextFact::unread(size, max))))),
         BlobRead::TooLarge { size, .. } => budget.over_cap(size, cap, wire_path).map(Some),
     }
 }
@@ -1773,15 +1834,16 @@ fn gitlink_read(
     is_staged: bool,
 ) -> Result<ReadContent, TransferError> {
     match read {
-        BlobRead::Text(s) => Ok((Some(s), None)),
+        BlobRead::Text(s) => Ok((Some(s), None, None)),
         BlobRead::Missing
         | BlobRead::NotText(_)
+        | BlobRead::NonText { .. }
         | BlobRead::NotABlob { .. }
         | BlobRead::TooLarge { not_text: Some(_), .. } => {
             if is_staged {
-                Ok((Some(UNREADABLE_FILE_MARKER.to_string()), None))
+                Ok((Some(UNREADABLE_FILE_MARKER.to_string()), None, None))
             } else {
-                Ok((None, None))
+                Ok((None, None, None))
             }
         }
         BlobRead::TooLarge { size, .. } => budget.over_cap(size, cap, wire_path),
@@ -1795,8 +1857,8 @@ fn deleted_read(
     budget: &BlobBudget,
 ) -> Result<ReadContent, TransferError> {
     match content {
-        DeletedContent::Text(t) => Ok((Some(t), None)),
-        DeletedContent::Marker => Ok((Some(DELETED_FILE_MARKER.to_string()), None)),
+        DeletedContent::Text(t) => Ok((Some(t), None, None)),
+        DeletedContent::Marker => Ok((Some(DELETED_FILE_MARKER.to_string()), None, None)),
         DeletedContent::TooLarge { size, .. } => budget.over_cap(size, cap, wire_path),
     }
 }
@@ -1807,6 +1869,25 @@ fn deleted_read(
 /// meant.
 fn staged_index_spec(toplevel_rel: String) -> String {
     format!(":0:{toplevel_rel}")
+}
+
+/// What [`format::write_payload_file`] adds for `file` after a written line.
+fn payload_file_len(
+    file: &PayloadFile,
+    settings: &Settings,
+    custom: Option<&format::HeaderPattern>,
+) -> Result<usize, TransferError> {
+    let mut counter = format::CountingWriter::default();
+    let mut writer = format::PayloadLineWriter::new_with_written(&mut counter, true);
+    format::write_payload_file(
+        &mut writer,
+        file,
+        &settings.header_format,
+        settings.add_extra_line_between_files,
+        custom,
+    )
+    .map_err(|_| TransferError::UnsafePath("formatting error".into()))?;
+    Ok(counter.count)
 }
 
 fn make_payload_opts<'a, 'f>(
@@ -2026,6 +2107,11 @@ pub fn plan_export_with(
         let mut skipped_file_size_count = 0usize;
         let mut skipped_unreadable_count = 0usize;
         let mut file_limit_reached = false;
+        let mut non_text_file_count = 0usize;
+        let mut non_text_summary = NonTextSummary::default();
+        // Exclude: what the non-text entries would add to the payload.
+        let mut include_extra = 0isize;
+        let non_text_max = settings.max_non_text_file_bytes();
 
         for item in &selection.items {
             cancelled_err(opts, "plan-export")?;
@@ -2102,6 +2188,7 @@ pub fn plan_export_with(
                 max_payload_bytes,
                 current_total_bytes,
                 max_file_size_kb: settings.max_file_size_kb,
+                max_non_text_bytes: non_text_max,
             };
 
             let deleted = item.change_type == Some(ChangeType::Deleted);
@@ -2114,12 +2201,9 @@ pub fn plan_export_with(
                 None => rel.clone(),
             };
             // The outer `Option` says whether to record freshness; the inner
-            // one is the file's state (`None` = absent).
-            let (content, skipped_reason, freshness_info): (
-                Option<String>,
-                Option<String>,
-                Option<Option<FileFreshness>>,
-            ) = match &item.source {
+            // one is the file's state (`None` = absent). The last field is
+            // the freshness of a file read only to carry it as non-text.
+            let (content, skipped_reason, freshness_info, fact, non_text_freshness): ItemRead = match &item.source {
                 SourceKind::Commit { rev } => {
                     let frozen_oid = frozen_commits
                         .get(&(item.root.clone(), rev.clone()))
@@ -2127,7 +2211,7 @@ pub fn plan_export_with(
                     let git = gits
                         .get(&item.root)
                         .ok_or_else(|| TransferError::UnknownRoot(item.root.path().to_path_buf()))?;
-                    let (text, reason) = if deleted {
+                    let (text, reason, fact) = if deleted {
                         // Every parent in order, like gitsrc: a merge may
                         // delete a file only one side had. The old body obeys
                         // the per-file size limit, as in ClipCode.
@@ -2147,11 +2231,11 @@ pub fn plan_export_with(
                         let spec = format!("{frozen_oid}:{toplevel_rel}");
                         let b = blob_budget();
                         let cap = b.cap();
-                        let read = blobs.read(git, &spec, cap)?;
+                        let read = blobs.read_keeping_non_text(git, &spec, b.read_cap())?;
                         blob_content(read, &spec, cap, &wire_path, &b)?
                             .ok_or(TransferError::Git(GitError::InvalidRevision(spec)))?
                     };
-                    (text, reason, None)
+                    (text, reason, None, fact, None)
                 }
                 SourceKind::Range { base, tip } => {
                     let frozen_base = frozen_commits
@@ -2163,7 +2247,7 @@ pub fn plan_export_with(
                     let git = gits
                         .get(&item.root)
                         .ok_or_else(|| TransferError::UnknownRoot(item.root.path().to_path_buf()))?;
-                    let (text, reason) = if deleted {
+                    let (text, reason, fact) = if deleted {
                         let spec = format!("{frozen_base}:{toplevel_rel}");
                         let b = blob_budget();
                         let cap = b.cap();
@@ -2179,17 +2263,17 @@ pub fn plan_export_with(
                         let spec = format!("{frozen_tip}:{toplevel_rel}");
                         let b = blob_budget();
                         let cap = b.cap();
-                        let read = blobs.read(git, &spec, cap)?;
+                        let read = blobs.read_keeping_non_text(git, &spec, b.read_cap())?;
                         blob_content(read, &spec, cap, &wire_path, &b)?
                             .ok_or(TransferError::Git(GitError::InvalidRevision(spec)))?
                     };
-                    (text, reason, None)
+                    (text, reason, None, fact, None)
                 }
                 SourceKind::Staged => {
                     let git = gits
                         .get(&item.root)
                         .ok_or_else(|| TransferError::UnknownRoot(item.root.path().to_path_buf()))?;
-                    let (text, reason) = if deleted {
+                    let (text, reason, fact) = if deleted {
                         // A staged deletion is gone from the index; HEAD has it.
                         let b = blob_budget();
                         let cap = b.cap();
@@ -2205,16 +2289,16 @@ pub fn plan_export_with(
                         let spec = staged_index_spec(toplevel_rel);
                         let b = blob_budget();
                         let cap = b.cap();
-                        let read = blobs.read(git, &spec, cap)?;
-                        let (text, reason) = blob_content(read, &spec, cap, &wire_path, &b)?
+                        let read = blobs.read_keeping_non_text(git, &spec, b.read_cap())?;
+                        let (text, reason, fact) = blob_content(read, &spec, cap, &wire_path, &b)?
                             .ok_or(TransferError::Git(GitError::InvalidRevision(spec)))?;
                         if reason.is_none() && text.is_none() {
-                            (Some(UNREADABLE_FILE_MARKER.to_string()), None)
+                            (Some(UNREADABLE_FILE_MARKER.to_string()), None, fact)
                         } else {
-                            (text, reason)
+                            (text, reason, fact)
                         }
                     };
-                    (text, reason, None)
+                    (text, reason, None, fact, None)
                 }
                 SourceKind::Working | SourceKind::Unstaged | SourceKind::File if deleted => {
                     // Pre-deletion content: `Unstaged` is the worktree against
@@ -2227,7 +2311,7 @@ pub fn plan_export_with(
                     };
                     let b = blob_budget();
                     let cap = b.cap();
-                    let (text, reason) = if let Some(git) = gits.get(&item.root) {
+                    let (text, reason, _) = if let Some(git) = gits.get(&item.root) {
                         let content = blobs.deleted_file_content(git, [spec], cap)?;
                         deleted_read(content, cap, &wire_path, &b)?
                     } else {
@@ -2235,7 +2319,7 @@ pub fn plan_export_with(
                     };
                     // The absence is part of the snapshot: recreating the path
                     // before the clipboard write invalidates the export.
-                    (text, reason, Some(None))
+                    (text, reason, Some(None), None, None)
                 }
                 SourceKind::Working | SourceKind::Unstaged | SourceKind::File => 'read_file: {
                     cancelled_err(opts, "read-file")?;
@@ -2243,7 +2327,7 @@ pub fn plan_export_with(
                     let sym_meta = match fs::symlink_metadata(&absolute) {
                         Ok(m) => m,
                         Err(_) if is_changed_item => {
-                            break 'read_file (None, None, None);
+                            break 'read_file (None, None, None, None, None);
                         }
                         Err(e) => return Err(e.into()),
                     };
@@ -2251,33 +2335,33 @@ pub fn plan_export_with(
                     // escape (symlinked parent directory or link target), so
                     // they are skipped here before any read.
                     if is_changed_item && escapes_all_roots(&[item.root.path()], &absolute) {
-                        break 'read_file (None, None, None);
+                        break 'read_file (None, None, None, None, None);
                     }
                     let target_meta = if sym_meta.file_type().is_symlink() {
                         let roots = [item.root.path()];
                         if escapes_all_roots(&roots, &absolute) {
                             if is_changed_item {
-                                break 'read_file (None, None, None);
+                                break 'read_file (None, None, None, None, None);
                             }
                             return Err(TransferError::UnsafePath(absolute.to_string_lossy().into_owned()));
                         }
                         let canonical = match dunce::canonicalize(&absolute) {
                             Ok(c) => c,
                             Err(_) if is_changed_item => {
-                                break 'read_file (None, None, None);
+                                break 'read_file (None, None, None, None, None);
                             }
                             Err(e) => return Err(e.into()),
                         };
                         if escapes_all_roots(&roots, &canonical) {
                             if is_changed_item {
-                                break 'read_file (None, None, None);
+                                break 'read_file (None, None, None, None, None);
                             }
                             return Err(TransferError::UnsafePath(canonical.to_string_lossy().into_owned()));
                         }
                         match fs::metadata(&canonical) {
                             Ok(m) => m,
                             Err(_) if is_changed_item => {
-                                break 'read_file (None, None, None);
+                                break 'read_file (None, None, None, None, None);
                             }
                             Err(e) => return Err(e.into()),
                         }
@@ -2287,7 +2371,7 @@ pub fn plan_export_with(
 
                     if !target_meta.file_type().is_file() {
                         if is_changed_item {
-                            break 'read_file (None, None, None);
+                            break 'read_file (None, None, None, None, None);
                         }
                         return Err(TransferError::SpecialFile(absolute.to_string_lossy().into_owned()));
                     }
@@ -2296,6 +2380,47 @@ pub fn plan_export_with(
                     let per_file_limit = (settings.max_file_size_kb * 1024.0) as u64;
                     let over_per_file = file_size as f64 > settings.max_file_size_kb * 1024.0;
                     let over_budget = remaining_budget.is_some_and(|b| file_size as usize > b);
+                    // Over the text limit but within the non-text one: read and
+                    // classify. Text keeps today's size placeholder; a non-text
+                    // file is carried under Include and only reported under
+                    // Exclude, whose payload stays today's.
+                    if over_per_file && file_size <= non_text_max {
+                        cancelled_err(opts, "read-file")?;
+                        let mut bytes = Vec::with_capacity(file_size as usize);
+                        let mut hasher = Sha256::new();
+                        let read_res =
+                            for_each_chunk(&absolute, Some(non_text_max.saturating_add(1)), opts, "read-file", |c| {
+                                bytes.extend_from_slice(c);
+                                hasher.update(c);
+                            });
+                        let placeholder = format!("size exceeds limit ({file_size} bytes)");
+                        match read_res {
+                            Err(e)
+                                if matches!(e, TransferError::Git(GitError::Cancelled { .. }))
+                                    || opts.cancel.as_ref().is_some_and(CancelToken::is_cancelled) =>
+                            {
+                                return Err(e);
+                            }
+                            // Unreadable or grown past the non-text limit: today's handling below.
+                            Err(_) => {}
+                            Ok(len) if len > non_text_max => {}
+                            Ok(len) => match decode_utf8_or_bytes(bytes) {
+                                FileBody::Text(_) => break 'read_file (None, Some(placeholder), None, None, None),
+                                FileBody::NonText(bytes) => {
+                                    let freshness = target_meta.modified().ok().map(|mtime| FileFreshness {
+                                        size: len,
+                                        mtime,
+                                        content_hash: hasher.finalize().into(),
+                                    });
+                                    // Today a changed item's non-text file is dropped and
+                                    // a picked file gets the placeholder unread.
+                                    let reason = (!is_changed_item).then_some(placeholder);
+                                    let fact = NonTextFact::new(bytes, non_text_max);
+                                    break 'read_file (None, reason, None, Some(fact), freshness);
+                                }
+                            },
+                        }
+                    }
                     if is_changed_item && (over_per_file || over_budget) {
                         let mut scan = crate::blob::ChunkTextScan::new();
                         let scan_res = for_each_chunk(&absolute, None, opts, "read-file", |chunk| scan.feed(chunk));
@@ -2307,13 +2432,14 @@ pub fn plan_export_with(
                             {
                                 return Err(e);
                             }
-                            Err(_) => break 'read_file (None, None, None),
+                            Err(_) => break 'read_file (None, None, None, None, None),
                         }
                         if scan.finish().is_some() {
-                            break 'read_file (None, None, None);
+                            let fact = NonTextFact::unread(file_size, non_text_max);
+                            break 'read_file (None, None, None, Some(fact), None);
                         }
                         if over_per_file {
-                            (None, Some(format!("size exceeds limit ({file_size} bytes)")), None)
+                            (None, Some(format!("size exceeds limit ({file_size} bytes)")), None, None, None)
                         } else {
                             let budget = remaining_budget.unwrap_or(usize::MAX);
                             return Err(TransferError::PayloadLimitExceeded {
@@ -2323,7 +2449,7 @@ pub fn plan_export_with(
                             });
                         }
                     } else if over_per_file {
-                        (None, Some(format!("size exceeds limit ({file_size} bytes)")), None)
+                        (None, Some(format!("size exceeds limit ({file_size} bytes)")), None, None, None)
                     } else if over_budget {
                         let budget = remaining_budget.unwrap_or(usize::MAX);
                         return Err(TransferError::PayloadLimitExceeded {
@@ -2354,7 +2480,7 @@ pub fn plan_export_with(
                                 return Err(e);
                             }
                             Err(_) if is_changed_item => {
-                                break 'read_file (None, None, None);
+                                break 'read_file (None, None, None, None, None);
                             }
                             Err(e) => return Err(e),
                         };
@@ -2366,19 +2492,80 @@ pub fn plan_export_with(
                                     reason: format!("working file '{wire_path}' grew past limit during read"),
                                 });
                             }
-                            (None, Some(format!("size exceeds limit ({read_len} bytes)")), None)
+                            (None, Some(format!("size exceeds limit ({read_len} bytes)")), None, None, None)
                         } else {
                             let mtime = match target_meta.modified() {
                                 Ok(m) => m,
                                 Err(_) if is_changed_item => {
-                                    break 'read_file (None, None, None);
+                                    break 'read_file (None, None, None, None, None);
                                 }
                                 Err(e) => return Err(e.into()),
                             };
                             let content_hash = hasher.finalize().into();
                             let freshness = FileFreshness { size: read_len, mtime, content_hash };
-                            (decode_utf8_or_skip(bytes), None, Some(Some(freshness)))
+                            match decode_utf8_or_bytes(bytes) {
+                                FileBody::Text(text) => (Some(text), None, Some(Some(freshness)), None, None),
+                                FileBody::NonText(bytes) => {
+                                    let fact = NonTextFact::new(bytes, non_text_max);
+                                    (None, None, Some(Some(freshness)), Some(fact), None)
+                                }
+                            }
                         }
+                    }
+                }
+            };
+
+            // `content`/`skipped_reason` are today's (Exclude) result. A
+            // non-text file is reported either way; Include swaps in its
+            // bytes, or a size placeholder when it is over its limit.
+            let mut include_len: Option<usize> = None;
+            let (content, skipped_reason, non_text) = match fact {
+                None => (content, skipped_reason, None),
+                Some(fact) => {
+                    let over_reason = format!("size exceeds limit ({} bytes)", fact.size);
+                    let include_file = |skipped_reason: Option<String>| PayloadFile {
+                        path: wire_path.clone(),
+                        change_type: item.change_type,
+                        skipped_reason,
+                        ..Default::default()
+                    };
+                    if fact.within {
+                        non_text_summary.found(&wire_path, fact.size);
+                    } else {
+                        non_text_summary.over_limit_count += 1;
+                    }
+                    match selection.non_text {
+                        NonTextMode::Exclude => {
+                            include_len = Some(if fact.within {
+                                format::non_text_entry_len(
+                                    &settings.header_format,
+                                    &wire_path,
+                                    item.change_type,
+                                    settings.add_extra_line_between_files,
+                                    fact.size,
+                                )
+                            } else {
+                                payload_file_len(&include_file(Some(over_reason)), settings, custom)?
+                            });
+                            (content, skipped_reason, None)
+                        }
+                        NonTextMode::Include if !fact.within => (None, Some(over_reason), None),
+                        NonTextMode::Include => match fact.bytes {
+                            Some(bytes) => {
+                                if let Some(f) = non_text_freshness {
+                                    working_files.insert((item.root.clone(), rel.clone()), Some(f));
+                                }
+                                (None, None, Some(bytes))
+                            }
+                            None => {
+                                let budget = remaining_budget.unwrap_or(usize::MAX);
+                                return Err(TransferError::PayloadLimitExceeded {
+                                    limit: max_payload_bytes.unwrap_or(budget),
+                                    actual: current_total_bytes.saturating_add(fact.size as usize),
+                                    reason: format!("file '{wire_path}' exceeds remaining payload budget"),
+                                });
+                            }
+                        },
                     }
                 }
             };
@@ -2388,7 +2575,10 @@ pub fn plan_export_with(
             }
 
             // Drop unreadable/binary files (matching copy.rs and gitsrc.rs)
-            if skipped_reason.is_none() && content.is_none() {
+            if skipped_reason.is_none() && content.is_none() && non_text.is_none() {
+                if let Some(len) = include_len {
+                    include_extra += len as isize;
+                }
                 skipped_unreadable_count += 1;
                 continue;
             }
@@ -2399,13 +2589,17 @@ pub fn plan_export_with(
 
             if skipped_reason.is_some() {
                 skipped_file_size_count += 1;
+            } else if non_text.is_some() {
+                non_text_file_count += 1;
+                copied_file_count += 1;
             } else if content.as_deref() == Some(UNREADABLE_FILE_MARKER) {
                 skipped_unreadable_count += 1;
             } else {
                 copied_file_count += 1;
             }
 
-            let payload_file = PayloadFile { path: wire_path, content, change_type: item.change_type, skipped_reason };
+            let payload_file =
+                PayloadFile { path: wire_path, content, change_type: item.change_type, skipped_reason, non_text };
 
             cancelled_err(opts, "serialize-export")?;
             let mut file_counter = format::CountingWriter::default();
@@ -2420,6 +2614,9 @@ pub fn plan_export_with(
             .map_err(|_| TransferError::UnsafePath("formatting error".into()))?;
 
             let file_delta = file_counter.count;
+            if let Some(len) = include_len {
+                include_extra += len as isize - file_delta as isize;
+            }
 
             if let Some(max_bytes) = max_payload_bytes {
                 if current_total_bytes + file_delta > max_bytes {
@@ -2465,6 +2662,7 @@ pub fn plan_export_with(
 
         let stats = payload_stats(&payload);
         cancelled_err(opts, "serialize-export")?;
+        non_text_summary.estimated_include_payload_bytes = payload.len().saturating_add_signed(include_extra);
 
         Ok(ExportPlan {
             files,
@@ -2475,6 +2673,8 @@ pub fn plan_export_with(
             skipped_file_size_count,
             skipped_unreadable_count,
             file_limit_reached,
+            non_text_file_count,
+            non_text: non_text_summary,
         })
     })();
     finish_reader(&mut blobs, outcome)
@@ -4227,6 +4427,7 @@ mod freshness_error_tests {
             absolute_roots: Vec::new(),
             anchor_root: None,
             project_roots: Vec::new(),
+            non_text: NonTextMode::Exclude,
         };
         let export_err = SourceFreshnessSnapshot::capture(&export_selection)
             .expect_err("export capture must fail on non-regular file");
