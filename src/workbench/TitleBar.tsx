@@ -22,7 +22,6 @@ import {
   widgetTitle,
 } from "./mainToolbar";
 import { WindowControls } from "./WindowControls";
-import { useFullscreen } from "./useFullscreen";
 import { usePlatform } from "@/platform/platformInfo";
 import { projectInitials } from "./projectColor";
 import { keymapItems, themeItems, themePreview, type ThemePreview, VIEW_MODE_ITEMS } from "./quickSwitch";
@@ -307,18 +306,12 @@ export function TitleBar({
   title?: string;
 }) {
   const overlay = usePlatform((s) => s.overlayTitleBar);
-  const fullscreen = useFullscreen();
   const frameless = usePlatform((s) => s.framelessTitleBar);
   const { map, shown, menu } = useToolbar();
   const [menuExpanded, setMenuExpanded] = useState(false);
   const [bar, setBar] = useState<HTMLElement | null>(null);
   useNativeTitlebar(bar);
-  const className = clsx(
-    styles.bar,
-    overlay && styles.overlay,
-    overlay && fullscreen && styles.overlayFullscreen,
-    frameless && styles.frameless,
-  );
+  const className = clsx(styles.bar, overlay && styles.overlay, frameless && styles.frameless);
   // Where the title bar carries the main menu (Windows, Linux) it stays, or nothing
   // would lead back out of Distraction Free Mode or bring the toolbar back.
   if (bare || compact)
