@@ -111,7 +111,8 @@ export async function copyClip(source: ClipCopySource): Promise<boolean> {
   });
   if (!chosen) return false;
   result = chosen;
-  if (result.files === 0 && result.text === "") {
+  // A files copy that kept no file is Nothing to copy, even when a size placeholder fills the text.
+  if (result.files === 0 && (result.mode === "files" || result.text === "")) {
     notifications().notify({
       group: "clipcode",
       level: "warning",
