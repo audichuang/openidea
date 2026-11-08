@@ -2608,7 +2608,8 @@ pub fn plan_export_with(
                 copied_file_count += 1;
             } else if content.as_deref() == Some(UNREADABLE_FILE_MARKER) {
                 skipped_unreadable_count += 1;
-                if skipped_unreadable_paths.len() < SKIPPED_PATHS_SHOWN {
+                // A staged non-text file excluded by the mode carries the marker too, but it is not unreadable.
+                if include_len.is_none() && skipped_unreadable_paths.len() < SKIPPED_PATHS_SHOWN {
                     skipped_unreadable_paths.push(wire_path.clone());
                 }
             } else {
