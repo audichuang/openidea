@@ -168,6 +168,13 @@ Only OpenIDEA implements commits mode (`// snip-sync commits v1`). The marker st
   and notes shrink or drop before the name does, a name that still does not fit is shortened in the middle
   keeping its extension, and 30–60 character names that share a prefix stay distinguishable.
 - Commits replay writes and commits the decoded bytes, after the same length and SHA-256 check.
+- A **text** write over an existing non-UTF-8 file stays refused by the non-UTF-8 overwrite guard, outside the
+  batch case in [Commits-mode](#commits-mode-wire-format-openidea-only) (decided by the user, deep round 3). The
+  preview shows the reason in user text ("Existing file is not UTF-8; not overwritten"). A replayed commit whose
+  every file change was refused or skipped is not created as an empty commit: the replay names it as not created,
+  with the reason, and continues with the next commit.
+- Read-only targets (mode 444) follow the overwrite option like any other existing file, with no extra note; this
+  is today's behaviour for text files too (decided by the user, deep round 3: keep as is).
 - The whole-payload limit on paste counts the payload as the parser sees it: each CRLF pair counts as one byte (a
   Windows clipboard must not push a valid payload over the limit), but a lone CR counts in full (it must not let
   oversized input bypass the limit).
@@ -214,12 +221,14 @@ Each implementation adds these to its contract tests (OpenIDEA: `clipboard-contr
     outside the alphabet (other than ASCII whitespace) make the entry corrupt.
 19. A selected unreadable folder plus a readable file: the file is copied, the folder is named as unreadable.
 20. Paste where a target path is a directory: only that row is skipped; the others restore.
-21. Names shown in the dialog and preview: three 58–60 character names sharing a prefix are distinguishable; a
+21. Commits replay of a single commit whose only change is refused by the non-UTF-8 guard: the preview shows the
+    reason, no empty commit is created, later commits of the replay still apply.
+22. Names shown in the dialog and preview: three 58–60 character names sharing a prefix are distinguishable; a
     file under a 150-character folder path shows its whole file name (extension included) in the dialog and in a
     nested preview row with an Unchanged badge.
-22. A symlink to a folder selected directly (alone and in a multi-selection) is not followed and is named as a
+23. A symlink to a folder selected directly (alone and in a multi-selection) is not followed and is named as a
     symlinked folder.
-23. A payload with `IMG.png` and `img.png` pasted on a case-insensitive file system skips both with a collision
+24. A payload with `IMG.png` and `img.png` pasted on a case-insensitive file system skips both with a collision
     reason and restores the other entries.
 
 ## Open items for the other implementations
@@ -243,8 +252,8 @@ Each review or test round folds its findings back into this spec.
   the file name's end instead of the folder part (round 2 fix incomplete; rule made concrete); notice categories
   ran together on one line; text-first file-count case clarified (no dialog, notice reports what was left out);
   case-only path collisions abort the paste (pre-existing); a failed write row was not counted as skipped.
-  Still open for the user: Big5 → UTF-8 rewrite outside a batch refused, and that replay creates an empty
-  commit; read-only (444) targets replaced without a note.
+  User decisions: the Big5 → UTF-8 rewrite outside a batch stays refused, with the reason shown and no empty
+  commit; read-only (444) targets keep today's behaviour (replaced under the overwrite option, no note).
 - Deep testers, round 2 (three testers, D1–D13 matrix): selected unreadable folder fails the copy
   (pre-existing); directory at a target path aborts the paste (pre-existing); symlinked folders silently dropped
   (pre-existing); non-portable names reported as unreadable; raw reason codes in previews; middle ellipsis for
