@@ -768,3 +768,94 @@ mod commits_mode {
         assert!(!dest.root.join("img/old.png").exists());
     }
 }
+
+/// Mixed selections under a file-count limit: the Exclude summary equals what Include carries and reports.
+#[test]
+fn fuzz_the_summary_equals_the_include_result_with_placeholders_in_the_window() {
+    for (text_kb, non_text_kb) in [(1.0, 2.0), (2.0, 1.0)] {
+        let mut seed = 12345u64;
+        let mut next = move |n: u64| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) % n
+        };
+        for round in 0..60 {
+            let repo = Repo::new();
+            let total = 5 + next(30) as usize;
+            let mut items = Vec::new();
+            for i in 0..total {
+                let kind = next(7);
+                let (name, bytes): (String, Vec<u8>) = match kind {
+                    0 => (format!("f{i:03}.png"), png(300 + i)),
+                    1 => (format!("f{i:03}.txt"), b"text\n".to_vec()),
+                    2 => (format!("f{i:03}.json"), "x".repeat(1500).into_bytes()),
+                    3 => (format!("f{i:03}.big.png"), png(1500)),
+                    4 => (format!("f{i:03}.huge.png"), png(3000)),
+                    5 => (format!("f{i:03}.nul"), vec![0]),
+                    _ => (format!("f{i:03}.big5"), BIG5.to_vec()),
+                };
+                repo.write(&name, &bytes);
+                items.push(name);
+            }
+            let list: Vec<(&str, SourceKind, Option<ChangeType>)> =
+                items.iter().map(|p| (p.as_str(), SourceKind::File, None)).collect();
+            let sel = repo.selection(&list);
+            let limit = (1 + next(total as u64)) as f64;
+            let settings = Settings {
+                max_file_size_kb: text_kb,
+                max_non_text_file_size_kb: non_text_kb,
+                set_max_file_count: true,
+                file_count_limit: limit,
+                ..Settings::default()
+            };
+            let exclude = export(&sel, &settings, NonTextMode::Exclude);
+            let include = export(&sel, &settings, NonTextMode::Include);
+            let ctx = format!("limits {text_kb}/{non_text_kb} round {round} limit {limit} items {items:?}");
+            assert_eq!(exclude.non_text.files.len(), include.non_text_file_count, "count: {ctx}");
+            assert_eq!(exclude.non_text.limit_left_out, include.non_text.limit_left_out, "left out: {ctx}");
+            assert_eq!(exclude.non_text.estimated_include_payload_bytes, include.payload.len(), "estimate: {ctx}");
+            assert_eq!(exclude.non_text.files, include.non_text.files, "list: {ctx}");
+            assert_eq!(exclude.non_text.over_limit_count, include.non_text.over_limit_count, "over: {ctx}");
+        }
+    }
+}
+
+/// Test 15, round 3: size placeholders and non-text files over the text limit inside the file-count window.
+/// The dialog (Exclude summary) equals the Include payload and its notice numbers.
+#[test]
+fn the_dialog_equals_include_with_size_placeholders_before_the_images() {
+    let settings = limited(30.0);
+    let repo = Repo::new();
+    let mut items: Vec<String> = Vec::new();
+    let mut put = |name: String, bytes: Vec<u8>| {
+        repo.write(&name, &bytes);
+        items.push(name);
+    };
+    put("d2/a1.png".into(), png(300));
+    put("d2/a2.png".into(), png(301));
+    put("d2/a3.txt".into(), b"text\n".to_vec());
+    // Over both limits: never read.
+    put("d2/b1.png".into(), png(3000));
+    put("d2/b2.png".into(), png(3001));
+    // Read, over the text limit: a text placeholder, and a non-text file that Include carries.
+    put("d2/c1.json".into(), "x".repeat(1500).into_bytes());
+    put("d2/c2.png".into(), png(1500));
+    for i in 0..40 {
+        put(format!("d4/i{i:02}.png"), png(100 + i));
+    }
+    let list: Vec<(&str, SourceKind, Option<ChangeType>)> =
+        items.iter().map(|p| (p.as_str(), SourceKind::File, None)).collect();
+    let sel = repo.selection(&list);
+    let exclude = export(&sel, &settings, NonTextMode::Exclude);
+    let include = export(&sel, &settings, NonTextMode::Include);
+    assert_eq!(exclude.non_text.count(), include.non_text_file_count);
+    assert_eq!(exclude.non_text.files, include.non_text.files);
+    assert_eq!(exclude.non_text.limit_left_out, include.non_text.limit_left_out);
+    assert_eq!(exclude.non_text.estimated_include_payload_bytes, include.payload.len());
+    assert_eq!(exclude.non_text.total_bytes, include.non_text.total_bytes);
+    assert_eq!(
+        (exclude.non_text.over_limit_count, exclude.non_text.unread_over_limit_count),
+        (include.non_text.over_limit_count, include.non_text.unread_over_limit_count)
+    );
+    // The window held 30 carried files: a1, a2, a3 and c2 of d2 plus 26 images.
+    assert_eq!((include.non_text_file_count, include.copied_file_count), (29, 30));
+}
