@@ -741,7 +741,10 @@ pub fn paste_preview_into(
     settings: &Settings,
 ) -> IdeResult<ClipPastePreview> {
     let opts = RunOptions::default();
-    if text.len() > CLIPBOARD_PAYLOAD_MAX {
+    // The copy side caps the LF length; a CRLF pipe adds a byte per line (about 1.3% on wrapped
+    // Base64) that must not push a payload that fit over the cap.
+    let lf_len = text.len() - text.bytes().filter(|&b| b == b'\r').count();
+    if lf_len > CLIPBOARD_PAYLOAD_MAX {
         return Err(IdeError::invalid("The clipboard holds more than 50 MiB"));
     }
     if commits::is_commit_payload(text) {
