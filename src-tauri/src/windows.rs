@@ -1313,7 +1313,7 @@ fn open_diff_files(app: &AppHandle, diff: DiffFilesLaunch) {
     } else {
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
-            if let Err(e) = create_window_for(&app, None, launch, false) {
+            if let Err(e) = create_window_for(&app, None, launch, Tabbing::Never) {
                 tracing::warn!("cannot open window: {}", e.message);
             }
         });
