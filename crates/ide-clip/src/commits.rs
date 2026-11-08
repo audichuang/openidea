@@ -568,7 +568,7 @@ fn admit_blob(
         BlobRead::Text(t) => {
             file.content = Some(t);
         }
-        BlobRead::NotText(r) | BlobRead::TooLarge { not_text: Some(r), .. } => {
+        BlobRead::NotText(r) | BlobRead::NonText { kind: r, .. } | BlobRead::TooLarge { not_text: Some(r), .. } => {
             file.not_copied = Some(r.into());
         }
         BlobRead::NotABlob { .. } => {
