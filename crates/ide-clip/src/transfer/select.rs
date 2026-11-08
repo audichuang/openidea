@@ -648,6 +648,25 @@ pub fn selection_from_paths_or_refused(
         let full_path = if path.is_absolute() { path.to_path_buf() } else { cwd.join(path) };
         let normalized = lexical_normalize(&full_path);
 
+        // A folder symlink is never followed, even one that points back at the root: it must be refused
+        // before the root test below, which compares canonical paths and would expand the root instead. The
+        // root's own spelling is not such a link, whatever it points through.
+        if normalized != lexical_root
+            && normalized != canonical_root.path()
+            && std::fs::symlink_metadata(&normalized).is_ok_and(|m| m.is_symlink())
+            && is_dir_symlink(&normalized)
+        {
+            let rel = normalized
+                .strip_prefix(&lexical_root)
+                .or_else(|_| normalized.strip_prefix(canonical_root.path()))
+                .ok()
+                .or_else(|| normalized.file_name().map(Path::new))
+                .unwrap_or(&normalized);
+            skipped += 1;
+            detail.symlink_dir(rel.to_string_lossy().replace('\\', "/"));
+            continue;
+        }
+
         let is_root = normalized == lexical_root
             || normalized == canonical_root.path()
             || dunce::canonicalize(&normalized).ok().as_deref() == Some(canonical_root.path());
@@ -781,6 +800,20 @@ pub fn selection_from_paths_or_refused(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A folder symlink that points at the project root is a symlinked folder like any other, not the root.
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_symlink_to_the_root_is_not_expanded() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        std::fs::write(root.join("ok.txt"), "ok\n").unwrap();
+        std::os::unix::fs::symlink(&root, root.join("loop")).unwrap();
+        let refused = selection_from_paths_or_refused(&root, &root, &[root.join("loop")]).unwrap().unwrap_err();
+        assert_eq!(refused.skipped, 1);
+        assert_eq!(refused.detail.symlink_dirs, 1);
+        assert_eq!(refused.detail.symlink_dir_paths, vec!["loop".to_string()]);
+    }
 
     #[test]
     fn test_selection_from_paths_child_sort_order_matches_list_files_recursive() {
