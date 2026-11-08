@@ -14,7 +14,8 @@ use ide_clip::restore::{FsProbe, RestoreBase, RestoreSelection, SkipReason, sugg
 use ide_clip::settings::{NonTextMode, Settings};
 use ide_clip::transfer::{
     self, CLIPBOARD_PAYLOAD_MAX, CanonicalRootId, CommitReplayPreview, ExportItem, ExportSelection, ImportMapping,
-    TransferError, TransferImportPlan, changed_items, copy_selection_detailed, selection_from_paths,
+    SKIPPED_PATHS_SHOWN, TransferError, TransferImportPlan, changed_items, copy_selection_detailed,
+    selection_from_paths,
 };
 use ide_core::{IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
@@ -254,6 +255,7 @@ fn by_repo(paths: &[PathBuf]) -> IdeResult<Vec<(PathBuf, Vec<PathBuf>)>> {
 fn file_copy(
     sel: ExportSelection,
     primary_skipped: usize,
+    primary_skipped_paths: Vec<String>,
     settings: &Settings,
     mode: ClipNonTextMode,
 ) -> IdeResult<ClipCopyResult> {
@@ -287,7 +289,12 @@ fn file_copy(
         notify: settings.show_copy_notification,
         non_text: non_text_summary(&o.non_text),
         non_text_copied: n(o.non_text_files),
-        skipped_unreadable_paths: report.skipped_unreadable_paths,
+        skipped_unreadable_paths: report
+            .skipped_unreadable_paths
+            .into_iter()
+            .chain(primary_skipped_paths)
+            .take(SKIPPED_PATHS_SHOWN)
+            .collect(),
         text: o.payload,
     })
 }
@@ -387,6 +394,7 @@ pub fn copy_in_with(
     match source {
         ClipCopySource::Files { paths } => {
             let mut skipped = 0;
+            let mut skipped_paths: Vec<String> = Vec::new();
             // Files of one root plan together; several roots join one selection,
             // anchored on the project like the git sources.
             let mut groups: Vec<(PathBuf, Vec<PathBuf>)> = Vec::new();
@@ -426,6 +434,7 @@ pub fn copy_in_with(
             for (root, list) in &groups {
                 let part = selection_from_paths(root, root, list).map_err(err)?;
                 skipped += part.skipped;
+                skipped_paths.extend(part.skipped_paths);
                 parts.push(part.sel);
             }
             if parts.is_empty() {
@@ -445,7 +454,7 @@ pub fn copy_in_with(
                 .map_err(err)?
                 .with_source_root(source_root)
                 .with_spelled_root(spelled_root);
-            file_copy(sel, skipped, settings, non_text)
+            file_copy(sel, skipped, skipped_paths, settings, non_text)
         }
         ClipCopySource::Changes { paths, side } => {
             let repos = by_repo(&paths)?;
@@ -458,7 +467,7 @@ pub fn copy_in_with(
                     item.source = transfer::SourceKind::Unstaged;
                 }
             }
-            file_copy(git_selection(project, content_roots, items)?, skipped, settings, non_text)
+            file_copy(git_selection(project, content_roots, items)?, skipped, Vec::new(), settings, non_text)
         }
         ClipCopySource::CommitFiles { repo, rev, paths } => {
             let root = repo_root(&repo)?;
@@ -467,7 +476,7 @@ pub fn copy_in_with(
             if items.is_empty() && no_filter {
                 return Err(IdeError::no_net_changes());
             }
-            file_copy(git_selection(project, content_roots, items)?, skipped, settings, non_text)
+            file_copy(git_selection(project, content_roots, items)?, skipped, Vec::new(), settings, non_text)
         }
         ClipCopySource::Range { repo, base, tip, paths } => {
             let root = repo_root(&repo)?;
@@ -476,7 +485,7 @@ pub fn copy_in_with(
             if items.is_empty() && no_filter {
                 return Err(IdeError::no_net_changes());
             }
-            file_copy(git_selection(project, content_roots, items)?, skipped, settings, non_text)
+            file_copy(git_selection(project, content_roots, items)?, skipped, Vec::new(), settings, non_text)
         }
         ClipCopySource::RootRange { repo, tip, paths } => {
             let root = repo_root(&repo)?;
@@ -487,7 +496,7 @@ pub fn copy_in_with(
             if items.is_empty() && no_filter {
                 return Err(IdeError::no_net_changes());
             }
-            file_copy(git_selection(project, content_roots, items)?, skipped, settings, non_text)
+            file_copy(git_selection(project, content_roots, items)?, skipped, Vec::new(), settings, non_text)
         }
         ClipCopySource::CommitList { repo, revs, paths } => {
             let root = repo_root(&repo)?;
@@ -514,7 +523,7 @@ pub fn copy_in_with(
             if items.is_empty() && no_filter {
                 return Err(IdeError::no_net_changes());
             }
-            file_copy(git_selection(project, content_roots, items)?, skipped, settings, non_text)
+            file_copy(git_selection(project, content_roots, items)?, skipped, Vec::new(), settings, non_text)
         }
         ClipCopySource::Commits { repo, tip, selected } => {
             let git = Git::open(&repo).map_err(err)?;
