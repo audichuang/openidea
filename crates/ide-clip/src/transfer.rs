@@ -3958,6 +3958,7 @@ mod preview_target_hash_cancel {
         rename.change = FileChange::Renamed;
         let mut skipped = replay_file("kept.txt", None);
         skipped.not_copied = Some(crate::commits::NotCopiedReason::Binary);
+        skipped.change = FileChange::Modified;
         let payload = CommitsPayload {
             commits: vec![
                 replay_record(vec![replay_file("new.txt", Some("first\n"))]),
