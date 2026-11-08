@@ -51,6 +51,8 @@ const summary = (over: Partial<ClipNonTextSummary> = {}): ClipNonTextSummary => 
   unreadOverLimitCount: 0,
   unreadLimitBytes: 2097152,
   exceedsPayloadCap: false,
+  limitLeftOut: 0,
+  limitLeftOutAtLeast: false,
   ...over,
 });
 
@@ -72,6 +74,10 @@ const result = (text: string, nonText: ClipNonTextSummary, extra: Partial<ClipCo
   nonText,
   nonTextCopied: 0,
   skippedUnreadablePaths: [],
+  skippedUnportable: 0,
+  skippedUnportablePaths: [],
+  skippedSymlinkDirs: 0,
+  skippedSymlinkDirPaths: [],
   ...extra,
 });
 
@@ -112,6 +118,55 @@ describe("copyClip non-text decision", () => {
     expect(call.mock.calls[1]![0]).toMatchObject({ nonText: "include" });
     expect(copied).toHaveBeenCalledWith("INCLUDED");
     expect(notify.mock.calls[0]![0].title).toContain("Non-text files copied as Base64: 2");
+  });
+
+  it("after Include the notice says Unreadable, after Exclude it keeps the old wording", async () => {
+    call.mockResolvedValueOnce(result("EXCLUDED", found, { skippedUnreadable: 2 }));
+    call.mockResolvedValueOnce(result("INCLUDED", found, { nonTextCopied: 2, skippedUnreadable: 2 }));
+    ask.mockResolvedValueOnce("include");
+    await copyClip(source);
+    expect(notify.mock.calls[0]![0].title).toContain("Unreadable: 2.");
+    expect(notify.mock.calls[0]![0].title).not.toContain("non-text file or unreadable");
+
+    notify.mockClear();
+    call.mockResolvedValueOnce(result("EXCLUDED", found, { skippedUnreadable: 2 }));
+    ask.mockResolvedValueOnce("exclude");
+    await copyClip(source);
+    expect(notify.mock.calls[0]![0].title).toContain("Skipped (non-text file or unreadable): 2.");
+  });
+
+  it("names unportable file names and symlinked folders apart from unreadable ones", async () => {
+    call.mockResolvedValueOnce(
+      result("TEXT", summary(), {
+        skipped: 4,
+        skippedUnportable: 3,
+        skippedUnportablePaths: ["odd/back\\slash.txt", "odd/tab\tname.txt"],
+        skippedSymlinkDirs: 1,
+        skippedSymlinkDirPaths: ["odd/linkdir"],
+      }),
+    );
+    await copyClip(source);
+    const n = notify.mock.calls[0]![0];
+    expect(n.title).toContain("Name not portable: 3.");
+    expect(n.title).toContain("Symlinked folder not followed: 1.");
+    expect(n.title).not.toContain("Unreadable");
+    expect(n.body).toContain("Name not portable: odd/back\\slash.txt, odd/tab\\tname.txt");
+    expect(n.body).toContain("Symlinked folder: odd/linkdir");
+  });
+
+  it("reports how many files the file limit left out", async () => {
+    call.mockResolvedValueOnce(result("TEXT", summary({ limitLeftOut: 5 }), { truncated: true }));
+    await copyClip(source);
+    expect(notify.mock.calls[0]![0].title).toContain("File limit 30 reached, files left out: 5.");
+  });
+
+  it("asks when the Include result has non-text files after the limit", async () => {
+    call.mockResolvedValueOnce(result("TEXT", summary({ ...found, limitLeftOut: 10 }), { truncated: true }));
+    ask.mockResolvedValueOnce("exclude");
+    await copyClip(source);
+    expect(ask).toHaveBeenCalledOnce();
+    // The count describes Include, so an Exclude result does not quote it.
+    expect(notify.mock.calls[0]![0].title).toContain("File limit 30 reached.");
   });
 
   it("Exclude with only a size placeholder left is Nothing to copy", async () => {
@@ -186,8 +241,10 @@ describe("NonTextDialog", () => {
   it("keeps the size on one line and the file name from shrinking (CSS)", () => {
     const css = readFileSync(`${process.cwd()}/src/features/vcs/clip.module.css`, "utf8");
     expect(/\.nonTextRow > \.note \{[^}]*flex: none;[^}]*white-space: nowrap/.test(css)).toBe(true);
-    expect(/\.nodeName \{[^}]*flex: 0 1 auto;[^}]*min-width: 8ch/.test(css)).toBe(true);
-    expect(/\.nodeNote \{[^}]*flex: none;[^}]*white-space: nowrap/.test(css)).toBe(true);
+    // The name has priority: the note shrinks first, a long name keeps its end.
+    expect(/\.nodeName \{[^}]*flex: 0 1 auto;[^}]*min-width: 12ch/.test(css)).toBe(true);
+    expect(/\.nodeNote \{[^}]*flex: 0 100 auto;[^}]*white-space: nowrap/.test(css)).toBe(true);
+    expect(/\.nameTail \{[^}]*flex: none/.test(css)).toBe(true);
     expect(/\.badge\[data-action="corrupt"\] \{[^}]*var\(--danger\)/.test(css)).toBe(true);
   });
 
@@ -332,7 +389,7 @@ describe("paste preview rows", () => {
         adjusted: false,
       };
       render(<PastePreviewDialog text="" target={{ dest: "/p", repo: null }} initial={preview} onClose={() => {}} />);
-      const name = screen.getByText("holiday-photo-beach-2026.png");
+      const name = screen.getAllByText("holiday-photo-beach-2026.png").find((e) => e.className.includes("nodeName"))!;
       expect(name.getAttribute("title")).toBe(`${path}\nCorrupt non-text file`);
     });
 
