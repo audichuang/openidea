@@ -502,3 +502,29 @@ fn the_dialog_numbers_equal_the_include_payload_with_size_placeholders() {
     assert_eq!(e.over_limit_count, i.over_limit_count);
     assert_eq!(e.unread_over_limit_count, i.unread_over_limit_count);
 }
+
+/// A row that fails while writing counts as skipped in the notice title, not only in its body (a read-only
+/// parent folder), and the other rows are still restored.
+#[cfg(unix)]
+#[test]
+fn a_row_that_fails_while_writing_counts_as_skipped() {
+    use std::os::unix::fs::PermissionsExt;
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (_tmp, dst) = dir();
+    fs::create_dir_all(dst.join("locked")).unwrap();
+    fs::set_permissions(dst.join("locked"), fs::Permissions::from_mode(0o555)).unwrap();
+    // As root the write succeeds and there is nothing to observe.
+    let writable = fs::write(dst.join("locked/probe"), b"x").is_ok();
+    let settings = Settings::default();
+    let text = "// file: locked/a.txt\nhello\n// file: ok.txt\nfine\n";
+    let preview = paste_preview_into(&dst, None, &[], text, false, &[], &settings).unwrap();
+    let result = paste_apply(ClipPasteApply { id: preview.id, ..Default::default() });
+    fs::set_permissions(dst.join("locked"), fs::Permissions::from_mode(0o755)).unwrap();
+    if writable {
+        return;
+    }
+    let result = result.unwrap();
+    assert_eq!((result.created, result.skipped), (1, 1), "{result:?}");
+    assert_eq!(result.errors.len(), 1, "{result:?}");
+    assert!(dst.join("ok.txt").exists());
+}
