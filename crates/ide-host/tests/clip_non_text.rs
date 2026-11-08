@@ -415,3 +415,36 @@ fn unportable_names_and_symlinked_folders_are_named() {
     named.sort();
     assert_eq!(named, ["odd/back\\slash.txt", "odd/tab\tname.txt"]);
 }
+
+/// A symlink to a folder selected directly, alone or next to a file, is not followed and is named as a
+/// symlinked folder (required case 22). A project tree that shows the link as a folder changes nothing.
+#[cfg(unix)]
+#[test]
+fn a_directly_selected_symlinked_folder_is_not_followed() {
+    use std::os::unix::fs::symlink;
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (_tmp, root) = dir();
+    let d = root.join("d14");
+    fs::create_dir_all(d.join("real")).unwrap();
+    fs::write(d.join("real/secret.txt"), "SECRET-CONTENT\n").unwrap();
+    fs::write(d.join("ok.png"), png()).unwrap();
+    fs::write(d.join("note.txt"), "plain\n").unwrap();
+    symlink(d.join("real"), d.join("linkdir")).unwrap();
+    let settings = Settings::default();
+
+    // Alone: nothing is copied and the reason names the link.
+    let alone =
+        copy_with(&root, ClipCopySource::Files { paths: vec![d.join("linkdir")] }, &settings, ClipNonTextMode::Include);
+    let message = format!("{:?}", alone.expect_err("a lone symlinked folder has nothing to copy"));
+    assert!(message.contains("symlinked folder") && message.contains("d14/linkdir"), "{message}");
+
+    // Multi-selection: the other entries are copied, the link is skipped and named, its contents are absent.
+    for order in [vec!["linkdir", "note.txt", "ok.png"], vec!["note.txt", "ok.png", "linkdir"]] {
+        let paths = order.iter().map(|n| d.join(n)).collect();
+        let r = copy_with(&root, ClipCopySource::Files { paths }, &settings, ClipNonTextMode::Include).unwrap();
+        assert!(!r.text.contains("SECRET-CONTENT") && !r.text.contains("secret.txt"), "{}", r.text);
+        assert_eq!(r.files, 2, "{r:?}");
+        assert_eq!((r.skipped, r.skipped_symlink_dirs, r.skipped_unreadable), (1, 1, 0), "{r:?}");
+        assert_eq!(r.skipped_symlink_dir_paths, ["d14/linkdir"]);
+    }
+}

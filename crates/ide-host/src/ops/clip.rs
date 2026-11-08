@@ -15,7 +15,7 @@ use ide_clip::settings::{NonTextMode, Settings};
 use ide_clip::transfer::{
     self, CLIPBOARD_PAYLOAD_MAX, CanonicalRootId, CommitReplayPreview, ExportItem, ExportSelection, ImportMapping,
     SKIPPED_PATHS_SHOWN, TransferError, TransferImportPlan, WalkRefusals, changed_items, copy_selection_detailed,
-    selection_from_paths,
+    selection_from_paths_or_refused,
 };
 use ide_core::{IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
@@ -276,6 +276,19 @@ fn outside_root(p: &Path) -> PathBuf {
         .unwrap_or_else(|_| if at.is_dir() { at.to_path_buf() } else { at.parent().unwrap_or(at).to_path_buf() })
 }
 
+/// The error text when no selected path could be read: names the symlinked folders and unportable names
+/// that were refused, which the generic text would hide.
+fn nothing_selected_message(refusals: &WalkRefusals) -> String {
+    let mut reasons = Vec::new();
+    if refusals.symlink_dirs > 0 {
+        reasons.push(format!("symlinked folder not followed: {}", refusals.symlink_dir_paths.join(", ")));
+    }
+    if refusals.unportable > 0 {
+        reasons.push(format!("name not portable: {}", refusals.unportable_paths.join(", ")));
+    }
+    if reasons.is_empty() { "Nothing to copy".to_string() } else { format!("Nothing to copy ({})", reasons.join("; ")) }
+}
+
 fn file_copy(
     sel: ExportSelection,
     primary_skipped: usize,
@@ -469,14 +482,23 @@ pub fn copy_in_with(
             // the roots and the absolute spelling must all be known before validation.
             let mut parts = Vec::with_capacity(groups.len());
             for (root, list) in &groups {
-                let part = selection_from_paths(root, root, list).map_err(err)?;
-                skipped += part.skipped;
-                skipped_paths.extend(part.skipped_paths);
-                refusals.merge(part.detail);
-                parts.push(part.sel);
+                match selection_from_paths_or_refused(root, root, list).map_err(err)? {
+                    Ok(part) => {
+                        skipped += part.skipped;
+                        skipped_paths.extend(part.skipped_paths);
+                        refusals.merge(part.detail);
+                        parts.push(part.sel);
+                    }
+                    Err(refused) => {
+                        skipped += refused.skipped;
+                        skipped_paths.extend(refused.skipped_paths);
+                        refusals.merge(refused.detail);
+                    }
+                }
             }
             if parts.is_empty() {
-                return Err(IdeError::invalid("Nothing to copy"));
+                // Every selected path was refused: say why where the reason is not "unreadable".
+                return Err(IdeError::invalid(nothing_selected_message(&refusals)));
             }
             // The `clipcode-root` name is the project's own spelling, never another root's.
             let source_root = groups.iter().position(|(r, _)| r == project).and_then(|i| parts[i].source_root.clone());
