@@ -70,7 +70,8 @@ export function Toolbar(p: ToolbarProps) {
     <div className={styles.toolbar} role="toolbar" aria-label={tx("Git Graph")}>
       <span className={styles.modeSwitch} role="tablist" aria-label={tx("Git Graph View")}>
         {modeTab("graph", <T>Graph</T>)}
-        {modeTab("pr", <T>PR</T>)}
+        {/* An abbreviation every locale keeps as is. */}
+        {modeTab("pr", "PR")}
       </span>
       {p.roots.length > 1 && p.repo ? (
         <button
