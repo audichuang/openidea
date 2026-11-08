@@ -133,6 +133,8 @@ pub struct ClipNonTextSummary {
     pub limit_left_out: u32,
     /// `limit_left_out` is a lower bound (a folder walk stopped at the limit).
     pub limit_left_out_at_least: bool,
+    /// The `headerFormat` cannot be escaped: `Include` would write Base64 lines that read as file headers.
+    pub header_cannot_be_escaped: bool,
 }
 
 fn non_text_summary(s: &NonTextSummary) -> ClipNonTextSummary {
@@ -152,6 +154,7 @@ fn non_text_summary(s: &NonTextSummary) -> ClipNonTextSummary {
         exceeds_payload_cap: s.estimated_include_payload_bytes > CLIPBOARD_PAYLOAD_MAX,
         limit_left_out: n(s.limit_left_out),
         limit_left_out_at_least: s.limit_left_out_lower_bound,
+        header_cannot_be_escaped: s.header_cannot_be_escaped,
     }
 }
 
