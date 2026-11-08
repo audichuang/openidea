@@ -38,8 +38,10 @@ import {
   isUnchanged,
   pasteNonTextLabel,
   pasteRowNote,
+  errorLineText,
   pasteRowTitle,
   replayFileNote,
+  resolveNonText,
 } from "../clipNonText";
 
 const summary = (over: Partial<ClipNonTextSummary> = {}): ClipNonTextSummary => ({
@@ -53,6 +55,7 @@ const summary = (over: Partial<ClipNonTextSummary> = {}): ClipNonTextSummary => 
   exceedsPayloadCap: false,
   limitLeftOut: 0,
   limitLeftOutAtLeast: false,
+  headerCannotBeEscaped: false,
   ...over,
 });
 
@@ -290,6 +293,42 @@ describe("NonTextDialog", () => {
     expect(onChoose.mock.calls.map((c) => c[0])).toEqual(["include", "exclude", "cancel"]);
   });
 
+  it("over the cap says more than 50 MB next to the raw total, never an estimate below it (case 26)", () => {
+    const MB = 1024 * 1024;
+    render(
+      <NonTextDialog
+        summary={summary({
+          ...found,
+          totalBytes: 54 * MB,
+          estimatedIncludeBytes: 50 * MB + 1,
+          exceedsPayloadCap: true,
+        })}
+        onChoose={() => {}}
+      />,
+    );
+    expect(screen.getByText(/raw 54 MB/)).toBeTruthy();
+    expect(screen.getByText("Payload with them: more than 50 MB")).toBeTruthy();
+    expect(screen.queryByText(/about/)).toBeNull();
+  });
+
+  it("disables Include, with the reason, when the header format cannot be escaped (case 25)", async () => {
+    const onChoose = vi.fn();
+    render(<NonTextDialog summary={summary({ ...found, headerCannotBeEscaped: true })} onChoose={onChoose} />);
+    const include = screen.getByRole("button", { name: "Include" }) as HTMLButtonElement;
+    expect(include.disabled).toBe(true);
+    expect(screen.getByRole("alert").textContent).toMatch(/header format/i);
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Exclude" }));
+    fireEvent.click(include);
+    expect(onChoose).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Exclude" }));
+    expect(onChoose).toHaveBeenCalledWith("exclude");
+    // A stale Include answer still yields the Exclude result.
+    const first = result("x", summary({ ...found, headerCannotBeEscaped: true }));
+    const again = vi.fn();
+    expect(await resolveNonText(first, async () => "include", again)).toBe(first);
+    expect(again).not.toHaveBeenCalled();
+  });
+
   it("disables Include over the payload cap", () => {
     const onChoose = vi.fn();
     render(<NonTextDialog summary={summary({ ...found, exceedsPayloadCap: true })} onChoose={onChoose} />);
@@ -298,6 +337,24 @@ describe("NonTextDialog", () => {
     expect(screen.getByRole("alert")).toBeTruthy();
     fireEvent.click(include);
     expect(onChoose).not.toHaveBeenCalled();
+  });
+});
+
+describe("write error lines", () => {
+  it("shows user text with the path kept, never the OS message", () => {
+    expect(errorLineText("ro/new.png: Folder is not writable")).toBe("ro/new.png: Folder is not writable");
+    expect(errorLineText("a: b/c.png: The disk is full")).toBe("a: b/c.png: The disk is full");
+    expect(errorLineText("other: text")).toBe("other: text");
+  });
+
+  it("translates the reason in zh and keeps the path", async () => {
+    const { setLocale } = await import("@/platform/i18n");
+    await setLocale("zh");
+    try {
+      expect(errorLineText("ro/new.png: Folder is not writable")).toBe("ro/new.png: 文件夹不可写");
+    } finally {
+      await setLocale("en");
+    }
   });
 });
 
