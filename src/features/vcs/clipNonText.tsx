@@ -106,19 +106,19 @@ export function NonTextDialog({
         {
           label: "Include",
           role: "default",
-          autoFocus: true,
+          autoFocus: !summary.exceedsPayloadCap,
           disabled: summary.exceedsPayloadCap,
           title: summary.exceedsPayloadCap
             ? "The payload with non-text files is over the clipboard size limit"
             : undefined,
           onClick: () => onChoose("include"),
         },
-        { label: "Exclude", onClick: () => onChoose("exclude") },
+        { label: "Exclude", autoFocus: summary.exceedsPayloadCap, onClick: () => onChoose("exclude") },
         { label: "Cancel", role: "cancel", onClick: () => onChoose("cancel") },
       ]}
     >
       <div className={styles.nonText}>
-        <div>{tx`${count} non-text files, raw ${raw}`}</div>
+        <div>{tx`Non-text files: ${count}, raw ${raw}`}</div>
         <div className={styles.note}>{tx`Payload with them: about ${estimate}`}</div>
         {summary.exceedsPayloadCap && (
           <div className={styles.warn} role="alert">
@@ -139,13 +139,9 @@ export function NonTextDialog({
         {unread > 0 && (
           <div
             className={styles.note}
-          >{tx`${unread} files over ${unreadLimit} were not read and are copied as size placeholders.`}</div>
+          >{tx`Not read, over ${unreadLimit} (copied as size placeholders): ${unread}`}</div>
         )}
-        {over > 0 && (
-          <div
-            className={styles.note}
-          >{tx`${over} non-text files are over the size limit and will not be copied.`}</div>
-        )}
+        {over > 0 && <div className={styles.note}>{tx`Non-text files over the size limit (not copied): ${over}`}</div>}
       </div>
     </Dialog>
   );
