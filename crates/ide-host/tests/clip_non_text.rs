@@ -433,10 +433,13 @@ fn a_directly_selected_symlinked_folder_is_not_followed() {
     let settings = Settings::default();
 
     // Alone: nothing is copied and the reason names the link.
+    // It is a normal empty result (the UI says "Nothing to copy"), not an error with a raw code.
     let alone =
-        copy_with(&root, ClipCopySource::Files { paths: vec![d.join("linkdir")] }, &settings, ClipNonTextMode::Include);
-    let message = format!("{:?}", alone.expect_err("a lone symlinked folder has nothing to copy"));
-    assert!(message.contains("symlinked folder") && message.contains("d14/linkdir"), "{message}");
+        copy_with(&root, ClipCopySource::Files { paths: vec![d.join("linkdir")] }, &settings, ClipNonTextMode::Include)
+            .expect("a lone symlinked folder is an empty result, not an error");
+    assert_eq!((alone.files, alone.skipped, alone.skipped_symlink_dirs), (0, 1, 1), "{alone:?}");
+    assert_eq!(alone.skipped_symlink_dir_paths, ["d14/linkdir"]);
+    assert!(alone.text.is_empty());
 
     // Multi-selection: the other entries are copied, the link is skipped and named, its contents are absent.
     for order in [vec!["linkdir", "note.txt", "ok.png"], vec!["note.txt", "ok.png", "linkdir"]] {
@@ -587,12 +590,11 @@ fn a_commit_refused_by_the_non_utf8_guard_is_not_created_and_named() {
     let result =
         paste_apply(ClipPasteApply { id: preview.id, overwrite_existing: true, ..Default::default() }).unwrap();
     assert_eq!(result.commits.len(), 1, "{result:?}");
-    assert_eq!(result.errors.len(), 1, "{result:?}");
-    assert!(
-        result.errors[0].contains("Commit 1 (rewrite legacy) not created")
-            && result.errors[0].contains("Existing file is not UTF-8; not overwritten"),
-        "{result:?}"
-    );
+    // Structured, not an English sentence: the UI words it through the text catalog.
+    assert!(result.errors.is_empty(), "{result:?}");
+    assert_eq!(result.not_created.len(), 1, "{result:?}");
+    let nc = &result.not_created[0];
+    assert_eq!((nc.number, nc.subject.as_str(), nc.reason.as_str()), (1, "rewrite legacy", "NON_UTF8_TARGET"));
     let after: usize = git(&dst, &["rev-list", "--count", "HEAD"]).parse().unwrap();
     assert_eq!(after, before + 1);
     assert_eq!(fs::read(dst.join("legacy.txt")).unwrap(), BIG5);
