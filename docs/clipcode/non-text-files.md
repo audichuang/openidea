@@ -17,8 +17,11 @@ project with a `static/` folder of images lost the images.
   skipped. The completion notice counts them and names the first few paths, including those dropped while a
   selected folder is expanded or a selection is resolved, not only those that fail at read time. A selected
   folder that cannot be listed is skipped and named like any other unreadable item; it never fails the whole copy.
-- A symlink to a directory is not followed; it is counted and named as skipped (reason: symlinked folder). A
-  symlink to a file is followed and carries the target's bytes.
+- A symlink to a directory is not followed; it is counted and named as skipped (reason: symlinked folder). This
+  holds whether the symlink is selected directly (alone or in a multi-selection) or found while a selected folder
+  is expanded; a project tree that shows the symlink as a folder does not change this. A symlink to a file is
+  followed and carries the target's bytes. (Found by deep testing round 3: a directly selected symlinked folder
+  was followed and its contents copied.)
 - A file whose name cannot be carried portably (it contains `\`, `"`, a tab or another character the payload path
   rules reject) is skipped and named with that reason and its real name, not reported as unreadable.
 - **Exclude** keeps today's result exactly, including today's "Nothing to copy" when nothing but size
@@ -59,10 +62,14 @@ The dialog shows:
 Every number, path and the estimate describe exactly what **Include** would put on the clipboard, after the
 file-count limit (`setMaxFileCount` / `fileCountLimit`) is applied. Non-text files count toward that limit like
 text files, in the copy's normal file order. When the limit cuts files off, the dialog says so (how many files the
-limit left out), and the decision to ask is made on the Include result: a copy whose Exclude result has no
-non-text file but whose Include result would carry some (for example text files filling the limit first under
-Exclude) still asks. (Found by deep testing: the dialog said 40 files while 30 were copied, and with text files
-first the images were dropped without a dialog.)
+limit left out), and the decision to ask is made on the Include result: the dialog appears exactly when
+Include would carry at least one non-text file. When files ordered first fill the limit so that Include would
+carry no non-text file, Include and Exclude are the same payload, so there is no dialog; the completion notice
+still says how many files the limit left out. Size placeholders (files over both limits, or over their own
+limit) take a slot under the limit like any entry, so the count, the list, the left-out number and the estimate
+are computed from the same ordered entry list Include writes; the dialog and the Include notice must agree.
+(Found by deep testing: the dialog said 40 files while 30 were copied; in round 3 it said 31 non-text files and
+11 left out while Include carried 29 and left out 13, with size placeholders in the selection.)
 
 Buttons: **Include** (default focus), **Exclude** (today's behaviour: non-text files are left out) and
 **Cancel** (nothing is copied). Include is disabled, with the reason shown, when the estimate is over the
@@ -70,7 +77,10 @@ whole-payload limit; focus then starts on Exclude. Esc is Cancel. The choice is 
 
 Counts in UI text are phrased so they read correctly for 1 and for many (e.g. "Non-text files copied as Base64:
 1."), unless the platform has plural support. Long paths are shortened in the middle so the file name stays
-visible (e.g. `d11long/a-really-long…/name-alpha.png`); sizes never wrap. After Include, the completion notice
+visible (e.g. `d11long/a-really-long…/name-alpha.png`): the folder part shrinks first, down to its first segment
+and an ellipsis, before any character of the file name is dropped; a file name that alone does not fit is itself
+shortened in the middle, keeping its extension. Sizes never wrap. Notices that list several categories (e.g.
+Unreadable, Symlinked folder, Name not portable) show one category per line. After Include, the completion notice
 says "Unreadable" for what was skipped, not "non-text file or unreadable".
 
 UI text says "non-text file" (Simplified zh: 非文本文件; Traditional zh: 非文字檔), never "binary file" or "non-UTF-8 file".
@@ -153,14 +163,19 @@ Only OpenIDEA implements commits mode (`// snip-sync commits v1`). The marker st
 - An identical target shows an **Unchanged** badge, is not counted in "Overwrite all N existing files", and needs
   no overwrite permission.
 - A corrupt entry shows a **Corrupt** badge (not a long inline note), with "Corrupt non-text file" in the tooltip
-  and the detail pane. The file name keeps priority in the row: notes shrink or drop before the name does, and
-  30–60 character names that share a prefix stay distinguishable.
+  and the detail pane. The file name keeps priority in the row, in flat and nested (indented) rows alike: badges
+  and notes shrink or drop before the name does, a name that still does not fit is shortened in the middle
+  keeping its extension, and 30–60 character names that share a prefix stay distinguishable.
 - Commits replay writes and commits the decoded bytes, after the same length and SHA-256 check.
 - The whole-payload limit on paste counts the payload as the parser sees it: each CRLF pair counts as one byte (a
   Windows clipboard must not push a valid payload over the limit), but a lone CR counts in full (it must not let
   oversized input bypass the limit).
-- One entry that cannot be applied (its target path is a directory, a parent is not writable) skips that row
-  with its reason; the rest of the paste continues. It never aborts the whole paste.
+- One entry that cannot be applied (its target path is a directory, a parent is not writable, two entries map to
+  the same file on a case-insensitive file system such as `IMG.png` and `img.png` on APFS) skips that row (for a
+  collision: every colliding row) with its reason in user text; the rest of the paste continues. It never aborts
+  the whole paste. A row that fails while writing counts as skipped in the notice title, not only in its body.
+  (Case-only collisions aborted the whole paste with the raw `IpcError: target collision` text before this spec:
+  pre-existing, found by deep testing round 3.)
 - The paste and replay previews never show raw reason codes (`BINARY`, `NON_UTF8`, `NON_UTF8_TARGET`); each
   reason has user text.
 - Known, not handled: with `core.autocrlf=true` in the destination repository, git's own line-ending conversion
@@ -188,7 +203,9 @@ Each implementation adds these to its contract tests (OpenIDEA: `clipboard-contr
     source (the deletion happens); a rename of an image moves it.
 14. Commits mode: Big5 file rewritten as UTF-8 in a later commit of the same batch keeps the rewrite.
 15. File-count limit: 40 small images with a limit of 30 — the dialog's count, list and estimate match the
-    Include payload; 30 text files ordered before 5 images still ask and report what the limit left out.
+    Include payload; the same with size placeholders in the selection (a folder with files over both limits
+    plus 40 images): dialog numbers equal the Include payload and notice. 30 text files ordered before 5 images:
+    no dialog, and the notice reports 5 left out by the limit.
 16. Unreadable files dropped during folder expansion (chmod 000 file and folder, dangling symlink) are named in
     the completion notice.
 17. CRLF growth near the whole-payload limit is accepted on paste; lone CRs past the limit are refused.
@@ -196,7 +213,13 @@ Each implementation adds these to its contract tests (OpenIDEA: `clipboard-contr
     outside the alphabet (other than ASCII whitespace) make the entry corrupt.
 19. A selected unreadable folder plus a readable file: the file is copied, the folder is named as unreadable.
 20. Paste where a target path is a directory: only that row is skipped; the others restore.
-21. Names shown in the dialog and preview: three 58–60 character names sharing a prefix are distinguishable.
+21. Names shown in the dialog and preview: three 58–60 character names sharing a prefix are distinguishable; a
+    file under a 150-character folder path shows its whole file name (extension included) in the dialog and in a
+    nested preview row with an Unchanged badge.
+22. A symlink to a folder selected directly (alone and in a multi-selection) is not followed and is named as a
+    symlinked folder.
+23. A payload with `IMG.png` and `img.png` pasted on a case-insensitive file system skips both with a collision
+    reason and restores the other entries.
 
 ## Open items for the other implementations
 
@@ -213,6 +236,14 @@ Each review or test round folds its findings back into this spec.
 - Hands-on testers, round 1: identical targets as Unchanged; corrupt rows and replay preview labels; count
   phrasing for 1; long paths; focus when Include is disabled. Round 2: unreadable paths from folder expansion;
   Corrupt badge instead of a squeezed note.
+- Deep testers, round 3 (three testers, D1–D17 matrix): a directly selected symlinked folder was followed (code
+  did not match the rule; rule now says "selected or expanded"); dialog numbers disagreed with Include when size
+  placeholders shared the file-count limit (code bug in the round 2 fix); dialog paths and nested preview rows cut
+  the file name's end instead of the folder part (round 2 fix incomplete; rule made concrete); notice categories
+  ran together on one line; text-first file-count case clarified (no dialog, notice reports what was left out);
+  case-only path collisions abort the paste (pre-existing); a failed write row was not counted as skipped.
+  Still open for the user: Big5 → UTF-8 rewrite outside a batch refused, and that replay creates an empty
+  commit; read-only (444) targets replaced without a note.
 - Deep testers, round 2 (three testers, D1–D13 matrix): selected unreadable folder fails the copy
   (pre-existing); directory at a target path aborts the paste (pre-existing); symlinked folders silently dropped
   (pre-existing); non-portable names reported as unreadable; raw reason codes in previews; middle ellipsis for
