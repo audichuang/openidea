@@ -2501,6 +2501,10 @@ export type ClipNonTextSummary = {
 	files: ClipNonTextFile[],
 	/**  Non-text files over the non-text limit: not copied either way. */
 	overLimitCount: number,
+	/**  Files over both per-file limits: never read, copied as size placeholders. */
+	unreadOverLimitCount: number,
+	/**  The larger per-file limit in bytes, which those files exceed. */
+	unreadLimitBytes: number | null,
 	/**  The estimate is over the whole-payload limit: `Include` would fail. */
 	exceedsPayloadCap: boolean,
 };
