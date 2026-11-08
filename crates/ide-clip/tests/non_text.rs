@@ -176,6 +176,7 @@ fn exclude_writes_todays_payload_and_reports_what_include_adds() {
     assert_eq!(summary.total_bytes, 300 + 5 + 1 + 1500);
     // `img/huge.png` was never read: over both limits it stays a size placeholder.
     assert_eq!(summary.over_limit_count, 0);
+    assert_eq!((summary.unread_over_limit_count, summary.unread_limit_bytes), (1, 2048));
 
     let include = export(&sel, &settings, NonTextMode::Include);
     assert_eq!(summary.estimated_include_payload_bytes, include.payload.len());
@@ -247,6 +248,8 @@ fn non_text_over_its_own_limit_is_a_size_placeholder() {
     assert_eq!(exclude.payload, payload(&settings, "repo", vec![text("a.ts", "a\n")]));
     assert_eq!(exclude.non_text.count(), 0);
     assert_eq!(exclude.non_text.over_limit_count, 1);
+    // It was read to be classified: over its own limit, not unread.
+    assert_eq!(exclude.non_text.unread_over_limit_count, 0);
     assert_eq!(exclude.non_text.estimated_include_payload_bytes, include.payload.len());
 }
 
