@@ -735,7 +735,7 @@ pub fn paste_preview_into(
 ) -> IdeResult<ClipPastePreview> {
     let opts = RunOptions::default();
     if text.len() > CLIPBOARD_PAYLOAD_MAX {
-        return Err(IdeError::invalid("The clipboard holds more than 32 MiB"));
+        return Err(IdeError::invalid("The clipboard holds more than 50 MiB"));
     }
     if commits::is_commit_payload(text) {
         let payload: CommitsPayload = commits::parse_commit_payload(text).map_err(err)?;
