@@ -1060,6 +1060,18 @@ pub enum ReplaySkipReason {
     CorruptNonText,
 }
 
+impl ReplaySkipReason {
+    /// The reason as user text (the preview shows the same wording).
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::NotCopied => "Not copied",
+            Self::UnsafePath => "Unsafe path",
+            Self::NonUtf8Target => "Existing file is not UTF-8; not overwritten",
+            Self::CorruptNonText => "Corrupt non-text file",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum LayoutConflict {
@@ -2005,11 +2017,26 @@ pub struct ReplayFailure {
     pub conflict_path: Option<String>,
 }
 
+/// A commit the replay did not create because every one of its file changes was refused or skipped: an empty
+/// commit would record nothing of what the source commit did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayNotCreated {
+    /// Index into the payload's commits.
+    pub index: usize,
+    pub message: String,
+    /// Why its first file change was refused or skipped.
+    pub reason: ReplaySkipReason,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReplayResult {
     /// New commit OIDs, in replay order. Never rolled back.
     pub created: Vec<String>,
+    /// Commits that were not created (see [`ReplayNotCreated`]); the replay went on with the next one.
+    #[serde(default)]
+    pub not_created: Vec<ReplayNotCreated>,
     /// The commit replay stopped at, if any.
     pub failure: Option<ReplayFailure>,
 }
@@ -2035,6 +2062,7 @@ impl ReplaySession {
     pub(crate) fn refused(payload: &CommitsPayload, error: String) -> ReplayResult {
         ReplayResult {
             created: Vec::new(),
+            not_created: Vec::new(),
             failure: payload.commits.first().map(|c| ReplayFailure {
                 index: 0,
                 message: c.message.clone(),
@@ -2052,11 +2080,11 @@ impl ReplaySession {
         scope: &Path,
         payload: &CommitsPayload,
         _guards: Vec<crate::workspace::HeavyGuard>,
-    ) -> Result<Self, ReplayResult> {
+    ) -> Result<Self, Box<ReplayResult>> {
         let no_hooks = match NoHooks::create() {
             Ok(h) => h,
             Err(e) => {
-                return Err(Self::refused(payload, format!("cannot create an empty hooks directory: {e}")));
+                return Err(Box::new(Self::refused(payload, format!("cannot create an empty hooks directory: {e}"))));
             }
         };
         Ok(Self { no_hooks, scope: scope.to_path_buf(), _guards })
@@ -2068,7 +2096,10 @@ impl ReplaySession {
         let mut written = std::collections::HashSet::new();
         for (index, commit) in payload.commits.iter().enumerate() {
             match replay_commit(git, &self.scope, commit, &self.no_hooks.config, &mut written) {
-                Ok(sha) => result.created.push(sha),
+                Ok(ReplayOutcome::Created(sha)) => result.created.push(sha),
+                Ok(ReplayOutcome::NotCreated(reason)) => {
+                    result.not_created.push(ReplayNotCreated { index, message: commit.message.clone(), reason });
+                }
                 Err(err) => {
                     result.failure = Some(ReplayFailure {
                         index,
@@ -2093,7 +2124,7 @@ pub(crate) fn replay(git: &Git, payload: &CommitsPayload) -> ReplayResult {
     };
     match ReplaySession::begin_in(git.root(), payload, vec![guard]) {
         Ok(session) => session.run(git, payload),
-        Err(refused) => refused,
+        Err(refused) => *refused,
     }
 }
 
@@ -2144,13 +2175,18 @@ impl From<String> for ReplayCommitError {
     }
 }
 
+enum ReplayOutcome {
+    Created(String),
+    NotCreated(ReplaySkipReason),
+}
+
 fn replay_commit(
     git: &Git,
     scope: &Path,
     commit: &CommitRecord,
     no_hooks: &str,
     written: &mut std::collections::HashSet<PathBuf>,
-) -> Result<String, ReplayCommitError> {
+) -> Result<ReplayOutcome, ReplayCommitError> {
     let root = git.root();
     // Replay plans against the disk and index as the earlier commits left
     // them.
@@ -2168,6 +2204,14 @@ fn replay_commit(
             layout_conflict: Some(conflict),
             conflict_path: Some(plan.files[i].path.clone()),
         });
+    }
+    // Every file change refused or skipped (the non-UTF-8 overwrite guard, an unsafe path, a corrupt or
+    // uncopied file): nothing of the commit applies, so no empty commit is made. A commit that had no file
+    // changes to begin with stays what it was.
+    if let Some(reason) = plan.files.first().and_then(|f| f.skip_reason) {
+        if plan.files.iter().all(|f| f.skip_reason.is_some()) {
+            return Ok(ReplayOutcome::NotCreated(reason));
+        }
     }
     // Deleted paths: staged only if HEAD tracks them. A path that is only in
     // the index (a staged new file) has nothing to commit, and `commit
@@ -2298,7 +2342,7 @@ fn replay_commit(
     args.extend(&paths);
     run_commit(git, &args, commit).map_err(err)?;
     let head = git.run(&["-c", no_hooks, "rev-parse", "HEAD"]).map_err(err)?;
-    Ok(String::from_utf8_lossy(&head).trim().to_string())
+    Ok(ReplayOutcome::Created(String::from_utf8_lossy(&head).trim().to_string()))
 }
 
 /// Removes `abs`; already absent is fine. Parent directories left empty go
@@ -3481,12 +3525,12 @@ mod tests {
         dst.git(&["add", "foreign.txt"]);
         // Untracked at the target; the source deletes it.
         dst.write("gone.txt", b"untracked\n");
-        let record = |msg: &str, file: CommitFile| CommitRecord {
+        let record = |msg: &str, files: Vec<CommitFile>| CommitRecord {
             message: msg.into(),
             author_name: "Bob".into(),
             author_email: "bob@example.com".into(),
             author_date: "2020-01-01T00:00:00+00:00".into(),
-            files: vec![file],
+            files,
         };
         let file = |path: &str, change, not_copied| CommitFile {
             path: path.into(),
@@ -3498,8 +3542,9 @@ mod tests {
         };
         let payload = CommitsPayload {
             commits: vec![
-                record("only binary\n", file("img.bin", FileChange::Added, Some(NotCopiedReason::Binary))),
-                record("delete untracked\n", file("gone.txt", FileChange::Deleted, None)),
+                // No file changes at all: stays the empty commit it was.
+                record("nothing changed\n", Vec::new()),
+                record("delete untracked\n", vec![file("gone.txt", FileChange::Deleted, None)]),
             ],
         };
         let result = replay(&dst.open(), &payload);
@@ -3513,7 +3558,57 @@ mod tests {
         assert_eq!(dst.git(&["diff", "--cached", "--name-only"]), "foreign.txt");
     }
 
-    #[cfg(unix)]
+    /// Required case 24: a commit whose only change the non-UTF-8 overwrite guard refuses is not created as an
+    /// empty commit; the replay names it with the reason and goes on with the next commit.
+    #[test]
+    fn a_commit_whose_every_change_is_refused_is_not_created() {
+        let dst = Repo::new("main");
+        dst.write("legacy.txt", &[0xa4, 0xe9, 0xa5, 0xbb, b'\n']);
+        dst.commit("root", "2019-01-01T00:00:00+00:00");
+        let record = |msg: &str, files: Vec<CommitFile>| CommitRecord {
+            message: msg.into(),
+            author_name: "Bob".into(),
+            author_email: "bob@example.com".into(),
+            author_date: "2020-01-01T00:00:00+00:00".into(),
+            files,
+        };
+        let text_file = |path: &str, change, content: &str| CommitFile {
+            path: path.into(),
+            old_path: None,
+            change,
+            content: Some(content.into()),
+            not_copied: None,
+            non_text: None,
+        };
+        let payload = CommitsPayload {
+            commits: vec![
+                record("rewrite legacy as UTF-8\n", vec![text_file("legacy.txt", FileChange::Modified, "中文\n")]),
+                record("add b\n", vec![text_file("b.txt", FileChange::Added, "b\n")]),
+            ],
+        };
+        let before = dst.git(&["rev-list", "--count", "HEAD"]);
+        let git = dst.open();
+        let plan = plan_commit_replay(&git, &payload);
+        assert_eq!(plan.commits[0].files[0].skip_reason, Some(ReplaySkipReason::NonUtf8Target));
+
+        let result = replay(&git, &payload);
+        assert_eq!(result.failure, None);
+        assert_eq!(result.created.len(), 1, "{result:?}");
+        assert_eq!(
+            result.not_created,
+            [ReplayNotCreated {
+                index: 0,
+                message: "rewrite legacy as UTF-8\n".into(),
+                reason: ReplaySkipReason::NonUtf8Target
+            }]
+        );
+        let after = dst.git(&["rev-list", "--count", "HEAD"]);
+        assert_eq!(after.parse::<usize>().unwrap(), before.parse::<usize>().unwrap() + 1);
+        assert_eq!(fs::read(dst.path().join("legacy.txt")).unwrap(), [0xa4, 0xe9, 0xa5, 0xbb, b'\n']);
+        assert_eq!(dst.git(&["log", "-1", "--format=%s"]), "add b");
+        assert!(dst.path().join("b.txt").exists());
+    }
+
     #[test]
     fn commits_replay_replaces_symlink_dir_and_keeps_staged_new_file() {
         let dst = Repo::new("main");
