@@ -1419,9 +1419,10 @@ enum Node {
 ///
 /// Only the layout is simulated. Symlink checks in `target` and
 /// `must_not_overwrite` stay on the real disk, except for a path the layout
-/// [`replaced`](Self::replaced): a payload creates neither symlinks nor
-/// non-UTF-8 files, but an earlier commit can delete one, and what is left
-/// there is then a regular file or nothing.
+/// [`replaced`](Self::replaced): a payload creates no symlinks, but an earlier
+/// commit can delete one, and what is left there is then a regular file
+/// or nothing. A non-text row writes non-UTF-8 bytes, so a later commit
+/// that rewrites the path as text must see it as replaced too.
 ///
 /// A path an earlier commit deleted or wrote as a file is `cut`: whatever the
 /// disk shows below it (the old symlink's target included) is gone, so its
@@ -1446,6 +1447,10 @@ struct PlannedLayout {
     cut: std::collections::HashSet<PathBuf>,
     /// The index's spellings, read only when `fold_case`.
     tracked: TrackedSpellings,
+    /// Keys of paths an earlier commit of this replay run wrote to the disk.
+    /// A later commit's layout is rebuilt from the disk, so these stand in
+    /// for the overrides `plan_commit_replay` carried over.
+    written: std::collections::HashSet<PathBuf>,
 }
 
 impl PlannedLayout {
@@ -1480,7 +1485,7 @@ impl PlannedLayout {
     /// Whether the disk no longer decides what `path` is: an earlier commit
     /// changed it, or removed what the disk shows above it.
     fn replaced(&self, path: &Path) -> bool {
-        self.get(path).is_some() || self.shadowed(path)
+        self.get(path).is_some() || self.shadowed(path) || self.written.contains(&self.key(path))
     }
 
     /// Whether the disk's entries inside `dir` are still there.
@@ -2033,8 +2038,9 @@ impl ReplaySession {
     /// Replays every commit; never polls cancellation.
     pub(crate) fn run(&self, git: &Git, payload: &CommitsPayload) -> ReplayResult {
         let mut result = ReplayResult::default();
+        let mut written = std::collections::HashSet::new();
         for (index, commit) in payload.commits.iter().enumerate() {
-            match replay_commit(git, &self.scope, commit, &self.no_hooks.config) {
+            match replay_commit(git, &self.scope, commit, &self.no_hooks.config, &mut written) {
                 Ok(sha) => result.created.push(sha),
                 Err(err) => {
                     result.failure = Some(ReplayFailure {
@@ -2111,11 +2117,21 @@ impl From<String> for ReplayCommitError {
     }
 }
 
-fn replay_commit(git: &Git, scope: &Path, commit: &CommitRecord, no_hooks: &str) -> Result<String, ReplayCommitError> {
+fn replay_commit(
+    git: &Git,
+    scope: &Path,
+    commit: &CommitRecord,
+    no_hooks: &str,
+    written: &mut std::collections::HashSet<PathBuf>,
+) -> Result<String, ReplayCommitError> {
     let root = git.root();
     // Replay plans against the disk and index as the earlier commits left
     // them.
-    let layout = PlannedLayout::new(git, &RunOptions::default()).map_err(|e| e.to_string())?;
+    let mut layout = PlannedLayout::new(git, &RunOptions::default()).map_err(|e| e.to_string())?;
+    // A path an earlier commit of this run wrote is no longer what the
+    // destination had, so the preview's verdict for it (a rewrite of a
+    // non-text file as UTF-8 text is a Write) holds here too.
+    layout.written = written.iter().map(|p| layout.key(p)).collect();
     let plan = plan_commit(root, commit, &layout);
     // The preview skips these; replay refuses the commit before touching
     // anything rather than stop halfway with a half-staged worktree.
@@ -2150,7 +2166,7 @@ fn replay_commit(git: &Git, scope: &Path, commit: &CommitRecord, no_hooks: &str)
         if unsafe_replay_target(scope, abs) {
             return Err(format!("{}: unsafe path", f.path).into());
         }
-        if is_text && !is_symlink(abs) && must_not_overwrite(abs) {
+        if is_text && !layout.replaced(abs) && !is_symlink(abs) && must_not_overwrite(abs) {
             return Err(format!("{}: target is not UTF-8 or cannot be verified", f.path).into());
         }
     }
@@ -2189,6 +2205,7 @@ fn replay_commit(git: &Git, scope: &Path, commit: &CommitRecord, no_hooks: &str)
         }
         .map_err(|e| format!("{}: {e}", f.path))?;
         paths.push(&f.path);
+        written.insert(abs.clone());
     }
 
     // Tracked deletions are staged with `rm --cached`, never `add -A`: a
@@ -3611,6 +3628,34 @@ mod tests {
         }
         assert_eq!(dst.git(&["ls-tree", "-r", "--name-only", "HEAD"]), "big5.txt\nbin.dat\nkeep.txt");
         assert_eq!(dst.git(&["show", "HEAD:keep.txt"]), "keep v2");
+    }
+
+    #[test]
+    fn replay_rewrites_non_text_file_as_text_in_a_later_commit() {
+        let src = Repo::new("main");
+        src.write("keep.txt", b"keep\n");
+        src.commit("base", "2020-01-01T00:00:00+00:00");
+        src.write("f.txt", &[0xa4, 0xe9, 0xa5, 0xbb]);
+        let a = src.commit("add big5", "2020-01-02T00:00:00+00:00");
+        src.write("f.txt", b"hello\n");
+        let b = src.commit("to utf8", "2020-01-03T00:00:00+00:00");
+
+        let opts = CommitNonTextOptions { mode: NonTextMode::Include, ..CommitNonTextOptions::default() };
+        let export =
+            copy_commits_with_non_text(&src.open(), &[a, b], &RunOptions::default(), 10_000_000, opts).unwrap();
+        let payload = parse_commit_payload(&export.text).unwrap();
+        let dst = Repo::new("feature");
+        dst.write("keep.txt", b"keep\n");
+        dst.commit("target root", "2019-01-01T00:00:00+00:00");
+        let tg = dst.open();
+
+        let plan = plan_commit_replay(&tg, &payload);
+        assert!(plan.commits.iter().all(|c| c.files.iter().all(|f| f.action == ReplayAction::Write)));
+        let result = replay(&tg, &payload);
+        assert_eq!(result.failure, None);
+        assert_eq!(result.created.len(), 2);
+        assert_eq!(fs::read(dst.path().join("f.txt")).unwrap(), b"hello\n");
+        assert_eq!(dst.git(&["show", "HEAD:f.txt"]), "hello");
     }
 
     #[test]
