@@ -122,6 +122,9 @@ jwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAAZdEVYdFNvZnR3YXJlAHBhaW50Lm5ldCA0LjAu
      `//clipcode-esc: ` is always escaped, so the first line now carries two prefixes:
      `//clipcode-esc: //clipcode-esc: // File skipped: non-text file, …`.
 
+  "First line" means the first non-blank body line, since the reader drops leading blank lines; the writer
+  applies the placeholder escape to that line, not to a blank one before it.
+
   A real non-text placeholder line carries zero prefixes (built-in header) or one (a custom `headerFormat` that
   matches it, e.g. `// $FILE_PATH`). The reader un-escapes one level per line as for any body, then looks at
   the first line: the exact placeholder means a non-text entry; a line starting with `//clipcode-esc: ` that is
