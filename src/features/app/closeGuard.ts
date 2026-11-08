@@ -236,7 +236,6 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
           throw e;
         }
       }
-      await commands.windowGroupCancelClose();
       return false;
     }
     const confirmTerminate = workflowSettings().run.confirmTerminate;
