@@ -212,3 +212,19 @@ fn commits_carry_the_image_only_when_included() {
     assert_eq!((result.commits.len(), result.errors.len()), (1, 0));
     assert_eq!(fs::read(dst.join("img/logo.png")).unwrap(), png());
 }
+
+/// Exclude is today's copy: a selection whose only text file is a size placeholder copies nothing,
+/// whatever non-text files sit next to it.
+#[test]
+fn exclude_with_only_a_size_placeholder_is_nothing_to_copy() {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (_tmp, root) = dir();
+    fs::create_dir_all(root.join("d")).unwrap();
+    fs::write(root.join("d/big.txt"), "x".repeat(700 * 1024)).unwrap();
+    fs::write(root.join("d/logo.png"), png()).unwrap();
+    let source = ClipCopySource::Files { paths: vec![root.join("d")] };
+    let settings = Settings::default();
+
+    let err = copy(&root, source, &settings).unwrap_err();
+    assert!(err.to_string().contains("Nothing to copy"), "{err}");
+}
