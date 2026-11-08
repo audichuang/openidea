@@ -6992,6 +6992,7 @@
   "Path matches more than one root": "路径对应多个根目录",
   "Placeholder, no file content": "占位文本，没有文件内容",
   "Target is a folder; not replaced": "目标是文件夹，未替换",
+  "Another entry maps to the same file; not applied": "另一个条目对应同一个文件，未应用",
   "The renamed-from path is a folder": "被重命名的原路径是文件夹",
   "The path to delete is a folder": "要删除的路径是文件夹",
   "A folder is in the way of the file": "有文件夹挡在文件的位置上",
