@@ -12,6 +12,7 @@ pub mod format;
 pub mod fsutil;
 pub mod gitrun;
 pub mod gitsrc;
+pub mod nontext;
 pub mod paths;
 pub mod restore;
 pub mod settings;
