@@ -6801,6 +6801,7 @@
   "Copy the pull request's commits so snip-sync or OpenIDEA can replay them": "复制拉取请求的提交，供 snip-sync 或 OpenIDEA 重放",
   "ClipCode: Copy Full Source": "ClipCode：复制完整源代码",
   "ClipCode copy failed": "ClipCode 复制失败",
+  "Nothing to copy": "没有可复制的内容",
   "The clipboard is empty": "剪贴板为空",
   "Nothing to paste": "没有可粘贴的内容",
   "No files selected.": "未选择文件。",
