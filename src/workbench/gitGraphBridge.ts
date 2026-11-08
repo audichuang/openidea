@@ -10,6 +10,7 @@
 import type { ComponentType } from "react";
 import type { Branch, ChangedFile, Commit } from "@/bindings";
 import type { MenuItem } from "@/ui";
+import type { EditorInput } from "./contributions";
 
 /** A commit of the graph, tagged with its repository root. */
 export type GraphCommit = Commit & { repo: string };
@@ -35,6 +36,12 @@ export interface GraphRefLabel {
   kind: "head" | "local" | "remote" | "tag";
   /** Branch or tag name. */
   name: string;
+}
+
+/** One side of a two-revision comparison: what git reads and what the diff header shows. */
+export interface GraphRevisionSide {
+  rev: string;
+  label: string;
 }
 
 export interface GraphLayoutState {
@@ -92,6 +99,18 @@ export interface GitGraphBridge {
   filesMenu(commit: GraphCommit, files: ChangedFile[]): Promise<MenuItem[]>;
   /** Opens the diff of `files[index]` with the others chained (F7 moves along). */
   openDiff(commit: GraphCommit, files: ChangedFile[], index: number, preview?: boolean): Promise<void>;
+  /** The diff viewer's input for `file` changed between `from` and `to`, embedded and read-only. */
+  revisionDiffInput(repo: string, from: GraphRevisionSide, to: GraphRevisionSide, file: ChangedFile): EditorInput;
+  /** Opens the diff of `files[index]` between `from` and `to` in an editor tab, the others chained. */
+  openRevisionDiff(
+    repo: string,
+    from: GraphRevisionSide,
+    to: GraphRevisionSide,
+    files: ChangedFile[],
+    index: number,
+  ): Promise<void>;
+  /** ClipCode: the files changed between `base` and `tip` (Copy Changed Files); false when nothing was copied. */
+  copyRange(repo: string, base: string, tip: string): Promise<boolean>;
   /** `path` (repository-relative) at `rev` compared with the working file. */
   openRevisionFile(repo: string, rev: string, path: string): Promise<void>;
   /** Unstash Changes entries for `stash@{index}` of `repo` (apply, pop, the dialog, drop). */
