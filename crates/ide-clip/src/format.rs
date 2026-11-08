@@ -334,6 +334,17 @@ fn needs_escape(line: &str, custom: Option<&HeaderPattern>) -> bool {
     find_header_path(&format!("{ESCAPE_MARKER}{as_parsed}"), custom).is_none()
 }
 
+/// A `headerFormat` whose header pattern still matches a Base64 line after the escape marker was put in front
+/// of it (no fixed text before `$FILE_PATH`, such as `$FILE_PATH` alone): escaping cannot keep the Base64 lines
+/// of a non-text entry from being read as file headers. Same test as the degenerate case of [`needs_escape`].
+pub fn header_format_unescapable(header_format: &str) -> bool {
+    let Some(custom) = HeaderPattern::new(header_format) else { return false };
+    let custom = Some(&custom);
+    let full_line = "A".repeat(crate::nontext::BASE64_LINE_LEN);
+    let padded_line = format!("{}=", &full_line[1..]);
+    [full_line, padded_line].iter().any(|line| find_header_path(line, custom).is_some() && !needs_escape(line, custom))
+}
+
 /// Whether `line`, after removing any number of leading escape prefixes, is the non-text placeholder line.
 fn is_placeholder_shaped(line: &str) -> bool {
     let mut rest = line;
@@ -776,6 +787,16 @@ mod tests {
                 assert!(entry.escaped_placeholder, "{header}: {}", entry.path);
                 assert_eq!(&entry.content, text, "{header}: {}", entry.path);
             }
+        }
+    }
+
+    #[test]
+    fn header_formats_that_cannot_escape_base64_lines_are_detected() {
+        for unescapable in ["$FILE_PATH", "$FILE_PATH="] {
+            assert!(header_format_unescapable(unescapable), "{unescapable}");
+        }
+        for fine in [DEFAULT, "// $FILE_PATH", "A$FILE_PATH", "### $FILE_PATH", "$FILE_PATH.md", "no placeholder", ""] {
+            assert!(!header_format_unescapable(fine), "{fine}");
         }
     }
 
