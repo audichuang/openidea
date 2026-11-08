@@ -204,6 +204,7 @@ mod tests {
             .map(|item| match item {
                 WalkItem::File(p) => p.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/"),
                 WalkItem::UnreadableDir(p) => format!("!{}", p.display()),
+                WalkItem::SymlinkedDir(p) => format!("@{}", p.strip_prefix(root).unwrap().display()),
             })
             .collect()
     }
@@ -307,8 +308,8 @@ mod tests {
 
         // The selected link is walked.
         assert_eq!(walk(&root.join("node_modules/ui"), root), ["node_modules/ui/index.ts"]);
-        // A link back to an ancestor is not followed during recursion.
-        assert_eq!(walk(&root.join("packages"), root), ["packages/ui/index.ts"]);
+        // A link back to an ancestor is not followed during recursion; it is reported.
+        assert_eq!(walk(&root.join("packages"), root), ["@packages/loop", "packages/ui/index.ts"]);
         // A dangling link is yielded; reading it is the caller's failure.
         assert_eq!(walk(&root.join("src"), root), ["src/a.ts", "src/dangling.ts"]);
         assert!(read_text_file(&root.join("src/dangling.ts")).is_err());
