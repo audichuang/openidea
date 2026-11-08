@@ -9,7 +9,7 @@ describe("dateFormat", () => {
   it("formats like the locale methods it replaces", () => {
     expect(formatDay(d, system)).toBe(d.toLocaleDateString(undefined, long));
     expect(formatDay(d, system, true)).toBe(
-      d.toLocaleDateString(undefined, { year: "2-digit", month: "2-digit", day: "2-digit" }),
+      d.toLocaleDateString(undefined, { year: "numeric", month: "numeric", day: "numeric" }),
     );
     expect(formatClock(d, system)).toBe(d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }));
     expect(formatPattern(d, "MMMM MMM dd.MM.yyyy")).toBe("November Nov 05.11.2026");
