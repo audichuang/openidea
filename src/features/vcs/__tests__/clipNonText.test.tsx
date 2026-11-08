@@ -186,7 +186,9 @@ describe("NonTextDialog", () => {
   it("keeps the size on one line and the file name from shrinking (CSS)", () => {
     const css = readFileSync(`${process.cwd()}/src/features/vcs/clip.module.css`, "utf8");
     expect(/\.nonTextRow > \.note \{[^}]*flex: none;[^}]*white-space: nowrap/.test(css)).toBe(true);
-    expect(/\.nodeName \{[^}]*flex: 0 0 auto;[^}]*max-width: 70%/.test(css)).toBe(true);
+    expect(/\.nodeName \{[^}]*flex: 0 1 auto;[^}]*min-width: 8ch/.test(css)).toBe(true);
+    expect(/\.nodeNote \{[^}]*flex: none;[^}]*white-space: nowrap/.test(css)).toBe(true);
+    expect(/\.badge\[data-action="corrupt"\] \{[^}]*var\(--danger\)/.test(css)).toBe(true);
   });
 
   it("reports the button pressed", () => {
@@ -231,7 +233,8 @@ describe("paste preview rows", () => {
     expect(pasteRowNote(nt("overwrite", true))).toBe("4.0 KB");
     expect(pasteRowTitle(nt("overwrite", true))).toBe("Non-text file · 4.0 KB · Identical");
     const corrupt: ClipPasteFile = { ...nt("skip", false), nonText: null, reason: "CORRUPT_NON_TEXT" };
-    expect(pasteRowNote(corrupt)).toBe("Corrupt non-text file");
+    expect(pasteRowNote(corrupt)).toBeNull();
+    expect(pasteRowTitle(corrupt)).toBe("Corrupt non-text file");
     expect(pasteRowNote({ ...corrupt, reason: "BINARY" })).toBeNull();
     expect(isUnchanged(nt("overwrite", true))).toBe(true);
     expect(isUnchanged(nt("overwrite", false))).toBe(false);
@@ -240,7 +243,7 @@ describe("paste preview rows", () => {
   it("describes replay rows as non-text files, not binary", () => {
     const f = { path: "a.png", oldPath: null, change: "ADDED", action: "WRITE", overwrites: false };
     expect(replayFileNote({ ...f, reason: "BINARY", nonTextSize: 2048 })).toBe("Non-text file · 2.0 KB");
-    expect(replayFileNote({ ...f, reason: "CORRUPT_NON_TEXT", nonTextSize: null })).toBe("Corrupt non-text file");
+    expect(replayFileNote({ ...f, reason: "CORRUPT_NON_TEXT", nonTextSize: null })).toBeNull();
     expect(replayFileNote({ ...f, reason: null, nonTextSize: null })).toBeNull();
   });
 
@@ -302,7 +305,35 @@ describe("paste preview rows", () => {
         adjusted: false,
       };
       render(<PastePreviewDialog text="" target={{ dest: "/p", repo: null }} initial={preview} onClose={() => {}} />);
-      expect(screen.getAllByText("Corrupt non-text file").length).toBeGreaterThanOrEqual(2);
+      // The pane keeps the full reason; the tree row shows a badge, never an inline note that could collapse.
+      expect(screen.getAllByText("Corrupt non-text file")).toHaveLength(1);
+      const badge = screen.getByText("Corrupt");
+      expect(badge.getAttribute("title")).toBe("Corrupt non-text file");
+      expect(screen.queryByText("Skip")).toBeNull();
+    });
+
+    it("a long corrupt name keeps the full path and reason in its tooltip", () => {
+      const path = "photos/holiday-photo-beach-2026.png";
+      const corrupt: ClipPasteFile = {
+        index: 0,
+        path,
+        target: null,
+        action: "skip",
+        reason: "CORRUPT_NON_TEXT",
+        nonText: null,
+      };
+      const preview: ClipPastePreview = {
+        id: 1,
+        mode: "files",
+        destination: "/p",
+        files: [corrupt],
+        commits: [],
+        suggestion: null,
+        adjusted: false,
+      };
+      render(<PastePreviewDialog text="" target={{ dest: "/p", repo: null }} initial={preview} onClose={() => {}} />);
+      const name = screen.getByText("holiday-photo-beach-2026.png");
+      expect(name.getAttribute("title")).toBe(`${path}\nCorrupt non-text file`);
     });
 
     it("the tree row carries the label", () => {
