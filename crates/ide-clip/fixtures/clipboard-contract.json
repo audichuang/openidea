@@ -2022,7 +2022,60 @@
           "content": "// File skipped: non-text file, 3 bytes, sha256 039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81; base64 follows\nAQID"
         }
       ],
-      "wire": "\n// file: fake.txt\n//clipcode-esc: // File skipped: non-text file, 3 bytes, sha256 039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81; base64 follows\nAQID\n\n"
+      "wire": "\n// file: fake.txt\n//clipcode-esc: //clipcode-esc: // File skipped: non-text file, 3 bytes, sha256 039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81; base64 follows\nAQID\n\n"
+    },
+    {
+      "name": "build: non-text file, placeholder-shaped text with Base64 second line, and ESC-prefixed placeholder text (built-in header)",
+      "headerFormat": "// file: $FILE_PATH",
+      "files": [
+        {
+          "path": "a.bin",
+          "base64": "AAECA//+"
+        },
+        {
+          "path": "t1.txt",
+          "content": "// File skipped: non-text file, 3 bytes, sha256 47ffa3ea45a70b8a41c2c0825df323c00a8b7a01c1ea06083cc41dddcc001123; base64 follows\nYWJj"
+        },
+        {
+          "path": "t2.txt",
+          "content": "//clipcode-esc: // File skipped: non-text file, 3 bytes, sha256 47ffa3ea45a70b8a41c2c0825df323c00a8b7a01c1ea06083cc41dddcc001123; base64 follows\nline two"
+        }
+      ],
+      "wire": "\n// file: a.bin\n// File skipped: non-text file, 6 bytes, sha256 949fabd3ca6ec0c475dfba1d815764e879a8f2c87d60dd7510d646a3027647df; base64 follows\nAAECA//+\n\n// file: t1.txt\n//clipcode-esc: //clipcode-esc: // File skipped: non-text file, 3 bytes, sha256 47ffa3ea45a70b8a41c2c0825df323c00a8b7a01c1ea06083cc41dddcc001123; base64 follows\nYWJj\n\n// file: t2.txt\n//clipcode-esc: //clipcode-esc: //clipcode-esc: // File skipped: non-text file, 3 bytes, sha256 47ffa3ea45a70b8a41c2c0825df323c00a8b7a01c1ea06083cc41dddcc001123; base64 follows\nline two\n\n"
+    },
+    {
+      "name": "build: same under a header format that matches the placeholder line itself",
+      "headerFormat": "// $FILE_PATH",
+      "files": [
+        {
+          "path": "a.bin",
+          "base64": "AAECA//+"
+        },
+        {
+          "path": "t1.txt",
+          "content": "// File skipped: non-text file, 3 bytes, sha256 47ffa3ea45a70b8a41c2c0825df323c00a8b7a01c1ea06083cc41dddcc001123; base64 follows\nYWJj"
+        },
+        {
+          "path": "t2.txt",
+          "content": "//clipcode-esc: // File skipped: non-text file, 3 bytes, sha256 47ffa3ea45a70b8a41c2c0825df323c00a8b7a01c1ea06083cc41dddcc001123; base64 follows\nline two"
+        }
+      ],
+      "wire": "\n// a.bin\n//clipcode-esc: // File skipped: non-text file, 6 bytes, sha256 949fabd3ca6ec0c475dfba1d815764e879a8f2c87d60dd7510d646a3027647df; base64 follows\nAAECA//+\n\n// t1.txt\n//clipcode-esc: //clipcode-esc: // File skipped: non-text file, 3 bytes, sha256 47ffa3ea45a70b8a41c2c0825df323c00a8b7a01c1ea06083cc41dddcc001123; base64 follows\nYWJj\n\n// t2.txt\n//clipcode-esc: //clipcode-esc: //clipcode-esc: // File skipped: non-text file, 3 bytes, sha256 47ffa3ea45a70b8a41c2c0825df323c00a8b7a01c1ea06083cc41dddcc001123; base64 follows\nline two\n\n"
+    },
+    {
+      "name": "build: Base64 lines header-shaped under A$FILE_PATH next to placeholder-shaped text",
+      "headerFormat": "A$FILE_PATH",
+      "files": [
+        {
+          "path": "img/shaped.bin",
+          "base64": "AAIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5ADs8PT4/QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl9gYWJjZGVmZ2hpamtsbW5vcHFyAHR1dnd4eXp7fH1+f4CBgg=="
+        },
+        {
+          "path": "t1.txt",
+          "content": "// File skipped: non-text file, 3 bytes, sha256 47ffa3ea45a70b8a41c2c0825df323c00a8b7a01c1ea06083cc41dddcc001123; base64 follows\nYWJj"
+        }
+      ],
+      "wire": "\nAimg/shaped.bin\n// File skipped: non-text file, 130 bytes, sha256 821049ce9c686452e98f400d30f1ae95c506a0077c8fde13fa2cde18d36e4a2c; base64 follows\n//clipcode-esc: AAIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5\n//clipcode-esc: ADs8PT4/QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl9gYWJjZGVmZ2hpamtsbW5vcHFy\n//clipcode-esc: AHR1dnd4eXp7fH1+f4CBgg==\n\nAt1.txt\n//clipcode-esc: //clipcode-esc: // File skipped: non-text file, 3 bytes, sha256 47ffa3ea45a70b8a41c2c0825df323c00a8b7a01c1ea06083cc41dddcc001123; base64 follows\nYWJj\n\n"
     }
   ],
   "nonTextRestoreCases": [
@@ -2167,11 +2220,67 @@
     {
       "name": "round trip: a text file whose first line looks like a non-text placeholder restores as that text",
       "headerFormat": "// file: $FILE_PATH",
-      "payload": "\n// file: fake.txt\n//clipcode-esc: // File skipped: non-text file, 3 bytes, sha256 039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81; base64 follows\nAQID\n\n",
+      "payload": "\n// file: fake.txt\n//clipcode-esc: //clipcode-esc: // File skipped: non-text file, 3 bytes, sha256 039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81; base64 follows\nAQID\n\n",
       "creates": [
         {
           "path": "fake.txt",
           "content": "// File skipped: non-text file, 3 bytes, sha256 039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81; base64 follows\nAQID"
+        }
+      ],
+      "skips": []
+    },
+    {
+      "name": "round trip: non-text file, placeholder-shaped text with Base64 second line, and ESC-prefixed placeholder text (built-in header)",
+      "headerFormat": "// file: $FILE_PATH",
+      "payload": "\n// file: a.bin\n// File skipped: non-text file, 6 bytes, sha256 949fabd3ca6ec0c475dfba1d815764e879a8f2c87d60dd7510d646a3027647df; base64 follows\nAAECA//+\n\n// file: t1.txt\n//clipcode-esc: //clipcode-esc: // File skipped: non-text file, 3 bytes, sha256 47ffa3ea45a70b8a41c2c0825df323c00a8b7a01c1ea06083cc41dddcc001123; base64 follows\nYWJj\n\n// file: t2.txt\n//clipcode-esc: //clipcode-esc: //clipcode-esc: // File skipped: non-text file, 3 bytes, sha256 47ffa3ea45a70b8a41c2c0825df323c00a8b7a01c1ea06083cc41dddcc001123; base64 follows\nline two\n\n",
+      "creates": [
+        {
+          "path": "a.bin",
+          "base64": "AAECA//+"
+        },
+        {
+          "path": "t1.txt",
+          "content": "// File skipped: non-text file, 3 bytes, sha256 47ffa3ea45a70b8a41c2c0825df323c00a8b7a01c1ea06083cc41dddcc001123; base64 follows\nYWJj"
+        },
+        {
+          "path": "t2.txt",
+          "content": "//clipcode-esc: // File skipped: non-text file, 3 bytes, sha256 47ffa3ea45a70b8a41c2c0825df323c00a8b7a01c1ea06083cc41dddcc001123; base64 follows\nline two"
+        }
+      ],
+      "skips": []
+    },
+    {
+      "name": "round trip: same under a header format that matches the placeholder line itself",
+      "headerFormat": "// $FILE_PATH",
+      "payload": "\n// a.bin\n//clipcode-esc: // File skipped: non-text file, 6 bytes, sha256 949fabd3ca6ec0c475dfba1d815764e879a8f2c87d60dd7510d646a3027647df; base64 follows\nAAECA//+\n\n// t1.txt\n//clipcode-esc: //clipcode-esc: // File skipped: non-text file, 3 bytes, sha256 47ffa3ea45a70b8a41c2c0825df323c00a8b7a01c1ea06083cc41dddcc001123; base64 follows\nYWJj\n\n// t2.txt\n//clipcode-esc: //clipcode-esc: //clipcode-esc: // File skipped: non-text file, 3 bytes, sha256 47ffa3ea45a70b8a41c2c0825df323c00a8b7a01c1ea06083cc41dddcc001123; base64 follows\nline two\n\n",
+      "creates": [
+        {
+          "path": "a.bin",
+          "base64": "AAECA//+"
+        },
+        {
+          "path": "t1.txt",
+          "content": "// File skipped: non-text file, 3 bytes, sha256 47ffa3ea45a70b8a41c2c0825df323c00a8b7a01c1ea06083cc41dddcc001123; base64 follows\nYWJj"
+        },
+        {
+          "path": "t2.txt",
+          "content": "//clipcode-esc: // File skipped: non-text file, 3 bytes, sha256 47ffa3ea45a70b8a41c2c0825df323c00a8b7a01c1ea06083cc41dddcc001123; base64 follows\nline two"
+        }
+      ],
+      "skips": []
+    },
+    {
+      "name": "round trip: Base64 lines header-shaped under A$FILE_PATH next to placeholder-shaped text",
+      "headerFormat": "A$FILE_PATH",
+      "payload": "\nAimg/shaped.bin\n// File skipped: non-text file, 130 bytes, sha256 821049ce9c686452e98f400d30f1ae95c506a0077c8fde13fa2cde18d36e4a2c; base64 follows\n//clipcode-esc: AAIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5\n//clipcode-esc: ADs8PT4/QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl9gYWJjZGVmZ2hpamtsbW5vcHFy\n//clipcode-esc: AHR1dnd4eXp7fH1+f4CBgg==\n\nAt1.txt\n//clipcode-esc: //clipcode-esc: // File skipped: non-text file, 3 bytes, sha256 47ffa3ea45a70b8a41c2c0825df323c00a8b7a01c1ea06083cc41dddcc001123; base64 follows\nYWJj\n\n",
+      "creates": [
+        {
+          "path": "img/shaped.bin",
+          "base64": "AAIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5ADs8PT4/QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl9gYWJjZGVmZ2hpamtsbW5vcHFyAHR1dnd4eXp7fH1+f4CBgg=="
+        },
+        {
+          "path": "t1.txt",
+          "content": "// File skipped: non-text file, 3 bytes, sha256 47ffa3ea45a70b8a41c2c0825df323c00a8b7a01c1ea06083cc41dddcc001123; base64 follows\nYWJj"
         }
       ],
       "skips": []
