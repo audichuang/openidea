@@ -241,9 +241,10 @@ describe("NonTextDialog", () => {
   it("keeps the size on one line and the file name from shrinking (CSS)", () => {
     const css = readFileSync(`${process.cwd()}/src/features/vcs/clip.module.css`, "utf8");
     expect(/\.nonTextRow > \.note \{[^}]*flex: none;[^}]*white-space: nowrap/.test(css)).toBe(true);
-    // The name has priority: the note shrinks first, a long name keeps its end.
-    expect(/\.nodeName \{[^}]*flex: 0 1 auto;[^}]*min-width: 12ch/.test(css)).toBe(true);
-    expect(/\.nodeNote \{[^}]*flex: 0 100 auto;[^}]*white-space: nowrap/.test(css)).toBe(true);
+    // The name has priority: the note shrinks first (then the badge), a long name keeps its end. The name
+    // has no width floor of its own; the layout rules are asserted in clipLongNames.test.tsx.
+    expect(/\.nodeName \{[^}]*flex: 0 1 auto;[^}]*min-width: 0/.test(css)).toBe(true);
+    expect(/\.nodeNote \{[^}]*flex: 0 1000000000 auto;[^}]*white-space: nowrap/.test(css)).toBe(true);
     expect(/\.nameTail \{[^}]*flex: none/.test(css)).toBe(true);
     expect(/\.badge\[data-action="corrupt"\] \{[^}]*var\(--danger\)/.test(css)).toBe(true);
   });
@@ -389,7 +390,10 @@ describe("paste preview rows", () => {
         adjusted: false,
       };
       render(<PastePreviewDialog text="" target={{ dest: "/p", repo: null }} initial={preview} onClose={() => {}} />);
-      const name = screen.getAllByText("holiday-photo-beach-2026.png").find((e) => e.className.includes("nodeName"))!;
+      const name = [...document.querySelectorAll("[class*=nodeName]")].find((e) =>
+        e.getAttribute("title")?.includes("Corrupt"),
+      )!;
+      expect(name.textContent).toBe("holiday-photo-beach-2026.png");
       expect(name.getAttribute("title")).toBe(`${path}\nCorrupt non-text file`);
     });
 
