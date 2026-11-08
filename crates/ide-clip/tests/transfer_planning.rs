@@ -918,8 +918,20 @@ fn test_outsidepath_and_traversal_rejected_before_io() {
 // 16. Duplicate mapped destination target rejected before write
 // ---------------------------------------------------------------------------
 
+/// Relative paths of the rows skipped because several entries map to the same file.
+fn collision_rows(plan: &ide_clip::transfer::TransferImportPlan) -> Vec<String> {
+    let mut rows: Vec<String> = plan
+        .skipped_operations()
+        .iter()
+        .filter(|s| s.reason == SkipReason::TargetCollision)
+        .map(|s| s.relative_path.clone().unwrap())
+        .collect();
+    rows.sort();
+    rows
+}
+
 #[test]
-fn test_duplicate_mapped_destination_target_rejected() {
+fn test_duplicate_mapped_destination_target_skips_every_colliding_row() {
     let dst = TestRepo::new("collision-target");
 
     let clipboard_text = "\
@@ -927,28 +939,23 @@ fn test_duplicate_mapped_destination_target_rejected() {
 content 1
 // file: item2.txt
 content 2
+// file: other.txt
+other
 ";
 
     // Both item1 and item2 explicitly map to the SAME destination path "target.txt"
-    let mut mapping = ImportMapping::new();
+    let mut mapping = ImportMapping::with_primary(dst.canonical_id());
     mapping.map_entry("item1.txt", dst.canonical_id(), Some("target.txt".to_string()));
     mapping.map_entry("item2.txt", dst.canonical_id(), Some("target.txt".to_string()));
 
-    let err = plan_import(clipboard_text, "// file: $FILE_PATH", &[dst.path().to_path_buf()], &mapping).unwrap_err();
-
-    match &err {
-        TransferError::TargetCollision { path, msg } => {
-            assert_eq!(path, &dst.canonical_id().path().join("target.txt"));
-            assert_eq!(msg, "previous was 'create target.txt', current is 'create target.txt'");
-            let full = err.to_string();
-            assert_eq!(full.matches(&path.display().to_string()).count(), 1, "path should appear once, got: {full}");
-            assert!(!full.contains("identity"), "identity should not appear, got: {full}");
-            assert!(full.contains("previous was 'create target.txt'"));
-            assert!(full.contains("current is 'create target.txt'"));
-        }
-        other => panic!("expected TargetCollision, got {other:?}"),
-    }
+    let plan = plan_import(clipboard_text, "// file: $FILE_PATH", &[dst.path().to_path_buf()], &mapping).unwrap();
+    // The paste is not aborted: both colliding rows are skipped, the other entry stays.
+    assert_eq!(collision_rows(&plan), ["target.txt", "target.txt"]);
+    let created: Vec<_> = plan.create_operations().iter().map(|o| o.relative_path.as_str()).collect();
+    assert_eq!(created, ["other.txt"]);
+    plan.apply(&RestoreSelection::default()).unwrap();
     assert!(!dst.canonical_id().path().join("target.txt").exists());
+    assert!(dst.canonical_id().path().join("other.txt").exists());
 
     #[cfg(unix)]
     {
@@ -956,27 +963,9 @@ content 2
         let symlink_root = symlink_dir.path().join("symlink_collision_dst");
         std::os::unix::fs::symlink(dst.path(), &symlink_root).unwrap();
 
-        // Even when destination root is spelled through a symlink alias,
-        // plan_import canonicalizes it, rejects duplicate target, and reports the canonical target.
-        let err_symlink = plan_import(clipboard_text, "// file: $FILE_PATH", &[symlink_root], &mapping).unwrap_err();
-
-        match &err_symlink {
-            TransferError::TargetCollision { path, msg } => {
-                assert_eq!(path, &dst.canonical_id().path().join("target.txt"));
-                assert_eq!(msg, "previous was 'create target.txt', current is 'create target.txt'");
-                let full = err_symlink.to_string();
-                assert_eq!(
-                    full.matches(&path.display().to_string()).count(),
-                    1,
-                    "path should appear once, got: {full}"
-                );
-                assert!(!full.contains("identity"), "identity should not appear, got: {full}");
-                assert!(full.contains("previous was 'create target.txt'"));
-                assert!(full.contains("current is 'create target.txt'"));
-            }
-            other => panic!("expected TargetCollision, got {other:?}"),
-        }
-        assert!(!dst.canonical_id().path().join("target.txt").exists());
+        // Even when the destination root is spelled through a symlink alias, the collision is found.
+        let plan = plan_import(clipboard_text, "// file: $FILE_PATH", &[symlink_root], &mapping).unwrap();
+        assert_eq!(collision_rows(&plan), ["target.txt", "target.txt"]);
     }
 }
 
@@ -1399,18 +1388,17 @@ fn test_d10_case_collision_new_targets() {
     let mapping = ImportMapping::with_primary(repo.canonical_id());
 
     // [NEW] B.txt + [NEW] b.txt
-    let payload_bb = "// file: B.txt\ncontent B\n// file: b.txt\ncontent b\n";
-    let res_bb = plan_import(payload_bb, "// file: $FILE_PATH", &[repo.path().to_path_buf()], &mapping);
+    let payload_bb = "// file: B.txt\ncontent B\n// file: b.txt\ncontent b\n// file: ok.txt\nfine\n";
+    let plan = plan_import(payload_bb, "// file: $FILE_PATH", &[repo.path().to_path_buf()], &mapping).unwrap();
     if is_ci {
-        assert!(
-            matches!(res_bb, Err(TransferError::TargetCollision { .. })),
-            "expected TargetCollision on case-insensitive FS, got {res_bb:?}"
-        );
-        assert!(!repo.path().join("B.txt").exists());
-        assert!(!repo.path().join("b.txt").exists());
+        assert_eq!(collision_rows(&plan), ["B.txt", "b.txt"]);
+        assert_eq!(plan.create_operations().len(), 1);
+        plan.apply(&RestoreSelection { overwrite_existing: true, ..RestoreSelection::default() }).unwrap();
+        assert!(repo.path().join("ok.txt").exists());
+        assert!(!repo.path().join("B.txt").exists() && !repo.path().join("b.txt").exists());
     } else {
-        let plan = res_bb.unwrap();
-        assert_eq!(plan.create_operations().len(), 2);
+        assert!(collision_rows(&plan).is_empty());
+        assert_eq!(plan.create_operations().len(), 3);
         let _ = plan.apply(&RestoreSelection { overwrite_existing: true, ..RestoreSelection::default() }).unwrap();
         assert!(repo.path().join("B.txt").exists());
         assert!(repo.path().join("b.txt").exists());
@@ -1420,15 +1408,12 @@ fn test_d10_case_collision_new_targets() {
     let repo2 = TestRepo::new("d10-collision-dir");
     let mapping2 = ImportMapping::with_primary(repo2.canonical_id());
     let payload_dx = "// file: D/x.txt\ncontent 1\n// file: d/x.txt\ncontent 2\n";
-    let res_dx = plan_import(payload_dx, "// file: $FILE_PATH", &[repo2.path().to_path_buf()], &mapping2);
+    let plan_dx = plan_import(payload_dx, "// file: $FILE_PATH", &[repo2.path().to_path_buf()], &mapping2).unwrap();
     if is_ci {
-        assert!(
-            matches!(res_dx, Err(TransferError::TargetCollision { .. })),
-            "expected TargetCollision on case-insensitive FS, got {res_dx:?}"
-        );
+        // The directories collide, not the files: the whole payload has nowhere to go.
+        assert_eq!(plan_dx.create_operations().len() + collision_rows(&plan_dx).len(), 2);
     } else {
-        let plan = res_dx.unwrap();
-        assert_eq!(plan.create_operations().len(), 2);
+        assert_eq!(plan_dx.create_operations().len(), 2);
     }
 
     // [NEW] A.txt + [DELETED] a.txt (a.txt exists)
@@ -1436,16 +1421,15 @@ fn test_d10_case_collision_new_targets() {
     repo3.write("a.txt", "existing a\n");
     let mapping3 = ImportMapping::with_primary(repo3.canonical_id());
     let payload_ad = "// file: A.txt\nnew A content\n// file: [DELETED] a.txt\n";
-    let res_ad = plan_import(payload_ad, "// file: $FILE_PATH", &[repo3.path().to_path_buf()], &mapping3);
+    let plan_ad = plan_import(payload_ad, "// file: $FILE_PATH", &[repo3.path().to_path_buf()], &mapping3).unwrap();
     if is_ci {
-        assert!(
-            matches!(res_ad, Err(TransferError::TargetCollision { .. })),
-            "expected TargetCollision on case-insensitive FS, got {res_ad:?}"
-        );
+        assert_eq!(collision_rows(&plan_ad).len(), 2);
+        assert!(plan_ad.create_operations().is_empty() && plan_ad.delete_operations().is_empty());
+        plan_ad.apply(&RestoreSelection { overwrite_existing: true, ..RestoreSelection::default() }).unwrap();
+        assert_eq!(fs::read_to_string(repo3.path().join("a.txt")).unwrap(), "existing a\n");
     } else {
-        let plan = res_ad.unwrap();
-        assert_eq!(plan.create_operations().len(), 1);
-        assert_eq!(plan.delete_operations().len(), 1);
+        assert_eq!(plan_ad.create_operations().len(), 1);
+        assert_eq!(plan_ad.delete_operations().len(), 1);
     }
 
     #[cfg(unix)]
@@ -1454,11 +1438,11 @@ fn test_d10_case_collision_new_targets() {
         let symlink_root = symlink_dir.path().join("symlink_d10_dst");
         std::os::unix::fs::symlink(repo.path(), &symlink_root).unwrap();
 
-        let res_sym = plan_import(payload_bb, "// file: $FILE_PATH", &[symlink_root], &mapping);
+        let plan_sym = plan_import(payload_bb, "// file: $FILE_PATH", &[symlink_root], &mapping).unwrap();
         if is_ci {
-            assert!(matches!(res_sym, Err(TransferError::TargetCollision { .. })));
+            assert_eq!(collision_rows(&plan_sym).len(), 2);
         } else {
-            assert_eq!(res_sym.unwrap().create_operations().len(), 2);
+            assert_eq!(plan_sym.create_operations().len(), 3);
         }
     }
 }
@@ -1470,11 +1454,12 @@ fn test_d10_probe_fs_case_insensitive_behavior() {
     let mapping = ImportMapping::with_primary(repo.canonical_id());
 
     let payload = "// file: ProbeFile.txt\n1\n// file: probefile.txt\n2\n";
-    let res = plan_import(payload, "// file: $FILE_PATH", &[repo.path().to_path_buf()], &mapping);
-    assert_eq!(res.is_err(), is_ci, "target collision presence must match runtime case-insensitivity probe");
-    if is_ci {
-        assert!(matches!(res.unwrap_err(), TransferError::TargetCollision { .. }));
-    }
+    let plan = plan_import(payload, "// file: $FILE_PATH", &[repo.path().to_path_buf()], &mapping).unwrap();
+    assert_eq!(
+        collision_rows(&plan).len(),
+        if is_ci { 2 } else { 0 },
+        "target collision presence must match runtime case-insensitivity probe"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1948,31 +1933,18 @@ fn test_alias_target_collision_inside_root_symlink() {
 first content
 // file: link_dir/target.txt
 second content
+// file: other.txt
+fine
 ";
         let mapping = ImportMapping::with_primary(dst.canonical_id());
-        let err =
-            plan_import(clipboard_text, "// file: $FILE_PATH", &[dst.path().to_path_buf()], &mapping).unwrap_err();
+        let plan = plan_import(clipboard_text, "// file: $FILE_PATH", &[dst.path().to_path_buf()], &mapping).unwrap();
+        assert_eq!(collision_rows(&plan), ["link_dir/target.txt", "real_dir/target.txt"]);
+        plan.apply(&RestoreSelection::default()).unwrap();
 
-        match &err {
-            TransferError::TargetCollision { path, msg } => {
-                assert!(path.to_string_lossy().contains("target.txt"));
-                assert_eq!(msg, "previous was 'create real_dir/target.txt', current is 'create link_dir/target.txt'");
-                let full = err.to_string();
-                assert_eq!(
-                    full.matches(&path.display().to_string()).count(),
-                    1,
-                    "path should appear once, got: {full}"
-                );
-                assert!(!full.contains("identity"), "identity should not appear, got: {full}");
-                assert!(full.contains("previous was 'create real_dir/target.txt'"));
-                assert!(full.contains("current is 'create link_dir/target.txt'"));
-            }
-            other => panic!("expected TargetCollision, got: {other:?}"),
-        }
-
-        // Ensure no-write-on-invalid-plan: neither alias was created on disk!
+        // Neither alias was written; the other entry was restored.
         assert!(!dst.exists("real_dir/target.txt"));
         assert!(!dst.exists("link_dir/target.txt"));
+        assert!(dst.exists("other.txt"));
     }
 }
 
