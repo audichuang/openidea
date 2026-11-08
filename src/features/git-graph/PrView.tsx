@@ -165,7 +165,7 @@ export function PrView(p: {
         </span>
         {refButton("base", base)}
         <IconButton
-          icon="diff-arrow-left"
+          icon="arrow-left"
           title="Swap Base and Head"
           disabled={!base}
           onClick={() => base && setPrChoice(repo, { base: head, head: base, file: null })}
@@ -232,7 +232,7 @@ function PrBody(p: {
   return (
     <>
       <div className={styles.prSummary} role="status">
-        {tx`${ahead} commits ahead, ${behind} behind ${base}`}
+        {tx`Commits: ${ahead} ahead, ${behind} behind ${base}`}
       </div>
       <div className={styles.paneTabs} role="tablist" aria-label={tx("Pull Request")}>
         {(["files", "commits"] as const).map((tab) => (
