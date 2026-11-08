@@ -129,6 +129,10 @@ pub struct ClipNonTextSummary {
     pub unread_limit_bytes: f64,
     /// The estimate is over the whole-payload limit: `Include` would fail.
     pub exceeds_payload_cap: bool,
+    /// Files the file-count limit leaves out of what `Include` copies.
+    pub limit_left_out: u32,
+    /// `limit_left_out` is a lower bound (a folder walk stopped at the limit).
+    pub limit_left_out_at_least: bool,
 }
 
 fn non_text_summary(s: &NonTextSummary) -> ClipNonTextSummary {
@@ -146,6 +150,8 @@ fn non_text_summary(s: &NonTextSummary) -> ClipNonTextSummary {
         unread_over_limit_count: n(s.unread_over_limit_count),
         unread_limit_bytes: s.unread_limit_bytes as f64,
         exceeds_payload_cap: s.estimated_include_payload_bytes > CLIPBOARD_PAYLOAD_MAX,
+        limit_left_out: n(s.limit_left_out),
+        limit_left_out_at_least: s.limit_left_out_lower_bound,
     }
 }
 
