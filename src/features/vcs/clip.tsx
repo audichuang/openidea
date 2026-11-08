@@ -79,7 +79,7 @@ function notifyCopied(r: ClipCopyResult) {
 export async function copyClip(source: ClipCopySource): Promise<boolean> {
   let result;
   try {
-    result = await call(commands.clipCopy(source));
+    result = await call(commands.clipCopy(source, "exclude"));
   } catch (e) {
     // A commit with no net file changes is not a failure (IntelliJ: information, clipboard untouched).
     if (e instanceof IpcError && e.data?.type === "noNetChanges") {
@@ -87,6 +87,16 @@ export async function copyClip(source: ClipCopySource): Promise<boolean> {
       return false;
     }
     notifications().notify({ group: "clipcode", level: "warning", title: "ClipCode copy failed", body: String(e) });
+    return false;
+  }
+  // Exclude with only non-text files found: the dialog (ticket T3) asks; until then nothing is copied.
+  if (result.files === 0 && result.text === "") {
+    notifications().notify({
+      group: "clipcode",
+      level: "warning",
+      title: "ClipCode copy failed",
+      body: "Nothing to copy",
+    });
     return false;
   }
   await copyText(result.text);
