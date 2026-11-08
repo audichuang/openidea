@@ -276,10 +276,10 @@ describe("NonTextDialog", () => {
   it("keeps the size on one line and the file name from shrinking (CSS)", () => {
     const css = readFileSync(`${process.cwd()}/src/features/vcs/clip.module.css`, "utf8");
     expect(/\.nonTextRow > \.note \{[^}]*flex: none;[^}]*white-space: nowrap/.test(css)).toBe(true);
-    // The name has priority: the note shrinks first (then the badge), a long name keeps its end. The name
-    // has no width floor of its own; the layout rules are asserted in clipLongNames.test.tsx.
+    // The name has priority: a note, then a badge, wraps to the clipped second line whole instead of
+    // shrinking; a long name keeps its end. The layout rules are asserted in clipLongNames.test.tsx.
     expect(/\.nodeName \{[^}]*flex: 0 1 auto;[^}]*min-width: 0/.test(css)).toBe(true);
-    expect(/\.nodeNote \{[^}]*flex: 0 1000000000 auto;[^}]*white-space: nowrap/.test(css)).toBe(true);
+    expect(/\.nodeNote \{[^}]*flex: none;[^}]*white-space: nowrap/.test(css)).toBe(true);
     expect(/\.nameTail \{[^}]*flex: none/.test(css)).toBe(true);
     expect(/\.badge\[data-action="corrupt"\] \{[^}]*var\(--danger\)/.test(css)).toBe(true);
   });
