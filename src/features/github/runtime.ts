@@ -9,7 +9,7 @@ import { useProject } from "@/platform/project";
 import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
 import { activateReviewDiff, toggleReviewDiffViewed } from "./diff";
 import { reloadList } from "./data/list";
-import { checkoutPullRequest, clearDiffCache, copyUrl, openInBrowser, openInWorktree } from "./data/local";
+import { checkoutPullRequest, clearDiffCache, copyUrl, openInBrowser, openInWorktree, prepareDiff } from "./data/local";
 import { deleteMergedBranch } from "./data/operations";
 import { cachedDetails, loadPullRequestData, reloadPullRequest } from "./data/pullRequest";
 import { refreshConnection, resetConnection, useGhRepository } from "./data/repository";
@@ -32,6 +32,20 @@ function targetPullRequest(arg: unknown): number | null {
 async function withPullRequest(arg: unknown, run: (number: number) => unknown) {
   const n = targetPullRequest(arg);
   if (n !== null) await run(n);
+}
+
+/**
+ * ClipCode copy of a pull request: its changed files (merge base ↔ head, as "Files
+ * changed" shows them) or its commits for replay, fetched locally first.
+ */
+async function copyPullRequest(number: number, mode: "files" | "commits") {
+  const revs = await prepareDiff(await loadPullRequestData(number, "details"));
+  if (!revs) return;
+  const { copyClip } = await import("@/features/vcs/clip");
+  const { root: repo, base, head: tip } = revs;
+  await copyClip(
+    mode === "files" ? { kind: "range", repo, base, tip, paths: [] } : { kind: "commitRange", repo, base, tip },
+  );
 }
 
 async function prUrl(number: number): Promise<string> {
@@ -69,6 +83,8 @@ export const runs: Record<string, Run> = {
   "github.pullRequest.timeline.refresh": () => withPullRequest(undefined, reloadPullRequest),
   "github.pullRequest.openInBrowser": ({ arg }) => withPullRequest(arg, async (n) => openInBrowser(await prUrl(n))),
   "github.pullRequest.copyUrl": ({ arg }) => withPullRequest(arg, async (n) => copyUrl(await prUrl(n))),
+  "github.pullRequest.clipCopyFiles": ({ arg }) => withPullRequest(arg, (n) => copyPullRequest(n, "files")),
+  "github.pullRequest.clipCopyCommits": ({ arg }) => withPullRequest(arg, (n) => copyPullRequest(n, "commits")),
   "github.pullRequest.checkoutBranch": ({ arg }) => withPullRequest(arg, checkoutPullRequest),
   "github.pullRequest.openInWorktree": ({ arg }) => withPullRequest(arg, openInWorktree),
   "github.pullRequest.deleteMergedBranch": ({ arg }) =>
