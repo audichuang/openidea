@@ -13,6 +13,8 @@ import styles from "./clip.module.css";
 export type NonTextChoice = "include" | "exclude" | "cancel";
 
 const MAX_LISTED = 10;
+/** The whole-payload limit of the Rust side (`CLIPBOARD_PAYLOAD_MAX`), for the over-limit wording. */
+const PAYLOAD_CAP_BYTES = 50 * 1024 * 1024;
 
 /** Raw byte counts the way the dialog and the paste preview spell them. */
 export function formatBytes(bytes: number | null | undefined): string {
@@ -41,7 +43,9 @@ export async function resolveNonText(
   if (first.nonText.count === 0) return first;
   const choice = await ask(first.nonText);
   if (choice === "cancel") return null;
-  if (choice === "include" && !first.nonText.exceedsPayloadCap) return again();
+  if (choice === "include" && !first.nonText.exceedsPayloadCap && !first.nonText.headerCannotBeEscaped) {
+    return again();
+  }
   return first;
 }
 
@@ -138,6 +142,41 @@ export function skipReasonText(code: string | null | undefined): string {
   }
 }
 
+/**
+ * A paste result line `<path>: <reason>` whose reason is one of the write-error texts of `restore.rs`
+ * (`io_error_text`): the reason is translated, the path kept.
+ */
+export function errorLineText(line: string): string {
+  const at = line.lastIndexOf(": ");
+  if (at < 0) return line;
+  const translate = (reason: string): string | null => {
+    switch (reason) {
+      case "Folder is not writable":
+        return tx("Folder is not writable");
+      case "File or folder not found":
+        return tx("File or folder not found");
+      case "A file or folder already exists at that path":
+        return tx("A file or folder already exists at that path");
+      case "A file is in the way of a folder":
+        return tx("A file is in the way of a folder");
+      case "The target is a folder":
+        return tx("The target is a folder");
+      case "The disk is full":
+        return tx("The disk is full");
+      case "The file system is read-only":
+        return tx("The file system is read-only");
+      case "Could not apply the change":
+        return tx("Could not apply the change");
+      case "unsafe path":
+        return tx("Unsafe path");
+      default:
+        return null;
+    }
+  };
+  const text = translate(line.slice(at + 2));
+  return text === null ? line : `${line.slice(0, at)}: ${text}`;
+}
+
 /** A file name for a notice: control characters (a tab) are made visible. */
 export function visibleName(name: string): string {
   // eslint-disable-next-line no-control-regex
@@ -156,6 +195,8 @@ export function NonTextDialog({
   const { count, files } = summary;
   const raw = formatBytes(summary.totalBytes);
   const estimate = formatBytes(summary.estimatedIncludeBytes);
+  const cap = formatBytes(PAYLOAD_CAP_BYTES);
+  const includeBlocked = summary.exceedsPayloadCap || summary.headerCannotBeEscaped;
   const shown = files.slice(0, MAX_LISTED);
   const more = count - shown.length;
   const over = summary.overLimitCount;
@@ -172,23 +213,37 @@ export function NonTextDialog({
         {
           label: "Include",
           role: "default",
-          autoFocus: !summary.exceedsPayloadCap,
-          disabled: summary.exceedsPayloadCap,
+          autoFocus: !includeBlocked,
+          disabled: includeBlocked,
           title: summary.exceedsPayloadCap
             ? "The payload with non-text files is over the clipboard size limit"
-            : undefined,
+            : summary.headerCannotBeEscaped
+              ? "The header format cannot be escaped"
+              : undefined,
           onClick: () => onChoose("include"),
         },
-        { label: "Exclude", autoFocus: summary.exceedsPayloadCap, onClick: () => onChoose("exclude") },
+        { label: "Exclude", autoFocus: includeBlocked, onClick: () => onChoose("exclude") },
         { label: "Cancel", role: "cancel", onClick: () => onChoose("cancel") },
       ]}
     >
       <div className={styles.nonText}>
         <div>{tx`Non-text files: ${count}, raw ${raw}`}</div>
-        <div className={styles.note}>{tx`Payload with them: about ${estimate}`}</div>
+        <div className={styles.note}>
+          {summary.exceedsPayloadCap
+            ? tx`Payload with them: more than ${cap}`
+            : tx`Payload with them: about ${estimate}`}
+        </div>
         {summary.exceedsPayloadCap && (
           <div className={styles.warn} role="alert">
             <T>Too large for the clipboard: Include is not available.</T>
+          </div>
+        )}
+        {summary.headerCannotBeEscaped && (
+          <div className={styles.warn} role="alert">
+            <T>
+              Include is not available: the header format has no fixed text before $FILE_PATH, so Base64 lines would be
+              read as file headers.
+            </T>
           </div>
         )}
         <ul className={styles.nonTextList} aria-label={tx("Non-text files")}>
