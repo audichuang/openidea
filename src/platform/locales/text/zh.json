@@ -7777,5 +7777,6 @@
   "Payload with them: about {estimate}": "包含后的内容约 {estimate}",
   "Too large for the clipboard: Include is not available.": "超过剪贴板大小上限，无法包含。",
   "Non-text files": "非文本文件",
-  "{over} non-text files are over the size limit and will not be copied.": "{over} 个非文本文件超过大小上限，不会复制。"
+  "{over} non-text files are over the size limit and will not be copied.": "{over} 个非文本文件超过大小上限，不会复制。",
+  "{unread} files over {unreadLimit} were not read and are copied as size placeholders.": "{unread} 个文件超过 {unreadLimit}，未读取，将以大小占位文本复制。"
 }
