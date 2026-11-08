@@ -451,6 +451,46 @@ fn placeholder_shaped_text_round_trips_through_the_app_import_path() {
     assert_eq!(fs::read_to_string(dest.join("fake.txt")).unwrap().trim_end(), fake.trim_end());
 }
 
+/// Test 20: a target that is a directory skips only its row.
+#[test]
+fn a_directory_at_a_target_path_skips_only_that_row() {
+    let repo = Repo::new();
+    let settings = small_limits();
+    repo.write("ok.txt", b"ok\n");
+    repo.write("dir/x.png", &png(100));
+    repo.write("img.png", &png(120));
+    let sel = repo.selection(&[
+        ("ok.txt", SourceKind::File, None),
+        ("img.png", SourceKind::File, None),
+        ("dir/x.png", SourceKind::File, None),
+    ]);
+    let plan = export(&sel, &settings, NonTextMode::Include);
+
+    let dest_dir = tempfile::tempdir().unwrap();
+    let dest = dunce::canonicalize(dest_dir.path()).unwrap();
+    fs::create_dir_all(dest.join("dir/x.png")).unwrap();
+    fs::create_dir_all(dest.join("img.png")).unwrap();
+    let import = plan_import(
+        &plan.payload,
+        &settings.header_format,
+        std::slice::from_ref(&dest),
+        &ImportMapping::with_primary(CanonicalRootId::new(&dest).unwrap()),
+    )
+    .unwrap();
+    let created: Vec<_> = import.create_operations().iter().map(|o| o.relative_path.as_str()).collect();
+    assert_eq!(created, ["ok.txt"]);
+    let skipped: Vec<_> = import
+        .restore_plan()
+        .skipped_operations
+        .iter()
+        .map(|s| (s.relative_path.clone().unwrap(), s.reason.as_str()))
+        .collect();
+    assert_eq!(skipped, [("img.png".to_string(), "TARGET_NOT_FILE"), ("dir/x.png".to_string(), "TARGET_NOT_FILE")]);
+    import.apply(&RestoreSelection::default()).unwrap();
+    assert_eq!(fs::read_to_string(dest.join("ok.txt")).unwrap().trim_end(), "ok");
+    assert!(dest.join("img.png").is_dir());
+}
+
 // ---- commits mode (test 10) ----
 
 mod commits_mode {
