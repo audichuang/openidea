@@ -213,6 +213,39 @@ fn commits_carry_the_image_only_when_included() {
     assert_eq!(fs::read(dst.join("img/logo.png")).unwrap(), png());
 }
 
+/// A commit whose non-text entry is corrupt says so in the replay preview, not the raw BINARY reason.
+#[test]
+fn corrupt_commit_entry_previews_as_corrupt_not_binary() {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (_src_tmp, src) = dir();
+    init_repo(&src);
+    fs::write(src.join("a.txt"), "hello\n").unwrap();
+    git(&src, &["add", "-A"]);
+    git(&src, &["commit", "-q", "-m", "base"]);
+    fs::write(src.join("logo.png"), png()).unwrap();
+    git(&src, &["add", "-A"]);
+    git(&src, &["commit", "-q", "-m", "add logo"]);
+    let tip = git(&src, &["rev-parse", "HEAD"]);
+    let source = ClipCopySource::Commits { repo: src.clone(), tip: tip.clone(), selected: vec![tip] };
+    let settings = Settings::default();
+    let include = copy_with(&src, source, &settings, ClipNonTextMode::Include).unwrap();
+
+    let at = include.text.find("\"sha256\":\"").expect("sha256 in the payload") + "\"sha256\":\"".len();
+    let mut bad = include.text.clone();
+    let flipped = if bad.as_bytes()[at] == b'0' { "1" } else { "0" };
+    bad.replace_range(at..at + 1, flipped);
+
+    let (_dst_tmp, dst) = dir();
+    init_repo(&dst);
+    fs::write(dst.join("a.txt"), "hello\n").unwrap();
+    git(&dst, &["add", "-A"]);
+    git(&dst, &["commit", "-q", "-m", "base"]);
+    let preview = paste_preview_into(&dst, None, &[], &bad, false, &[], &settings).unwrap();
+    let file = &preview.commits[0].files[0];
+    assert_eq!(file.reason.as_deref(), Some("CORRUPT_NON_TEXT"));
+    assert_eq!(file.action, "SKIP");
+}
+
 /// Exclude is today's copy: a selection whose only text file is a size placeholder copies nothing,
 /// whatever non-text files sit next to it.
 #[test]
