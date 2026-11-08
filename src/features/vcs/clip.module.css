@@ -28,6 +28,10 @@
 .file {
   padding-left: 16px;
 }
+.file > .note {
+  flex: none;
+  white-space: nowrap;
+}
 .commit + .commit {
   margin-top: 8px;
 }
@@ -63,6 +67,10 @@
 .badge[data-change="DELETED"] {
   background: color-mix(in srgb, var(--vcs-deleted) 14%, transparent);
   color: var(--vcs-deleted);
+}
+.badge[data-action="corrupt"] {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
 }
 .badge[data-action="skip"],
 .badge[data-action="unchanged"] {
@@ -104,20 +112,16 @@
   gap: 6px;
 }
 .nodeName {
-  /* Full width up to 70% of the row: a sub-pixel overflow must not eat the name; the note shrinks first. */
-  flex: 0 0 auto;
-  max-width: 70%;
-  min-width: 0;
+  /* The name ellipsizes before the note or badge does: those never shrink, so they always read whole. */
+  flex: 0 1 auto;
+  min-width: 8ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* The secondary label gives way first: the file name keeps its room. */
+/* The size note never collapses to a few characters. */
 .nodeNote {
-  flex: 0 100 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex: none;
   white-space: nowrap;
   color: var(--fg-subtle);
 }
