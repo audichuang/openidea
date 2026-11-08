@@ -8,7 +8,7 @@ import { call, commands } from "@/platform/ipc";
 import type { MenuItem } from "@/ui";
 import { gitGraphBridge, type GraphCommit, type GraphRefLabel } from "@/workbench/gitGraphBridge";
 import type { GraphEntry } from "./entries";
-import { useGraphView } from "./viewState";
+import { setPrChoice, useGraphView } from "./viewState";
 
 function refOp(repo: string, title: string, op: GraphRefOp, success: string) {
   return gitGraphBridge()?.runOp(title, () => call(commands.graphRefOp(repo, op)), success);
@@ -118,6 +118,30 @@ export function branchExtras(branch: Branch, repo: string, remoteBranches: reado
           } satisfies MenuItem,
         ]
       : []),
+  ];
+}
+
+/**
+ * Opens the PR view with `branch` as the head going into the current branch; on the current
+ * branch itself, into the remembered or default base.
+ */
+export function compareExtras(branch: Branch, repo: string, current: string | null): MenuItem[] {
+  return [
+    { kind: "separator" },
+    {
+      label: "Compare in PR View",
+      icon: "diff",
+      run: () => {
+        const isCurrent = !branch.remote && branch.name === current;
+        setPrChoice(repo, {
+          head: branch.name,
+          ...(isCurrent || !current ? {} : { base: current }),
+          tab: "files",
+          file: null,
+        });
+        useGraphView.setState({ mode: "pr" });
+      },
+    },
   ];
 }
 

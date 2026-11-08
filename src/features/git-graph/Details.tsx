@@ -123,7 +123,7 @@ function WorkingDetails({ entry }: { entry: GraphEntry & { kind: "working" } }) 
   );
 }
 
-const KIND_LETTER: Record<string, string> = {
+export const KIND_LETTER: Record<string, string> = {
   added: "A",
   modified: "M",
   deleted: "D",
