@@ -21,6 +21,28 @@ pub fn read_text_file(path: &Path) -> io::Result<Option<String>> {
     fs::read(path).map(decode_utf8_or_skip)
 }
 
+/// A file's bytes, classified: strict UTF-8 text or a non-text file
+/// (GLOSSARY: a NUL byte or invalid UTF-8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileBody {
+    Text(String),
+    NonText(Vec<u8>),
+}
+
+/// [`decode_utf8_or_skip`] that keeps a non-text file's bytes.
+pub fn decode_utf8_or_bytes(bytes: Vec<u8>) -> FileBody {
+    match crate::blob::classify_keep(bytes) {
+        Ok(text) => FileBody::Text(text),
+        Err((_, bytes)) => FileBody::NonText(bytes),
+    }
+}
+
+/// [`read_text_file`] that keeps a non-text file's bytes. An IO error
+/// (unreadable file) is still an error.
+pub fn read_file_body(path: &Path) -> io::Result<FileBody> {
+    fs::read(path).map(decode_utf8_or_bytes)
+}
+
 /// 8 MiB. A larger restore target is reported as unverifiable, not read.
 const ENCODING_CHECK_LIMIT: u64 = 8 * 1024 * 1024;
 
@@ -126,6 +148,12 @@ pub(crate) fn sort_names_js_order(names: &mut [OsString]) {
 /// written through — the file its other name or its target holds keeps its
 /// bytes, on every OS. The temporary file is removed when anything fails.
 pub fn write_text_file(path: &Path, content: &str) -> io::Result<()> {
+    write_bytes_file(path, content.as_bytes())
+}
+
+/// [`write_text_file`] for raw bytes (a non-text file): the same entry
+/// replacement, never a write through a link.
+pub fn write_bytes_file(path: &Path, content: &[u8]) -> io::Result<()> {
     let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
     // Our own exclusive create: a fresh random name, never an existing
@@ -141,7 +169,7 @@ pub fn write_text_file(path: &Path, content: &str) -> io::Result<()> {
         }
         opts.open(p)
     })?;
-    tmp.write_all(content.as_bytes())?;
+    tmp.write_all(content)?;
     tmp.flush()?;
     match fs::symlink_metadata(path) {
         Ok(info) if info.is_file() => {
@@ -186,6 +214,19 @@ mod tests {
         assert_eq!(decode_utf8_or_skip(vec![0xa4, 0xe9, 0xa5, 0xbb]), None);
         assert_eq!(decode_utf8_or_skip(vec![0xff, 0xfe, 0x41, 0x00]), None);
         assert_eq!(decode_utf8_or_skip(b"a\0b".to_vec()), None);
+    }
+
+    #[test]
+    fn file_body_keeps_non_text_bytes() {
+        assert_eq!(decode_utf8_or_bytes(b"abc".to_vec()), FileBody::Text("abc".into()));
+        assert_eq!(decode_utf8_or_bytes(Vec::new()), FileBody::Text(String::new()));
+        assert_eq!(decode_utf8_or_bytes(vec![0]), FileBody::NonText(vec![0]));
+        assert_eq!(decode_utf8_or_bytes(vec![0xa4, 0xe9]), FileBody::NonText(vec![0xa4, 0xe9]));
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("x/logo.png");
+        write_bytes_file(&p, &[0x89, 0, 0xff]).unwrap();
+        assert_eq!(read_file_body(&p).unwrap(), FileBody::NonText(vec![0x89, 0, 0xff]));
+        assert!(read_file_body(&dir.path().join("missing")).is_err());
     }
 
     #[test]
