@@ -249,3 +249,15 @@ fn paste_cap_ignores_crlf_growth() {
     let e = paste_preview_into(&root, None, &[], &lf, false, &[], &settings).unwrap_err();
     assert!(e.to_string().contains("more than 50 MiB"), "{e}");
 }
+
+/// Only a CR that a parser would drop (one before an LF) is forgiven; lone CRs stay in the content
+/// and count in full, so they cannot smuggle an oversized payload past the cap.
+#[test]
+fn paste_cap_counts_lone_cr() {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (_tmp, root) = dir();
+    let cap = ide_clip::transfer::CLIPBOARD_PAYLOAD_MAX;
+    let text = format!("// file: a.txt\nx{}\n", "\r".repeat(cap + 1024));
+    let e = paste_preview_into(&root, None, &[], &text, false, &[], &Settings::default()).unwrap_err();
+    assert!(e.to_string().contains("more than 50 MiB"), "{e}");
+}
