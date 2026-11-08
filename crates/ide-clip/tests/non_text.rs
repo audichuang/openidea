@@ -862,3 +862,30 @@ fn the_dialog_equals_include_with_size_placeholders_before_the_images() {
     // The window held 30 carried files: a1, a2, a3 and c2 of d2 plus 26 images.
     assert_eq!((include.non_text_file_count, include.copied_file_count), (29, 30));
 }
+
+/// Required case 26: over the whole-payload limit the dialog never shows an estimate below the raw total.
+#[test]
+fn over_the_payload_limit_the_estimate_is_never_below_the_raw_total() {
+    let repo = Repo::new();
+    let settings = Settings { max_non_text_file_size_kb: 10.0, ..small_limits() };
+    let names: Vec<String> = (0..6).map(|i| format!("img/p{i}.png")).collect();
+    for name in &names {
+        repo.write(name, &png(9000));
+    }
+    let items: Vec<_> = names.iter().map(|n| (n.as_str(), SourceKind::File, None)).collect();
+    let sel = repo.selection(&items);
+    let real = plan_export(&sel.clone().with_non_text(NonTextMode::Include), &settings, None).unwrap().payload.len();
+    let cap = 20_000;
+    assert!(real > cap);
+    let plan = plan_export(&sel.with_non_text(NonTextMode::Exclude), &settings, Some(cap)).unwrap();
+    let s = &plan.non_text;
+    assert_eq!((s.count(), s.total_bytes), (6, 54_000));
+    assert!(s.estimated_include_payload_bytes > cap, "{}", s.estimated_include_payload_bytes);
+    assert!(s.estimated_include_payload_bytes as u64 >= s.total_bytes, "{}", s.estimated_include_payload_bytes);
+    // A real estimate of the full Include size, not the size where planning stopped.
+    assert!(
+        s.estimated_include_payload_bytes.abs_diff(real) * 100 <= real,
+        "{} vs {real}",
+        s.estimated_include_payload_bytes
+    );
+}
