@@ -157,12 +157,32 @@ pub struct NonTextSummary {
     /// `limit_left_out` is a lower bound: a folder walk stopped at the limit before listing the rest.
     #[serde(default)]
     pub limit_left_out_lower_bound: bool,
+    /// The `headerFormat` cannot be escaped (see `format::header_format_unescapable`): Base64 lines would be
+    /// read as file headers, so the dialog disables Include.
+    #[serde(default)]
+    pub header_cannot_be_escaped: bool,
 }
 
 impl NonTextSummary {
     /// The dialog is shown only when this is non-zero.
     pub fn count(&self) -> usize {
         self.files.len()
+    }
+
+    /// The Include payload size from the Exclude payload's `exclude_len`: what each found file adds (header,
+    /// placeholder line, wrapped Base64). Used when the Include plan itself is over the whole-payload limit.
+    pub(crate) fn include_estimate(&self, exclude_len: usize, header_format: &str, extra_line: bool) -> usize {
+        let sha = "0".repeat(64);
+        let added: u64 = self
+            .files
+            .iter()
+            .map(|f| {
+                let header = header_format.replace("$FILE_PATH", &f.path).len() as u64 + 1;
+                let placeholder = placeholder_line(f.size, &sha).len() as u64 + 1;
+                header + placeholder + encoded_len(f.size) + wrapped_line_count(f.size) + u64::from(extra_line)
+            })
+            .sum();
+        exclude_len.saturating_add(added as usize)
     }
 
     pub(crate) fn found(&mut self, path: &str, size: u64) {
