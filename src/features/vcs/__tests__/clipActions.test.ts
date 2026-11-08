@@ -61,6 +61,8 @@ describe("ClipCode: Copy to Clipboard without an argument", () => {
       notify: false,
       nonText: { count: 0, files: [], overLimitCount: 0, exceedsPayloadCap: false },
       skippedUnreadablePaths: [],
+      skippedUnportablePaths: [],
+      skippedSymlinkDirPaths: [],
     });
     unregister = registerClipActions();
   });
@@ -156,6 +158,8 @@ describe("ClipCode: Copy to Clipboard from a non-filesystem editor", () => {
       notify: false,
       nonText: { count: 0, files: [], overLimitCount: 0, exceedsPayloadCap: false },
       skippedUnreadablePaths: [],
+      skippedUnportablePaths: [],
+      skippedSymlinkDirPaths: [],
     });
     unregister = registerClipActions();
   });
@@ -194,6 +198,8 @@ describe("ClipCode: Copy to Clipboard with unreadable entries", () => {
       skippedUnreadable: 3,
       nonText: { count: 0, files: [], overLimitCount: 0, exceedsPayloadCap: false },
       skippedUnreadablePaths: ["mix/dangling", "mix/locked.txt", "mix/locked_dir"],
+      skippedUnportablePaths: [],
+      skippedSymlinkDirPaths: [],
     });
     await expect(copyClip({ kind: "files", paths: ["/p/mix"] })).resolves.toBe(true);
     expect(notify).toHaveBeenCalledWith(
