@@ -95,6 +95,8 @@ pub struct CopyReport {
     pub skipped_file_size: usize,
     /// Plan-level unreadable plus the folder walk's refusals.
     pub skipped_unreadable: usize,
+    /// The first few unreadable files' payload paths (the folder walk's refusals have none).
+    pub skipped_unreadable_paths: Vec<String>,
     pub file_limit_reached: bool,
 }
 
@@ -193,6 +195,7 @@ pub fn copy_selection_detailed(
             files: plan.files,
             skipped_file_size: plan.skipped_file_size_count,
             skipped_unreadable: plan.skipped_unreadable_count + expanded.skipped,
+            skipped_unreadable_paths: plan.skipped_unreadable_paths.clone(),
             file_limit_reached: plan.file_limit_reached,
         });
     }
@@ -214,6 +217,7 @@ pub fn copy_selection_detailed(
         files: plan.files,
         skipped_file_size: plan.skipped_file_size_count,
         skipped_unreadable: plan.skipped_unreadable_count + expanded.skipped,
+        skipped_unreadable_paths: plan.skipped_unreadable_paths.clone(),
         file_limit_reached: plan.file_limit_reached,
     })
 }
