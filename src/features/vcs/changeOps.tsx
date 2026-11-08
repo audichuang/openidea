@@ -13,7 +13,7 @@ import { notifyFileOperation } from "@/platform/fileOps";
 import { confirmDialog, openDialog } from "./dialogs";
 import { KIND_COLOR, baseName, dirName, effectiveKind, relTo, stripSlash } from "./model";
 import { logConsole, runOp, saveAll } from "./ops";
-import { isStagingArea, stagingPlan } from "./staging";
+import { isStagingArea, stagedFiles, stagingPlan } from "./staging";
 import { currentRepo, loadStashes, refreshNow, useVcs } from "./store";
 import styles from "./common.module.css";
 import { tx } from "@/platform/i18n";
@@ -38,14 +38,18 @@ export async function commitChanges(): Promise<string | undefined> {
   await refreshNow();
   // With the staging area the index is committed as it is; otherwise the checkboxes decide.
   const staging = isStagingArea();
-  const plan = staging ? stagingPlan(useVcs.getState().status) : currentPlan();
+  const vcs = useVcs.getState();
+  const plan = staging
+    ? stagingPlan(vcs.status, vcs.roots, useCommit.getState().stagingExcludedRoots)
+    : currentPlan();
   // Concluding a merge needs no further changes (e.g. every conflict resolved as "yours").
   const merging = useVcs.getState().branch?.operation === "merge";
   if (!plan.included.length && !amend && !merging) {
     notifications().notify({
       group: "vcs",
       level: "warning",
-      title: staging ? "No staged changes to commit" : "No changes selected for commit",
+      // Staged changes left only in unticked repositories: nothing selected, not nothing staged.
+      title: staging && !stagedFiles(status).length ? "No staged changes to commit" : "No changes selected for commit",
     });
     return undefined;
   }
