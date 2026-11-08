@@ -364,8 +364,9 @@ pub fn copy_in(
     settings: &Settings,
 ) -> IdeResult<ClipCopyResult> {
     let result = copy_in_with(project, content_roots, source, settings, ClipNonTextMode::Exclude)?;
-    // Today's contract: only non-text files found is nothing to copy (`copy_in_with` reports them instead).
-    if result.files == 0 && result.text.is_empty() {
+    // Today's contract: no copied file is nothing to copy, even when a size placeholder or the
+    // non-text files found make the payload text non-empty (`copy_in_with` reports them instead).
+    if result.files == 0 && (result.mode == "files" || result.text.is_empty()) {
         return Err(IdeError::invalid("Nothing to copy"));
     }
     Ok(result)
