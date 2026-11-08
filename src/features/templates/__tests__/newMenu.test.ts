@@ -38,6 +38,7 @@ describe("New menu templates by directory kind", () => {
       "dockerfile",
       "editorconfig",
       "gitignore",
+      "tomcat-context",
     ]);
   });
 
