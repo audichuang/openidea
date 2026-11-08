@@ -26,7 +26,16 @@ import {
 import { gitGraphBridge, type GraphCommit, type GraphLaneRow, type GraphRefLabel } from "@/workbench/gitGraphBridge";
 import { changeCount, type GraphEntry } from "./entries";
 import { GraphCell, LANE } from "./GraphCell";
-import { branchExtras, commitExtras, dropMenu, GRAPH_DRAG, tagExtras, workingMenu, type DragItem } from "./menus";
+import {
+  branchExtras,
+  commitExtras,
+  compareExtras,
+  dropMenu,
+  GRAPH_DRAG,
+  tagExtras,
+  workingMenu,
+  type DragItem,
+} from "./menus";
 import styles from "./GitGraph.module.css";
 
 export const ROW = 24;
@@ -339,7 +348,11 @@ function RefPills(p: {
         behind: 0,
         lastCommitMs: null,
       };
-      items = [...(await bridge.branchMenu(branch, p.repo)), ...branchExtras(branch, p.repo, [...p.remoteBranches])];
+      items = [
+        ...(await bridge.branchMenu(branch, p.repo)),
+        ...branchExtras(branch, p.repo, [...p.remoteBranches]),
+        ...compareExtras(branch, p.repo, p.currentBranch),
+      ];
     }
     if (items.length) showContextMenu(point, items);
   };
