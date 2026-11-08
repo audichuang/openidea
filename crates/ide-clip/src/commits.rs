@@ -1336,6 +1336,8 @@ fn plan_file(root: &Path, f: &CommitFile, layout: &PlannedLayout) -> FilePlan {
     // The bytes are verified before anything is planned as writable.
     if let Some(nt) = f.non_text.as_ref().filter(|_| !deleted) {
         if nt.decode().is_err() {
+            // The corrupt entry is the reason; the copy side's Binary note must not outrank it.
+            plan.not_copied = None;
             plan.skip_reason = Some(ReplaySkipReason::CorruptNonText);
             return plan;
         }

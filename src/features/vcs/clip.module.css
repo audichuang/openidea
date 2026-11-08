@@ -104,7 +104,9 @@
   gap: 6px;
 }
 .nodeName {
-  flex: 0 1 auto;
+  /* Full width up to 70% of the row: a sub-pixel overflow must not eat the name; the note shrinks first. */
+  flex: 0 0 auto;
+  max-width: 70%;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -193,6 +195,10 @@
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: var(--radius-small);
+}
+.nonTextRow > .note {
+  flex: none;
+  white-space: nowrap;
 }
 .nonTextRow {
   display: flex;
