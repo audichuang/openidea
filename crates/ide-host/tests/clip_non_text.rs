@@ -448,3 +448,57 @@ fn a_directly_selected_symlinked_folder_is_not_followed() {
         assert_eq!(r.skipped_symlink_dir_paths, ["d14/linkdir"]);
     }
 }
+
+fn limit_settings(n: f64) -> Settings {
+    Settings { set_max_file_count: true, file_count_limit: n, ..Settings::default() }
+}
+
+/// Folder `d2` (2 carried non-text files, 1 text file, 4 size placeholders) and folder `d4` (40 images)
+/// under a limit of 30, as the testers copied them.
+fn d2_d4() -> (tempfile::TempDir, PathBuf) {
+    let (tmp, root) = dir();
+    let d2 = root.join("d2");
+    fs::create_dir_all(&d2).unwrap();
+    fs::write(d2.join("a1.png"), png()).unwrap();
+    fs::write(d2.join("a2.png"), png()).unwrap();
+    fs::write(d2.join("a3.txt"), "text\n").unwrap();
+    // Over both limits: never read.
+    fs::write(d2.join("b1.bin"), vec![0u8; 3 * 1024 * 1024]).unwrap();
+    fs::write(d2.join("b2.bin"), vec![0u8; 3 * 1024 * 1024]).unwrap();
+    // Read, then over their own limit: text over 500 KB, a PNG-like file is within 2 MB so use text twice.
+    fs::write(d2.join("c1.json"), "x".repeat(700 * 1024)).unwrap();
+    fs::write(d2.join("c2.json"), "y".repeat(700 * 1024)).unwrap();
+    let d4 = root.join("d4");
+    fs::create_dir_all(&d4).unwrap();
+    for i in 0..40 {
+        let mut b = png();
+        b.push(i as u8);
+        fs::write(d4.join(format!("i{i:02}.png")), b).unwrap();
+    }
+    (tmp, root)
+}
+
+/// The dialog (Exclude result) describes exactly what Include carries and what its notice reports, also
+/// when size placeholders sit inside the file-count window (required case 15).
+#[test]
+fn the_dialog_numbers_equal_the_include_payload_with_size_placeholders() {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (_tmp, root) = d2_d4();
+    let settings = limit_settings(30.0);
+    let src = || ClipCopySource::Files { paths: vec![root.join("d2"), root.join("d4")] };
+    let exclude = copy_with(&root, src(), &settings, ClipNonTextMode::Exclude).unwrap();
+    let include = copy_with(&root, src(), &settings, ClipNonTextMode::Include).unwrap();
+    let (e, i) = (&exclude.non_text, &include.non_text);
+    assert_eq!(e.count, include.non_text_copied, "dialog count vs Include payload: {e:?} / {include:?}");
+    assert_eq!(e.count, i.count);
+    assert_eq!(e.limit_left_out, i.limit_left_out, "left out: dialog vs Include notice");
+    assert_eq!(e.files.len(), 10);
+    assert_eq!(
+        e.files.iter().map(|f| &f.path).collect::<Vec<_>>(),
+        i.files.iter().map(|f| &f.path).collect::<Vec<_>>()
+    );
+    assert_eq!(e.estimated_include_bytes as usize, include.text.len(), "estimate vs Include payload");
+    assert_eq!(e.total_bytes, i.total_bytes);
+    assert_eq!(e.over_limit_count, i.over_limit_count);
+    assert_eq!(e.unread_over_limit_count, i.unread_over_limit_count);
+}
