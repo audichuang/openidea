@@ -40,7 +40,9 @@ import {
   pasteRowTitle,
   replayFileNote,
   resolveNonText,
+  visibleName,
 } from "./clipNonText";
+import { isElided, NameText, PathText } from "./PathText";
 import { buildPasteTree, fileKey, filesUnder, rowKey, type PasteNode } from "./clipPasteTree";
 import styles from "./clip.module.css";
 
@@ -51,7 +53,7 @@ const grouped = (n: number) => n.toLocaleString("en-US");
  * clipboard's chars · lines · words · ~tokens; a warning from 1,000,000 tokens and an
  * error from 2,000,000 (pasting that much into a chat model fails).
  */
-function notifyCopied(r: ClipCopyResult) {
+function notifyCopied(r: ClipCopyResult, included = false) {
   const parts: string[] = [];
   if (r.mode === "commits") {
     const { commits, files } = r;
@@ -68,7 +70,13 @@ function notifyCopied(r: ClipCopyResult) {
     } else parts.push(tx`${files} files copied.`);
     if (r.truncated) {
       const limit = r.fileLimit;
-      parts.push(tx`File limit ${limit} reached.`);
+      // The count describes what Include copies, so it only fits a result nobody was asked about or one
+      // that included the non-text files.
+      const leftOut = r.nonText.count === 0 || included ? r.nonText.limitLeftOut : 0;
+      if (leftOut > 0) {
+        const more = r.nonText.limitLeftOutAtLeast ? `${leftOut}+` : String(leftOut);
+        parts.push(tx`File limit ${limit} reached, files left out: ${more}.`);
+      } else parts.push(tx`File limit ${limit} reached.`);
     }
     if (r.nonTextCopied) {
       const carried = r.nonTextCopied;
@@ -76,7 +84,16 @@ function notifyCopied(r: ClipCopyResult) {
     }
     if (r.skippedUnreadable) {
       const skipped = r.skippedUnreadable;
-      parts.push(tx`Skipped (non-text file or unreadable): ${skipped}.`);
+      // After Include no non-text file was left out for being non-text, so only unreadable ones remain.
+      parts.push(included ? tx`Unreadable: ${skipped}.` : tx`Skipped (non-text file or unreadable): ${skipped}.`);
+    }
+    if (r.skippedUnportable) {
+      const skipped = r.skippedUnportable;
+      parts.push(tx`Name not portable: ${skipped}.`);
+    }
+    if (r.skippedSymlinkDirs) {
+      const skipped = r.skippedSymlinkDirs;
+      parts.push(tx`Symlinked folder not followed: ${skipped}.`);
     }
   }
   const [chars, lines, words, tokens] = [r.chars, r.lines, r.words, r.tokens].map(grouped);
@@ -84,12 +101,19 @@ function notifyCopied(r: ClipCopyResult) {
   const level = r.tokens >= 2_000_000 ? "error" : r.tokens >= 1_000_000 ? "warning" : "info";
   if (level === "error") body += ` ${tx("Over 2,000,000 tokens.")}`;
   else if (level === "warning") body += ` ${tx("Over 1,000,000 tokens.")}`;
-  if (r.mode !== "commits" && r.skippedUnreadablePaths.length) {
-    const shown = r.skippedUnreadablePaths.slice(0, 3);
-    const rest = r.skippedUnreadablePaths.length - shown.length;
-    const names = shown.join(", ");
-    body += `\n${tx`Unreadable: ${names}`}`;
-    if (rest > 0) body += ` ${tx`and ${rest} more`}`;
+  if (r.mode !== "commits") {
+    const lists: [string[], (names: string) => string][] = [
+      [r.skippedUnreadablePaths, (names) => tx`Unreadable: ${names}`],
+      [r.skippedUnportablePaths, (names) => tx`Name not portable: ${names}`],
+      [r.skippedSymlinkDirPaths, (names) => tx`Symlinked folder: ${names}`],
+    ];
+    for (const [paths, line] of lists) {
+      if (!paths.length) continue;
+      const shown = paths.slice(0, 3);
+      const rest = paths.length - shown.length;
+      body += `\n${line(shown.map(visibleName).join(", "))}`;
+      if (rest > 0) body += ` ${tx`and ${rest} more`}`;
+    }
   }
   if (!r.notify && level === "info") return;
   notifications().notify({ group: "clipcode", level, title: parts.join(" "), body });
@@ -109,6 +133,7 @@ export async function copyClip(source: ClipCopySource): Promise<boolean> {
     notifications().notify({ group: "clipcode", level: "warning", title: "ClipCode copy failed", body: String(e) });
     return false;
   }
+  const first = result;
   const chosen = await resolveNonText(result, askNonText, async () => {
     try {
       return await call(commands.clipCopy(source, "include"));
@@ -130,7 +155,7 @@ export async function copyClip(source: ClipCopySource): Promise<boolean> {
     return false;
   }
   await copyText(result.text);
-  notifyCopied(result);
+  notifyCopied(result, result !== first);
   return true;
 }
 
@@ -460,9 +485,7 @@ export function PastePreviewDialog({
                         {f.change}
                       </span>
                     )}
-                    <span className={styles.path} title={f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}>
-                      {f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}
-                    </span>
+                    <PathText path={f.oldPath ? `${f.oldPath} → ${f.path}` : f.path} />
                     {f.overwrites && <span className={styles.note}>{tx("overwrites")}</span>}
                     {replayFileNote(f) && <span className={styles.note}>{replayFileNote(f)}</span>}
                   </div>
@@ -501,11 +524,12 @@ export function PastePreviewDialog({
                       <span
                         className={styles.nodeName}
                         data-action={n.file?.action}
+                        data-elided={isElided(n.name) ? "" : undefined}
                         title={
                           n.file && isCorruptRow(n.file) ? `${n.file.path}\n${pasteRowTitle(n.file)}` : n.file?.path
                         }
                       >
-                        {n.name}
+                        <NameText name={n.name} />
                       </span>
                       {n.file && pasteRowNote(n.file) && (
                         <span className={styles.nodeNote} title={pasteRowTitle(n.file) ?? undefined}>
