@@ -191,8 +191,10 @@ pub struct RestoreExecutionResult {
 }
 
 impl RestoreExecutionResult {
+    /// Rows that wrote nothing: refused at planning, kept as existing files, or failed while writing (each
+    /// failed row has one entry in `errors`).
     pub fn total_skipped(&self) -> usize {
-        self.planned_skipped_count.saturating_add(self.skipped_existing_count)
+        self.planned_skipped_count.saturating_add(self.skipped_existing_count).saturating_add(self.errors.len())
     }
 }
 
