@@ -451,6 +451,105 @@ fn placeholder_shaped_text_round_trips_through_the_app_import_path() {
     assert_eq!(fs::read_to_string(dest.join("fake.txt")).unwrap().trim_end(), fake.trim_end());
 }
 
+/// The same with a whitespace-only first line that the header format matches (so it is escaped and kept): the
+/// placeholder-shaped line after it still restores as written, not with a stray escape and not skipped.
+#[test]
+fn placeholder_shaped_text_after_an_escaped_blank_line_round_trips() {
+    let fake = "   \n// File skipped: non-text file, 3 bytes, sha256 039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81; base64 follows\nAQID\n";
+    let settings = Settings { header_format: " $FILE_PATH".into(), ..small_limits() };
+    let repo = Repo::new();
+    repo.write("fake.txt", fake.as_bytes());
+    let sel = repo.selection(&[("fake.txt", SourceKind::File, None)]);
+    let plan = export(&sel, &settings, NonTextMode::Include);
+    assert_eq!(plan.non_text.count(), 0);
+
+    let dest_dir = tempfile::tempdir().unwrap();
+    let dest = dunce::canonicalize(dest_dir.path()).unwrap();
+    let import = plan_import(
+        &plan.payload,
+        &settings.header_format,
+        std::slice::from_ref(&dest),
+        &ImportMapping::with_primary(CanonicalRootId::new(&dest).unwrap()),
+    )
+    .unwrap();
+    assert_eq!(import.create_operations().len(), 1, "{}", plan.payload);
+    assert!(import.create_operations()[0].non_text_size().is_none());
+    import.apply(&RestoreSelection::default()).unwrap();
+    assert_eq!(fs::read_to_string(dest.join("fake.txt")).unwrap().trim_end(), fake.trim_end());
+}
+
+/// The unescapable-`headerFormat` check guards exactly what Include writes: for every format it lets through, a
+/// payload of non-text files whose placeholder and Base64 lines take every shape (`AA==`, `////`, `+/8=`, full
+/// 76-character lines) parses back to the same entries and bytes. Before the fix, `//$FILE_PATH` turned the
+/// placeholder into a header and `$FILE_PATH==` turned `AA==` into one, while the check said both were fine.
+#[test]
+fn every_header_format_include_allows_round_trips_non_text_lines() {
+    use ide_clip::format::{header_format_unescapable, parse_clipboard};
+    let blobs: Vec<(String, Vec<u8>)> = [
+        vec![0x00],
+        vec![0xFF; 3],
+        vec![0xFB, 0xFF],
+        vec![0xFF; 57],
+        (0..=255u8).cycle().take(300).collect(),
+        png(200),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, b)| (format!("d/b{i}.bin"), b))
+    .collect();
+    let formats = [
+        "// file: $FILE_PATH",
+        "// $FILE_PATH",
+        "A$FILE_PATH",
+        "#$FILE_PATH",
+        "### $FILE_PATH",
+        "$FILE_PATH.md",
+        "-- $FILE_PATH --",
+        "$FILE_PATH",
+        "$FILE_PATH=",
+        "$FILE_PATH==",
+        "$FILE_PATH/",
+        "$FILE_PATHQ",
+        "$FILE_PATH follows",
+        "/$FILE_PATH",
+        "//$FILE_PATH",
+        "//c$FILE_PATH",
+        "//clipcode-esc$FILE_PATH",
+        "$FILE_PATH$FILE_PATH",
+        "/$FILE_PATH/$FILE_PATH",
+    ];
+    let mut allowed = 0;
+    for format in formats {
+        if header_format_unescapable(format) {
+            continue;
+        }
+        allowed += 1;
+        for extra in [false, true] {
+            let mut files: Vec<PayloadFile> = blobs
+                .iter()
+                .map(|(p, b)| PayloadFile { path: p.clone(), non_text: Some(b.clone()), ..Default::default() })
+                .collect();
+            files.push(text("d/z.txt", "last\n"));
+            let payload = build_payload(&BuildPayloadOptions {
+                header_format: format.into(),
+                add_extra_line_between_files: extra,
+                files,
+                ..Default::default()
+            });
+            let entries = parse_clipboard(&payload, format);
+            let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+            let mut want: Vec<&str> = blobs.iter().map(|(p, _)| p.as_str()).collect();
+            want.push("d/z.txt");
+            assert_eq!(paths, want, "{format:?} (extra line {extra}):\n{payload}");
+            for (entry, (path, bytes)) in entries.iter().zip(&blobs) {
+                assert_eq!(nontext::parse_body(&entry.content), Some(Ok(bytes.clone())), "{format:?}: {path}");
+            }
+            assert_eq!(entries.last().unwrap().content, "last", "{format:?}");
+        }
+    }
+    assert!(allowed >= 7, "the corpus must keep formats Include allows");
+}
+
 /// Test 20: a target that is a directory skips only its row.
 #[test]
 fn a_directory_at_a_target_path_skips_only_that_row() {
