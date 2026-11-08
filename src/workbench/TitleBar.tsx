@@ -25,7 +25,6 @@ import {
 } from "./mainToolbar";
 import { WindowControls } from "./WindowControls";
 import { captionButtons } from "./windowButtons";
-import { useFullscreen } from "./useFullscreen";
 import { usePlatform } from "@/platform/platformInfo";
 import { ProjectAvatar } from "./ProjectBadge";
 import { keymapItems, themeItems, themePreview, type ThemePreview, VIEW_MODE_ITEMS } from "./quickSwitch";
@@ -327,7 +326,6 @@ export function TitleBar({
   title?: string;
 }) {
   const overlay = usePlatform((s) => s.overlayTitleBar);
-  const fullscreen = useFullscreen();
   const frameless = usePlatform((s) => s.framelessTitleBar);
   const showMainMenu = frameless || isWebMode();
   const windowButtons = usePlatform((s) => s.windowButtons);
@@ -344,7 +342,6 @@ export function TitleBar({
   const className = clsx(
     styles.bar,
     overlay && styles.overlay,
-    overlay && fullscreen && styles.overlayFullscreen,
     frameless && styles.frameless,
     frameless && captionButtons(windowButtons, "left", dialog).length > 0 && styles.captionsAtLeft,
     frameless && captionButtons(windowButtons, "right", dialog).length === 0 && styles.noCaptionsAtRight,
