@@ -59,21 +59,26 @@ export function isUnchanged(file: ClipPasteFile): boolean {
   return !!file.nonText?.identical;
 }
 
-/** The short note on a tree row (the file name keeps the room): size only, or why a file is corrupt. */
+/** A skipped entry whose Base64 payload cannot be decoded: its row shows a Corrupt badge, not a note. */
+export function isCorruptRow(file: ClipPasteFile): boolean {
+  return file.action === "skip" && file.reason === "CORRUPT_NON_TEXT";
+}
+
+/** The short note on a tree row: the size only (a corrupt row has the badge, so no note). */
 export function pasteRowNote(file: ClipPasteFile): string | null {
-  if (file.action === "skip" && file.reason === "CORRUPT_NON_TEXT") return tx("Corrupt non-text file");
+  if (isCorruptRow(file)) return null;
   return file.nonText ? formatBytes(file.nonText.size) : null;
 }
 
 /** The full wording of a tree row's note, for its tooltip and the preview pane. */
 export function pasteRowTitle(file: ClipPasteFile): string | null {
-  if (file.action === "skip" && file.reason === "CORRUPT_NON_TEXT") return tx("Corrupt non-text file");
+  if (isCorruptRow(file)) return tx("Corrupt non-text file");
   return pasteNonTextLabel(file);
 }
 
-/** What a replayed commit's file row says besides its change: the non-text wording, else the reason. */
+/** What a replayed commit's file row says besides its change: the non-text size, else the reason (a corrupt row has a badge). */
 export function replayFileNote(f: ClipReplayFile): string | null {
-  if (f.reason === "CORRUPT_NON_TEXT") return tx("Corrupt non-text file");
+  if (f.reason === "CORRUPT_NON_TEXT") return null;
   if (f.nonTextSize != null) {
     const size = formatBytes(f.nonTextSize);
     return tx`Non-text file · ${size}`;
