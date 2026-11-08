@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import type { Branch, Commit } from "@/bindings";
+import type { Branch, ChangedFile, Commit } from "@/bindings";
+import type { EditorInput } from "@/workbench/contributions";
 import type { MenuItem } from "@/ui";
 
 vi.mock("@tanstack/react-virtual", () => ({
@@ -15,6 +16,8 @@ const vcsLog = vi.fn();
 const vcsBranches = vi.fn();
 const vcsTags = vi.fn();
 const vcsCommitFiles = vi.fn();
+const vcsMergeBase = vi.fn();
+const vcsDiffRevisions = vi.fn();
 const graphStashes = vi.fn();
 const graphWorkingState = vi.fn();
 const popStash = vi.fn();
@@ -28,6 +31,8 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       vcsBranches: (repo: string) => vcsBranches(repo),
       vcsTags: (repo: string) => vcsTags(repo),
       vcsCommitFiles: (repo: string, id: string) => vcsCommitFiles(repo, id),
+      vcsMergeBase: (repo: string, a: string, b: string) => vcsMergeBase(repo, a, b),
+      vcsDiffRevisions: (repo: string, from: string, to: string) => vcsDiffRevisions(repo, from, to),
       vcsRemotes: () => Promise.resolve({ status: "ok", data: [] }),
       graphStashes: (repo: string) => graphStashes(repo),
       graphWorkingState: (repo: string) => graphWorkingState(repo),
@@ -50,9 +55,12 @@ import {
   type GitGraphBridge,
   type GitGraphRepoState,
   type GraphBranchFilterProps,
+  type GraphRevisionSide,
 } from "@/workbench/gitGraphBridge";
 import { GitGraphEditor } from "../GitGraphView";
 import { findMatches, logBranches } from "../data";
+import { defaultPrRefs } from "../PrView";
+import { useContributions } from "@/workbench/contributions";
 import { initialGraphView, useGraphView } from "../viewState";
 
 const REPO = "/repo";
@@ -122,6 +130,15 @@ const bridge = {
   filesMenu: vi.fn(async () => [{ label: "File Item" }] as MenuItem[]),
   openDiff: vi.fn(async () => {}),
   openRevisionFile: vi.fn(async () => {}),
+  revisionDiffInput: vi.fn(
+    (_repo: string, from: GraphRevisionSide, to: GraphRevisionSide, file: ChangedFile): EditorInput => ({
+      kind: "diff",
+      key: `${from.rev}:${to.rev}:${file.path}`,
+      data: { from, to, file },
+    }),
+  ),
+  openRevisionDiff: vi.fn(async () => {}),
+  copyRange: vi.fn(async () => true),
   stashMenu: vi.fn(() => [{ label: "Apply" }, { label: "Pop", run: popStash }] as MenuItem[]),
   mergeIntoCurrent: vi.fn(async () => {}),
   rebaseCurrentOnto: vi.fn(async () => {}),
@@ -359,6 +376,208 @@ describe("Git Graph pseudo rows and panels", () => {
     fireEvent.keyDown(search, { key: "Enter" });
     await waitFor(() => expect(useGraphView.getState().repo).toBe("/work/billing-web"));
     expect(screen.queryByRole("listbox", { name: "Repositories" })).toBeNull();
+  });
+});
+
+describe("Git Graph PR view", () => {
+  const MB = "m".padEnd(40, "0");
+  const showDiff = vi.fn(({ input }: { input: EditorInput }) => <div data-testid="embedded-diff">{input.key}</div>);
+
+  beforeEach(() => {
+    state = { ...state, heads: { [REPO]: { head: "feature", headCommit: "a".padEnd(40, "0") } } };
+    vcsBranches.mockImplementation(() =>
+      ok([
+        branch("feature", { current: true }),
+        branch("main"),
+        branch("origin/HEAD", { remote: true }),
+        branch("origin/main", { remote: true }),
+      ]),
+    );
+    vcsMergeBase.mockImplementation(() => ok(MB));
+    vcsDiffRevisions.mockImplementation(() =>
+      ok([
+        { path: "src/app.ts", kind: "modified", oldPath: null },
+        { path: "src/new.ts", kind: "renamed", oldPath: "src/old.ts" },
+      ]),
+    );
+    vcsLog.mockImplementation((_repo: string, q: { range?: string | null }) =>
+      q.range === "main..feature"
+        ? ok([commit("f2", ["f1"], { summary: "second change" }), commit("f1", [MB], { summary: "first change" })])
+        : q.range === "feature..main"
+          ? ok([commit("x", [MB])])
+          : ok([commit("a", ["b"], { refs: ["HEAD", "feature"] }), commit("b", [])]),
+    );
+    useContributions.setState({
+      editorKinds: new Map([["diff", { kind: "diff", component: showDiff, title: () => "diff" }]]),
+    });
+  });
+
+  afterEach(() => {
+    useContributions.setState({ editorKinds: new Map() });
+  });
+
+  const openPr = async () => {
+    render(<GitGraphEditor />);
+    fireEvent.click(screen.getByRole("tab", { name: "PR" }));
+    return screen.findByText(/commits ahead/);
+  };
+
+  it("switches between the graph and the PR view, keeping the shared toolbar actions", async () => {
+    render(<GitGraphEditor />);
+    await screen.findByText("subject a");
+    expect(screen.getByRole("tab", { name: "Graph" }).getAttribute("aria-selected")).toBe("true");
+    fireEvent.click(screen.getByRole("tab", { name: "PR" }));
+    expect(useGraphView.getState().mode).toBe("pr");
+    expect(screen.queryByRole("grid", { name: "Commits" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Branches" })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "Find commit" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Show Remote Branches" })).toBeNull();
+    for (const name of ["Refresh", "Fetch", "Pull…", "Push…", "Commit…", "Show Git Log"])
+      expect(screen.getByRole("button", { name })).toBeTruthy();
+    fireEvent.click(screen.getByRole("tab", { name: "Graph" }));
+    expect(await screen.findByRole("grid", { name: "Commits" })).toBeTruthy();
+  });
+
+  it("compares the current branch into main by default, three-dot from the merge base", async () => {
+    const summary = await openPr();
+    expect(summary.textContent).toBe("2 commits ahead, 1 behind main");
+    expect(screen.getByRole("button", { name: "Base Branch" }).textContent).toBe("main");
+    expect(screen.getByRole("button", { name: "Head Branch" }).textContent).toBe("feature");
+    expect(vcsMergeBase).toHaveBeenCalledWith(REPO, "main", "feature");
+    expect(vcsDiffRevisions).toHaveBeenCalledWith(REPO, MB, "feature");
+    const files = screen.getByRole("list", { name: "Changed Files" });
+    expect(
+      within(files)
+        .getAllByRole("listitem")
+        .map((f) => f.textContent),
+    ).toEqual(["Mapp.tssrc", "Rnew.tssrc/old.ts → src/new.ts"]);
+    // The first file's diff is embedded: merge base on the left, head on the right.
+    expect(screen.getByTestId("embedded-diff").textContent).toBe(`${MB}:feature:src/app.ts`);
+    expect(bridge.revisionDiffInput).toHaveBeenLastCalledWith(
+      REPO,
+      { rev: MB, label: "merge-base (main)" },
+      { rev: "feature", label: "feature" },
+      expect.objectContaining({ path: "src/app.ts" }),
+    );
+    fireEvent.click(within(files).getByText("new.ts"));
+    expect(screen.getByTestId("embedded-diff").textContent).toBe(`${MB}:feature:src/new.ts`);
+    fireEvent.doubleClick(within(files).getByText("new.ts"));
+    expect(bridge.openRevisionDiff).toHaveBeenCalledWith(
+      REPO,
+      { rev: MB, label: "merge-base (main)" },
+      { rev: "feature", label: "feature" },
+      expect.any(Array),
+      1,
+    );
+  });
+
+  it("copies the changed files from the merge base with ClipCode", async () => {
+    await openPr();
+    fireEvent.click(screen.getByRole("button", { name: "ClipCode: Copy Changed Files" }));
+    expect(bridge.copyRange).toHaveBeenCalledWith(REPO, MB, "feature");
+  });
+
+  it("filters the base picker by typing, grouped HEAD / Local / Remote / Tags", async () => {
+    await openPr();
+    fireEvent.click(screen.getByRole("button", { name: "Base Branch" }));
+    const search = await screen.findByRole("textbox", { name: "Search branches and tags" });
+    const list = screen.getByRole("listbox", { name: "Branches and Tags" });
+    const options = () =>
+      within(list)
+        .getAllByRole("option")
+        .map((o) => o.textContent);
+    // origin/HEAD is an alias, not a branch to compare with.
+    expect(options()).toEqual(["HEAD", "feature", "main", "origin/main", "v1"]);
+    for (const section of ["Local", "Remote", "Tags"]) expect(within(list).getByText(section)).toBeTruthy();
+    fireEvent.change(search, { target: { value: "v1" } });
+    expect(options()).toEqual(["v1"]);
+    fireEvent.keyDown(search, { key: "Enter" });
+    await waitFor(() => expect(useGraphView.getState().pr[REPO]?.base).toBe("v1"));
+    await waitFor(() => expect(vcsMergeBase).toHaveBeenLastCalledWith(REPO, "v1", "feature"));
+  });
+
+  it("swaps base and head", async () => {
+    await openPr();
+    fireEvent.click(screen.getByRole("button", { name: "Swap Base and Head" }));
+    expect(useGraphView.getState().pr[REPO]).toMatchObject({ base: "feature", head: "main" });
+    await waitFor(() => expect(vcsMergeBase).toHaveBeenLastCalledWith(REPO, "feature", "main"));
+  });
+
+  it("asks for a base when no default branch exists", async () => {
+    vcsBranches.mockImplementation(() => ok([branch("feature", { current: true })]));
+    render(<GitGraphEditor />);
+    fireEvent.click(screen.getByRole("tab", { name: "PR" }));
+    expect(await screen.findByText("Choose a base branch to compare")).toBeTruthy();
+    expect(vcsMergeBase).not.toHaveBeenCalled();
+  });
+
+  it("says when the branches share no history instead of diffing them directly", async () => {
+    vcsMergeBase.mockImplementation(() => ok(null));
+    render(<GitGraphEditor />);
+    fireEvent.click(screen.getByRole("tab", { name: "PR" }));
+    expect(await screen.findByText("No common history")).toBeTruthy();
+    expect(screen.getByText("main and feature have no common commit to compare from.")).toBeTruthy();
+    expect(vcsDiffRevisions).not.toHaveBeenCalled();
+  });
+
+  it("shows an empty state for the same branch and an inline error on failure", async () => {
+    useGraphView.setState({ pr: { [REPO]: { base: "feature", head: null, tab: "files", file: null } } });
+    render(<GitGraphEditor />);
+    fireEvent.click(screen.getByRole("tab", { name: "PR" }));
+    expect(await screen.findByText("Base and head are the same")).toBeTruthy();
+    vcsMergeBase.mockImplementation(() => Promise.resolve({ status: "error", error: { message: "bad revision" } }));
+    act(() => useGraphView.setState({ pr: { [REPO]: { base: "nope", head: null, tab: "files", file: null } } }));
+    expect((await screen.findByRole("alert")).textContent).toContain("bad revision");
+  });
+
+  it("lists the commits and shows one in the graph", async () => {
+    await openPr();
+    fireEvent.click(screen.getByRole("tab", { name: /Commits/ }));
+    const list = screen.getByRole("list", { name: "Commits" });
+    expect(
+      within(list)
+        .getAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual([expect.stringContaining("second change"), expect.stringContaining("first change")]);
+    fireEvent.click(within(list).getByText("first change"));
+    expect(useGraphView.getState()).toMatchObject({
+      mode: "graph",
+      selection: { repo: REPO, ids: ["f1".padEnd(40, "0")] },
+    });
+  });
+
+  it("keeps each repository's base and head apart", async () => {
+    const OTHER = "/other";
+    state = { ...state, roots: [REPO, OTHER], heads: { ...state.heads, [OTHER]: { head: "dev", headCommit: null } } };
+    vcsBranches.mockImplementation((repo: string) =>
+      repo === OTHER
+        ? ok([branch("dev", { current: true }), branch("master")])
+        : ok([branch("feature", { current: true }), branch("main")]),
+    );
+    useGraphView.setState({ pr: { [REPO]: { base: "v1", head: "main", tab: "files", file: null } } });
+    render(<GitGraphEditor />);
+    fireEvent.click(screen.getByRole("tab", { name: "PR" }));
+    await waitFor(() => expect(vcsMergeBase).toHaveBeenLastCalledWith(REPO, "v1", "main"));
+    act(() => useGraphView.setState({ repo: OTHER }));
+    await waitFor(() => expect(vcsMergeBase).toHaveBeenLastCalledWith(OTHER, "master", "dev"));
+    expect(screen.getByRole("button", { name: "Base Branch" }).textContent).toBe("master");
+    expect(useGraphView.getState().pr[REPO]).toMatchObject({ base: "v1", head: "main" });
+    expect(useGraphView.getState().pr[OTHER]).toBeUndefined();
+  });
+});
+
+describe("PR view defaults", () => {
+  it("heads from the current branch into main, master or develop, else a remote one, else none", () => {
+    expect(defaultPrRefs([branch("feature"), branch("master"), branch("develop")], "feature")).toEqual({
+      base: "master",
+      head: "feature",
+    });
+    expect(defaultPrRefs([branch("main"), branch("develop")], "main")).toEqual({ base: "develop", head: "main" });
+    expect(defaultPrRefs([branch("x"), branch("origin/main", { remote: true })], null)).toEqual({
+      base: "origin/main",
+      head: "HEAD",
+    });
+    expect(defaultPrRefs([branch("x")], "x")).toEqual({ base: null, head: "x" });
   });
 });
 
