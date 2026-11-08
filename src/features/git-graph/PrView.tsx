@@ -160,20 +160,21 @@ export function PrView(p: {
   return (
     <div className={styles.pr}>
       <div className={styles.prHeader}>
+        {/* Left to right: the branch the pull request comes from, then the one it goes into. */}
         <span className={styles.prSide}>
-          <T>base</T>
+          <T>From</T>
         </span>
-        {refButton("base", base)}
+        {refButton("head", head)}
         <IconButton
-          icon="arrow-left"
+          icon="arrow-right"
           title="Swap Base and Head"
           disabled={!base}
           onClick={() => base && setPrChoice(repo, { base: head, head: base, file: null })}
         />
         <span className={styles.prSide}>
-          <T>head</T>
+          <T>into</T>
         </span>
-        {refButton("head", head)}
+        {refButton("base", base)}
         <span className={styles.spacer} />
         {ready ? (
           <IconButton
