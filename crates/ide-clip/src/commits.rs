@@ -1345,6 +1345,13 @@ fn plan_file(root: &Path, f: &CommitFile, layout: &PlannedLayout) -> FilePlan {
         plan.not_copied = None;
         plan.non_text_size = Some(nt.size);
     }
+    // A rename of a non-text file copied without its bytes (Exclude, or a copy from before this rule) moves
+    // the file the destination already has at the old path: the replay reads it before the old path goes.
+    let moved_size = moved_non_text_size(root, f, layout);
+    if let Some(size) = moved_size {
+        plan.not_copied = None;
+        plan.non_text_size = Some(size);
+    }
     let non_text = plan.non_text_size.is_some();
     if !deleted && !non_text && f.content.is_none() && plan.not_copied.is_none() {
         plan.not_copied = Some(NotCopiedReason::Unreadable);
@@ -1391,6 +1398,23 @@ fn plan_file(root: &Path, f: &CommitFile, layout: &PlannedLayout) -> FilePlan {
     plan.old_before =
         plan.old_absolute_path.as_deref().map(|p| layout.content_source(p)).unwrap_or(ReplayContentSource::Absent);
     plan
+}
+
+/// The size of the file a bytes-less rename of a non-text file would move, when the destination has it as a
+/// regular file at the old path.
+fn moved_non_text_size(root: &Path, f: &CommitFile, layout: &PlannedLayout) -> Option<u64> {
+    let bytes_less = f.change == FileChange::Renamed
+        && f.content.is_none()
+        && f.non_text.is_none()
+        && matches!(f.not_copied, Some(NotCopiedReason::Binary | NotCopiedReason::NonUtf8));
+    if !bytes_less {
+        return None;
+    }
+    let old = target(root, f.old_path.as_deref()?, layout)?;
+    if !layout.exists(&old) || is_symlink(&old) {
+        return None;
+    }
+    fs::metadata(&old).ok().filter(|m| m.is_file()).map(|m| m.len())
 }
 
 /// Whether a directory between `root` and `abs` is a symlink on disk.
@@ -2158,6 +2182,11 @@ fn replay_commit(
     for (f, src) in plan.files.iter().zip(&commit.files) {
         let non_text = match (&f.non_text_size, &src.non_text) {
             (Some(_), Some(nt)) => Some(nt.decode().map_err(|e| format!("{}: {e}", f.path))?),
+            // A bytes-less rename: read the file before the deletions below remove it.
+            (Some(_), None) => {
+                let old = f.old_absolute_path.as_deref().ok_or_else(|| format!("{}: nothing to move", f.path))?;
+                Some(fs::read(old).map_err(|e| format!("{}: {e}", f.old_path.as_deref().unwrap_or(&f.path)))?)
+            }
             _ => None,
         };
         let writes = src.content.is_some() || non_text.is_some();
@@ -3569,7 +3598,7 @@ mod tests {
     }
 
     #[test]
-    fn binary_delete_is_not_copied_and_replay_keeps_the_target_file() {
+    fn non_text_delete_is_replayed_as_a_deletion() {
         let src = Repo::new("main");
         src.write("bin.dat", &[0x89, b'P', 0, 1, 2]);
         src.write("big5.txt", &[0xa4, 0xe9, 0xa5, 0xbb]);
@@ -3587,16 +3616,10 @@ mod tests {
         let payload = copy_commits(&src.open(), &[sha]).unwrap();
         let files = &payload.commits[0].files;
         let find = |p: &str| files.iter().find(|f| f.path == p).unwrap();
-        for (path, reason) in [
-            ("bin.dat", Some(NotCopiedReason::Binary)),
-            ("big5.txt", Some(NotCopiedReason::NonUtf8)),
-            ("empty.txt", None),
-            ("gone.txt", None),
-            ("big.txt", None),
-        ] {
+        for path in ["bin.dat", "big5.txt", "empty.txt", "gone.txt", "big.txt"] {
             let f = find(path);
             assert_eq!(f.change, FileChange::Deleted, "{path}");
-            assert_eq!(f.not_copied, reason, "{path}");
+            assert_eq!(f.not_copied, None, "{path}");
             assert_eq!(f.content, None, "{path}");
         }
 
@@ -3613,23 +3636,17 @@ mod tests {
 
         let plan = plan_commit_replay(&tg, &parsed);
         let pf = |p: &str| plan.commits[0].files.iter().find(|f| f.path == p).unwrap();
-        for p in ["bin.dat", "big5.txt"] {
-            assert_eq!(pf(p).action, ReplayAction::Skip, "{p}");
-            assert_eq!(pf(p).skip_reason, Some(ReplaySkipReason::NotCopied), "{p}");
-        }
-        for p in ["empty.txt", "gone.txt", "big.txt"] {
+        for p in ["bin.dat", "big5.txt", "empty.txt", "gone.txt", "big.txt"] {
             assert_eq!(pf(p).action, ReplayAction::Delete, "{p}");
         }
 
         let result = replay(&tg, &parsed);
         assert_eq!(result.failure, None);
         assert_eq!(result.created.len(), 1);
-        assert!(dst.path().join("bin.dat").exists());
-        assert!(dst.path().join("big5.txt").exists());
-        for p in ["empty.txt", "gone.txt", "big.txt"] {
+        for p in ["bin.dat", "big5.txt", "empty.txt", "gone.txt", "big.txt"] {
             assert!(!dst.path().join(p).exists(), "{p}");
         }
-        assert_eq!(dst.git(&["ls-tree", "-r", "--name-only", "HEAD"]), "big5.txt\nbin.dat\nkeep.txt");
+        assert_eq!(dst.git(&["ls-tree", "-r", "--name-only", "HEAD"]), "keep.txt");
         assert_eq!(dst.git(&["show", "HEAD:keep.txt"]), "keep v2");
     }
 
