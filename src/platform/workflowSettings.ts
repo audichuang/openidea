@@ -79,6 +79,7 @@ export interface ClipCodeSettingsValid {
   setMaxFileCount: boolean;
   fileCountLimit: number;
   maxFileSizeKB: number;
+  maxNonTextFileSizeKB: number;
   showCopyNotification: boolean;
   useFilters: boolean;
   useIncludeFilters: boolean;
@@ -214,6 +215,7 @@ function clipCode(c: Record<string, unknown>, d: ClipCodeSettingsValid): ClipCod
     setMaxFileCount: bool(c.setMaxFileCount, d.setMaxFileCount),
     fileCountLimit: num(c.fileCountLimit, d.fileCountLimit, L.clipFileCount, true),
     maxFileSizeKB: num(c.maxFileSizeKB, d.maxFileSizeKB, L.clipFileSizeKb, true),
+    maxNonTextFileSizeKB: num(c.maxNonTextFileSizeKB, d.maxNonTextFileSizeKB, L.clipFileSizeKb, true),
     showCopyNotification: bool(c.showCopyNotification, d.showCopyNotification),
     useFilters: bool(c.useFilters, d.useFilters),
     useIncludeFilters: bool(c.useIncludeFilters, d.useIncludeFilters),
@@ -307,6 +309,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       setMaxFileCount: true,
       fileCountLimit: 30,
       maxFileSizeKB: 500,
+      maxNonTextFileSizeKB: 2048,
       showCopyNotification: true,
       useFilters: false,
       useIncludeFilters: true,
