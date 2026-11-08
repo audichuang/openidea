@@ -2012,6 +2012,17 @@
         }
       ],
       "wire": "\nAimg/shaped.bin\n// File skipped: non-text file, 130 bytes, sha256 821049ce9c686452e98f400d30f1ae95c506a0077c8fde13fa2cde18d36e4a2c; base64 follows\n//clipcode-esc: AAIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5\n//clipcode-esc: ADs8PT4/QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl9gYWJjZGVmZ2hpamtsbW5vcHFy\n//clipcode-esc: AHR1dnd4eXp7fH1+f4CBgg==\n\n"
+    },
+    {
+      "name": "a text file whose first line looks like a non-text placeholder is escaped",
+      "headerFormat": "// file: $FILE_PATH",
+      "files": [
+        {
+          "path": "fake.txt",
+          "content": "// File skipped: non-text file, 3 bytes, sha256 039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81; base64 follows\nAQID"
+        }
+      ],
+      "wire": "\n// file: fake.txt\n//clipcode-esc: // File skipped: non-text file, 3 bytes, sha256 039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81; base64 follows\nAQID\n\n"
     }
   ],
   "nonTextRestoreCases": [
@@ -2152,6 +2163,18 @@
           "reason": "PLACEHOLDER_BODY"
         }
       ]
+    },
+    {
+      "name": "round trip: a text file whose first line looks like a non-text placeholder restores as that text",
+      "headerFormat": "// file: $FILE_PATH",
+      "payload": "\n// file: fake.txt\n//clipcode-esc: // File skipped: non-text file, 3 bytes, sha256 039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81; base64 follows\nAQID\n\n",
+      "creates": [
+        {
+          "path": "fake.txt",
+          "content": "// File skipped: non-text file, 3 bytes, sha256 039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81; base64 follows\nAQID"
+        }
+      ],
+      "skips": []
     }
   ]
 }
