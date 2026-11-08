@@ -7,6 +7,7 @@ import type { ClipCopyResult, ClipNonTextSummary, ClipPasteFile, ClipReplayFile 
 import { tx } from "@/platform/i18n";
 import { Dialog, T } from "@/ui";
 import { openDialog } from "./dialogs";
+import { PathText } from "./PathText";
 import styles from "./clip.module.css";
 
 export type NonTextChoice = "include" | "exclude" | "cancel";
@@ -83,7 +84,64 @@ export function replayFileNote(f: ClipReplayFile): string | null {
     const size = formatBytes(f.nonTextSize);
     return tx`Non-text file · ${size}`;
   }
-  return f.reason;
+  return f.reason ? skipReasonText(f.reason) : null;
+}
+
+/** What a skip or not-copied reason code means to the user (the previews never show the raw code). */
+export function skipReasonText(code: string | null | undefined): string {
+  switch (code) {
+    case undefined:
+    case null:
+    case "":
+      return "";
+    case "BINARY":
+    case "NON_UTF8":
+      return tx("Non-text file, not copied");
+    case "NON_UTF8_PATH":
+      return tx("File name is not UTF-8, not copied");
+    case "UNSUPPORTED_TYPE":
+      return tx("Symlink or submodule, not copied");
+    case "UNREADABLE":
+      return tx("Unreadable, not copied");
+    case "NOT_COPIED":
+      return tx("Not copied");
+    case "UNSAFE_PATH":
+      return tx("Unsafe path");
+    case "NON_UTF8_TARGET":
+      return tx("Existing file is not UTF-8; not overwritten");
+    case "CORRUPT_NON_TEXT":
+      return tx("Corrupt non-text file");
+    case "ALREADY_ABSENT":
+      return tx("Already absent");
+    case "UNRESOLVED_PATH":
+      return tx("Path could not be resolved");
+    case "AMBIGUOUS_PATH":
+      return tx("Path matches more than one root");
+    case "PLACEHOLDER_BODY":
+      return tx("Placeholder, no file content");
+    case "TARGET_NOT_FILE":
+      return tx("Target is a folder; not replaced");
+    case "the renamed-from path is a directory":
+      return tx("The renamed-from path is a folder");
+    case "the path to delete is a directory":
+      return tx("The path to delete is a folder");
+    case "a directory is in the way of the file":
+      return tx("A folder is in the way of the file");
+    case "a file is in the way of its parent directory":
+      return tx("A file is in the way of its parent folder");
+    case "the path differs only in letter case from another one in the destination or the commit":
+      return tx("The path differs only in letter case from another one in the destination or the commit");
+    default:
+      return code;
+  }
+}
+
+/** A file name for a notice: control characters (a tab) are made visible. */
+export function visibleName(name: string): string {
+  // eslint-disable-next-line no-control-regex
+  return name.replace(/[\u0000-\u001f]/g, (c) =>
+    c === "\t" ? "\\t" : `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`,
+  );
 }
 
 export function NonTextDialog({
@@ -101,6 +159,7 @@ export function NonTextDialog({
   const over = summary.overLimitCount;
   const unread = summary.unreadOverLimitCount;
   const unreadLimit = formatBytes(summary.unreadLimitBytes);
+  const leftOut = summary.limitLeftOutAtLeast ? `${summary.limitLeftOut}+` : String(summary.limitLeftOut);
   return (
     <Dialog
       open
@@ -133,9 +192,7 @@ export function NonTextDialog({
         <ul className={styles.nonTextList} aria-label={tx("Non-text files")}>
           {shown.map((f) => (
             <li key={f.path} className={styles.nonTextRow}>
-              <span className={styles.path} title={f.path}>
-                {f.path}
-              </span>
+              <PathText path={f.path} className={styles.nonTextPath} />
               <span className={styles.note}>{formatBytes(f.size)}</span>
             </li>
           ))}
@@ -147,6 +204,9 @@ export function NonTextDialog({
           >{tx`Not read, over ${unreadLimit} (copied as size placeholders): ${unread}`}</div>
         )}
         {over > 0 && <div className={styles.note}>{tx`Non-text files over the size limit (not copied): ${over}`}</div>}
+        {summary.limitLeftOut > 0 && (
+          <div className={styles.note}>{tx`Files left out by the file limit: ${leftOut}`}</div>
+        )}
       </div>
     </Dialog>
   );

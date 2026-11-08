@@ -112,18 +112,58 @@
   gap: 6px;
 }
 .nodeName {
-  /* The name ellipsizes before the note or badge does: those never shrink, so they always read whole. */
+  /* The file name has priority: the note shrinks (and ellipsizes) first, and a long name elides in its middle. */
   flex: 0 1 auto;
-  min-width: 8ch;
+  min-width: 12ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* The size note never collapses to a few characters. */
+.nodeName[data-elided],
+.pathName[data-elided] {
+  display: flex;
+}
 .nodeNote {
-  flex: none;
+  flex: 0 100 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--fg-subtle);
+}
+/* A long name: the head ellipsizes, the tail (the name's end) always shows. */
+.nameHead {
+  flex: 0 1 auto;
+  min-width: 4ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nameTail {
+  flex: none;
+  white-space: nowrap;
+}
+/* A path: folders elide first, then the name's head; the name's tail stays. */
+.pathText {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  white-space: nowrap;
+}
+.nonTextPath {
+  flex: 1 1 auto;
+}
+.pathDir {
+  flex: 0 8 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pathName {
+  flex: 0 1 auto;
+  min-width: 8ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .nodeRow > .badge {
   margin-left: auto;
