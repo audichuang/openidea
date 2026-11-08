@@ -1129,7 +1129,18 @@ pub fn paste_apply_with_paths(req: ClipPasteApply) -> IdeResult<(ClipPasteResult
                 .map(|f| f.path.clone())
                 .collect();
             let r = preview.apply().map_err(|e| IdeError::invalid(e.paste_message()))?;
-            let mut errors = Vec::new();
+            let mut errors: Vec<String> = r
+                .not_created
+                .iter()
+                .map(|c| {
+                    format!(
+                        "Commit {} ({}) not created: {}",
+                        c.index + 1,
+                        c.message.lines().next().unwrap_or(""),
+                        c.reason.describe()
+                    )
+                })
+                .collect();
             if let Some(f) = &r.failure {
                 errors.push(format!(
                     "Commit {} ({}) failed: {}",
