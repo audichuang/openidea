@@ -193,7 +193,8 @@ jobs:
           rm -rf "target/$TARGET/release/bundle"
           config=$(jq -cn --arg v "$VERSION" --arg k "$UPDATER_PUBKEY" --arg e "$UPDATER_ENDPOINT" \
             '{version: $v, bundle: {createUpdaterArtifacts: true}, plugins: {updater: {pubkey: $k, endpoints: [$e]}}}')
-          pnpm tauri build --target "$TARGET" --bundles "${{ matrix.bundles }}" --config "$config"
+          # --timings: per-crate compile times in target/cargo-timings, uploaded below.
+          pnpm tauri build --target "$TARGET" --bundles "${{ matrix.bundles }}" --config "$config" -- --timings
 
       - name: Verify the signature and notarization
         if: runner.os == 'macOS'
@@ -231,6 +232,13 @@ jobs:
           name: ${{ env.MODE == 'candidate' && format('candidate-{0}-{1}', env.VERSION, matrix.target) || format('assets-{0}', matrix.target) }}
           path: ${{ runner.temp }}/assets/
           retention-days: ${{ env.MODE == 'release' && 7 || 3 }}
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-timings-${{ matrix.target }}
+          path: ${{ env.WORK }}/target/cargo-timings/cargo-timing.html
+          retention-days: 14
+          if-no-files-found: warn
       - if: env.MODE == 'candidate' && !cancelled()
         uses: ./.github/actions/target-cache
         with:
