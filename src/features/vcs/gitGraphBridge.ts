@@ -10,9 +10,10 @@ import {
   type GitGraphBridge,
   type GraphCommit,
   type GraphLayoutState,
+  type GraphRevisionSide,
 } from "@/workbench/gitGraphBridge";
 import { computeGraph, emptyGraphState, laneColor, type GraphState } from "./graph";
-import { openDiff, withChain } from "./diffInput";
+import { diffInput, openDiff, withChain, type DiffData, type DiffSide } from "./diffInput";
 import { repoColor } from "./model";
 import { repositoryPath } from "./repositoryPaths";
 import { toLogChanges } from "./logChanges";
@@ -108,6 +109,29 @@ export function withActionLabels(items: MenuItem[]): MenuItem[] {
   );
 }
 
+/** `file` changed between two revisions (Compare Branches' mapping): added and deleted files get an empty side. */
+export function revisionFileDiff(
+  repo: string,
+  from: GraphRevisionSide,
+  to: GraphRevisionSide,
+  file: ChangedFile,
+): DiffData {
+  const missing = (label: string): DiffSide => ({ type: "text", text: "", label });
+  return {
+    path: repositoryPath(repo, file.path),
+    left:
+      file.kind === "added" || file.kind === "untracked"
+        ? missing("(does not exist)")
+        : {
+            type: "rev",
+            rev: from.rev,
+            label: from.label,
+            path: file.oldPath ? repositoryPath(repo, file.oldPath) : undefined,
+          },
+    right: file.kind === "deleted" ? missing("(deleted)") : { type: "rev", rev: to.rev, label: to.label },
+  };
+}
+
 /** Matches no branch name (git refuses NUL in ref names). */
 const NO_REMOTES: ReadonlySet<string> = new Set(["\0"]);
 
@@ -168,6 +192,18 @@ export function createGitGraphBridge(): GitGraphBridge {
       const diffs = toLogChanges(files, commit, commit.repo).map((c) => c.diff);
       if (!diffs[index]) return;
       await openDiff(withChain(diffs, index), preview ? { preview: true, focus: false } : {});
+    },
+    revisionDiffInput(repo, from, to, file) {
+      return diffInput({ ...revisionFileDiff(repo, from, to, file), embedded: true, readOnly: true });
+    },
+    async openRevisionDiff(repo, from, to, files, index) {
+      const diffs = files.map((f) => revisionFileDiff(repo, from, to, f));
+      if (!diffs[index]) return;
+      await openDiff(withChain(diffs, index));
+    },
+    async copyRange(repo, base, tip) {
+      const { copyClip } = await import("./clip");
+      return copyClip({ kind: "range", repo, base, tip, paths: [] });
     },
     async openRevisionFile(repo, rev, path) {
       await openDiff({

@@ -18,7 +18,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 
 import { provideGitGraphBridge, type GitGraphBridge, type GraphCommit } from "@/workbench/gitGraphBridge";
 import { buildEntries, layoutInput, WORKING_ID, type GraphEntry } from "../entries";
-import { branchExtras, commitExtras, dropMenu, tagExtras } from "../menus";
+import { branchExtras, commitExtras, compareExtras, dropMenu, tagExtras } from "../menus";
 import { initialGraphView, useGraphView } from "../viewState";
 
 const REPO = "/repo";
@@ -188,6 +188,25 @@ describe("reference extras", () => {
     await runLabel(items, "Unset Upstream");
     expect(graphRefOp).toHaveBeenLastCalledWith(REPO, { op: "unsetUpstream", branch: "feature" });
     expect(branchExtras(branch("origin/x", { remote: true }), REPO, [])).toEqual([]);
+  });
+});
+
+describe("compare in PR view", () => {
+  it("opens the PR view with the branch going into the current branch", async () => {
+    await runLabel(compareExtras(branch("origin/feature", { remote: true }), REPO, "main"), "Compare in PR View");
+    expect(useGraphView.getState().mode).toBe("pr");
+    expect(useGraphView.getState().pr[REPO]).toEqual({
+      base: "main",
+      head: "origin/feature",
+      tab: "files",
+      file: null,
+    });
+  });
+
+  it("keeps the remembered base for the current branch itself", async () => {
+    useGraphView.setState({ pr: { [REPO]: { base: "develop", head: "x", tab: "commits", file: "a.ts" } } });
+    await runLabel(compareExtras(branch("main", { current: true }), REPO, "main"), "Compare in PR View");
+    expect(useGraphView.getState().pr[REPO]).toEqual({ base: "develop", head: "main", tab: "files", file: null });
   });
 });
 
