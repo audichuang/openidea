@@ -306,8 +306,8 @@ fn refused_entries() -> Option<(tempfile::TempDir, PathBuf)> {
     fs::write(d.join("a.txt"), "hello\n").unwrap();
     fs::write(d.join("locked.txt"), "secret\n").unwrap();
     symlink(d.join("nowhere"), d.join("dangling")).unwrap();
-    fs::set_permissions(d.join("locked.txt"), fs::Permissions::from_mode(0)).unwrap();
-    fs::set_permissions(d.join("locked_dir"), fs::Permissions::from_mode(0)).unwrap();
+    fs::set_permissions(d.join("locked.txt"), fs::Permissions::from_mode(0o000)).unwrap();
+    fs::set_permissions(d.join("locked_dir"), fs::Permissions::from_mode(0o000)).unwrap();
     if fs::File::open(d.join("locked.txt")).is_ok() {
         return None;
     }
