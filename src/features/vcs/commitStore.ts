@@ -28,6 +28,8 @@ interface CommitState {
   commitDiffPreview: boolean;
   /** User overrides of the inclusion checkboxes (absolute path → state). */
   checks: Map<string, CheckState>;
+  /** With the staging area and several repositories: repositories unticked on their Staged node. */
+  stagingExcludedRoots: ReadonlySet<string>;
   /** Changed blocks left out of the commit (absolute path → `hunkKeys`) of `hunks` files. */
   excludedHunks: Map<string, Set<string>>;
   /** Absolute paths selected in the changes tree. */
@@ -64,6 +66,7 @@ export const useCommit = create<CommitState>(() => ({
   diffPreview: readBool("openidea.vcs.diffPreview", true),
   commitDiffPreview: readBool("openidea.vcs.commitDiffPreview", false),
   checks: new Map(),
+  stagingExcludedRoots: new Set(),
   excludedHunks: new Map(),
   selection: [],
   selectedFile: null,
@@ -109,6 +112,14 @@ export function setGroupByDir(v: boolean) {
   } catch {
     // ignore
   }
+}
+
+/** Ticks or unticks a repository's staged changes for the next commit (staging area, several repositories). */
+export function setStagingRootIncluded(root: string, included: boolean) {
+  const next = new Set(useCommit.getState().stagingExcludedRoots);
+  if (included) next.delete(root);
+  else next.add(root);
+  useCommit.setState({ stagingExcludedRoots: next });
 }
 
 export function setStagingGroupByDir(v: boolean) {
@@ -306,6 +317,7 @@ export function installPreparedMessage(): () => void {
         message: "",
         amend: false,
         checks: new Map(),
+        stagingExcludedRoots: new Set(),
         excludedHunks: new Map(),
         selection: [],
         selectedFile: null,

@@ -67,6 +67,7 @@ import {
   setGroupByDir,
   setGroupByStaging,
   setStagingGroupByDir,
+  setStagingRootIncluded,
   setUntrackedInUnstaged,
   useCommit,
   type CommitTab,
@@ -484,9 +485,11 @@ function useIncludedFiles(): FileStatus[] {
   const status = useVcs((s) => s.status);
   const checks = useCommitChecks();
   const staging = useStagingArea();
+  const repos = useVcs((s) => s.roots);
+  const excludedRoots = useCommit((s) => s.stagingExcludedRoots);
   return useMemo(
-    () => (staging ? stagedFiles(status) : planCommit(status, checks).included),
-    [status, checks, staging],
+    () => (staging ? stagedFiles(status, repos, excludedRoots) : planCommit(status, checks).included),
+    [status, checks, staging, repos, excludedRoots],
   );
 }
 
@@ -589,6 +592,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const lists = useChangelists((s) => s.state);
   const checks = useCommitChecks();
   const checkboxes = mode !== "local" && !staging;
+  const excludedRoots = useCommit((s) => s.stagingExcludedRoots);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   // Rows the user opened or closed (key → open) keep that state across refreshes; other
   // rows take their default. Changing the grouping goes back to the default view, as in IDEA.
@@ -866,6 +870,9 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                       },
                     }),
                   };
+            // IDEA's staging area: a repository's staged changes can be left out of the commit.
+            const stagingRootCheck =
+              staging && mode !== "local" && n.group === "staged" && n.type === "dir" && !!n.repo;
             return (
               <span
                 className={clsx(styles.nodeRow, n.type === "group" && dropTarget === n.changelist && styles.dropTarget)}
@@ -879,11 +886,19 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                     onToggle={() => toggle(selected.has(n.key) && selected.size > 1 ? selectedNodes() : [n])}
                   />
                 )}
+                {stagingRootCheck && n.repo && (
+                  <CheckMark
+                    checked={!excludedRoots.has(n.repo)}
+                    indeterminate={false}
+                    label={tx`Include ${n.label} in commit`}
+                    onToggle={() => setStagingRootIncluded(n.repo!, excludedRoots.has(n.repo!))}
+                  />
+                )}
                 {n.type === "group" ? null : (
                   <Icon
                     name={n.type === "dir" ? (st.expanded ? "folder-open" : "folder") : fileIconName(n.label)}
                     size={16}
-                    className={styles.icon}
+                    className={clsx(styles.icon, stagingRootCheck && styles.repoIcon)}
                   />
                 )}
                 {n.repo && <RepoSwatch root={n.repo} />}

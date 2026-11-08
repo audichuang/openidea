@@ -14,7 +14,7 @@ import {
 } from "@/platform/workflowSettings";
 import { GROUP_LABEL, renamedFromPath, repoNodes, type ChangeNode, type CommitPlan, type GroupId } from "./changes";
 import type { DiffData, DiffSide } from "./diffInput";
-import { effectiveKind, kindOf, stripSlash } from "./model";
+import { effectiveKind, kindOf, rootOf, stripSlash } from "./model";
 
 /** The staging area only replaces the Commit tool window (the non-modal commit interface), as in IDEA. */
 const stagingOn = (w: WorkflowSettings) => w.vcs.git.stagingArea && w.vcs.commit.nonModal;
@@ -54,14 +54,30 @@ export function stagingGroups(fs: FileStatus, untrackedInUnstaged = false): Grou
   return out;
 }
 
-/** Files whose staged changes the next commit takes. */
-export function stagedFiles(status: readonly FileStatus[]): FileStatus[] {
-  return status.filter((fs) => !conflicted(fs) && indexed(fs.staged));
+/**
+ * Files whose staged changes the next commit takes. With several repositories, those of
+ * `excludedRoots` (unticked on their Staged node, as in IDEA) stay in the index uncommitted.
+ */
+export function stagedFiles(
+  status: readonly FileStatus[],
+  repos: readonly string[] = [],
+  excludedRoots: ReadonlySet<string> = new Set(),
+): FileStatus[] {
+  const skip = (fs: FileStatus) => {
+    if (repos.length < 2 || !excludedRoots.size) return false;
+    const repo = rootOf(fs.path, repos);
+    return !!repo && excludedRoots.has(repo);
+  };
+  return status.filter((fs) => !conflicted(fs) && indexed(fs.staged) && !skip(fs));
 }
 
 /** Commit with the staging area: the index as it is — nothing staged or unstaged first. */
-export function stagingPlan(status: readonly FileStatus[]): CommitPlan {
-  return { stage: [], exclude: [], included: stagedFiles(status), partial: [] };
+export function stagingPlan(
+  status: readonly FileStatus[],
+  repos: readonly string[] = [],
+  excludedRoots: ReadonlySet<string> = new Set(),
+): CommitPlan {
+  return { stage: [], exclude: [], included: stagedFiles(status, repos, excludedRoots), partial: [] };
 }
 
 const ORDER: GroupId[] = ["conflicts", "staged", "unstaged", "unversioned"];
