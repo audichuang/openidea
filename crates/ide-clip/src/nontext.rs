@@ -148,9 +148,16 @@ pub struct NonTextSummary {
     pub unread_limit_bytes: u64,
     /// The payload size with the non-text files included. Exact for an
     /// Include copy; for an Exclude copy it is the Exclude payload plus each
-    /// entry's arithmetic size (escape markers a custom header format may
-    /// add to Base64 lines, and a changed file-count cutoff, are not counted).
+    /// entry's arithmetic size, less what Include's earlier file-count cutoff drops (escape markers a
+    /// custom header format may add to Base64 lines are not counted).
     pub estimated_include_payload_bytes: usize,
+    /// Files the file-count limit leaves out of what Include would copy: every file from Include's cutoff
+    /// on that passes the filters. Non-text files count toward the limit like text files.
+    #[serde(default)]
+    pub limit_left_out: usize,
+    /// `limit_left_out` is a lower bound: a folder walk stopped at the limit before listing the rest.
+    #[serde(default)]
+    pub limit_left_out_lower_bound: bool,
 }
 
 impl NonTextSummary {
