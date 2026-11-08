@@ -184,6 +184,69 @@ fn exclude_writes_todays_payload_and_reports_what_include_adds() {
     assert_eq!(include.non_text.estimated_include_payload_bytes, include.payload.len());
 }
 
+fn limited(n: f64) -> Settings {
+    Settings { set_max_file_count: true, file_count_limit: n, ..small_limits() }
+}
+
+/// Test 15: the dialog describes what Include copies after the file-count limit.
+#[test]
+fn the_summary_describes_the_include_payload_after_the_file_count_limit() {
+    let settings = limited(30.0);
+    // 40 images, limit 30.
+    let repo = Repo::new();
+    let files: Vec<(String, Vec<u8>)> = (0..40).map(|i| (format!("img/i{i:02}.png"), png(100 + i))).collect();
+    for (p, b) in &files {
+        repo.write(p, b);
+    }
+    let items: Vec<(&str, SourceKind, Option<ChangeType>)> =
+        files.iter().map(|(p, _)| (p.as_str(), SourceKind::File, None)).collect();
+    let sel = repo.selection(&items);
+    let exclude = export(&sel, &settings, NonTextMode::Exclude);
+    let include = export(&sel, &settings, NonTextMode::Include);
+    assert_eq!(include.non_text_file_count, 30);
+    assert_eq!(exclude.non_text.count(), 30);
+    assert_eq!(exclude.non_text.files, include.non_text.files);
+    assert_eq!(exclude.non_text.total_bytes, include.non_text.total_bytes);
+    assert_eq!(exclude.non_text.estimated_include_payload_bytes, include.payload.len());
+    assert_eq!((exclude.non_text.limit_left_out, include.non_text.limit_left_out), (10, 10));
+
+    // 28 text files, 5 images, 2 text files: Include carries the first two images.
+    let repo = Repo::new();
+    let mut items: Vec<String> = (0..28).map(|i| format!("a{i:02}.txt")).collect();
+    items.extend((0..5).map(|i| format!("img/i{i}.png")));
+    items.extend((0..2).map(|i| format!("z{i}.txt")));
+    for p in &items {
+        repo.write(p, &if p.ends_with(".png") { png(200) } else { b"text\n".to_vec() });
+    }
+    let list: Vec<(&str, SourceKind, Option<ChangeType>)> =
+        items.iter().map(|p| (p.as_str(), SourceKind::File, None)).collect();
+    let sel = repo.selection(&list);
+    let exclude = export(&sel, &settings, NonTextMode::Exclude);
+    let include = export(&sel, &settings, NonTextMode::Include);
+    assert_eq!(exclude.non_text.count(), 2);
+    assert_eq!(exclude.non_text.estimated_include_payload_bytes, include.payload.len());
+    assert_eq!(exclude.non_text.limit_left_out, 5);
+    assert_eq!(include.non_text.files, exclude.non_text.files);
+    // Exclude's own payload is today's: all 30 text files.
+    assert_eq!(exclude.copied_file_count, 30);
+
+    // 30 text files then 5 images: neither mode reaches the images.
+    let repo = Repo::new();
+    let mut items: Vec<String> = (0..30).map(|i| format!("a{i:02}.txt")).collect();
+    items.extend((0..5).map(|i| format!("img/i{i}.png")));
+    for p in &items {
+        repo.write(p, &if p.ends_with(".png") { png(200) } else { b"text\n".to_vec() });
+    }
+    let list: Vec<(&str, SourceKind, Option<ChangeType>)> =
+        items.iter().map(|p| (p.as_str(), SourceKind::File, None)).collect();
+    let sel = repo.selection(&list);
+    let exclude = export(&sel, &settings, NonTextMode::Exclude);
+    let include = export(&sel, &settings, NonTextMode::Include);
+    assert_eq!(exclude.non_text.count(), 0);
+    assert_eq!(exclude.non_text.limit_left_out, 5);
+    assert_eq!(exclude.payload, include.payload);
+}
+
 /// Test 7: each file is held to its own limit after classification.
 #[test]
 fn include_carries_non_text_within_its_limit_and_round_trips() {
