@@ -81,6 +81,9 @@ pub enum SkipReason {
     CorruptNonText,
     /// The target path exists and is not a regular file (a directory): paste never replaces it.
     TargetNotFile,
+    /// Two or more entries map to the same file (letter case on a case-insensitive file system, a symlinked
+    /// folder, an explicit mapping): every one of them is skipped.
+    TargetCollision,
 }
 
 impl SkipReason {
@@ -94,6 +97,7 @@ impl SkipReason {
             Self::NonUtf8Target => "NON_UTF8_TARGET",
             Self::CorruptNonText => "CORRUPT_NON_TEXT",
             Self::TargetNotFile => "TARGET_NOT_FILE",
+            Self::TargetCollision => "TARGET_COLLISION",
         }
     }
 }
