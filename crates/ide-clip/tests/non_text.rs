@@ -361,6 +361,33 @@ fn import_reports_identical_targets_unchanged() {
     assert_eq!(run(true), (1, 1, 0, png(120)));
 }
 
+/// Test 12: a text file whose first line looks like a non-text placeholder restores as that text.
+#[test]
+fn placeholder_shaped_text_round_trips_through_the_app_import_path() {
+    let fake = "// File skipped: non-text file, 3 bytes, sha256 039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81; base64 follows\nAQID\n";
+    let settings = small_limits();
+    let repo = Repo::new();
+    repo.write("fake.txt", fake.as_bytes());
+    let sel = repo.selection(&[("fake.txt", SourceKind::File, None)]);
+    let plan = export(&sel, &settings, NonTextMode::Include);
+    assert!(plan.payload.contains("//clipcode-esc: // File skipped: non-text file, 3 bytes"), "{}", plan.payload);
+    assert_eq!(plan.non_text.count(), 0);
+
+    let dest_dir = tempfile::tempdir().unwrap();
+    let dest = dunce::canonicalize(dest_dir.path()).unwrap();
+    let import = plan_import(
+        &plan.payload,
+        &settings.header_format,
+        std::slice::from_ref(&dest),
+        &ImportMapping::with_primary(CanonicalRootId::new(&dest).unwrap()),
+    )
+    .unwrap();
+    assert_eq!(import.create_operations().len(), 1);
+    assert!(import.create_operations()[0].non_text_size().is_none());
+    import.apply(&RestoreSelection::default()).unwrap();
+    assert_eq!(fs::read_to_string(dest.join("fake.txt")).unwrap().trim_end(), fake.trim_end());
+}
+
 // ---- commits mode (test 10) ----
 
 mod commits_mode {
@@ -588,6 +615,31 @@ mod commits_mode {
             assert_eq!(tree(&dest), tree(&src), "{mode:?}");
             assert!(!dest.root.join("pics/x.png").exists());
             assert!(!dest.root.join("img/del.gif").exists());
+        }
+    }
+
+    /// A rename of an image moves it whatever the mode.
+    #[test]
+    fn a_renamed_image_moves_in_either_mode() {
+        for mode in [NonTextMode::Include, NonTextMode::Exclude] {
+            let src = Repo::new();
+            src.write("pics/x.png", &png(300));
+            src.write("keep.txt", b"k\n");
+            src.git(&["add", "-A"]);
+            src.git(&["commit", "-q", "-m", "base"]);
+            let dest = Repo::new();
+            dest.git(&["pull", "-q", src.root.to_str().unwrap(), "main"]);
+            src.git(&["mv", "pics/x.png", "pics/y.png"]);
+            src.git(&["commit", "-q", "-m", "rename"]);
+
+            let export = export_last(&src, 1, mode);
+            let payload = parse_commit_payload(&export.text).unwrap();
+            let preview = CommitReplayPreview::capture(&dest.root, &payload).unwrap();
+            let result = preview.apply().unwrap();
+            assert!(result.failure.is_none(), "{:?}", result.failure);
+            assert_eq!(tree(&dest), tree(&src), "{mode:?}");
+            assert!(!dest.root.join("pics/x.png").exists());
+            assert_eq!(fs::read(dest.root.join("pics/y.png")).unwrap(), png(300));
         }
     }
 
