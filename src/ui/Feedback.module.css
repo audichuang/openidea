@@ -170,6 +170,8 @@
 }
 .toastBody {
   color: var(--fg-secondary);
+  /* A body of several lines (one category per line) keeps its line breaks. */
+  white-space: pre-line;
   overflow-wrap: anywhere;
   /* A huge message (stack trace, build output) scrolls inside the balloon instead
      of growing past the window and pushing the close button off-screen. */
