@@ -7917,6 +7917,5 @@
   "merge-base ({base})": "合并基础 ({base})",
   "Show in Graph": "在图中显示",
   "Git Graph View": "Git 图视图",
-  "PR": "PR",
   "Compare in PR View": "在 PR 视图中比较"
 }
