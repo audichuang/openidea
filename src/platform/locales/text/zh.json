@@ -6980,7 +6980,7 @@
   "The disk is full": "磁盘已满",
   "The file system is read-only": "文件系统为只读",
   "Could not apply the change": "无法应用该更改",
-  "Include is not available: the header format has no fixed text before $FILE_PATH, so Base64 lines would be read as file headers.": "无法包含：文件头格式在 $FILE_PATH 之前没有固定文字，Base64 行会被当成文件头。",
+  "Include is not available: the header format matches the placeholder or Base64 lines even when escaped, so they would be read as file headers.": "无法包含：即使转义，文件头格式仍会匹配占位行或 Base64 行，这些行会被当成文件头。",
   "Too large for the clipboard: Include is not available.": "超过剪贴板大小上限，无法包含。",
   "Non-text files": "非文本文件",
   "Non-text files over the size limit (not copied): {over}": "超过大小上限的非文本文件（不复制）：{over}",
