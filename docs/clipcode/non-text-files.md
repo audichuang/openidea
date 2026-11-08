@@ -113,8 +113,10 @@ jwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAAZdEVYdFNvZnR3YXJlAHBhaW50Lm5ldCA0LjAu
   lines), and the reader un-escapes before decoding. Base64 has no space or `:`, so the built-in header pattern
   cannot match it; the escaping covers a loose custom `headerFormat`.
 - Header labels (`[NEW]`, `[MOVED]`, ...) and the `clipcode-root` line work as for text entries.
-- A **text** entry whose first body line matches the placeholder pattern above (a real text file that happens to
-  start with that line) gets two layers of escaping (decided by the user, deep round 4):
+- A **text** entry whose first body line is placeholder-shaped gets two layers of escaping (decided by the user,
+  deep round 4). Placeholder-shaped means: after removing any number of leading `//clipcode-esc: ` prefixes, the
+  line matches the placeholder pattern above (so a text line that already starts with `//clipcode-esc: // File
+  skipped: non-text file, …` counts too).
   1. The writer first prefixes that first line with `//clipcode-esc: ` (the placeholder escape).
   2. The body then goes through the normal content escaping like any other body. A line starting with
      `//clipcode-esc: ` is always escaped, so the first line now carries two prefixes:
@@ -122,9 +124,9 @@ jwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAAZdEVYdFNvZnR3YXJlAHBhaW50Lm5ldCA0LjAu
 
   A real non-text placeholder line carries zero prefixes (built-in header) or one (a custom `headerFormat` that
   matches it, e.g. `// $FILE_PATH`). The reader un-escapes one level per line as for any body, then looks at
-  the first line: the exact placeholder means a non-text entry; `//clipcode-esc: ` followed by the exact
-  placeholder means placeholder-shaped text, so the reader strips that one remaining prefix and restores the text
-  as written. This works under every header format without guessing from the body. A reader that predates this
+  the first line: the exact placeholder means a non-text entry; a line starting with `//clipcode-esc: ` that is
+  placeholder-shaped means text, so the reader strips exactly one remaining prefix and restores the text as
+  written. This works under every header format without guessing from the body. A reader that predates this
   rule un-escapes one level and writes the text with a literal `//clipcode-esc: ` first line (before this rule it
   skipped such a file). (Found by deep testing: with one shared prefix, a custom header made such a text file
   paste as decoded bytes or show as Corrupt.)
@@ -226,7 +228,8 @@ Each implementation adds these to its contract tests (OpenIDEA: `clipboard-contr
 11. Exclude in the dialog produces today's payload byte for byte.
 12. A text file whose first line is a valid-looking non-text placeholder round-trips as the original text, under
     the built-in header and under `// $FILE_PATH` (also when its second line is valid Base64, e.g. `YWJj`), in
-    the same payload as a real non-text file that round-trips byte for byte.
+    the same payload as a real non-text file that round-trips byte for byte; a text file whose first line is
+    `//clipcode-esc: ` plus a placeholder line round-trips too.
 13. Commits mode: image added, modified, then deleted across three commits replays to the same tree as the
     source (the deletion happens); a rename of an image moves it.
 14. Commits mode: Big5 file rewritten as UTF-8 in a later commit of the same batch keeps the rewrite.
