@@ -1954,6 +1954,57 @@ fn finish_reader<T>(blobs: &mut BlobReader, outcome: Result<T, TransferError>) -
     }
 }
 
+/// Whether the copy's filter rules let `item` through (the file-count limit is not looked at).
+fn item_passes_filters(
+    selection: &ExportSelection,
+    settings: &Settings,
+    primary: Option<&CanonicalRootId>,
+    anchor: Option<&paths::PathResolver>,
+    item: &ExportItem,
+) -> bool {
+    if !settings.use_filters {
+        return true;
+    }
+    let wire_path = wire_path_of(selection, primary, anchor, item);
+    let absolute = item.root.path().join(&item.relative_path);
+    if matches!(item.source, SourceKind::File) {
+        let is_primary = primary == Some(&item.root) && !selection.absolute_roots.contains(&item.root);
+        let filter_absolute = if selection.roots.len() == 1 || is_primary {
+            selection.spelled_root.as_ref().map(|s| s.join(&item.relative_path)).unwrap_or_else(|| absolute.clone())
+        } else {
+            absolute.clone()
+        };
+        return filter::file_matches_filters(
+            &wire_path,
+            &settings.filter_rules,
+            settings.use_include_filters,
+            settings.use_exclude_filters,
+            Some(&filter_absolute.to_string_lossy()),
+        );
+    }
+    let filter_wire_path;
+    let filter_path = match (&selection.filter_root, &item.source) {
+        (Some(filter_root), SourceKind::Commit { .. } | SourceKind::Range { .. }) => {
+            let filter_root_canonical = dunce::canonicalize(filter_root).unwrap_or_else(|_| filter_root.clone());
+            let p = paths::to_clipboard_path_from_roots(&[filter_root_canonical], &absolute, None);
+            if p.is_empty() {
+                wire_path.as_str()
+            } else {
+                filter_wire_path = p;
+                filter_wire_path.as_str()
+            }
+        }
+        _ => wire_path.as_str(),
+    };
+    filter::file_matches_filters(
+        filter_path,
+        &settings.filter_rules,
+        settings.use_include_filters,
+        settings.use_exclude_filters,
+        Some(&absolute.to_string_lossy()),
+    )
+}
+
 /// Plans and generates an export payload across one or multiple repositories.
 /// Freezes revisions once, enforces cumulative budget before retention, and revalidates freshness.
 pub fn plan_export(
@@ -2120,12 +2171,22 @@ pub fn plan_export_with(
         let non_text_max = settings.max_non_text_file_bytes();
         non_text_summary.unread_limit_bytes = non_text_max.max((settings.max_file_size_kb * 1024.0) as u64);
 
-        for item in &selection.items {
+        // What an Include copy would do with the same selection, tracked while Exclude runs: non-text files
+        // do not use up the file-count limit under Exclude, so Exclude walks on past Include's cutoff.
+        let mut include_count = 0usize;
+        let mut include_cut_idx: Option<usize> = None;
+
+        for (idx, item) in selection.items.iter().enumerate() {
             cancelled_err(opts, "plan-export")?;
             let wire_path = wire_path_of(selection, primary.as_ref(), anchor.as_ref(), item);
-            let is_primary = primary.as_ref() == Some(&item.root) && !selection.absolute_roots.contains(&item.root);
-
             let absolute = item.root.path().join(&item.relative_path);
+            if include_cut_idx.is_none()
+                && settings.set_max_file_count
+                && include_count as f64 >= settings.file_count_limit
+            {
+                include_cut_idx = Some(idx);
+            }
+            let past_cut = include_cut_idx.is_some();
 
             // Parity check:
             // File mode (copy.rs): count limit checked BEFORE filtering candidate.
@@ -2135,51 +2196,11 @@ pub fn plan_export_with(
                     file_limit_reached = true;
                     break;
                 }
-                let filter_absolute = if selection.roots.len() == 1 || is_primary {
-                    selection
-                        .spelled_root
-                        .as_ref()
-                        .map(|s| s.join(&item.relative_path))
-                        .unwrap_or_else(|| absolute.clone())
-                } else {
-                    absolute.clone()
-                };
-                if settings.use_filters
-                    && !filter::file_matches_filters(
-                        &wire_path,
-                        &settings.filter_rules,
-                        settings.use_include_filters,
-                        settings.use_exclude_filters,
-                        Some(&filter_absolute.to_string_lossy()),
-                    )
-                {
+                if !item_passes_filters(selection, settings, primary.as_ref(), anchor.as_ref(), item) {
                     continue;
                 }
             } else {
-                let filter_wire_path;
-                let filter_path = match (&selection.filter_root, &item.source) {
-                    (Some(filter_root), SourceKind::Commit { .. } | SourceKind::Range { .. }) => {
-                        let filter_root_canonical =
-                            dunce::canonicalize(filter_root).unwrap_or_else(|_| filter_root.clone());
-                        let p = paths::to_clipboard_path_from_roots(&[filter_root_canonical], &absolute, None);
-                        if p.is_empty() {
-                            wire_path.as_str()
-                        } else {
-                            filter_wire_path = p;
-                            filter_wire_path.as_str()
-                        }
-                    }
-                    _ => wire_path.as_str(),
-                };
-                if settings.use_filters
-                    && !filter::file_matches_filters(
-                        filter_path,
-                        &settings.filter_rules,
-                        settings.use_include_filters,
-                        settings.use_exclude_filters,
-                        Some(&absolute.to_string_lossy()),
-                    )
-                {
+                if !item_passes_filters(selection, settings, primary.as_ref(), anchor.as_ref(), item) {
                     continue;
                 }
                 if settings.set_max_file_count && copied_file_count as f64 >= settings.file_count_limit {
@@ -2456,7 +2477,7 @@ pub fn plan_export_with(
                             });
                         }
                     } else if over_per_file {
-                        if file_size > non_text_max {
+                        if file_size > non_text_max && !past_cut {
                             non_text_summary.unread_over_limit_count += 1;
                         }
                         (None, Some(format!("size exceeds limit ({file_size} bytes)")), None, None, None)
@@ -2529,9 +2550,12 @@ pub fn plan_export_with(
             // non-text file is reported either way; Include swaps in its
             // bytes, or a size placeholder when it is over its limit.
             let mut include_len: Option<usize> = None;
+            // Include would copy this non-text file (it is within its limit).
+            let mut include_copies_non_text = false;
             let (content, skipped_reason, non_text) = match fact {
                 None => (content, skipped_reason, None),
                 Some(fact) => {
+                    include_copies_non_text = fact.within;
                     let over_reason = format!("size exceeds limit ({} bytes)", fact.size);
                     let include_file = |skipped_reason: Option<String>| PayloadFile {
                         path: wire_path.clone(),
@@ -2539,14 +2563,19 @@ pub fn plan_export_with(
                         skipped_reason,
                         ..Default::default()
                     };
-                    if fact.within {
-                        non_text_summary.found(&wire_path, fact.size);
-                    } else {
-                        non_text_summary.over_limit_count += 1;
+                    // Past Include's file-count cutoff the file is not in what Include would copy.
+                    if !past_cut {
+                        if fact.within {
+                            non_text_summary.found(&wire_path, fact.size);
+                        } else {
+                            non_text_summary.over_limit_count += 1;
+                        }
                     }
                     match selection.non_text {
                         NonTextMode::Exclude => {
-                            include_len = Some(if fact.within {
+                            include_len = Some(if past_cut {
+                                0
+                            } else if fact.within {
                                 format::non_text_entry_len(
                                     &settings.header_format,
                                     &wire_path,
@@ -2589,6 +2618,9 @@ pub fn plan_export_with(
                 if let Some(len) = include_len {
                     include_extra += len as isize;
                 }
+                if include_copies_non_text {
+                    include_count += 1;
+                }
                 skipped_unreadable_count += 1;
                 // An excluded non-text file is counted here too, but it is not unreadable.
                 if include_len.is_none() && skipped_unreadable_paths.len() < SKIPPED_PATHS_SHOWN {
@@ -2606,14 +2638,19 @@ pub fn plan_export_with(
             } else if non_text.is_some() {
                 non_text_file_count += 1;
                 copied_file_count += 1;
+                include_count += 1;
             } else if content.as_deref() == Some(UNREADABLE_FILE_MARKER) {
                 skipped_unreadable_count += 1;
+                if include_copies_non_text {
+                    include_count += 1;
+                }
                 // A staged non-text file excluded by the mode carries the marker too, but it is not unreadable.
                 if include_len.is_none() && skipped_unreadable_paths.len() < SKIPPED_PATHS_SHOWN {
                     skipped_unreadable_paths.push(wire_path.clone());
                 }
             } else {
                 copied_file_count += 1;
+                include_count += 1;
             }
 
             let payload_file =
@@ -2632,7 +2669,10 @@ pub fn plan_export_with(
             .map_err(|_| TransferError::UnsafePath("formatting error".into()))?;
 
             let file_delta = file_counter.count;
-            if let Some(len) = include_len {
+            if past_cut {
+                // Exclude carries it; Include stopped before it.
+                include_extra -= file_delta as isize;
+            } else if let Some(len) = include_len {
                 include_extra += len as isize - file_delta as isize;
             }
 
@@ -2652,6 +2692,13 @@ pub fn plan_export_with(
 
             files.push(payload_file);
         }
+
+        non_text_summary.limit_left_out = include_cut_idx.map_or(0, |i| {
+            selection.items[i..]
+                .iter()
+                .filter(|it| item_passes_filters(selection, settings, primary.as_ref(), anchor.as_ref(), it))
+                .count()
+        });
 
         let final_source_root = if is_graph && files.is_empty() { None } else { default_source_root };
 
