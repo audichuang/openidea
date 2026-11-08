@@ -44,9 +44,9 @@ mod select;
 pub use crate::commits::ReplayPreviewUnavailable;
 pub use changes::{ChangedItems, changed_items};
 pub use select::{
-    CopyOutcome, CopyReport, FolderExpansion, PathSelection, WalkRefusals, copy_selection, copy_selection_detailed,
-    expand_folder_items, expand_folder_items_in_input_order, is_safe_dir_symlink, plan_export_expanding,
-    selection_from_paths,
+    CopyOutcome, CopyReport, FolderExpansion, PathSelection, RefusedPaths, WalkRefusals, copy_selection,
+    copy_selection_detailed, expand_folder_items, expand_folder_items_in_input_order, is_dir_symlink,
+    plan_export_expanding, selection_from_paths, selection_from_paths_or_refused,
 };
 
 /// A rename has two visible rows: deleting the source and writing the target.
