@@ -7912,7 +7912,7 @@
   "Base and head are the same": "基础分支和比较分支相同",
   "No common history": "没有共同历史",
   "{base} and {head} have no common commit to compare from.": "{base} 和 {head} 没有可用于比较的共同提交。",
-  "{ahead} commits ahead, {behind} behind {base}": "领先 {ahead} 个提交，落后 {base} {behind} 个提交",
+  "Commits: {ahead} ahead, {behind} behind {base}": "提交：领先 {ahead} 个，落后 {base} {behind} 个",
   "Pull Request": "拉取请求",
   "merge-base ({base})": "合并基础 ({base})",
   "Show in Graph": "在图中显示",
