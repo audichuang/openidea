@@ -1423,7 +1423,15 @@ fn moved_non_text_size(root: &Path, f: &CommitFile, layout: &PlannedLayout) -> O
         return None;
     }
     let old = target(root, f.old_path.as_deref()?, layout)?;
-    if !layout.exists(&old) || is_symlink(&old) {
+    if !layout.exists(&old) {
+        return None;
+    }
+    // A file an earlier commit of the batch wrote or moved only exists in the layout: its size comes from
+    // there, never from the disk (which has nothing, or an unrelated file, at that path).
+    if layout.get(&old).is_some() || layout.shadowed(&old) {
+        return layout.non_text_size(&old);
+    }
+    if is_symlink(&old) {
         return None;
     }
     fs::metadata(&old).ok().filter(|m| m.is_file()).map(|m| m.len())
@@ -1479,6 +1487,8 @@ struct PlannedLayout {
     /// Bytes of a virtual file come from an earlier payload entry. Initial
     /// disk contents remain lazy reads; never duplicate payload text here.
     contents: std::collections::HashMap<PathBuf, ReplayContentSource>,
+    /// Raw size of a virtual file an earlier commit wrote as non-text.
+    non_text_sizes: std::collections::HashMap<PathBuf, u64>,
     /// The non-absent overrides, by parent key: child key to the path as
     /// first spelled.
     added: std::collections::HashMap<PathBuf, std::collections::HashMap<PathBuf, PathBuf>>,
@@ -1575,6 +1585,14 @@ impl PlannedLayout {
         self.node(path) == Node::Dir
     }
 
+    /// The size of a virtual file an earlier commit wrote as non-text.
+    fn non_text_size(&self, path: &Path) -> Option<u64> {
+        match self.get(path) {
+            Some(Node::File) => self.non_text_sizes.get(&self.key(path)).copied(),
+            _ => None,
+        }
+    }
+
     /// Like `Path::exists`: a symlink counts by its target on disk.
     fn exists(&self, path: &Path) -> bool {
         match self.get(path) {
@@ -1586,6 +1604,7 @@ impl PlannedLayout {
     fn set(&mut self, path: &Path, node: Node) {
         let key = self.key(path);
         self.contents.remove(&key);
+        self.non_text_sizes.remove(&key);
         if node != Node::Dir {
             self.cut.insert(key.clone());
         }
@@ -1687,6 +1706,9 @@ impl PlannedLayout {
                 ReplayContentSource::Payload { commit_index, file_index }
             };
             self.contents.insert(self.key(abs), source);
+            if let Some(size) = f.non_text_size {
+                self.non_text_sizes.insert(self.key(abs), size);
+            }
             for a in abs.ancestors().skip(1) {
                 if a == root || !a.starts_with(root) {
                     break;
@@ -2224,6 +2246,12 @@ fn replay_commit(
     // A non-text row's bytes, verified again (`plan_file` checked them too).
     let mut bytes: Vec<Option<Vec<u8>>> = Vec::with_capacity(plan.files.len());
     for (f, src) in plan.files.iter().zip(&commit.files) {
+        // A skipped row moves and writes nothing: its bytes are never read, so a refused rename cannot abort
+        // the replay. `bytes` stays index-aligned with the files.
+        if f.action == ReplayAction::Skip {
+            bytes.push(None);
+            continue;
+        }
         let non_text = match (&f.non_text_size, &src.non_text) {
             (Some(_), Some(nt)) => Some(nt.decode().map_err(|e| format!("{}: {e}", f.path))?),
             // A bytes-less rename: read the file before the deletions below remove it.
@@ -4541,5 +4569,78 @@ mod tests {
             ],
         };
         assert_eq!(plan.existing_writes(), std::collections::BTreeSet::from(["a.txt"]));
+    }
+
+    fn bytes_less_rename(old: &str, new: &str) -> CommitFile {
+        CommitFile {
+            path: new.into(),
+            old_path: Some(old.into()),
+            change: FileChange::Renamed,
+            content: None,
+            not_copied: Some(NotCopiedReason::Binary),
+            non_text: None,
+        }
+    }
+
+    fn record(message: &str, files: Vec<CommitFile>) -> CommitRecord {
+        CommitRecord {
+            message: message.into(),
+            author_name: "Author".into(),
+            author_email: "author@example.invalid".into(),
+            author_date: "2020-01-01T00:00:00+00:00".into(),
+            files,
+        }
+    }
+
+    /// A -> B then B -> C without bytes: B exists only in the simulated layout, so the preview must still see
+    /// that step 2 replaces the destination's own C and ask for overwrite consent.
+    #[test]
+    fn consecutive_bytes_less_renames_ask_before_overwriting() {
+        let repo = Repo::new("main");
+        repo.write("A.bin", &[0, 1, 2, 255]);
+        repo.write("C.bin", &[9, 9, 0, 9]);
+        repo.commit("init", "2020-01-01T00:00:00+00:00");
+        let payload = CommitsPayload {
+            commits: vec![
+                record("one\n", vec![bytes_less_rename("A.bin", "B.bin")]),
+                record("two\n", vec![bytes_less_rename("B.bin", "C.bin")]),
+            ],
+        };
+        let plan = plan_commit_replay(&repo.open(), &payload);
+        let second = &plan.commits[1].files[0];
+        assert_eq!(second.action, ReplayAction::Write, "{second:?}");
+        assert_eq!(second.non_text_size, Some(4));
+        assert_eq!(plan.existing_writes(), std::collections::BTreeSet::from(["C.bin"]));
+    }
+
+    /// A skipped bytes-less rename moves nothing and must not abort the commit's other changes or later commits.
+    #[cfg(unix)]
+    #[test]
+    fn skipped_bytes_less_rename_does_not_abort_the_replay() {
+        let repo = Repo::new("main");
+        repo.write("A.bin", &[0, 1, 2, 255]);
+        repo.write("other/keep.txt", b"keep\n");
+        std::os::unix::fs::symlink("other", repo.path().join("linked")).unwrap();
+        repo.commit("init", "2020-01-01T00:00:00+00:00");
+        let text = |path: &str| CommitFile {
+            path: path.into(),
+            old_path: None,
+            change: FileChange::Added,
+            content: Some("x\n".into()),
+            not_copied: None,
+            non_text: None,
+        };
+        let payload = CommitsPayload {
+            commits: vec![
+                record("one\n", vec![bytes_less_rename("A.bin", "linked/B.bin"), text("ok.txt")]),
+                record("two\n", vec![text("later.txt")]),
+            ],
+        };
+        let result = replay(&repo.open(), &payload);
+        assert_eq!(result.failure, None);
+        assert_eq!(result.created.len(), 2);
+        assert!(repo.path().join("ok.txt").exists());
+        assert!(repo.path().join("later.txt").exists());
+        assert!(repo.path().join("A.bin").exists());
     }
 }

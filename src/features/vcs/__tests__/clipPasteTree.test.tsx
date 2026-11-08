@@ -86,6 +86,7 @@ describe("PastePreviewDialog files mode", () => {
         skipped: 1,
         commits: [],
         errors: [],
+        notCreated: [],
         unchanged: 0,
         corruptNonText: [],
       },
