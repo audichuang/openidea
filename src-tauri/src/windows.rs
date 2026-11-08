@@ -325,9 +325,6 @@ pub struct WindowsState {
     /// The last closed project opted out of Welcome; macOS keeps its app in the Dock.
     #[cfg(target_os = "macos")]
     pub keep_alive: AtomicBool,
-    /// Windows asked to close whose guards have not finished. AppKit closes a whole tab group at
-    /// once, so its members ask together.
-    close_requests: Mutex<Vec<String>>,
     /// Project tabs closing one by one (Close Other Tabs and friends).
     pub tab_closes: Mutex<Option<crate::window_groups::TabCloses>>,
     /// Relaunch once the quit completes (after installing an update).
@@ -356,21 +353,6 @@ pub(crate) struct AuxGeometry {
 }
 
 impl WindowsState {
-    pub fn close_requested(&self, label: &str) {
-        let mut requests = self.close_requests.lock();
-        if !requests.iter().any(|l| l == label) {
-            requests.push(label.to_owned());
-        }
-    }
-
-    pub fn close_settled(&self, label: &str) {
-        self.close_requests.lock().retain(|l| l != label);
-    }
-
-    pub fn pending_closes(&self) -> Vec<String> {
-        self.close_requests.lock().clone()
-    }
-
     pub fn set_launch(&self, label: &str, launch: Launch) {
         self.launches.lock().insert(label.to_owned(), launch);
     }
@@ -429,7 +411,6 @@ impl WindowsState {
     }
 
     pub fn forget(&self, label: &str) {
-        self.close_settled(label);
         {
             let mut launches = self.launches.lock();
             let mut opening = self.opening.lock();
@@ -590,20 +571,11 @@ pub fn settings_label(parent: &str) -> String {
 /// Held from choosing a project window's label until the window exists.
 static CREATING: Mutex<()> = Mutex::new(());
 
-/// Windows being built to join a window group, which takes their frame from the group.
-#[cfg(target_os = "macos")]
-static JOINING_GROUP: Mutex<Vec<String>> = Mutex::new(Vec::new());
-
-/// Whether the window-state plugin restores and tracks `label`'s geometry. A window joining a
-/// group takes the group's frame instead; auxiliary windows store logical sizes in
-/// `auxiliary-windows.json` and place themselves over their parent, avoiding physical-pixel
-/// scale drift and async restore races across mixed-DPI displays.
+/// Whether the window-state plugin restores and tracks `label`'s geometry. Auxiliary windows
+/// store logical sizes in `auxiliary-windows.json` and place themselves over their parent,
+/// avoiding physical-pixel scale drift and async restore races across mixed-DPI displays.
 #[cfg(any(target_os = "macos", test))]
 pub fn keeps_window_state(label: &str) -> bool {
-    #[cfg(target_os = "macos")]
-    if JOINING_GROUP.lock().iter().any(|l| l == label) {
-        return false;
-    }
     auxiliary_parent(label).is_none() && !AuxKind::ALL.iter().any(|k| k.name() == label)
 }
 
@@ -857,6 +829,8 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     decorate_csd(&window);
     #[cfg(target_os = "macos")]
     crate::page_swipe::install(&window);
+    #[cfg(target_os = "macos")]
+    crate::macos::keep_full_screen_on_escape();
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window, app.try_state::<WindowsState>().is_some_and(|w| w.opens_project(window.label())));
@@ -985,22 +959,10 @@ fn create_window_for(
         config.center = false;
     }
     app.state::<WindowsState>().set_launch(&label, launch);
-    #[cfg(target_os = "macos")]
-    if tab_target.is_some() {
-        JOINING_GROUP.lock().push(label.clone());
-        // Selecting it in the group shows it; shown before, a window opened over a fullscreen
-        // group lands on the desktop and takes the screen there.
-        config.visible = false;
-    }
-    let window = build_project_window(app, config);
+    let window = build_project_window(app, config)?;
     drop(creating);
-    // Plugins hear of the window from the main thread's queue; forget it after them.
     #[cfg(target_os = "macos")]
-    if tab_target.is_some() {
-        let joined = label.clone();
-        let _ = app.run_on_main_thread(move || JOINING_GROUP.lock().retain(|l| *l != joined));
-    }
-    let window = window?;
+    crate::macos::intercept_toggle_fullscreen(&window);
     #[cfg(target_os = "macos")]
     if let Some(target) = tab_target {
         crate::window_groups::join(app, target.label(), window.label())?;
