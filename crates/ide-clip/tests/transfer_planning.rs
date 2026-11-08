@@ -2868,6 +2868,7 @@ fn commit_replay_preview_rejects_head_index_content_and_absence_changes() {
                 change: FileChange::Modified,
                 content: Some("incoming\n".into()),
                 not_copied: None,
+                non_text: None,
             }],
         }],
     };
@@ -2894,6 +2895,7 @@ fn commit_replay_preview_rejects_head_index_content_and_absence_changes() {
                 change: FileChange::Added,
                 content: Some("new\n".into()),
                 not_copied: None,
+                non_text: None,
             }],
         }],
     };
@@ -2944,6 +2946,7 @@ fn skipped_non_utf8_replay_target_becomes_stale_when_it_turns_writable() {
                 change: FileChange::Modified,
                 content: Some("incoming\n".into()),
                 not_copied: None,
+                non_text: None,
             }],
         }],
     };
@@ -2976,6 +2979,7 @@ fn skipped_non_utf8_replay_target_becomes_stale_when_it_turns_writable() {
                 change: FileChange::Modified,
                 content: None,
                 not_copied: Some(ide_clip::commits::NotCopiedReason::Binary),
+                non_text: None,
             }],
         }],
     };
@@ -3000,6 +3004,7 @@ fn commit_replay_preview_treats_a_file_in_the_way_as_an_unsafe_skip() {
         change: FileChange::Added,
         content: Some("x\n".into()),
         not_copied: None,
+        non_text: None,
     };
     let payload = CommitsPayload {
         commits: vec![CommitRecord {
@@ -3040,6 +3045,7 @@ fn unsafe_symlink_replay_parent_is_not_followed_and_becomes_stale() {
                 change: ide_clip::commits::FileChange::Added,
                 content: Some("incoming\n".into()),
                 not_copied: None,
+                non_text: None,
             }],
         }],
     };
@@ -3117,6 +3123,7 @@ fn commit_replay_apply_replays_the_previewed_payload() {
                 change: FileChange::Added,
                 content: Some("payload bytes\n".into()),
                 not_copied: None,
+                non_text: None,
             }],
         }],
     };
@@ -3205,6 +3212,7 @@ fn commit_replay_preserves_0755_and_0600_through_a_symlinked_root() {
                     change: FileChange::Modified,
                     content: Some("replayed\n".into()),
                     not_copied: None,
+                    non_text: None,
                 })
                 .collect(),
         }],
@@ -3238,6 +3246,7 @@ fn commit_replay_apply_refuses_a_destination_changed_after_preview() {
                 change: FileChange::Modified,
                 content: Some("incoming a\n".into()),
                 not_copied: None,
+                non_text: None,
             }],
         }],
     };
@@ -3286,6 +3295,7 @@ fn commit_replay_apply_refuses_a_destination_changed_after_preview() {
                 change: FileChange::Added,
                 content: Some("incoming b\n".into()),
                 not_copied: None,
+                non_text: None,
             }],
         }],
     };
@@ -3325,6 +3335,7 @@ fn commit_replay_apply_refuses_after_head_moved() {
                 change: FileChange::Added,
                 content: Some("incoming\n".into()),
                 not_copied: None,
+                non_text: None,
             }],
         }],
     };
@@ -3368,6 +3379,7 @@ fn commit_replay_apply_through_a_symlinked_root() {
                 change: FileChange::Added,
                 content: Some("content in a\n".into()),
                 not_copied: None,
+                non_text: None,
             }],
         }],
     };
@@ -3394,6 +3406,7 @@ fn commit_replay_apply_through_a_symlinked_root() {
                 change: FileChange::Modified,
                 content: Some("content v2\n".into()),
                 not_copied: None,
+                non_text: None,
             }],
         }],
     };
@@ -3424,6 +3437,7 @@ fn commit_replay_apply_leaves_a_not_copied_target_alone() {
                     change: FileChange::Modified,
                     content: None,
                     not_copied: Some(NotCopiedReason::Binary),
+                    non_text: None,
                 },
                 CommitFile {
                     path: "added.txt".into(),
@@ -3431,6 +3445,7 @@ fn commit_replay_apply_leaves_a_not_copied_target_alone() {
                     change: FileChange::Added,
                     content: Some("added\n".into()),
                     not_copied: None,
+                    non_text: None,
                 },
             ],
         }],
@@ -3471,6 +3486,7 @@ fn commit_replay_apply_is_refused_while_the_worktree_lock_is_held() {
                 change: FileChange::Added,
                 content: Some("new content\n".into()),
                 not_copied: None,
+                non_text: None,
             }],
         }],
     };
@@ -3732,6 +3748,7 @@ fn assert_commit_replay_respects_nested_repo_lock(only_change: Option<ide_clip::
                     change: FileChange::Added,
                     content: Some("outer content\n".into()),
                     not_copied: None,
+                    non_text: None,
                 },
                 CommitFile {
                     path: "child/new/deep.txt".into(),
@@ -3739,6 +3756,7 @@ fn assert_commit_replay_respects_nested_repo_lock(only_change: Option<ide_clip::
                     change: FileChange::Added,
                     content: Some("new content\n".into()),
                     not_copied: None,
+                    non_text: None,
                 },
                 CommitFile {
                     path: "child/keep.txt".into(),
@@ -3746,6 +3764,7 @@ fn assert_commit_replay_respects_nested_repo_lock(only_change: Option<ide_clip::
                     change: FileChange::Modified,
                     content: Some("replacement\n".into()),
                     not_copied: None,
+                    non_text: None,
                 },
                 CommitFile {
                     path: "child/delete.txt".into(),
@@ -3753,6 +3772,7 @@ fn assert_commit_replay_respects_nested_repo_lock(only_change: Option<ide_clip::
                     change: FileChange::Deleted,
                     content: None,
                     not_copied: None,
+                    non_text: None,
                 },
                 CommitFile {
                     path: "moved.txt".into(),
@@ -3760,6 +3780,7 @@ fn assert_commit_replay_respects_nested_repo_lock(only_change: Option<ide_clip::
                     change: FileChange::Renamed,
                     content: Some("rename me\n".into()),
                     not_copied: None,
+                    non_text: None,
                 },
             ],
         }],
