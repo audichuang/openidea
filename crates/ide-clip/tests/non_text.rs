@@ -355,3 +355,182 @@ fn import_reports_identical_targets_unchanged() {
     assert_eq!(run(false), (1, 0, 1, b"old".to_vec()));
     assert_eq!(run(true), (1, 1, 0, png(120)));
 }
+
+// ---- commits mode (test 10) ----
+
+mod commits_mode {
+    use super::*;
+    use ide_clip::commits::{
+        CommitNonTextOptions, CommitsPayload, NotCopiedReason, ReplayAction, ReplaySkipReason, parse_commit_payload,
+        to_clipboard_text,
+    };
+    use ide_clip::gitrun::RunOptions;
+    use ide_clip::gitsrc::Git;
+    use ide_clip::transfer::{
+        CommitReplayPreview, ReplayFileSide, plan_commit_export_with, plan_commit_export_with_non_text,
+        read_replay_preview_with,
+    };
+    use serde::Deserialize;
+
+    fn options(mode: NonTextMode) -> CommitNonTextOptions {
+        CommitNonTextOptions { mode, max_file_bytes: 2048 }
+    }
+
+    /// A repository whose last commit adds an image, a text file and an
+    /// image over the 2 KB non-text limit.
+    fn source() -> Repo {
+        let repo = Repo::new();
+        repo.write("base.txt", b"base\n");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-q", "-m", "base"]);
+        repo.write("img/logo.png", &png(300));
+        repo.write("a.txt", b"a\n");
+        repo.write("img/huge.png", &png(5000));
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-q", "-m", "add images"]);
+        repo
+    }
+
+    fn export(repo: &Repo, mode: NonTextMode) -> ide_clip::commits::CommitExport {
+        let git = Git::open(&repo.root).unwrap();
+        plan_commit_export_with_non_text(
+            &git,
+            None,
+            Some(1),
+            &RunOptions::default(),
+            CLIPBOARD_PAYLOAD_MAX,
+            options(mode),
+        )
+        .unwrap()
+    }
+
+    fn file<'a>(payload: &'a CommitsPayload, path: &str) -> &'a ide_clip::commits::CommitFile {
+        payload.commits[0].files.iter().find(|f| f.path == path).unwrap()
+    }
+
+    #[test]
+    fn exclude_is_todays_payload_and_reports_the_image() {
+        let repo = source();
+        let git = Git::open(&repo.root).unwrap();
+        let today =
+            plan_commit_export_with(&git, None, Some(1), &RunOptions::default(), CLIPBOARD_PAYLOAD_MAX).unwrap();
+        let exclude = export(&repo, NonTextMode::Exclude);
+        assert_eq!(exclude.text, today.text);
+        assert!(!exclude.text.contains("nonText"));
+        assert_eq!(exclude.non_text.files, [found("img/logo.png", 300)]);
+        assert_eq!(exclude.non_text.over_limit_count, 1);
+
+        let include = export(&repo, NonTextMode::Include);
+        assert_eq!(exclude.non_text.estimated_include_payload_bytes, include.text.len());
+        let logo = file(&include.payload, "img/logo.png");
+        assert_eq!((logo.content.as_deref(), logo.not_copied), (None, Some(NotCopiedReason::Binary)));
+        let nt = logo.non_text.as_ref().unwrap();
+        assert_eq!((nt.size, nt.sha256.as_str()), (300, nontext::sha256_hex(&png(300)).as_str()));
+        assert_eq!(nt.base64, nontext::encode(&png(300)));
+        assert!(include.text.contains(r#""notCopied":"BINARY","nonText":{"size":300,"sha256":""#));
+        // Over the limit: not copied, exactly as today.
+        let huge = file(&include.payload, "img/huge.png");
+        assert_eq!((huge.not_copied, huge.non_text.is_none()), (Some(NotCopiedReason::Binary), true));
+        assert_eq!(include.text, to_clipboard_text(&include.payload));
+    }
+
+    #[test]
+    fn replay_writes_and_commits_the_image() {
+        let src = source();
+        let include = export(&src, NonTextMode::Include);
+        let payload = parse_commit_payload(&include.text).unwrap();
+
+        let dest = Repo::new();
+        dest.write("base.txt", b"base\n");
+        dest.git(&["add", "-A"]);
+        dest.git(&["commit", "-q", "-m", "base"]);
+        let preview = CommitReplayPreview::capture(&dest.root, &payload).unwrap();
+        let rows = &preview.plan().commits[0].files;
+        let logo = rows.iter().position(|f| f.path == "img/logo.png").unwrap();
+        assert_eq!(
+            (rows[logo].action, rows[logo].non_text_size, rows[logo].not_copied),
+            (ReplayAction::Write, Some(300), None)
+        );
+        let shown = preview
+            .file_preview_with(0, logo, ReplayFileSide::Target, 1 << 20, &RunOptions::default(), |p, o| {
+                read_replay_preview_with(p, 1 << 20, o)
+            })
+            .unwrap();
+        assert_eq!(shown.unavailable, Some(ide_clip::commits::ReplayPreviewUnavailable::Binary));
+        assert!(shown.after.is_empty());
+
+        let result = preview.apply().unwrap();
+        assert!(result.failure.is_none(), "{:?}", result.failure);
+        assert_eq!(result.created.len(), 1);
+        assert_eq!(fs::read(dest.root.join("img/logo.png")).unwrap(), png(300));
+        assert!(!dest.root.join("img/huge.png").exists());
+        let committed = Command::new("git")
+            .args(["cat-file", "blob", "HEAD:img/logo.png"])
+            .current_dir(&dest.root)
+            .output()
+            .unwrap()
+            .stdout;
+        assert_eq!(committed, png(300));
+    }
+
+    /// An older OpenIDEA ignores `nonText` (no `deny_unknown_fields`) and skips
+    /// the file as not copied.
+    #[test]
+    fn an_older_reader_ignores_the_field_and_skips_the_file() {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        #[allow(dead_code)]
+        struct OldFile {
+            path: String,
+            old_path: Option<String>,
+            change: String,
+            content: Option<String>,
+            not_copied: Option<String>,
+        }
+        #[derive(Deserialize)]
+        struct OldCommit {
+            files: Vec<OldFile>,
+        }
+        #[derive(Deserialize)]
+        struct OldPayload {
+            commits: Vec<OldCommit>,
+        }
+        let src = source();
+        let include = export(&src, NonTextMode::Include);
+        let json = include.text.split_once('\n').unwrap().1;
+        let old: OldPayload = serde_json::from_str(json).unwrap();
+        let logo = old.commits[0].files.iter().find(|f| f.path == "img/logo.png").unwrap();
+        assert_eq!((logo.content.as_deref(), logo.not_copied.as_deref()), (None, Some("BINARY")));
+
+        // The same payload without the field is what an older reader holds.
+        let mut payload = include.payload.clone();
+        for f in &mut payload.commits[0].files {
+            f.non_text = None;
+        }
+        let dest = Repo::new();
+        let preview = CommitReplayPreview::capture(&dest.root, &payload).unwrap();
+        let row = preview.plan().commits[0].files.iter().find(|f| f.path == "img/logo.png").unwrap();
+        assert_eq!((row.action, row.skip_reason), (ReplayAction::Skip, Some(ReplaySkipReason::NotCopied)));
+    }
+
+    #[test]
+    fn a_corrupt_non_text_field_skips_only_that_file() {
+        let src = source();
+        let mut payload = export(&src, NonTextMode::Include).payload;
+        let logo = payload.commits[0].files.iter_mut().find(|f| f.path == "img/logo.png").unwrap();
+        logo.non_text.as_mut().unwrap().sha256 = "0".repeat(64);
+        let dest = Repo::new();
+        dest.write("base.txt", b"base\n");
+        dest.git(&["add", "-A"]);
+        dest.git(&["commit", "-q", "-m", "base"]);
+        let preview = CommitReplayPreview::capture(&dest.root, &payload).unwrap();
+        let rows = &preview.plan().commits[0].files;
+        let row = |p: &str| rows.iter().find(|f| f.path == p).unwrap();
+        assert_eq!(row("img/logo.png").skip_reason, Some(ReplaySkipReason::CorruptNonText));
+        assert_eq!(row("a.txt").action, ReplayAction::Write);
+        let result = preview.apply().unwrap();
+        assert!(result.failure.is_none(), "{:?}", result.failure);
+        assert!(!dest.root.join("img/logo.png").exists());
+        assert_eq!(fs::read(dest.root.join("a.txt")).unwrap(), b"a\n");
+    }
+}
