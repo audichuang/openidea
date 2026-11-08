@@ -71,6 +71,12 @@
 .icon {
   flex: none;
 }
+/* A staging area repository row also carries its inclusion checkbox: in a very narrow tree the
+   folder icon gives way (after the label reaches its floor) so the file count stays inside. */
+.repoIcon {
+  flex: 0 1 auto;
+  min-width: 0;
+}
 /* Shrinks only after the row's branch chip or directory has given way (their `flex: 1 1 0`),
    keeping a character and its ellipsis. */
 .label {
