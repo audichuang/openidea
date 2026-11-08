@@ -114,6 +114,14 @@ describe("copyClip non-text decision", () => {
     expect(notify.mock.calls[0]![0].title).toContain("2 non-text files copied as Base64");
   });
 
+  it("Exclude with only a size placeholder left is Nothing to copy", async () => {
+    call.mockResolvedValueOnce(result("PLACEHOLDER", found, { files: 0 }));
+    ask.mockResolvedValueOnce("exclude");
+    await expect(copyClip(source)).resolves.toBe(false);
+    expect(copied).not.toHaveBeenCalled();
+    expect(notify.mock.calls[0]![0].body).toBe("Nothing to copy");
+  });
+
   it("Cancel writes nothing", async () => {
     call.mockResolvedValueOnce(result("EXCLUDED", found));
     ask.mockResolvedValueOnce("cancel");
