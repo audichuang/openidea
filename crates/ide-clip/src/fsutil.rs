@@ -84,14 +84,16 @@ pub enum WalkItem {
     /// A directory whose listing failed; its subtree is an omission the
     /// caller must report.
     UnreadableDir(PathBuf),
+    /// A symlink to a directory met during recursion: not followed, reported so the caller can name it.
+    SymlinkedDir(PathBuf),
 }
 
 /// Lazy depth-first walk of `input`, children in sorted order.
 ///
 /// `should_enter` prunes a directory's whole subtree when it returns false.
 /// A directory symlink is walked only when it is `input` itself; during
-/// recursion it is skipped (cross-linked pnpm / Bazel trees explode
-/// otherwise). Other symlinks, including dangling ones, are yielded as files.
+/// recursion it is not followed (cross-linked pnpm / Bazel trees explode
+/// otherwise) and comes back as [`WalkItem::SymlinkedDir`]. Other symlinks, including dangling ones, are yielded as files.
 pub fn list_files_recursive<F: FnMut(&Path) -> bool>(input: &Path, should_enter: F) -> ListFiles<F> {
     ListFiles { stack: vec![(input.to_path_buf(), true)], should_enter }
 }
@@ -115,7 +117,7 @@ impl<F: FnMut(&Path) -> bool> Iterator for ListFiles<F> {
                     return Some(WalkItem::File(path));
                 }
                 if !is_selection {
-                    continue;
+                    return Some(WalkItem::SymlinkedDir(path));
                 }
             } else if !info.is_dir() {
                 return Some(WalkItem::File(path));

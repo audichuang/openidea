@@ -160,6 +160,7 @@ pub fn collect_copy_files<P: AsRef<Path>, Q: AsRef<Path>>(
                     state.skipped_unreadable_count += 1;
                     continue;
                 }
+                WalkItem::SymlinkedDir(_) => continue,
             };
             if state.limit_hit(settings) {
                 break 'inputs;
@@ -427,7 +428,7 @@ mod tests {
         list_files_recursive(root, |_| true)
             .filter_map(|item| match item {
                 WalkItem::File(p) => Some(p),
-                WalkItem::UnreadableDir(_) => None,
+                WalkItem::UnreadableDir(_) | WalkItem::SymlinkedDir(_) => None,
             })
             .map(|p| {
                 let rel = p.strip_prefix(root).unwrap();
