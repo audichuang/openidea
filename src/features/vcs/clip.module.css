@@ -163,3 +163,29 @@
   padding: 12px;
   color: var(--fg-subtle);
 }
+
+.nonText {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.nonTextList {
+  margin: 0;
+  padding: 4px 8px;
+  list-style: none;
+  max-height: 40vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+}
+.nonTextRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 22px;
+}
+.warn {
+  color: var(--warning);
+}
