@@ -1,14 +1,18 @@
 /** The Git Graph tab's toolbar: repository, branch filter, find, and the remote / commit actions. */
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
+import clsx from "clsx";
 import type { Branch } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { Icon, IconButton, SearchField, Spinner, T } from "@/ui";
 import { gitGraphBridge } from "@/workbench/gitGraphBridge";
 import { PickerPopup } from "./PickerPopup";
+import type { GraphMode } from "./viewState";
 import styles from "./GitGraph.module.css";
 
 interface ToolbarProps {
+  mode: GraphMode;
+  onMode: (mode: GraphMode) => void;
   roots: string[];
   repo: string | null;
   onRepo: (r: string) => void;
@@ -50,8 +54,25 @@ export function Toolbar(p: ToolbarProps) {
       ? p.branchFilter[0]!
       : tx`${p.branchFilter.length} branches`
     : tx("All branches");
+  const graph = p.mode === "graph";
+  const modeTab = (mode: GraphMode, label: ReactNode) => (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={p.mode === mode}
+      className={clsx(styles.paneTab, p.mode === mode && styles.paneTabActive)}
+      onClick={() => p.onMode(mode)}
+    >
+      {label}
+    </button>
+  );
   return (
     <div className={styles.toolbar} role="toolbar" aria-label={tx("Git Graph")}>
+      <span className={styles.modeSwitch} role="tablist" aria-label={tx("Git Graph View")}>
+        {modeTab("graph", <T>Graph</T>)}
+        {/* An abbreviation every locale keeps as is. */}
+        {modeTab("pr", "PR")}
+      </span>
       {p.roots.length > 1 && p.repo ? (
         <button
           type="button"
@@ -81,56 +102,60 @@ export function Toolbar(p: ToolbarProps) {
           emptyLabel="No matching repositories"
         />
       ) : null}
-      <button
-        type="button"
-        className={styles.dropdown}
-        onClick={(e) => setBranchAnchor(e.currentTarget)}
-        aria-label={tx("Branches")}
-        aria-haspopup="dialog"
-      >
-        <Icon name="branch" size={14} />
-        <span>{branchLabel}</span>
-        <Icon name="chevron-down" size={12} />
-      </button>
-      {p.branchFilter.length ? (
-        <IconButton icon="close" title="Show All Branches" onClick={() => p.onBranchFilter([])} />
+      {graph ? (
+        <>
+          <button
+            type="button"
+            className={styles.dropdown}
+            onClick={(e) => setBranchAnchor(e.currentTarget)}
+            aria-label={tx("Branches")}
+            aria-haspopup="dialog"
+          >
+            <Icon name="branch" size={14} />
+            <span>{branchLabel}</span>
+            <Icon name="chevron-down" size={12} />
+          </button>
+          {p.branchFilter.length ? (
+            <IconButton icon="close" title="Show All Branches" onClick={() => p.onBranchFilter([])} />
+          ) : null}
+          <IconButton
+            icon="web"
+            title="Show Remote Branches"
+            pressed={p.showRemotes}
+            onClick={() => p.onShowRemotes(!p.showRemotes)}
+          />
+          {branchAnchor && BranchFilterPopup ? (
+            <BranchFilterPopup
+              anchor={branchAnchor}
+              repo={p.repo ?? ""}
+              branches={p.branches}
+              selected={p.branchFilter}
+              onSelect={(branch) => {
+                toggleBranch(branch);
+                setBranchAnchor(null);
+              }}
+              onSelectMany={p.onBranchFilter}
+              onClose={() => setBranchAnchor(null)}
+            />
+          ) : null}
+          <SearchField
+            className={styles.search}
+            value={p.query}
+            onChange={p.onQuery}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                p.onStep(e.shiftKey ? -1 : 1);
+              }
+            }}
+            placeholder={tx("Find commit (message, author, hash)")}
+            aria-label={tx("Find commit")}
+          />
+          {p.matchText ? <span className={styles.matchText}>{p.matchText}</span> : null}
+          <IconButton icon="arrow-up" title="Previous Match" onClick={() => p.onStep(-1)} disabled={!p.query} />
+          <IconButton icon="arrow-down" title="Next Match" onClick={() => p.onStep(1)} disabled={!p.query} />
+        </>
       ) : null}
-      <IconButton
-        icon="web"
-        title="Show Remote Branches"
-        pressed={p.showRemotes}
-        onClick={() => p.onShowRemotes(!p.showRemotes)}
-      />
-      {branchAnchor && BranchFilterPopup ? (
-        <BranchFilterPopup
-          anchor={branchAnchor}
-          repo={p.repo ?? ""}
-          branches={p.branches}
-          selected={p.branchFilter}
-          onSelect={(branch) => {
-            toggleBranch(branch);
-            setBranchAnchor(null);
-          }}
-          onSelectMany={p.onBranchFilter}
-          onClose={() => setBranchAnchor(null)}
-        />
-      ) : null}
-      <SearchField
-        className={styles.search}
-        value={p.query}
-        onChange={p.onQuery}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            p.onStep(e.shiftKey ? -1 : 1);
-          }
-        }}
-        placeholder={tx("Find commit (message, author, hash)")}
-        aria-label={tx("Find commit")}
-      />
-      {p.matchText ? <span className={styles.matchText}>{p.matchText}</span> : null}
-      <IconButton icon="arrow-up" title="Previous Match" onClick={() => p.onStep(-1)} disabled={!p.query} />
-      <IconButton icon="arrow-down" title="Next Match" onClick={() => p.onStep(1)} disabled={!p.query} />
       <span className={styles.spacer} />
       {p.operation && !/bisect/i.test(p.operation) ? <OperationBar operation={p.operation} /> : null}
       {p.loading ? <Spinner size={14} /> : null}

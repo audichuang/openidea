@@ -31,6 +31,17 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
   };
 });
 
+const copyClip = vi.fn(async (_source: unknown) => true);
+vi.mock("../clip", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../clip")>();
+  return { ...real, copyClip: (source: unknown) => copyClip(source) };
+});
+const openInput = vi.fn();
+vi.mock("@/workbench/contributions", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/workbench/contributions")>();
+  return { ...real, editorService: () => ({ openInput }) };
+});
+
 const chooseMany = vi.fn();
 vi.mock("../dialogs", async (importOriginal) => {
   const real = await importOriginal<typeof import("../dialogs")>();
@@ -263,6 +274,60 @@ describe("git graph bridge", () => {
       { kind: "action", action: "clip.copyLogChanges", arg: { commits: [c], changes: [1] } },
       { kind: "action", action: "vcs.log.changes.showDiff", arg: [1] },
     ]);
+  });
+
+  const MB = { rev: "m".repeat(40), label: "merge-base (main)" };
+  const HEAD_SIDE = { rev: "feature", label: "feature" };
+  const sides = (file: { path: string; kind: "added" | "modified" | "deleted" | "renamed"; oldPath: string | null }) =>
+    bridge().revisionDiffInput(REPO, MB, HEAD_SIDE, file).data as {
+      path: string;
+      left: unknown;
+      right: unknown;
+      embedded: boolean;
+      readOnly: boolean;
+    };
+
+  it("maps a changed file between two revisions to an embedded, read-only diff", () => {
+    const input = bridge().revisionDiffInput(REPO, MB, HEAD_SIDE, { path: "a.ts", kind: "modified", oldPath: null });
+    expect(input.kind).toBe("diff");
+    expect(input.data).toMatchObject({
+      path: `${REPO}/a.ts`,
+      left: { type: "rev", rev: MB.rev, label: "merge-base (main)" },
+      right: { type: "rev", rev: "feature", label: "feature" },
+      embedded: true,
+      readOnly: true,
+    });
+    expect(sides({ path: "n.ts", kind: "added", oldPath: null }).left).toEqual({
+      type: "text",
+      text: "",
+      label: "(does not exist)",
+    });
+    expect(sides({ path: "d.ts", kind: "deleted", oldPath: null }).right).toEqual({
+      type: "text",
+      text: "",
+      label: "(deleted)",
+    });
+    expect(sides({ path: "new.ts", kind: "renamed", oldPath: "old.ts" }).left).toMatchObject({
+      rev: MB.rev,
+      path: `${REPO}/old.ts`,
+    });
+  });
+
+  it("opens a revision diff in an editor tab with the other files chained", async () => {
+    const files = [
+      { path: "a.ts", kind: "modified" as const, oldPath: null },
+      { path: "b.ts", kind: "modified" as const, oldPath: null },
+    ];
+    await bridge().openRevisionDiff(REPO, MB, HEAD_SIDE, files, 1);
+    const [input] = openInput.mock.calls[0] as [{ data: { path: string; embedded?: boolean; chain: unknown[] } }];
+    expect(input.data.path).toBe(`${REPO}/b.ts`);
+    expect(input.data.embedded).toBeUndefined();
+    expect(input.data.chain).toHaveLength(2);
+  });
+
+  it("copies a revision range with ClipCode's Copy Changed Files", async () => {
+    await bridge().copyRange(REPO, MB.rev, "feature");
+    expect(copyClip).toHaveBeenCalledWith({ kind: "range", repo: REPO, base: MB.rev, tip: "feature", paths: [] });
   });
 
   const filterBranches = [

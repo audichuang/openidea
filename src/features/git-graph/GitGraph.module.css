@@ -515,3 +515,97 @@
   margin: 0 2px;
   border-radius: 2px;
 }
+
+/* Graph | PR switch */
+.modeSwitch {
+  display: inline-flex;
+  gap: 2px;
+  margin-right: 4px;
+}
+
+/* PR view */
+.pr {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.prHeader {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.prSide {
+  color: var(--fg-subtle);
+}
+.prRef {
+  border-color: var(--border-button);
+}
+.prSummary {
+  padding: 4px 12px;
+  color: var(--fg-secondary);
+  border-bottom: 1px solid var(--border);
+}
+.prBody {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.prBody > * {
+  flex: 1;
+  min-height: 0;
+}
+.prFiles {
+  height: 100%;
+  overflow: auto;
+  padding: 4px 0;
+}
+.prDiff {
+  height: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.prDiff > :not(.treeBar) {
+  flex: 1;
+  min-height: 0;
+}
+.prCount {
+  margin-left: 4px;
+  color: var(--fg-subtle);
+}
+.prCommits {
+  overflow: auto;
+  padding: 4px 0;
+}
+.prCommit {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: var(--h-list-row);
+  padding: 0 12px;
+  border: none;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.prCommit:hover {
+  background: var(--bg-tree-hover);
+}
+.prCommit .subject {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.prCommitMeta {
+  flex: none;
+  color: var(--fg-subtle);
+}
