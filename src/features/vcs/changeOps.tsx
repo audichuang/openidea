@@ -14,7 +14,7 @@ import { confirmDialog, openDialog } from "./dialogs";
 import { hunkKeys } from "./hunks";
 import { KIND_COLOR, baseName, dirName, effectiveKind, relTo, rootOf, stripSlash } from "./model";
 import { logConsole, runOp, saveAll } from "./ops";
-import { isStagingArea, stagingPlan } from "./staging";
+import { isStagingArea, stagedFiles, stagingPlan } from "./staging";
 import { currentRepo, loadStashes, refreshNow, useVcs } from "./store";
 import styles from "./common.module.css";
 import { tx } from "@/platform/i18n";
@@ -41,7 +41,7 @@ export async function commitChanges(): Promise<string | undefined> {
   // With the staging area the index is committed as it is; otherwise the checkboxes decide.
   const staging = isStagingArea();
   const plan = staging
-    ? stagingPlan(status)
+    ? stagingPlan(status, useVcs.getState().roots, useCommit.getState().stagingExcludedRoots)
     : planCommit(
         status,
         withListDefaults(
@@ -57,7 +57,8 @@ export async function commitChanges(): Promise<string | undefined> {
     notifications().notify({
       group: "vcs",
       level: "warning",
-      title: staging ? "No staged changes to commit" : "No changes selected for commit",
+      // Staged changes left only in unticked repositories: nothing selected, not nothing staged.
+      title: staging && !stagedFiles(status).length ? "No staged changes to commit" : "No changes selected for commit",
     });
     return undefined;
   }
