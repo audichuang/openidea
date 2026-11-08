@@ -303,6 +303,8 @@ fn git_sources_carry_non_text_under_include_only() {
         [found("img/commit.png", 400), found("img/staged.png", 200), found("img/work.png", 1500)]
     );
     assert_eq!(exclude.non_text.over_limit_count, 1);
+    // An excluded staged non-text file is not named as unreadable.
+    assert!(exclude.skipped_unreadable_paths.is_empty(), "{:?}", exclude.skipped_unreadable_paths);
 
     let include = export(&sel, &settings, NonTextMode::Include);
     let bytes = |rel: &str| fs::read(repo.root.join(rel)).unwrap();
