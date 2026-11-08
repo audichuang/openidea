@@ -24,6 +24,7 @@ Personal fork of OpenIDEA (`audichuang/openidea`, remote `fork`; upstream `l0ng-
 
 - Fork features must work on macOS, Windows and Linux, and a ClipCode payload copied on one OS must paste correctly on another (the user copies on the Mac and pastes on a Windows machine, and back). Paths inside a payload are always `/`-spelled; each OS converts at the edge. `crates/ide-clip/fixtures/clipboard-contract.json` is the shared contract and passes in the macOS, Linux and Windows test jobs.
 - The ClipCode format is shared with the IntelliJ, VS Code and Orca implementations. A fix that would change the format is a four-repo change: stop and take it to the user, never change it here alone.
+- Copying non-text files (images, archives, Big5) as Base64 follows `docs/clipcode/non-text-files.md` in all four implementations.
 - Releases ship the macOS arm64 app and the Windows x64 installer.
 
 ## Merge gate
