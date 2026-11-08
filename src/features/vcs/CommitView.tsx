@@ -1037,7 +1037,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                     onToggle={() => toggle(selected.has(n.key) && selected.size > 1 ? selectedNodes() : [n])}
                   />
                 )}
-                {stagingRootCheck && (
+                {stagingRootCheck && n.repo && (
                   <CheckMark
                     checked={!excludedRoots.has(n.repo)}
                     indeterminate={false}
