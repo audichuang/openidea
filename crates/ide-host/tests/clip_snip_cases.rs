@@ -370,19 +370,20 @@ fn t24_replay_runs_no_hooks() {
 }
 
 #[test]
-fn t25_binary_changes_are_not_copied_and_deletions_replay() {
+fn t25_deleting_a_binary_file_replays_as_a_deletion() {
     let f = Fix::new(&["commits-src", "commits-dst-present"]);
     let repo = f.p("commits-src");
     let c2 = sha(&repo, "C2 rename delete emoji");
     let copied = copy(&repo, commits(&repo, &c2, &[&c2]), &cli()).unwrap();
-    assert_eq!((copied.commits, copied.files, copied.skipped), (1, 5, 1), "{copied:?}");
+    // A deletion needs no content: the binary file's deletion is carried, not "not copied".
+    assert_eq!((copied.commits, copied.files, copied.skipped), (1, 5, 0), "{copied:?}");
     let dst = f.p("commits-dst-present");
     let p = paste_preview(&dst, &copied.text, false, &[], &cli()).unwrap();
     let bin = p.commits[0].files.iter().find(|f| f.path == "binary.dat").unwrap();
-    assert_eq!((bin.action.as_str(), bin.reason.as_deref()), ("SKIP", Some("BINARY")), "{bin:?}");
+    assert_eq!((bin.action.as_str(), bin.reason.as_deref()), ("DELETE", None), "{bin:?}");
     let r = apply(&p, ClipPasteApply::default());
     assert_eq!(r.commits.len(), 1, "{r:?}");
-    assert_eq!(fs::read(dst.join("binary.dat")).unwrap(), b"a\0b\n");
+    assert!(!dst.join("binary.dat").exists());
     assert!(!dst.join("gone.txt").exists() && !dst.join("old.txt").exists());
     assert_eq!(read(dst.join("new.txt")), "old\n");
     assert_eq!(read(dst.join("dir/gone.txt")), "folder-gone\n");
@@ -475,20 +476,21 @@ fn t32_b42_commit_files_carry_deletions_with_their_old_content() {
 }
 
 #[test]
-fn c_nonutf8_non_utf8_files_are_neither_written_nor_deleted() {
+fn c_nonutf8_non_utf8_files_are_not_written_but_their_deletion_replays() {
     let f = Fix::new(&["nonutf8-src", "nonutf8-dst", "commits-src"]);
     let src = f.p("nonutf8-src");
     let n1 = sha(&src, "N1 modify latin1 add ok");
     let n2 = sha(&src, "N2 delete latin1");
     let copied = copy(&src, commits(&src, &n2, &[&n2, &n1]), &cli()).unwrap();
-    assert_eq!(copied.skipped, 2, "{copied:?}");
+    assert_eq!(copied.skipped, 1, "{copied:?}");
     let dst = f.p("nonutf8-dst");
     let p = paste_preview(&dst, &copied.text, false, &[], &cli()).unwrap();
     let latin: Vec<_> =
         p.commits.iter().flat_map(|c| &c.files).filter(|f| f.path == "latin1.txt").map(|f| f.reason.clone()).collect();
-    assert_eq!(latin, [Some("NON_UTF8".into()), Some("NON_UTF8".into())]);
+    // The modification is not copied; the later deletion replays.
+    assert_eq!(latin, [Some("NON_UTF8".into()), None]);
     assert_eq!(apply(&p, ClipPasteApply::default()).commits.len(), 2);
-    assert_eq!(fs::read(dst.join("latin1.txt")).unwrap(), b"caf\xe9\n");
+    assert!(!dst.join("latin1.txt").exists());
     assert_eq!(read(dst.join("ok.txt")), "ok\n");
 
     // A non-UTF-8 file in the destination is not overwritten.
