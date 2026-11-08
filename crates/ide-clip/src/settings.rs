@@ -45,6 +45,9 @@ pub struct Settings {
     pub file_count_limit: f64,
     #[serde(rename = "maxFileSizeKB")]
     pub max_file_size_kb: f64,
+    /// Per-file limit for a non-text file (GLOSSARY), in KB of raw bytes.
+    #[serde(rename = "maxNonTextFileSizeKB")]
+    pub max_non_text_file_size_kb: f64,
     pub show_copy_notification: bool,
     pub use_filters: bool,
     pub use_include_filters: bool,
@@ -62,6 +65,7 @@ impl Default for Settings {
             set_max_file_count: true,
             file_count_limit: 30.0,
             max_file_size_kb: 500.0,
+            max_non_text_file_size_kb: 2048.0,
             show_copy_notification: true,
             use_filters: false,
             use_include_filters: true,
@@ -74,6 +78,30 @@ impl Default for Settings {
 impl<'de> Deserialize<'de> for Settings {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         Ok(normalize(&Value::deserialize(d)?))
+    }
+}
+
+/// Whether a copy carries non-text files (spec `docs/clipcode/non-text-files.md`).
+/// The user picks it in the copy dialog each time; it is never stored.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NonTextMode {
+    /// Today's behaviour: non-text files are left out.
+    #[default]
+    Exclude,
+    /// Non-text files within their limit are carried as Base64.
+    Include,
+}
+
+impl Settings {
+    /// [`Settings::max_file_size_kb`] in whole bytes (`size > floor(limit)` is `size > limit`).
+    pub fn max_text_file_bytes(&self) -> u64 {
+        (self.max_file_size_kb * 1024.0) as u64
+    }
+
+    /// [`Settings::max_non_text_file_size_kb`] in whole bytes.
+    pub fn max_non_text_file_bytes(&self) -> u64 {
+        (self.max_non_text_file_size_kb * 1024.0) as u64
     }
 }
 
@@ -115,6 +143,7 @@ pub fn normalize(input: &Value) -> Settings {
     };
     positive("fileCountLimit", &mut s.file_count_limit);
     positive("maxFileSizeKB", &mut s.max_file_size_kb);
+    positive("maxNonTextFileSizeKB", &mut s.max_non_text_file_size_kb);
 
     if let Some(rules) = input.get("filterRules").and_then(Value::as_array) {
         // Same shape check as isFilterRule: known type/action, string value,
@@ -135,6 +164,7 @@ mod tests {
         assert_eq!(d.header_format, "// file: $FILE_PATH");
         assert_eq!(d.file_count_limit, 30.0);
         assert_eq!(d.max_file_size_kb, 500.0);
+        assert_eq!(d.max_non_text_file_size_kb, 2048.0);
         assert!(d.add_extra_line_between_files);
     }
 
@@ -161,6 +191,7 @@ mod tests {
         let s = normalize(&json!({
             "fileCountLimit": 0,
             "maxFileSizeKB": -5,
+            "maxNonTextFileSizeKB": 0,
             "headerFormat": "## $FILE_PATH",
             "filterRules": [
                 { "type": "GLOB", "action": "EXCLUDE", "value": "x", "enabled": true },
@@ -172,6 +203,8 @@ mod tests {
         }));
         assert_eq!(s.file_count_limit, 30.0);
         assert_eq!(s.max_file_size_kb, 500.0);
+        assert_eq!(s.max_non_text_file_size_kb, 2048.0);
+        assert_eq!(normalize(&json!({ "maxNonTextFileSizeKB": 64 })).max_non_text_file_size_kb, 64.0);
         assert_eq!(s.header_format, "## $FILE_PATH");
         assert_eq!(s.filter_rules.len(), 1);
         assert_eq!(s.filter_rules[0].kind, FilterType::Pattern);
@@ -189,6 +222,7 @@ mod tests {
             "setMaxFileCount",
             "fileCountLimit",
             "maxFileSizeKB",
+            "maxNonTextFileSizeKB",
             "showCopyNotification",
             "useFilters",
             "useIncludeFilters",
