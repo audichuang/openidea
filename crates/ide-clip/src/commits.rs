@@ -621,12 +621,8 @@ fn admit_entry(
         return push_file(commits, current_wire_len, file, limit, opts);
     }
     if change == FileChange::Deleted {
-        // A deletion carries no content, so the pre-deletion blob is only
-        // classified: retain nothing, scan it. Text of any size (or a blob
-        // that cannot be read) stays a plain deletion and never counts
-        // against the payload limit; NUL or invalid UTF-8 becomes
-        // not-copied so paste leaves the target file alone (spec 4.2).
-        file.not_copied = blobs.deleted_not_text(git, &entry.old_oid)?.map(NotCopiedReason::from);
+        // A deletion carries no content and is replayed whatever the pre-deletion
+        // blob was (text or not), so the blob is never read or classified.
         return push_file(commits, current_wire_len, file, limit, opts);
     }
     admit_blob(commits, current_wire_len, file, git, blobs, &entry.new_oid, opts, limit, non_text)
@@ -1333,6 +1329,11 @@ fn plan_file(root: &Path, f: &CommitFile, layout: &PlannedLayout) -> FilePlan {
         non_text_size: None,
     };
     let deleted = f.change == FileChange::Deleted;
+    // A deletion needs no content. Payloads from before this rule marked a deleted non-text
+    // file as not copied; the replay still deletes it.
+    if deleted && matches!(f.not_copied, Some(NotCopiedReason::Binary | NotCopiedReason::NonUtf8)) {
+        plan.not_copied = None;
+    }
     // The bytes are verified before anything is planned as writable.
     if let Some(nt) = f.non_text.as_ref().filter(|_| !deleted) {
         if nt.decode().is_err() {
