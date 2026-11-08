@@ -77,6 +77,13 @@ pub struct CopyOutcome {
     pub skipped: usize,
     /// The file limit cut the copy short.
     pub truncated: bool,
+    /// Non-text files carried as Base64 (Include only); also in `copied`.
+    #[serde(default)]
+    pub non_text_files: usize,
+    /// What the copy dialog shows; under Exclude, what Include would add
+    /// (also when nothing else was copied).
+    #[serde(default)]
+    pub non_text: crate::nontext::NonTextSummary,
 }
 
 /// [`CopyOutcome`] plus the detail a local CLI prints: per-file skip
@@ -118,6 +125,8 @@ pub fn copy_selection(
             tokens: 0,
             skipped: 1,
             truncated: false,
+            non_text_files: 0,
+            non_text: Default::default(),
         }),
         Err(err) => Err(err),
     }
@@ -178,6 +187,8 @@ pub fn copy_selection_detailed(
                 tokens: 0,
                 skipped,
                 truncated: false,
+                non_text_files: 0,
+                non_text: plan.non_text.clone(),
             },
             files: plan.files,
             skipped_file_size: plan.skipped_file_size_count,
@@ -197,6 +208,8 @@ pub fn copy_selection_detailed(
             skipped,
             truncated: expanded.truncated || plan.file_limit_reached,
             payload: plan.payload,
+            non_text_files: plan.non_text_file_count,
+            non_text: plan.non_text.clone(),
         },
         files: plan.files,
         skipped_file_size: plan.skipped_file_size_count,

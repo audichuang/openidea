@@ -1185,7 +1185,7 @@ fn blob_output_limit(spec: &str, cap: u64) -> GitError {
 fn copyable(read: BlobRead, spec: &str, cap: u64) -> Result<Option<String>, GitError> {
     match read {
         BlobRead::Text(s) => Ok(Some(s)),
-        BlobRead::Missing | BlobRead::NotText(_) => Ok(None),
+        BlobRead::Missing | BlobRead::NotText(_) | BlobRead::NonText { .. } => Ok(None),
         // lenient reader 絕不產出 NotABlob，保留此分支僅為維持窮舉編譯。
         BlobRead::NotABlob { .. } => Ok(None),
         BlobRead::TooLarge { .. } => Err(blob_output_limit(spec, cap)),
@@ -1254,7 +1254,13 @@ fn read_changes(
             }
         };
         already_cancelled(opts, "read changed file")?;
-        files.push(PayloadFile { path: c.path, content, change_type: Some(change_type), skipped_reason: None });
+        files.push(PayloadFile {
+            path: c.path,
+            content,
+            change_type: Some(change_type),
+            skipped_reason: None,
+            non_text: None,
+        });
     }
     blobs.close()?;
     already_cancelled(opts, "read changes")?;
@@ -1369,6 +1375,7 @@ pub fn collect_payload_with_selection<P: AsRef<Path>>(
                 content: None,
                 change_type: file.change_type,
                 skipped_reason: Some(format!("size exceeds limit ({size} bytes)")),
+                non_text: None,
             });
             continue;
         }
@@ -1379,7 +1386,13 @@ pub fn collect_payload_with_selection<P: AsRef<Path>>(
         } else {
             copied += 1;
         }
-        files.push(PayloadFile { path, content: Some(content), change_type: file.change_type, skipped_reason: None });
+        files.push(PayloadFile {
+            path,
+            content: Some(content),
+            change_type: file.change_type,
+            skipped_reason: None,
+            non_text: None,
+        });
     }
     let has_files = !files.is_empty();
     let options = BuildPayloadOptions {
@@ -1620,18 +1633,18 @@ mod tests {
         let big_oid = big_oid.trim();
         let mut cat = git.cat_file().unwrap();
         assert_eq!(
-            cat.read_classified(big_oid, 64, false).unwrap(),
+            cat.read_classified(big_oid, 64, false, false).unwrap(),
             BlobRead::TooLarge { size: big.len() as u64, not_text: None }
         );
-        match cat.read_classified("HEAD:late.bin", 32, false).unwrap() {
+        match cat.read_classified("HEAD:late.bin", 32, false, false).unwrap() {
             BlobRead::TooLarge { not_text: Some(crate::blob::NotText::Binary), .. } => {}
             other => panic!("{other:?}"),
         }
-        match cat.read_classified("HEAD:bad.txt", 32, false).unwrap() {
+        match cat.read_classified("HEAD:bad.txt", 32, false, false).unwrap() {
             BlobRead::TooLarge { not_text: Some(crate::blob::NotText::NotUtf8), .. } => {}
             other => panic!("{other:?}"),
         }
-        assert_eq!(cat.read_classified("HEAD:small.txt", 64, false).unwrap(), BlobRead::Text("small\n".into()));
+        assert_eq!(cat.read_classified("HEAD:small.txt", 64, false, false).unwrap(), BlobRead::Text("small\n".into()));
         cat.close().unwrap();
     }
 
@@ -1843,7 +1856,13 @@ mod tests {
     }
 
     fn file(path: &str, content: &str, t: ChangeType) -> PayloadFile {
-        PayloadFile { path: path.into(), content: Some(content.into()), change_type: Some(t), skipped_reason: None }
+        PayloadFile {
+            path: path.into(),
+            content: Some(content.into()),
+            change_type: Some(t),
+            skipped_reason: None,
+            non_text: None,
+        }
     }
 
     use ChangeType::{Deleted, Modified, Moved, New};
