@@ -350,3 +350,68 @@ fn unreadable_entries_are_named_in_the_copy_result() {
     named.sort();
     assert_eq!(named, ["mix/dangling", "mix/locked.txt"]);
 }
+
+/// A selected unreadable folder next to a readable file: the file is copied, the folder is named.
+#[cfg(unix)]
+#[test]
+fn a_selected_unreadable_folder_is_skipped_and_named() {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some((_tmp, root)) = refused_entries() else { return };
+    init_repo(&root);
+    let mix = root.join("mix");
+    let settings = Settings::default();
+    let a = copy(&root, ClipCopySource::Files { paths: vec![mix.join("a.txt"), mix.join("locked_dir")] }, &settings);
+    let b = copy(&root, ClipCopySource::Files { paths: vec![mix.join("locked_dir"), mix.join("a.txt")] }, &settings);
+    // The same selection while the project is somewhere else.
+    let (_other_tmp, other) = dir();
+    let c = copy(&other, ClipCopySource::Files { paths: vec![mix.join("a.txt"), mix.join("locked_dir")] }, &settings);
+    restore_modes(&root);
+    for r in [a, b, c] {
+        let r = r.unwrap();
+        assert_eq!((r.files, r.skipped_unreadable), (1, 1), "{r:?}");
+        assert_eq!(r.skipped_unreadable_paths.len(), 1);
+        assert!(r.skipped_unreadable_paths[0].ends_with("locked_dir"), "{r:?}");
+        assert!(r.text.contains("hello"));
+    }
+}
+
+/// Names the payload cannot carry are reported as such, with their real names; a symlinked folder inside a
+/// copied folder is named too.
+#[cfg(unix)]
+#[test]
+fn unportable_names_and_symlinked_folders_are_named() {
+    use std::os::unix::fs::symlink;
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (_tmp, root) = dir();
+    let d = root.join("odd");
+    fs::create_dir_all(d.join("real")).unwrap();
+    fs::write(d.join("real/x.txt"), "x\n").unwrap();
+    fs::write(d.join("a.txt"), "hello\n").unwrap();
+    fs::write(d.join("back\\slash.txt"), "b\n").unwrap();
+    fs::write(d.join("q\"uote.txt"), "q\n").unwrap();
+    fs::write(d.join("tab\tname.txt"), "t\n").unwrap();
+    symlink(d.join("real"), d.join("linkdir")).unwrap();
+    let settings = Settings::default();
+
+    let folder = copy(&root, ClipCopySource::Files { paths: vec![d.clone()] }, &settings).unwrap();
+    assert_eq!(folder.files, 2, "{folder:?}");
+    assert_eq!((folder.skipped, folder.skipped_unreadable), (4, 0), "{folder:?}");
+    let mut named = folder.skipped_unportable_paths.clone();
+    named.sort();
+    assert_eq!(named, ["odd/back\\slash.txt", "odd/q\"uote.txt", "odd/tab\tname.txt"]);
+    assert_eq!((folder.skipped_unportable, folder.skipped_symlink_dirs), (3, 1));
+    assert_eq!(folder.skipped_symlink_dir_paths, ["odd/linkdir"]);
+    assert!(folder.skipped_unreadable_paths.is_empty());
+
+    // Picked directly, the same names are not "unreadable" either.
+    let direct = copy(
+        &root,
+        ClipCopySource::Files { paths: vec![d.join("a.txt"), d.join("back\\slash.txt"), d.join("tab\tname.txt")] },
+        &settings,
+    )
+    .unwrap();
+    assert_eq!((direct.files, direct.skipped_unportable, direct.skipped_unreadable), (1, 2, 0), "{direct:?}");
+    let mut named = direct.skipped_unportable_paths.clone();
+    named.sort();
+    assert_eq!(named, ["odd/back\\slash.txt", "odd/tab\tname.txt"]);
+}
