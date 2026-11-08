@@ -14,6 +14,8 @@ pub struct FolderExpansion {
     pub sel: ExportSelection,
     /// Walked files the payload cannot carry (see `folder_file_rel`).
     pub skipped: usize,
+    /// The first [`super::SKIPPED_PATHS_SHOWN`] of those files' root-relative paths, so a notice can name them.
+    pub skipped_paths: Vec<String>,
     /// The walk stopped at the file limit with files left.
     pub truncated: bool,
     /// When `truncated` is true, the item count in `sel.items` at the moment
@@ -21,6 +23,18 @@ pub struct FolderExpansion {
     /// that sort after the truncated folder, and must not be planned until the
     /// folder is fully expanded or the prefix alone satisfies the file limit.
     pub truncated_at: Option<usize>,
+}
+
+/// Records a dropped file's path while the notice can still show it.
+fn note_skipped(paths: &mut Vec<String>, path: String) {
+    if paths.len() < super::SKIPPED_PATHS_SHOWN {
+        paths.push(path);
+    }
+}
+
+/// `path` relative to `root` with `/` separators (lossy for non-UTF-8 names).
+fn rel_display(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/")
 }
 
 /// The payload path of a walked file, or None when the export would refuse
@@ -95,7 +109,7 @@ pub struct CopyReport {
     pub skipped_file_size: usize,
     /// Plan-level unreadable plus the folder walk's refusals.
     pub skipped_unreadable: usize,
-    /// The first few unreadable files' payload paths (the folder walk's refusals have none).
+    /// The first few unreadable files' paths: the plan's payload paths, then the selection's and folder walk's refusals.
     pub skipped_unreadable_paths: Vec<String>,
     pub file_limit_reached: bool,
 }
@@ -178,6 +192,13 @@ pub fn copy_selection_detailed(
         limit = limit.saturating_mul(2);
     };
     let skipped = plan.skipped_unreadable_count + plan.skipped_file_size_count + expanded.skipped;
+    let unreadable_paths: Vec<String> = plan
+        .skipped_unreadable_paths
+        .iter()
+        .chain(&expanded.skipped_paths)
+        .take(super::SKIPPED_PATHS_SHOWN)
+        .cloned()
+        .collect();
     if plan.files.is_empty() {
         return Ok(CopyReport {
             outcome: CopyOutcome {
@@ -195,7 +216,7 @@ pub fn copy_selection_detailed(
             files: plan.files,
             skipped_file_size: plan.skipped_file_size_count,
             skipped_unreadable: plan.skipped_unreadable_count + expanded.skipped,
-            skipped_unreadable_paths: plan.skipped_unreadable_paths.clone(),
+            skipped_unreadable_paths: unreadable_paths,
             file_limit_reached: plan.file_limit_reached,
         });
     }
@@ -217,7 +238,7 @@ pub fn copy_selection_detailed(
         files: plan.files,
         skipped_file_size: plan.skipped_file_size_count,
         skipped_unreadable: plan.skipped_unreadable_count + expanded.skipped,
-        skipped_unreadable_paths: plan.skipped_unreadable_paths.clone(),
+        skipped_unreadable_paths: unreadable_paths,
         file_limit_reached: plan.file_limit_reached,
     })
 }
@@ -287,11 +308,18 @@ fn expand_folder_items_inner(
         std::fs::metadata(&path).is_ok_and(|m| m.is_dir())
     };
     if !input_order_dedupe && !sel.items.iter().any(|item| is_folder(item) || is_refused_dir(item)) {
-        return Ok(FolderExpansion { sel, skipped: 0, truncated: false, truncated_at: None });
+        return Ok(FolderExpansion {
+            sel,
+            skipped: 0,
+            skipped_paths: Vec::new(),
+            truncated: false,
+            truncated_at: None,
+        });
     }
     let picked = sel.items.iter().filter(|item| !is_folder(item) && !is_refused_dir(item)).count();
     let mut budget = limit.saturating_sub(picked);
     let mut skipped = 0usize;
+    let mut skipped_paths: Vec<String> = Vec::new();
     let mut truncated = false;
     let mut truncated_at = None;
     let mut seen: HashSet<(PathBuf, String)> = if input_order_dedupe {
@@ -304,6 +332,7 @@ fn expand_folder_items_inner(
         if !is_folder(&item) {
             if is_refused_dir(&item) {
                 skipped += 1;
+                note_skipped(&mut skipped_paths, item.relative_path.clone());
                 continue;
             }
             if input_order_dedupe {
@@ -326,8 +355,9 @@ fn expand_folder_items_inner(
             }
             let path = match walked {
                 fsutil::WalkItem::File(path) => path,
-                fsutil::WalkItem::UnreadableDir(_) => {
+                fsutil::WalkItem::UnreadableDir(dir) => {
                     skipped += 1;
+                    note_skipped(&mut skipped_paths, rel_display(root, &dir));
                     continue;
                 }
             };
@@ -336,6 +366,7 @@ fn expand_folder_items_inner(
             }
             let Some(rel) = folder_file_rel(root, &path) else {
                 skipped += 1;
+                note_skipped(&mut skipped_paths, rel_display(root, &path));
                 continue;
             };
             let key = (root.to_path_buf(), rel.clone());
@@ -362,7 +393,7 @@ fn expand_folder_items_inner(
     // copy from a subfolder keeps its `filter_root`, so relative exclude
     // rules keep matching folder-relative paths.
     let sel = sel.with_items(items)?;
-    Ok(FolderExpansion { sel, skipped, truncated, truncated_at })
+    Ok(FolderExpansion { sel, skipped, skipped_paths, truncated, truncated_at })
 }
 
 /// Plans an export by expanding folder items in progressively doubling batches,
@@ -429,6 +460,8 @@ pub struct PathSelection {
     pub sel: ExportSelection,
     /// Items dropped before planning (FIFO/socket/device, out-of-root or dangling symlink, header-unrepresentable or non-UTF-8 name, unopenable file).
     pub skipped: usize,
+    /// The first [`super::SKIPPED_PATHS_SHOWN`] of those items' root-relative paths.
+    pub skipped_paths: Vec<String>,
 }
 
 fn lexical_normalize(path: &Path) -> PathBuf {
@@ -451,6 +484,7 @@ fn collect_root_children(
     items: &mut Vec<ExportItem>,
     seen: &mut HashSet<String>,
     skipped: &mut usize,
+    skipped_paths: &mut Vec<String>,
 ) -> Result<(), TransferError> {
     let read_dir = match std::fs::read_dir(canonical_root.path()) {
         Ok(rd) => rd,
@@ -473,6 +507,7 @@ fn collect_root_children(
     for name in child_names {
         let Some(name_str) = name.to_str() else {
             *skipped += 1;
+            note_skipped(skipped_paths, name.to_string_lossy().into_owned());
             continue;
         };
         let child_path = canonical_root.path().join(&name);
@@ -480,6 +515,7 @@ fn collect_root_children(
             Ok(m) => m,
             Err(_) => {
                 *skipped += 1;
+                note_skipped(skipped_paths, name_str.to_string());
                 continue;
             }
         };
@@ -505,6 +541,7 @@ fn collect_root_children(
             }
         } else {
             *skipped += 1;
+            note_skipped(skipped_paths, name_str.to_string());
         }
     }
     Ok(())
@@ -520,6 +557,7 @@ pub fn selection_from_paths(root: &Path, cwd: &Path, paths: &[PathBuf]) -> Resul
 
     let mut items = Vec::new();
     let mut skipped = 0usize;
+    let mut skipped_paths: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
     for path in paths {
@@ -530,7 +568,7 @@ pub fn selection_from_paths(root: &Path, cwd: &Path, paths: &[PathBuf]) -> Resul
             || normalized == canonical_root.path()
             || dunce::canonicalize(&normalized).ok().as_deref() == Some(canonical_root.path());
         if is_root {
-            collect_root_children(&canonical_root, path, &mut items, &mut seen, &mut skipped)?;
+            collect_root_children(&canonical_root, path, &mut items, &mut seen, &mut skipped, &mut skipped_paths)?;
             continue;
         }
 
@@ -569,7 +607,7 @@ pub fn selection_from_paths(root: &Path, cwd: &Path, paths: &[PathBuf]) -> Resul
         };
 
         if rel.as_os_str().is_empty() {
-            collect_root_children(&canonical_root, path, &mut items, &mut seen, &mut skipped)?;
+            collect_root_children(&canonical_root, path, &mut items, &mut seen, &mut skipped, &mut skipped_paths)?;
             continue;
         }
 
@@ -582,6 +620,7 @@ pub fn selection_from_paths(root: &Path, cwd: &Path, paths: &[PathBuf]) -> Resul
             Some(s) => s,
             None => {
                 skipped += 1;
+                note_skipped(&mut skipped_paths, rel.to_string_lossy().replace('\\', "/"));
                 continue;
             }
         };
@@ -620,6 +659,7 @@ pub fn selection_from_paths(root: &Path, cwd: &Path, paths: &[PathBuf]) -> Resul
             }
         } else {
             skipped += 1;
+            note_skipped(&mut skipped_paths, rel_str);
         }
     }
 
@@ -631,7 +671,7 @@ pub fn selection_from_paths(root: &Path, cwd: &Path, paths: &[PathBuf]) -> Resul
         .with_source_root(source_root)
         .with_spelled_root(Some(lexical_root));
 
-    Ok(PathSelection { sel, skipped })
+    Ok(PathSelection { sel, skipped, skipped_paths })
 }
 
 #[cfg(test)]
