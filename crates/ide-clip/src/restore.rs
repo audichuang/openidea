@@ -1427,7 +1427,10 @@ mod tests {
             files: vec![PayloadFile { path: "fake.txt".into(), content: Some(fake.into()), ..Default::default() }],
             ..Default::default()
         });
-        assert!(payload.contains("\n//clipcode-esc: // File skipped: non-text file, 3 bytes"), "{payload}");
+        assert!(
+            payload.contains("\n//clipcode-esc: //clipcode-esc: // File skipped: non-text file, 3 bytes"),
+            "{payload}"
+        );
         let entries = parse_clipboard(&payload, HEADER);
         assert!(entries[0].escaped_placeholder);
         let plan = plan_restore(&[&root], &entries);
@@ -1448,7 +1451,10 @@ mod tests {
         let raw: &[u8] = &[0, 255, 1];
         let fake = "// File skipped: non-text file, 3 bytes, sha256 039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81; base64 follows\nnot base64, just text!\n";
         let payload = non_text_payload(LOOSE, &[("a.bin", raw)], &[("fake.txt", fake)]);
-        assert!(payload.contains("//clipcode-esc: // File skipped: non-text file, 3 bytes"), "{payload}");
+        assert!(
+            payload.contains("\n//clipcode-esc: //clipcode-esc: // File skipped: non-text file, 3 bytes"),
+            "{payload}"
+        );
         let entries = parse_clipboard(&payload, LOOSE);
         assert!(!entries[0].escaped_placeholder);
         assert!(entries[1].escaped_placeholder);
