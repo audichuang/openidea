@@ -43,6 +43,10 @@ pub struct ParsedEntry {
     pub path: String,
     pub content: String,
     pub change_types: BTreeSet<ChangeType>,
+    /// The body's first line was written as `//clipcode-esc: ` plus a non-text placeholder line: a real
+    /// text file that starts like a non-text entry. `content` is the un-escaped text; it is not a non-text
+    /// entry and not a size placeholder.
+    pub escaped_placeholder: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -148,7 +152,18 @@ impl<'a, W: std::fmt::Write> PayloadLineWriter<'a, W> {
             self.w.write_char('\n')?;
         }
         self.has_written_line = true;
-        write_escaped_content(self.w, text, custom)
+        write_escaped_content(self.w, text, custom, false)
+    }
+
+    /// [`Self::write_escaped`] for a text body: a first line shaped like the non-text placeholder is escaped, so a
+    /// reader never decodes it.
+    pub fn write_escaped_text(&mut self, text: &str, custom: Option<&HeaderPattern>) -> std::fmt::Result {
+        if self.has_written_line {
+            self.w.write_char('\n')?;
+        }
+        self.has_written_line = true;
+        let first = text.split('\n').next().unwrap_or("");
+        write_escaped_content(self.w, text, custom, crate::nontext::parse_placeholder_line(first).is_some())
     }
 }
 
@@ -158,10 +173,11 @@ pub(crate) fn write_escaped_content<W: std::fmt::Write>(
     w: &mut W,
     text: &str,
     custom: Option<&HeaderPattern>,
+    force_first: bool,
 ) -> std::fmt::Result {
     let mut lines = text.split('\n');
     if let Some(first) = lines.next() {
-        if needs_escape(first, custom) {
+        if force_first || needs_escape(first, custom) {
             w.write_str(ESCAPE_MARKER)?;
         }
         w.write_str(first)?;
@@ -240,7 +256,7 @@ pub(crate) fn write_payload_file<W: std::fmt::Write>(
         }
         _ => {
             let body = file.content.as_deref().unwrap_or_default();
-            writer.write_escaped(body, custom)?;
+            writer.write_escaped_text(body, custom)?;
         }
     }
     if add_extra_line_between_files {
@@ -356,7 +372,13 @@ pub fn parse_clipboard(content: &str, header_format: &str) -> Vec<ParsedEntry> {
     let mut body: Vec<&str> = Vec::new();
     let mut flush = |current: &mut Option<(String, BTreeSet<ChangeType>)>, body: &mut Vec<&str>| {
         if let Some((path, change_types)) = current.take() {
-            entries.push(ParsedEntry { path, content: unescape_content(&join_content(body)), change_types });
+            let raw = join_content(body);
+            let escaped_placeholder = raw
+                .split('\n')
+                .next()
+                .and_then(|l| l.strip_prefix(ESCAPE_MARKER))
+                .is_some_and(|l| crate::nontext::parse_placeholder_line(l).is_some());
+            entries.push(ParsedEntry { path, content: unescape_content(&raw), change_types, escaped_placeholder });
         }
         body.clear();
     };
@@ -521,11 +543,21 @@ mod tests {
     fn parses_custom_and_generic_headers() {
         assert_eq!(
             parse_clipboard("### src/a.ts\none", "### $FILE_PATH"),
-            vec![ParsedEntry { path: "src/a.ts".into(), content: "one".into(), change_types: BTreeSet::new() }]
+            vec![ParsedEntry {
+                path: "src/a.ts".into(),
+                content: "one".into(),
+                change_types: BTreeSet::new(),
+                escaped_placeholder: false
+            }]
         );
         assert_eq!(
             parse_clipboard("# file: src/b.ts\ntwo", "missing placeholder"),
-            vec![ParsedEntry { path: "src/b.ts".into(), content: "two".into(), change_types: BTreeSet::new() }]
+            vec![ParsedEntry {
+                path: "src/b.ts".into(),
+                content: "two".into(),
+                change_types: BTreeSet::new(),
+                escaped_placeholder: false
+            }]
         );
     }
 
