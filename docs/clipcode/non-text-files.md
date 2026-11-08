@@ -74,7 +74,12 @@ Exclude copy runs; the dialog and the Include notice must agree.
 
 Buttons: **Include** (default focus), **Exclude** (today's behaviour: non-text files are left out) and
 **Cancel** (nothing is copied). Include is disabled, with the reason shown, when the estimate is over the
-whole-payload limit; focus then starts on Exclude. Esc is Cancel. The choice is not remembered.
+whole-payload limit; focus then starts on Exclude. In that case the dialog never shows an estimate below the raw
+total: it says the payload would be more than 50 MiB (or shows a real estimate of the full Include size), next
+to the raw total. Include is also disabled, with the reason shown, when the `headerFormat` cannot be escaped (a
+format with no fixed text before `$FILE_PATH`, such as `$FILE_PATH` alone: every line would match it, so Base64
+lines would be read as file headers); decided by the user, deep round 4. Esc is Cancel. The choice is not
+remembered.
 
 Counts in UI text are phrased so they read correctly for 1 and for many (e.g. "Non-text files copied as Base64:
 1."), unless the platform has plural support. Long paths are shortened in the middle so the file name stays
@@ -109,10 +114,20 @@ jwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAAZdEVYdFNvZnR3YXJlAHBhaW50Lm5ldCA0LjAu
   cannot match it; the escaping covers a loose custom `headerFormat`.
 - Header labels (`[NEW]`, `[MOVED]`, ...) and the `clipcode-root` line work as for text entries.
 - A **text** entry whose first body line matches the placeholder pattern above (a real text file that happens to
-  start with that line) is escaped on copy: the writer prefixes that first line with `//clipcode-esc: `. The
-  reader tests for the non-text placeholder on the raw first line, before un-escaping, so an escaped line is
-  never decoded; after un-escaping, the text is restored as written. (Found by deep testing: without this, such a
-  text file was pasted as the 3 decoded bytes.)
+  start with that line) gets two layers of escaping (decided by the user, deep round 4):
+  1. The writer first prefixes that first line with `//clipcode-esc: ` (the placeholder escape).
+  2. The body then goes through the normal content escaping like any other body. A line starting with
+     `//clipcode-esc: ` is always escaped, so the first line now carries two prefixes:
+     `//clipcode-esc: //clipcode-esc: // File skipped: non-text file, …`.
+
+  A real non-text placeholder line carries zero prefixes (built-in header) or one (a custom `headerFormat` that
+  matches it, e.g. `// $FILE_PATH`). The reader un-escapes one level per line as for any body, then looks at
+  the first line: the exact placeholder means a non-text entry; `//clipcode-esc: ` followed by the exact
+  placeholder means placeholder-shaped text, so the reader strips that one remaining prefix and restores the text
+  as written. This works under every header format without guessing from the body. A reader that predates this
+  rule un-escapes one level and writes the text with a literal `//clipcode-esc: ` first line (before this rule it
+  skipped such a file). (Found by deep testing: with one shared prefix, a custom header made such a text file
+  paste as decoded bytes or show as Corrupt.)
 
 ### Why the placeholder prefix
 
@@ -166,7 +181,9 @@ Only OpenIDEA implements commits mode (`// snip-sync commits v1`). The marker st
 - A corrupt entry shows a **Corrupt** badge (not a long inline note), with "Corrupt non-text file" in the tooltip
   and the detail pane. The file name keeps priority in the row, in flat and nested (indented) rows alike: badges
   and notes shrink or drop before the name does, a name that still does not fit is shortened in the middle
-  keeping its extension, and 30–60 character names that share a prefix stay distinguishable.
+  keeping its extension, and 30–60 character names that share a prefix stay distinguishable. A badge or a size
+  note shows whole or not at all: never a clipped word, a partial number or a sliver of padding. Middle
+  ellipsis shows as one continuous name (no visible gap between its two halves).
 - Commits replay writes and commits the decoded bytes, after the same length and SHA-256 check.
 - A **text** write over an existing non-UTF-8 file stays refused by the non-UTF-8 overwrite guard, outside the
   batch case in [Commits-mode](#commits-mode-wire-format-openidea-only) (decided by the user, deep round 3). The
@@ -180,7 +197,8 @@ Only OpenIDEA implements commits mode (`// snip-sync commits v1`). The marker st
   oversized input bypass the limit).
 - One entry that cannot be applied (its target path is a directory, a parent is not writable, two entries map to
   the same file on a case-insensitive file system such as `IMG.png` and `img.png` on APFS) skips that row (for a
-  collision: every colliding row) with its reason in user text; the rest of the paste continues. It never aborts
+  collision: every colliding row) with its reason in user text (a write error such as permission denied is shown
+  as user text, e.g. "Folder is not writable", not the raw OS message); the rest of the paste continues. It never aborts
   the whole paste. A row that fails while writing counts as skipped in the notice title, not only in its body.
   (Case-only collisions aborted the whole paste with the raw `IpcError: target collision` text before this spec:
   pre-existing, found by deep testing round 3.)
@@ -206,7 +224,9 @@ Each implementation adds these to its contract tests (OpenIDEA: `clipboard-contr
 9. Existing identical target is unchanged; existing different target follows the overwrite option.
 10. Commits mode: a commit adding an image replays with the image; an older reader skips it.
 11. Exclude in the dialog produces today's payload byte for byte.
-12. A text file whose first line is a valid-looking non-text placeholder round-trips as the original text.
+12. A text file whose first line is a valid-looking non-text placeholder round-trips as the original text, under
+    the built-in header and under `// $FILE_PATH` (also when its second line is valid Base64, e.g. `YWJj`), in
+    the same payload as a real non-text file that round-trips byte for byte.
 13. Commits mode: image added, modified, then deleted across three commits replays to the same tree as the
     source (the deletion happens); a rename of an image moves it.
 14. Commits mode: Big5 file rewritten as UTF-8 in a later commit of the same batch keeps the rewrite.
@@ -230,6 +250,9 @@ Each implementation adds these to its contract tests (OpenIDEA: `clipboard-contr
     reason and restores the other entries.
 24. Commits replay of a single commit whose only change is refused by the non-UTF-8 guard: the preview shows the
     reason, no empty commit is created, later commits of the replay still apply.
+25. With `headerFormat` set to `$FILE_PATH`, the dialog disables Include with its reason; Exclude still works.
+26. Over the whole-payload limit (e.g. six 9 MB non-text files with a 10000 KB non-text limit), the dialog never
+    shows an estimate below the raw total.
 
 ## Open items for the other implementations
 
