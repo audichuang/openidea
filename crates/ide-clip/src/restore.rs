@@ -394,7 +394,7 @@ pub fn execute_restore_plan_observed(
         if op.absolute_path.exists() {
             match delete_file(&op.absolute_path) {
                 Ok(()) => result.deleted_count += 1,
-                Err(e) => result.errors.push(format!("{}: {e}", op.relative_path)),
+                Err(e) => result.errors.push(format!("{}: {}", op.relative_path, io_error_text(&e))),
             }
         }
     }
@@ -435,8 +435,24 @@ fn run_create(roots: &[PathBuf], selection: &RestoreSelection, op: &CreateOperat
         Some(bytes) => write_bytes_file(&op.absolute_path, bytes),
         None => write_text_file(&op.absolute_path, &op.content),
     }
-    .map_err(|e| format!("{}: {e}", op.relative_path))?;
+    .map_err(|e| format!("{}: {}", op.relative_path, io_error_text(&e)))?;
     Ok(outcome)
+}
+
+/// What a failed write or delete says to the user (spec "Pasting": never the raw OS message). The UI
+/// translates these exact texts (`src/features/vcs/clipNonText.tsx`, `errorLineText`).
+fn io_error_text(e: &std::io::Error) -> &'static str {
+    use std::io::ErrorKind::*;
+    match e.kind() {
+        PermissionDenied => "Folder is not writable",
+        NotFound => "File or folder not found",
+        AlreadyExists => "A file or folder already exists at that path",
+        NotADirectory => "A file is in the way of a folder",
+        IsADirectory => "The target is a folder",
+        StorageFull => "The disk is full",
+        ReadOnlyFilesystem => "The file system is read-only",
+        _ => "Could not apply the change",
+    }
 }
 
 /// True if any path equals another, or is an ancestor directory of another
@@ -1463,6 +1479,38 @@ mod tests {
         execute_restore_plan(&plan, &RestoreSelection::default());
         assert_eq!(fs::read(root.join("a.bin")).unwrap(), raw);
         assert_eq!(fs::read_to_string(root.join("fake.txt")).unwrap().trim_end(), fake.trim_end());
+    }
+
+    /// A write error is user text, never the raw OS message, and keeps the path.
+    #[cfg(unix)]
+    #[test]
+    fn a_permission_error_is_user_text_not_the_os_message() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_d, root) = tmp();
+        fs::create_dir_all(root.join("ro")).unwrap();
+        fs::set_permissions(root.join("ro"), fs::Permissions::from_mode(0o555)).unwrap();
+        // A superuser writes anyway: nothing to observe.
+        if fs::write(root.join("ro/probe"), "x").is_ok() {
+            return;
+        }
+        let payload = non_text_payload(HEADER, &[("ro/new.png", PNG)], &[("ro/new.txt", "t")]);
+        let plan = plan_restore(&[&root], &parse_clipboard(&payload, HEADER));
+        let result = execute_restore_plan(&plan, &RestoreSelection::default());
+        fs::set_permissions(root.join("ro"), fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(result.errors, ["ro/new.png: Folder is not writable", "ro/new.txt: Folder is not writable"]);
+    }
+
+    #[test]
+    fn io_errors_map_to_user_text() {
+        use std::io::{Error, ErrorKind};
+        let text = |k| io_error_text(&Error::from(k));
+        assert_eq!(text(ErrorKind::PermissionDenied), "Folder is not writable");
+        assert_eq!(text(ErrorKind::NotFound), "File or folder not found");
+        assert_eq!(text(ErrorKind::StorageFull), "The disk is full");
+        assert_eq!(text(ErrorKind::ReadOnlyFilesystem), "The file system is read-only");
+        // An unknown error never leaks the OS wording.
+        assert_eq!(io_error_text(&Error::from_raw_os_error(13)), "Folder is not writable");
+        assert_eq!(io_error_text(&Error::other("boom (os error 99)")), "Could not apply the change");
     }
 
     #[test]
