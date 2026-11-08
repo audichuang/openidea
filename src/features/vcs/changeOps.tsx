@@ -39,9 +39,7 @@ export async function commitChanges(): Promise<string | undefined> {
   // With the staging area the index is committed as it is; otherwise the checkboxes decide.
   const staging = isStagingArea();
   const vcs = useVcs.getState();
-  const plan = staging
-    ? stagingPlan(vcs.status, vcs.roots, useCommit.getState().stagingExcludedRoots)
-    : currentPlan();
+  const plan = staging ? stagingPlan(vcs.status, vcs.roots, useCommit.getState().stagingExcludedRoots) : currentPlan();
   // Concluding a merge needs no further changes (e.g. every conflict resolved as "yours").
   const merging = useVcs.getState().branch?.operation === "merge";
   if (!plan.included.length && !amend && !merging) {
@@ -49,7 +47,8 @@ export async function commitChanges(): Promise<string | undefined> {
       group: "vcs",
       level: "warning",
       // Staged changes left only in unticked repositories: nothing selected, not nothing staged.
-      title: staging && !stagedFiles(status).length ? "No staged changes to commit" : "No changes selected for commit",
+      title:
+        staging && !stagedFiles(vcs.status).length ? "No staged changes to commit" : "No changes selected for commit",
     });
     return undefined;
   }
