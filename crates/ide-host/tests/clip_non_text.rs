@@ -294,3 +294,59 @@ fn paste_cap_counts_lone_cr() {
     let e = paste_preview_into(&root, None, &[], &text, false, &[], &Settings::default()).unwrap_err();
     assert!(e.to_string().contains("more than 50 MiB"), "{e}");
 }
+
+/// A folder with one readable file and three entries the export refuses (a mode-000 file, a dangling
+/// symlink, a mode-000 directory). Returns None when the user can read mode-000 files (root).
+#[cfg(unix)]
+fn refused_entries() -> Option<(tempfile::TempDir, PathBuf)> {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let (tmp, root) = dir();
+    let d = root.join("mix");
+    fs::create_dir_all(d.join("locked_dir")).unwrap();
+    fs::write(d.join("a.txt"), "hello\n").unwrap();
+    fs::write(d.join("locked.txt"), "secret\n").unwrap();
+    symlink(d.join("nowhere"), d.join("dangling")).unwrap();
+    fs::set_permissions(d.join("locked.txt"), fs::Permissions::from_mode(0)).unwrap();
+    fs::set_permissions(d.join("locked_dir"), fs::Permissions::from_mode(0)).unwrap();
+    if fs::File::open(d.join("locked.txt")).is_ok() {
+        return None;
+    }
+    Some((tmp, root))
+}
+
+#[cfg(unix)]
+fn restore_modes(root: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let d = root.join("mix");
+    let _ = fs::set_permissions(d.join("locked.txt"), fs::Permissions::from_mode(0o644));
+    let _ = fs::set_permissions(d.join("locked_dir"), fs::Permissions::from_mode(0o755));
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_entries_are_named_in_the_copy_result() {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some((_tmp, root)) = refused_entries() else { return };
+    let mix = root.join("mix");
+    let settings = Settings::default();
+
+    let folder = copy(&root, ClipCopySource::Files { paths: vec![mix.clone()] }, &settings);
+    let direct = copy(
+        &root,
+        ClipCopySource::Files { paths: vec![mix.join("a.txt"), mix.join("locked.txt"), mix.join("dangling")] },
+        &settings,
+    );
+    restore_modes(&root);
+
+    let folder = folder.unwrap();
+    assert_eq!((folder.files, folder.skipped_unreadable), (1, 3), "{folder:?}");
+    let mut named = folder.skipped_unreadable_paths.clone();
+    named.sort();
+    assert_eq!(named, ["mix/dangling", "mix/locked.txt", "mix/locked_dir"]);
+
+    let direct = direct.unwrap();
+    assert_eq!((direct.files, direct.skipped_unreadable), (1, 2), "{direct:?}");
+    let mut named = direct.skipped_unreadable_paths.clone();
+    named.sort();
+    assert_eq!(named, ["mix/dangling", "mix/locked.txt"]);
+}
