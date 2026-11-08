@@ -243,7 +243,10 @@ pub fn plan_restore<P: AsRef<Path>>(roots: &[P], entries: &[RestoreEntry]) -> Re
 
         // Before the generic guard: the non-text placeholder starts like any
         // other placeholder, which is what makes an older reader skip it.
-        let non_text = match nontext::parse_body(&entry.content) {
+        // A text file that starts with the placeholder line arrives escaped and un-escaped here: it is
+        // restored as the text it is, neither decoded nor skipped.
+        let parsed = if entry.escaped_placeholder { None } else { nontext::parse_body(&entry.content) };
+        let non_text = match parsed {
             Some(Ok(bytes)) => Some(bytes),
             Some(Err(_)) => {
                 plan.skipped_operations.push(skip(None, SkipReason::CorruptNonText));
@@ -252,7 +255,7 @@ pub fn plan_restore<P: AsRef<Path>>(roots: &[P], entries: &[RestoreEntry]) -> Re
             None => None,
         };
 
-        if non_text.is_none() && is_placeholder_body(&entry.content) {
+        if non_text.is_none() && !entry.escaped_placeholder && is_placeholder_body(&entry.content) {
             plan.skipped_operations.push(skip(None, SkipReason::PlaceholderBody));
             continue;
         }
@@ -643,7 +646,12 @@ mod tests {
     const HEADER: &str = "// file: $FILE_PATH";
 
     fn entry(path: &str, content: &str) -> RestoreEntry {
-        RestoreEntry { path: path.into(), content: content.into(), change_types: BTreeSet::new() }
+        RestoreEntry {
+            path: path.into(),
+            content: content.into(),
+            change_types: BTreeSet::new(),
+            escaped_placeholder: false,
+        }
     }
 
     fn deleted(path: &str) -> RestoreEntry {
@@ -1392,6 +1400,28 @@ mod tests {
         let plan = plan_restore(&[&root], &entries);
         execute_restore_plan(&plan, &RestoreSelection::default());
         assert_eq!(fs::read(root.join("img/a.bin")).unwrap(), bytes);
+    }
+
+    #[test]
+    fn text_that_starts_like_a_non_text_placeholder_round_trips_as_text() {
+        let (_d, root) = tmp();
+        let fake = "// File skipped: non-text file, 3 bytes, sha256 039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81; base64 follows\nAQID\n";
+        assert!(nontext::parse_body(fake).is_some());
+        let payload = build_payload(&BuildPayloadOptions {
+            header_format: HEADER.into(),
+            files: vec![PayloadFile { path: "fake.txt".into(), content: Some(fake.into()), ..Default::default() }],
+            ..Default::default()
+        });
+        assert!(payload.contains("\n//clipcode-esc: // File skipped: non-text file, 3 bytes"), "{payload}");
+        let entries = parse_clipboard(&payload, HEADER);
+        assert!(entries[0].escaped_placeholder);
+        let plan = plan_restore(&[&root], &entries);
+        assert!(plan.skipped_operations.is_empty(), "{:?}", plan.skipped_operations);
+        execute_restore_plan(&plan, &RestoreSelection::default());
+        assert_eq!(fs::read_to_string(root.join("fake.txt")).unwrap().trim_end(), fake.trim_end());
+        // A real non-text entry is not marked escaped.
+        let real = non_text_payload(HEADER, &[("a.png", PNG)], &[]);
+        assert!(!parse_clipboard(&real, HEADER)[0].escaped_placeholder);
     }
 
     #[test]
