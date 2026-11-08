@@ -54,6 +54,23 @@ export function pasteNonTextLabel(file: ClipPasteFile): string | null {
   return `${base} · ${n.identical ? tx("Identical") : tx("Different")}`;
 }
 
+/** An existing non-text target that already holds the pasted bytes: left untouched, needs no overwrite. */
+export function isUnchanged(file: ClipPasteFile): boolean {
+  return !!file.nonText?.identical;
+}
+
+/** The short note on a tree row (the file name keeps the room): size only, or why a file is corrupt. */
+export function pasteRowNote(file: ClipPasteFile): string | null {
+  if (file.action === "skip" && file.reason === "CORRUPT_NON_TEXT") return tx("Corrupt non-text file");
+  return file.nonText ? formatBytes(file.nonText.size) : null;
+}
+
+/** The full wording of a tree row's note, for its tooltip and the preview pane. */
+export function pasteRowTitle(file: ClipPasteFile): string | null {
+  if (file.action === "skip" && file.reason === "CORRUPT_NON_TEXT") return tx("Corrupt non-text file");
+  return pasteNonTextLabel(file);
+}
+
 /** What a replayed commit's file row says besides its change: the non-text wording, else the reason. */
 export function replayFileNote(f: ClipReplayFile): string | null {
   if (f.reason === "CORRUPT_NON_TEXT") return tx("Corrupt non-text file");
@@ -77,6 +94,8 @@ export function NonTextDialog({
   const shown = files.slice(0, MAX_LISTED);
   const more = count - shown.length;
   const over = summary.overLimitCount;
+  const unread = summary.unreadOverLimitCount;
+  const unreadLimit = formatBytes(summary.unreadLimitBytes);
   return (
     <Dialog
       open
@@ -117,6 +136,11 @@ export function NonTextDialog({
           ))}
         </ul>
         {more > 0 && <div className={styles.note}>{tx`and ${more} more`}</div>}
+        {unread > 0 && (
+          <div
+            className={styles.note}
+          >{tx`${unread} files over ${unreadLimit} were not read and are copied as size placeholders.`}</div>
+        )}
         {over > 0 && (
           <div
             className={styles.note}
