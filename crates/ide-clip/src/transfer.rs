@@ -2015,7 +2015,13 @@ pub fn plan_export_with(
             // Include cannot be built under the whole-payload limit: the dialog disables it, so only the
             // size it needs to say so is known; the rest keeps what the Exclude walk found.
             Err(TransferError::PayloadLimitExceeded { limit, actual, .. }) => {
-                plan.non_text.estimated_include_payload_bytes = actual.max(limit.saturating_add(1));
+                // Never below the raw total: the size where planning stopped says nothing about the rest.
+                let full = plan.non_text.include_estimate(
+                    plan.payload.len(),
+                    &settings.header_format,
+                    settings.add_extra_line_between_files,
+                );
+                plan.non_text.estimated_include_payload_bytes = actual.max(limit.saturating_add(1)).max(full);
             }
             Err(e) => return Err(e),
         }
@@ -2169,7 +2175,10 @@ fn plan_export_once(
         let mut skipped_unreadable_count = 0usize;
         let mut file_limit_reached = false;
         let mut non_text_file_count = 0usize;
-        let mut non_text_summary = NonTextSummary::default();
+        let mut non_text_summary = NonTextSummary {
+            header_cannot_be_escaped: format::header_format_unescapable(&settings.header_format),
+            ..NonTextSummary::default()
+        };
         let mut skipped_unreadable_paths: Vec<String> = Vec::new();
         let non_text_max = settings.max_non_text_file_bytes();
         non_text_summary.unread_limit_bytes = non_text_max.max((settings.max_file_size_kb * 1024.0) as u64);
