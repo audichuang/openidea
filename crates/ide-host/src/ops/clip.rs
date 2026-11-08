@@ -743,7 +743,7 @@ pub fn paste_preview_into(
     let opts = RunOptions::default();
     // The copy side caps the LF length; a CRLF pipe adds a byte per line (about 1.3% on wrapped
     // Base64) that must not push a payload that fit over the cap.
-    let lf_len = text.len() - text.bytes().filter(|&b| b == b'\r').count();
+    let lf_len = text.len() - text.as_bytes().windows(2).filter(|w| w == b"\r\n").count();
     if lf_len > CLIPBOARD_PAYLOAD_MAX {
         return Err(IdeError::invalid("The clipboard holds more than 50 MiB"));
     }
