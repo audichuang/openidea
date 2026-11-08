@@ -76,9 +76,13 @@ Buttons: **Include** (default focus), **Exclude** (today's behaviour: non-text f
 **Cancel** (nothing is copied). Include is disabled, with the reason shown, when the estimate is over the
 whole-payload limit; focus then starts on Exclude. In that case the dialog never shows an estimate below the raw
 total: it says the payload would be more than 50 MiB (or shows a real estimate of the full Include size), next
-to the raw total. Include is also disabled, with the reason shown, when the `headerFormat` cannot be escaped (a
-format with no fixed text before `$FILE_PATH`, such as `$FILE_PATH` alone: every line would match it, so Base64
-lines would be read as file headers); decided by the user, deep round 4. Esc is Cancel. The choice is not
+to the raw total. Include is also disabled, with the reason shown, when the `headerFormat` cannot be escaped: some
+line Include writes (the placeholder line or a Base64 line) matches the header pattern both as written and with
+`//clipcode-esc: ` in front, so it would be read as a file header. With one `$FILE_PATH` this happens when the text
+before `$FILE_PATH` is a prefix of `//clipcode-esc: ` (empty, `/`, `//`, ...) and such a line can end with the text
+after it: `$FILE_PATH` alone, `//$FILE_PATH` (matches the placeholder), `$FILE_PATH==` (matches a Base64 line
+`AA==`). Decided by the user, deep round 4; the class widened from "no fixed text before `$FILE_PATH`" by Codex
+review. Esc is Cancel. The choice is not
 remembered.
 
 Counts in UI text are phrased so they read correctly for 1 and for many (e.g. "Non-text files copied as Base64:
@@ -122,8 +126,13 @@ jwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAAZdEVYdFNvZnR3YXJlAHBhaW50Lm5ldCA0LjAu
      `//clipcode-esc: ` is always escaped, so the first line now carries two prefixes:
      `//clipcode-esc: //clipcode-esc: // File skipped: non-text file, …`.
 
-  "First line" means the first non-blank body line, since the reader drops leading blank lines; the writer
-  applies the placeholder escape to that line, not to a blank one before it.
+  "First line" means the first body line that is not blank (only ASCII whitespace) in the text itself, on both
+  sides: the writer applies the placeholder escape to that line, not to a blank one before it, and the reader,
+  after un-escaping one level, looks for the placeholder escape on its first non-blank line. A whitespace-only
+  line that the header format matches (e.g. `   ` under ` $FILE_PATH`) is escaped on the wire and kept by the
+  reader, so the reader cannot simply take line 0. (Found by Codex review: with leading blank lines the writer and
+  reader picked different lines; text lost a literal `//clipcode-esc: ` or was decoded as bytes.) The other
+  readers (IntelliJ, VS Code, Orca) need the same rule.
 
   A real non-text placeholder line carries zero prefixes (built-in header) or one (a custom `headerFormat` that
   matches it, e.g. `// $FILE_PATH`). The reader un-escapes one level per line as for any body, then looks at
