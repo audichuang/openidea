@@ -32,7 +32,15 @@ import { commitsArg } from "./historyActions";
 import { saveAll } from "./ops";
 import { refreshNow, useVcs } from "./store";
 import { ClipPastePane } from "./ClipPastePane";
-import { askNonText, isUnchanged, pasteRowNote, pasteRowTitle, replayFileNote, resolveNonText } from "./clipNonText";
+import {
+  askNonText,
+  isCorruptRow,
+  isUnchanged,
+  pasteRowNote,
+  pasteRowTitle,
+  replayFileNote,
+  resolveNonText,
+} from "./clipNonText";
 import { buildPasteTree, fileKey, filesUnder, rowKey, type PasteNode } from "./clipPasteTree";
 import styles from "./clip.module.css";
 
@@ -443,10 +451,18 @@ export function PastePreviewDialog({
                 </div>
                 {c.files.map((f, j) => (
                   <div key={j} className={styles.file}>
-                    <span className={styles.badge} data-change={f.change}>
-                      {f.change}
+                    {f.reason === "CORRUPT_NON_TEXT" ? (
+                      <span className={styles.badge} data-action="corrupt" title={tx("Corrupt non-text file")}>
+                        {tx("Corrupt")}
+                      </span>
+                    ) : (
+                      <span className={styles.badge} data-change={f.change}>
+                        {f.change}
+                      </span>
+                    )}
+                    <span className={styles.path} title={f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}>
+                      {f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}
                     </span>
-                    <span className={styles.path}>{f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}</span>
                     {f.overwrites && <span className={styles.note}>{tx("overwrites")}</span>}
                     {replayFileNote(f) && <span className={styles.note}>{replayFileNote(f)}</span>}
                   </div>
@@ -482,7 +498,13 @@ export function PastePreviewDialog({
                         label={n.file ? tx`Restore ${n.file.path}` : tx`Restore the files in ${n.name}`}
                         onToggle={() => toggleFiles(files)}
                       />
-                      <span className={styles.nodeName} data-action={n.file?.action} title={n.file?.path}>
+                      <span
+                        className={styles.nodeName}
+                        data-action={n.file?.action}
+                        title={
+                          n.file && isCorruptRow(n.file) ? `${n.file.path}\n${pasteRowTitle(n.file)}` : n.file?.path
+                        }
+                      >
                         {n.name}
                       </span>
                       {n.file && pasteRowNote(n.file) && (
@@ -491,9 +513,22 @@ export function PastePreviewDialog({
                         </span>
                       )}
                       {n.file ? (
-                        <span className={styles.badge} data-action={isUnchanged(n.file) ? "unchanged" : n.file.action}>
-                          {tx(isUnchanged(n.file) ? "Unchanged" : (ACTION_LABEL[n.file.action] ?? n.file.action))}
-                        </span>
+                        isCorruptRow(n.file) ? (
+                          <span
+                            className={styles.badge}
+                            data-action="corrupt"
+                            title={pasteRowTitle(n.file) ?? undefined}
+                          >
+                            {tx("Corrupt")}
+                          </span>
+                        ) : (
+                          <span
+                            className={styles.badge}
+                            data-action={isUnchanged(n.file) ? "unchanged" : n.file.action}
+                          >
+                            {tx(isUnchanged(n.file) ? "Unchanged" : (ACTION_LABEL[n.file.action] ?? n.file.action))}
+                          </span>
+                        )
                       ) : (
                         <span className={styles.count}>{files.length}</span>
                       )}
