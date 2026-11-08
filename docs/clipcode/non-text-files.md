@@ -221,15 +221,15 @@ Each implementation adds these to its contract tests (OpenIDEA: `clipboard-contr
     outside the alphabet (other than ASCII whitespace) make the entry corrupt.
 19. A selected unreadable folder plus a readable file: the file is copied, the folder is named as unreadable.
 20. Paste where a target path is a directory: only that row is skipped; the others restore.
-21. Commits replay of a single commit whose only change is refused by the non-UTF-8 guard: the preview shows the
-    reason, no empty commit is created, later commits of the replay still apply.
-22. Names shown in the dialog and preview: three 58–60 character names sharing a prefix are distinguishable; a
+21. Names shown in the dialog and preview: three 58–60 character names sharing a prefix are distinguishable; a
     file under a 150-character folder path shows its whole file name (extension included) in the dialog and in a
     nested preview row with an Unchanged badge.
-23. A symlink to a folder selected directly (alone and in a multi-selection) is not followed and is named as a
+22. A symlink to a folder selected directly (alone and in a multi-selection) is not followed and is named as a
     symlinked folder.
-24. A payload with `IMG.png` and `img.png` pasted on a case-insensitive file system skips both with a collision
+23. A payload with `IMG.png` and `img.png` pasted on a case-insensitive file system skips both with a collision
     reason and restores the other entries.
+24. Commits replay of a single commit whose only change is refused by the non-UTF-8 guard: the preview shows the
+    reason, no empty commit is created, later commits of the replay still apply.
 
 ## Open items for the other implementations
 
