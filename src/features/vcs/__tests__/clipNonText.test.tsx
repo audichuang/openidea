@@ -30,7 +30,7 @@ vi.mock("../clipNonText", async (importOriginal) => {
   return { ...real, askNonText: (s: ClipNonTextSummary) => ask(s) };
 });
 
-import { copyClip, PastePreviewDialog } from "../clip";
+import { copyClip, PastePreviewDialog, reportPaste } from "../clip";
 import { ClipPastePane } from "../ClipPastePane";
 import {
   NonTextDialog,
@@ -174,7 +174,39 @@ describe("copyClip non-text decision", () => {
     ask.mockResolvedValueOnce("exclude");
     await expect(copyClip(source)).resolves.toBe(false);
     expect(copied).not.toHaveBeenCalled();
-    expect(notify.mock.calls[0]![0].body).toBe("Nothing to copy");
+    expect(notify.mock.calls[0]![0].title).toBe("Nothing to copy");
+    expect(notify.mock.calls[0]![0].body).toBeUndefined();
+  });
+
+  it("a selection of only a symlinked folder is a Nothing to copy notice naming the folder", async () => {
+    call.mockResolvedValueOnce(
+      result("", summary(), { files: 0, skipped: 1, skippedSymlinkDirs: 1, skippedSymlinkDirPaths: ["d14/linkdir"] }),
+    );
+    await expect(copyClip(source)).resolves.toBe(false);
+    const n = notify.mock.calls[0]![0];
+    expect(n.title).toBe("Nothing to copy");
+    expect(n.body).toContain("Symlinked folder: d14/linkdir");
+    expect(JSON.stringify(n)).not.toMatch(/IpcError|symlinked folder not followed/);
+  });
+
+  it("names a commit the replay did not create in user text", () => {
+    reportPaste(
+      {
+        created: 0,
+        overwritten: 0,
+        deleted: 0,
+        skipped: 0,
+        commits: ["abc"],
+        errors: [],
+        notCreated: [{ number: 1, subject: "rewrite legacy", reason: "NON_UTF8_TARGET" }],
+        unchanged: 0,
+        corruptNonText: [],
+      },
+      true,
+    );
+    const n = notify.mock.calls[0]![0];
+    expect(n.level).toBe("warning");
+    expect(n.body).toBe("Commit 1 (rewrite legacy) not created: Existing file is not UTF-8; not overwritten");
   });
 
   it("Cancel writes nothing", async () => {

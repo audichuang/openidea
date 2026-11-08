@@ -2524,6 +2524,16 @@ export type ClipNonTextSummary = {
 	limitLeftOutAtLeast: boolean,
 };
 
+/**  A replayed commit that was not created because every file change of it was refused or skipped. */
+export type ClipNotCreated = {
+	/**  1-based position among the replayed commits. */
+	number: number,
+	/**  The commit message's first line. */
+	subject: string,
+	/**  A skip reason code, as in the preview rows (`NON_UTF8_TARGET`, ...). */
+	reason: string,
+};
+
 export type ClipPasteApply = {
 	id: number,
 	/**  Creates (by index) whose target exists and may be overwritten. */
@@ -2599,6 +2609,8 @@ export type ClipPasteResult = {
 	/**  Commit ids the replay created, oldest first. */
 	commits: string[],
 	errors: string[],
+	/**  Commits the replay did not create, each with its reason as a code the UI words (never English text). */
+	notCreated: ClipNotCreated[],
 	/**  Non-text targets that already held the pasted bytes: not written. */
 	unchanged: number,
 	/**
