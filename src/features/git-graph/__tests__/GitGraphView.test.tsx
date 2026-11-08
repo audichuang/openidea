@@ -474,7 +474,7 @@ describe("Git Graph PR view", () => {
   it("copies the changed files from the merge base with ClipCode", async () => {
     await openPr();
     fireEvent.click(screen.getByRole("button", { name: "ClipCode: Copy Changed Files" }));
-    expect(bridge.copyRange).toHaveBeenCalledWith(REPO, MB, "feature");
+    expect(bridge.copyRange).toHaveBeenCalledWith(REPO, MB, "f2".padEnd(40, "0"));
   });
 
   it("filters the base picker by typing, grouped HEAD / Local / Remote / Tags", async () => {
