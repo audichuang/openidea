@@ -353,9 +353,14 @@ async fn clipcode_still_works_after_a_workspace_member_folder_is_deleted() {
     host.open_project("main", &root).unwrap();
     std::fs::remove_dir_all(&b).unwrap();
 
-    let copied = ops::clip::clip_copy(&host, "main", ops::clip::ClipCopySource::Files { paths: vec![a.join("x.txt")] })
-        .await
-        .unwrap();
+    let copied = ops::clip::clip_copy(
+        &host,
+        "main",
+        ops::clip::ClipCopySource::Files { paths: vec![a.join("x.txt")] },
+        ops::clip::ClipNonTextMode::Exclude,
+    )
+    .await
+    .unwrap();
     assert!(copied.text.contains("x\n"), "{}", copied.text);
     let preview =
         ops::clip::clip_paste_preview(&host, "main", copied.text, None, None, false, Vec::new()).await.unwrap();
