@@ -94,6 +94,24 @@ describe("staging area commit", () => {
     expect(plan.included.map((f) => f.relPath)).toEqual(["src/Partial.kt", "src/New.kt", "Gone.kt"]);
     expect(stagedFiles([fs("x", null, "modified")])).toEqual([]);
   });
+
+  it("leaves the staged changes of unticked repositories out of the commit", () => {
+    const at = (path: string, staged: FileStatus["staged"]): FileStatus => ({
+      path,
+      relPath: path.split("/").pop()!,
+      staged,
+      unstaged: null,
+      renamedFrom: null,
+    });
+    const multi = [at("/w/app/A.kt", "modified"), at("/w/lib/B.kt", "added"), at("/w/lib/C.kt", null)];
+    const repos = ["/w/app", "/w/lib"];
+    const paths = (files: FileStatus[]) => files.map((f) => f.path);
+    expect(paths(stagingPlan(multi, repos, new Set(["/w/lib"])).included)).toEqual(["/w/app/A.kt"]);
+    expect(paths(stagedFiles(multi, repos, new Set()))).toEqual(["/w/app/A.kt", "/w/lib/B.kt"]);
+    expect(stagedFiles(multi, repos, new Set(repos))).toEqual([]);
+    // One repository has no repository nodes, so nothing can be unticked.
+    expect(paths(stagedFiles(multi, ["/w/app"], new Set(["/w/app"])))).toEqual(["/w/app/A.kt", "/w/lib/B.kt"]);
+  });
 });
 
 describe("staging area stage / unstage", () => {
