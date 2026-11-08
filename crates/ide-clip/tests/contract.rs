@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 
 const FIXTURE: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/clipboard-contract.json"));
 
-const EXPECTED_FIXTURE_SHA: &str = "209c2592c840de49310a289bbd200ef4851ab391d59199a400fab16393487a63";
+const EXPECTED_FIXTURE_SHA: &str = "ab72b88778680091a3418f213c1e8fb435e4cabaa4f8823ccba87302a4773436";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
