@@ -4908,6 +4908,7 @@ fn test_from_restore_base_equivalence() {
             path: expected_rel.clone(),
             content: c.to_string(),
             change_types: std::collections::BTreeSet::from([ChangeType::New]),
+            escaped_placeholder: false,
         };
         let expected_plan = restore::plan_restore(&[repo.path()], &[parsed]);
         let actual_op = plan_strip
@@ -4949,6 +4950,7 @@ fn test_from_restore_base_equivalence() {
             path: expected_path,
             content: c.to_string(),
             change_types: std::collections::BTreeSet::from([ChangeType::New]),
+            escaped_placeholder: false,
         };
         let expected_plan = restore::plan_restore(&[repo.path()], &[parsed]);
         let expected_rel = &expected_plan.create_operations[0].relative_path;
