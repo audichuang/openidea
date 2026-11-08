@@ -2522,6 +2522,8 @@ export type ClipNonTextSummary = {
 	limitLeftOut: number,
 	/**  `limit_left_out` is a lower bound (a folder walk stopped at the limit). */
 	limitLeftOutAtLeast: boolean,
+	/**  The `headerFormat` cannot be escaped: `Include` would write Base64 lines that read as file headers. */
+	headerCannotBeEscaped: boolean,
 };
 
 /**  A replayed commit that was not created because every file change of it was refused or skipped. */
