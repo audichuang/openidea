@@ -528,3 +528,26 @@ fn a_row_that_fails_while_writing_counts_as_skipped() {
     assert_eq!(result.errors.len(), 1, "{result:?}");
     assert!(dst.join("ok.txt").exists());
 }
+
+/// Entries that map to the same file skip every colliding row with a collision reason and restore the
+/// others; the paste is never aborted (required case 23; a symlinked folder stands in for a case-insensitive
+/// file system, which this host may not have).
+#[cfg(unix)]
+#[test]
+fn colliding_entries_skip_their_rows_and_the_rest_restores() {
+    use std::os::unix::fs::symlink;
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (_tmp, dst) = dir();
+    fs::create_dir_all(dst.join("real")).unwrap();
+    symlink("real", dst.join("alias")).unwrap();
+    let settings = Settings::default();
+    let text = "// file: real/img.png\none\n// file: alias/img.png\ntwo\n// file: ok.txt\nfine\n";
+    let preview = paste_preview_into(&dst, None, &[], text, false, &[], &settings).unwrap();
+    let skipped: Vec<_> = preview.files.iter().filter(|f| f.action == "skip").collect();
+    assert_eq!(skipped.len(), 2, "{:?}", preview.files);
+    assert!(skipped.iter().all(|f| f.reason.as_deref() == Some("TARGET_COLLISION")), "{skipped:?}");
+    let result = paste_apply(ClipPasteApply { id: preview.id, ..Default::default() }).unwrap();
+    assert_eq!((result.created, result.skipped), (1, 2), "{result:?}");
+    assert!(dst.join("ok.txt").exists());
+    assert!(!dst.join("real/img.png").exists());
+}
