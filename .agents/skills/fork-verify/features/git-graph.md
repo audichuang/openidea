@@ -14,6 +14,7 @@
 - Bisect: select two commits → "Bisect: Bad …, Good …"; banner with Good / Bad / Skip / End Bisect (`graph_bisect`).
 - Drag and drop (real pointer only): a branch pill onto the current branch's commit → merge / rebase; the current branch elsewhere → rebase / reset; a commit row onto HEAD → cherry-pick.
 - Main toolbar button (title item `gitGraph.open`).
+- PR view (`PrView.tsx`, toolbar `Graph | PR` switch): a local "New pull request" preview between any two refs (base / head pickers with HEAD, Local, Remote, Tags; swap). Three-dot: `vcs_merge_base`, then `vcs_diff_revisions(mergeBase, head)`; "N commits ahead, M behind base" from `vcs_log` ranges. Files tab embeds the read-only diff viewer (its own prev/next difference and side-by-side/unified buttons), double-click or the open button opens a diff tab; Commits tab lists `base..head`, a click selects the commit in the graph. The copy button is ClipCode Copy Changed Files from the merge base (`range` source). Base/head are remembered per repository; default head is the current branch, base the first of main/master/develop (local, else `origin/`). Branch pills: "Compare in PR View".
 
 ## How to get to it (user POV)
 
@@ -27,7 +28,8 @@ Find Action → "Git Graph" (action `gitGraph.open`, when `vcsAvailable`).
 4. Click a reference pill (`button[title="<branch>"]`) for its menu; run "Merge … into …" or a commit menu's "New Tag…", then check `git log` / `git tag` in the fixture and that the graph reloaded on its own.
 5. Drag needs real input: `cliclick dd:… dm:… du:…` from a pill's rect to the HEAD row's; assert the `[role=menu]` items, then click one with `cliclick c:` and check `git log`.
 6. Bisect: two `click` events (second with `metaKey`) on rows, `contextmenu`, click the Bisect item; the banner is the `[role=status]` inside the Git Graph tab that contains "End Bisect" (the toolbar hides its operation status during a bisect, and the status bar has its own `role=status`): select it by that text, not by position. Check `git bisect log`.
-7. Hover needs real input: `cliclick m:X,Y` (window origin + row rect); assert the count of `svg path, circle` with opacity < 0.5 and look at a `screencapture` crop.
+7. PR view: click `[role=tab]` "PR" in the Git Graph toolbar; pick refs with `button[aria-label="Base Branch"]` / `"Head Branch"` (type in "Search branches and tags", Enter); check the `[role=status]` summary containing "commits ahead" against `git rev-list --count base..head` / `head..base`, and the files under `[aria-label="Changed Files"]` against `git diff --name-status base...head`. Click the copy button ("ClipCode: Copy Changed Files") and compare the clipboard (`pbpaste`) with IntelliJ ClipCode's copy of the same range.
+8. Hover needs real input: `cliclick m:X,Y` (window origin + row rect); assert the count of `svg path, circle` with opacity < 0.5 and look at a `screencapture` crop.
 
 ## Gotchas
 
