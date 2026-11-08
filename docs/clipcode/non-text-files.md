@@ -288,6 +288,13 @@ Each review or test round folds its findings back into this spec.
   a non-text rename chain bypassed overwrite consent; a custom `headerFormat` made a real non-text entry paste as
   text; a skipped rename aborted the replay; a fully refused source group crashed the copy; a folder symlink to
   the project root was followed. Fixed.
+- Codex review round 5 (after the deep round 4 fixes): (1) the unescapable-`headerFormat` check only looked for
+  "no fixed text before `$FILE_PATH`", so `//$FILE_PATH` (placeholder stays a header when escaped) and
+  `$FILE_PATH==` (`AA==` becomes a header) kept Include enabled and pasted a non-text file as an empty file or as
+  Corrupt plus a phantom entry; the rule is now the class above. (2) Writer and reader picked different "first
+  lines" when the text starts with blank lines: a literal `//clipcode-esc: ` was lost, or `\n<placeholder>\nAQID`
+  pasted as bytes (pre-existing). Fixed on both sides, including an escaped whitespace-only line under
+  ` $FILE_PATH`; contract cases added.
 - Deep testers, round 4 (three testers, D1–D18): D1–D10 pass for all three. Open: (1) spec hole — under a custom
   `headerFormat` that matches the placeholder line (e.g. `// $FILE_PATH`), a real placeholder (header escape) and a
   placeholder-shaped text line (placeholder escape) both carry one `//clipcode-esc: ` prefix, so the reader
