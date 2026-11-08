@@ -551,3 +551,50 @@ fn colliding_entries_skip_their_rows_and_the_rest_restores() {
     assert!(dst.join("ok.txt").exists());
     assert!(!dst.join("real/img.png").exists());
 }
+
+/// Required case 24: a replayed commit whose only change the non-UTF-8 guard refuses shows the reason in
+/// the preview, is not created as an empty commit and is named in the result; the next commit still applies.
+#[test]
+fn a_commit_refused_by_the_non_utf8_guard_is_not_created_and_named() {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (_src_tmp, src) = dir();
+    init_repo(&src);
+    fs::write(src.join("legacy.txt"), "plain\n").unwrap();
+    git(&src, &["add", "-A"]);
+    git(&src, &["commit", "-q", "-m", "base"]);
+    fs::write(src.join("legacy.txt"), "中文\n").unwrap();
+    git(&src, &["add", "-A"]);
+    git(&src, &["commit", "-q", "-m", "rewrite legacy"]);
+    let first = git(&src, &["rev-parse", "HEAD"]);
+    fs::write(src.join("b.txt"), "b\n").unwrap();
+    git(&src, &["add", "-A"]);
+    git(&src, &["commit", "-q", "-m", "add b"]);
+    let tip = git(&src, &["rev-parse", "HEAD"]);
+    let source = ClipCopySource::Commits { repo: src.clone(), tip: tip.clone(), selected: vec![first, tip] };
+    let settings = Settings::default();
+    let copied = copy_with(&src, source, &settings, ClipNonTextMode::Include).unwrap();
+
+    let (_dst_tmp, dst) = dir();
+    init_repo(&dst);
+    fs::write(dst.join("legacy.txt"), BIG5).unwrap();
+    git(&dst, &["add", "-A"]);
+    git(&dst, &["commit", "-q", "-m", "base"]);
+    let before: usize = git(&dst, &["rev-list", "--count", "HEAD"]).parse().unwrap();
+
+    let preview = paste_preview_into(&dst, None, &[], &copied.text, false, &[], &settings).unwrap();
+    let row = &preview.commits[0].files[0];
+    assert_eq!((row.action.as_str(), row.reason.as_deref()), ("SKIP", Some("NON_UTF8_TARGET")), "{row:?}");
+    let result =
+        paste_apply(ClipPasteApply { id: preview.id, overwrite_existing: true, ..Default::default() }).unwrap();
+    assert_eq!(result.commits.len(), 1, "{result:?}");
+    assert_eq!(result.errors.len(), 1, "{result:?}");
+    assert!(
+        result.errors[0].contains("Commit 1 (rewrite legacy) not created")
+            && result.errors[0].contains("Existing file is not UTF-8; not overwritten"),
+        "{result:?}"
+    );
+    let after: usize = git(&dst, &["rev-list", "--count", "HEAD"]).parse().unwrap();
+    assert_eq!(after, before + 1);
+    assert_eq!(fs::read(dst.join("legacy.txt")).unwrap(), BIG5);
+    assert_eq!(fs::read_to_string(dst.join("b.txt")).unwrap(), "b\n");
+}
