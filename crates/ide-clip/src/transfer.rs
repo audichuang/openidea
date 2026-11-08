@@ -406,8 +406,6 @@ pub enum TransferError {
     MixedSourceCollision { root: PathBuf, path: String, msg: String },
     #[error("wire header collision: multiple items map to identical wire path '{wire_path}'")]
     WireHeaderCollision { wire_path: String },
-    #[error("target collision: multiple operations target '{}': {msg}", .path.display())]
-    TargetCollision { path: PathBuf, msg: String },
     #[error("payload limit exceeded: limit {limit}, actual {actual} ({reason})")]
     PayloadLimitExceeded { limit: usize, actual: usize, reason: String },
     #[error("stale source in '{}': {reason}", .root.display())]
@@ -2979,7 +2977,9 @@ pub fn plan_import_parsed_with(
 
     let mut combined_creates = Vec::new();
     let mut create_entry_indices = Vec::new();
+    let mut create_raw_paths: Vec<String> = Vec::new();
     let mut combined_deletes = Vec::new();
+    let mut delete_raw_paths: Vec<String> = Vec::new();
     let mut all_skipped = skipped_operations;
 
     // Same `plan_restore` as before, one entry at a time so a cancel is
@@ -2993,6 +2993,8 @@ pub fn plan_import_parsed_with(
         }
         let sub_plan = restore::plan_restore(&roots, std::slice::from_ref(&entry));
         create_entry_indices.extend(std::iter::repeat_n(entry_index, sub_plan.create_operations.len()));
+        create_raw_paths.extend(std::iter::repeat_n(raw_path.clone(), sub_plan.create_operations.len()));
+        delete_raw_paths.extend(std::iter::repeat_n(raw_path.clone(), sub_plan.delete_operations.len()));
         combined_creates.extend(sub_plan.create_operations);
         combined_deletes.extend(sub_plan.delete_operations);
         all_skipped.extend(sub_plan.skipped_operations.into_iter().map(|mut op| {
@@ -3001,9 +3003,10 @@ pub fn plan_import_parsed_with(
         }));
     }
 
-    // Reject if two entries map to the same target file (including symlinks and case aliases)
-    let mut target_identities: HashMap<String, String> = HashMap::new();
-    for op in &combined_creates {
+    // Two entries that map to the same target file (also through a symlink or a case alias) cannot both be
+    // applied, and neither is preferred: every one of them is skipped, the rest of the paste goes on.
+    let mut target_identities: HashMap<String, Vec<(bool, usize)>> = HashMap::new();
+    for (i, op) in combined_creates.iter().enumerate() {
         cancelled_err(opts, "plan-import")?;
         let is_ci = op_is_case_insensitive(
             Some(&op.root_path),
@@ -3016,14 +3019,9 @@ pub fn plan_import_parsed_with(
         if is_ci {
             identity = identity.to_lowercase();
         }
-        if let Some(prev) = target_identities.insert(identity.clone(), format!("create {}", op.relative_path)) {
-            return Err(TransferError::TargetCollision {
-                path: op.absolute_path.clone(),
-                msg: format!("previous was '{prev}', current is 'create {}'", op.relative_path),
-            });
-        }
+        target_identities.entry(identity).or_default().push((true, i));
     }
-    for op in &combined_deletes {
+    for (i, op) in combined_deletes.iter().enumerate() {
         cancelled_err(opts, "plan-import")?;
         let is_ci = op_is_case_insensitive(
             None,
@@ -3036,12 +3034,51 @@ pub fn plan_import_parsed_with(
         if is_ci {
             identity = identity.to_lowercase();
         }
-        if let Some(prev) = target_identities.insert(identity.clone(), format!("delete {}", op.relative_path)) {
-            return Err(TransferError::TargetCollision {
-                path: op.absolute_path.clone(),
-                msg: format!("previous was '{prev}', current is 'delete {}'", op.relative_path),
-            });
+        target_identities.entry(identity).or_default().push((false, i));
+    }
+    let mut colliding_creates: HashSet<usize> = HashSet::new();
+    let mut colliding_deletes: HashSet<usize> = HashSet::new();
+    for group in target_identities.values().filter(|g| g.len() > 1) {
+        for &(is_create, i) in group {
+            if is_create {
+                colliding_creates.insert(i)
+            } else {
+                colliding_deletes.insert(i)
+            };
         }
+    }
+    if !colliding_creates.is_empty() || !colliding_deletes.is_empty() {
+        let mut creates = Vec::with_capacity(combined_creates.len());
+        let mut indices = Vec::with_capacity(combined_creates.len());
+        for (i, op) in combined_creates.into_iter().enumerate() {
+            if colliding_creates.contains(&i) {
+                all_skipped.push(SkippedOperation {
+                    raw_path: create_raw_paths[i].clone(),
+                    relative_path: Some(op.relative_path),
+                    reason: SkipReason::TargetCollision,
+                    detail: None,
+                });
+            } else {
+                creates.push(op);
+                indices.push(create_entry_indices[i]);
+            }
+        }
+        combined_creates = creates;
+        create_entry_indices = indices;
+        let mut deletes = Vec::with_capacity(combined_deletes.len());
+        for (i, op) in combined_deletes.into_iter().enumerate() {
+            if colliding_deletes.contains(&i) {
+                all_skipped.push(SkippedOperation {
+                    raw_path: delete_raw_paths[i].clone(),
+                    relative_path: Some(op.relative_path),
+                    reason: SkipReason::TargetCollision,
+                    detail: None,
+                });
+            } else {
+                deletes.push(op);
+            }
+        }
+        combined_deletes = deletes;
     }
 
     let restore_plan = RestorePlan {
