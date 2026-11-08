@@ -50,7 +50,12 @@ pub struct PayloadFile {
     pub path: String,
     pub content: Option<String>,
     pub change_type: Option<ChangeType>,
+    /// A size placeholder (`size exceeds limit (<n> bytes)`). Never set
+    /// together with `non_text`.
     pub skipped_reason: Option<String>,
+    /// A non-text file's raw bytes, written as the non-text placeholder line
+    /// and wrapped Base64 (`crate::nontext`).
+    pub non_text: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -219,10 +224,19 @@ pub(crate) fn write_payload_file<W: std::fmt::Write>(
     custom: Option<&HeaderPattern>,
 ) -> std::fmt::Result {
     writer.write_line(&format_header(header_format, &file.path, file.change_type))?;
-    match file.skipped_reason.as_deref() {
-        Some(reason) if !reason.is_empty() => {
+    match (file.skipped_reason.as_deref(), &file.non_text) {
+        (Some(reason), _) if !reason.is_empty() => {
             let body = format!("// File skipped: {reason}");
             writer.write_escaped(&body, custom)?;
+        }
+        (_, Some(bytes)) => {
+            let sha = crate::nontext::sha256_hex(bytes);
+            writer.write_escaped(&crate::nontext::placeholder_line(bytes.len() as u64, &sha), custom)?;
+            // Line by line through the same escaping as any body.
+            let encoded = crate::nontext::encode(bytes);
+            for line in crate::nontext::base64_lines(&encoded) {
+                writer.write_escaped(line, custom)?;
+            }
         }
         _ => {
             let body = file.content.as_deref().unwrap_or_default();
@@ -233,6 +247,23 @@ pub(crate) fn write_payload_file<W: std::fmt::Write>(
         writer.write_line("")?;
     }
     Ok(())
+}
+
+/// What [`write_payload_file`] adds for a non-text file of `size` bytes after
+/// a line was already written (its leading newline included), computed
+/// without encoding. Escape markers a custom header format may add to Base64
+/// lines are not counted.
+pub(crate) fn non_text_entry_len(
+    header_format: &str,
+    path: &str,
+    change_type: Option<ChangeType>,
+    add_extra_line_between_files: bool,
+    size: u64,
+) -> usize {
+    let header = format_header(header_format, path, change_type).len();
+    let placeholder = crate::nontext::placeholder_line(size, &"0".repeat(64)).len();
+    let base64 = crate::nontext::encoded_len(size) + crate::nontext::wrapped_line_count(size);
+    1 + header + 1 + placeholder + base64 as usize + usize::from(add_extra_line_between_files)
 }
 
 pub(crate) fn write_payload_footer<W: std::fmt::Write>(
@@ -660,9 +691,45 @@ mod tests {
                 content: Some(DELETED_FILE_MARKER.into()),
                 change_type: Some(ChangeType::Deleted),
                 skipped_reason: None,
+                non_text: None,
             }],
         ));
         assert_eq!(payload, format!("// file: [DELETED] src/old.ts\n{DELETED_FILE_MARKER}\n"));
+    }
+
+    fn non_text(path: &str, bytes: &[u8]) -> PayloadFile {
+        PayloadFile { path: path.into(), non_text: Some(bytes.to_vec()), ..Default::default() }
+    }
+
+    #[test]
+    fn non_text_entry_is_placeholder_then_wrapped_base64() {
+        let bytes: Vec<u8> = (0..=255u8).cycle().take(200).collect();
+        let payload = build_payload(&opts(DEFAULT, "", "", true, vec![non_text("img/a.png", &bytes)]));
+        let sha = crate::nontext::sha256_hex(&bytes);
+        let expected = format!(
+            "\n// file: img/a.png\n// File skipped: non-text file, 200 bytes, sha256 {sha}; base64 follows\n{}\n\n",
+            crate::nontext::encode_wrapped(&bytes)
+        );
+        assert_eq!(payload, expected);
+        let entries = parse_clipboard(&payload, DEFAULT);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(crate::nontext::parse_body(&entries[0].content), Some(Ok(bytes)));
+    }
+
+    #[test]
+    fn non_text_entry_len_matches_the_writer() {
+        for (header, extra, label) in
+            [(DEFAULT, true, None), ("### $FILE_PATH ###", false, Some(ChangeType::New)), (DEFAULT, false, None)]
+        {
+            for n in [1usize, 57, 58, 1000] {
+                let bytes = vec![0u8; n];
+                let file = PayloadFile { change_type: label, ..non_text("a/b.bin", &bytes) };
+                let mut counter = CountingWriter::default();
+                let mut w = PayloadLineWriter::new_with_written(&mut counter, true);
+                write_payload_file(&mut w, &file, header, extra, HeaderPattern::new(header).as_ref()).unwrap();
+                assert_eq!(non_text_entry_len(header, "a/b.bin", label, extra, n as u64), counter.count, "{n}");
+            }
+        }
     }
 
     #[test]
