@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import type { ClipCopyResult, ClipCopySource, ClipNonTextSummary, ClipPasteFile, ClipPastePreview } from "@/bindings";
@@ -31,7 +32,15 @@ vi.mock("../clipNonText", async (importOriginal) => {
 
 import { copyClip, PastePreviewDialog } from "../clip";
 import { ClipPastePane } from "../ClipPastePane";
-import { NonTextDialog, formatBytes, pasteNonTextLabel, replayFileNote } from "../clipNonText";
+import {
+  NonTextDialog,
+  formatBytes,
+  isUnchanged,
+  pasteNonTextLabel,
+  pasteRowNote,
+  pasteRowTitle,
+  replayFileNote,
+} from "../clipNonText";
 
 const summary = (over: Partial<ClipNonTextSummary> = {}): ClipNonTextSummary => ({
   count: 0,
@@ -39,6 +48,8 @@ const summary = (over: Partial<ClipNonTextSummary> = {}): ClipNonTextSummary => 
   estimatedIncludeBytes: 0,
   files: [],
   overLimitCount: 0,
+  unreadOverLimitCount: 0,
+  unreadLimitBytes: 2097152,
   exceedsPayloadCap: false,
   ...over,
 });
@@ -139,6 +150,21 @@ describe("NonTextDialog", () => {
     expect(screen.getByText("3 non-text files are over the size limit and will not be copied.")).toBeTruthy();
   });
 
+  it("pads its summary lines and mentions unread files over both limits", () => {
+    const { container } = render(
+      <NonTextDialog summary={summary({ ...found, unreadOverLimitCount: 2 })} onChoose={() => {}} />,
+    );
+    expect(screen.getByText("2 files over 2.0 MB were not read and are copied as size placeholders.")).toBeTruthy();
+    const body = screen.getByText("2 non-text files, raw 4.9 KB").parentElement!;
+    expect(body.className).toMatch(/nonText/);
+    expect(container.ownerDocument.body.contains(body)).toBe(true);
+    // CSS modules are not applied in jsdom: the body rule itself must pad it.
+    const css = readFileSync(`${process.cwd()}/src/features/vcs/clip.module.css`, "utf8");
+    expect(/\.nonText \{[^}]*padding: 0 var\(--space-2\)/.test(css)).toBe(true);
+    render(<NonTextDialog summary={found} onChoose={() => {}} />);
+    expect(screen.getAllByText(/were not read/)).toHaveLength(1);
+  });
+
   it("reports the button pressed", () => {
     const onChoose = vi.fn();
     render(<NonTextDialog summary={found} onChoose={onChoose} />);
@@ -177,6 +203,16 @@ describe("paste preview rows", () => {
     expect(pasteNonTextLabel({ ...nt("create", false), nonText: null })).toBeNull();
   });
 
+  it("tree rows show the size only, with the full wording as the tooltip", () => {
+    expect(pasteRowNote(nt("overwrite", true))).toBe("4.0 KB");
+    expect(pasteRowTitle(nt("overwrite", true))).toBe("Non-text file · 4.0 KB · Identical");
+    const corrupt: ClipPasteFile = { ...nt("skip", false), nonText: null, reason: "CORRUPT_NON_TEXT" };
+    expect(pasteRowNote(corrupt)).toBe("Corrupt non-text file");
+    expect(pasteRowNote({ ...corrupt, reason: "BINARY" })).toBeNull();
+    expect(isUnchanged(nt("overwrite", true))).toBe(true);
+    expect(isUnchanged(nt("overwrite", false))).toBe(false);
+  });
+
   it("describes replay rows as non-text files, not binary", () => {
     const f = { path: "a.png", oldPath: null, change: "ADDED", action: "WRITE", overwrites: false };
     expect(replayFileNote({ ...f, reason: "BINARY", nonTextSize: 2048 })).toBe("Non-text file · 2.0 KB");
@@ -200,6 +236,51 @@ describe("paste preview rows", () => {
       expect(commands.clipPastePreviewFile).not.toHaveBeenCalled();
     });
 
+    it("identical targets are Unchanged, checked, and not counted as overwrites", () => {
+      const files: ClipPasteFile[] = [
+        { ...nt("overwrite", true), index: 0, path: "same.png" },
+        { ...nt("overwrite", false), index: 1, path: "diff.png" },
+        { ...nt("overwrite", false), index: 2, path: "diff2.png" },
+      ];
+      const preview: ClipPastePreview = {
+        id: 1,
+        mode: "files",
+        destination: "/p",
+        files,
+        commits: [],
+        suggestion: null,
+        adjusted: false,
+      };
+      render(<PastePreviewDialog text="" target={{ dest: "/p", repo: null }} initial={preview} onClose={() => {}} />);
+      expect(screen.getByText("Unchanged")).toBeTruthy();
+      expect(screen.getAllByText("Overwrite")).toHaveLength(2);
+      expect(screen.getByRole("checkbox", { name: "Overwrite all 2 existing files" })).toBeTruthy();
+      expect(screen.getByRole("checkbox", { name: "Restore same.png" }).getAttribute("aria-checked")).toBe("true");
+      expect(screen.getByRole("checkbox", { name: "Restore diff.png" }).getAttribute("aria-checked")).toBe("false");
+    });
+
+    it("a corrupt non-text entry says so in the tree and the pane", () => {
+      const corrupt: ClipPasteFile = {
+        index: 0,
+        path: "bad.png",
+        target: null,
+        action: "skip",
+        reason: "CORRUPT_NON_TEXT",
+        nonText: null,
+      };
+      const preview: ClipPastePreview = {
+        id: 1,
+        mode: "files",
+        destination: "/p",
+        files: [corrupt],
+        commits: [],
+        suggestion: null,
+        adjusted: false,
+      };
+      render(<PastePreviewDialog text="" target={{ dest: "/p", repo: null }} initial={preview} onClose={() => {}} />);
+      expect(screen.getAllByText("Corrupt non-text file").length).toBeGreaterThanOrEqual(2);
+    });
+
     it("the tree row carries the label", () => {
       const preview: ClipPastePreview = {
         id: 1,
@@ -211,6 +292,7 @@ describe("paste preview rows", () => {
         adjusted: false,
       };
       render(<PastePreviewDialog text="" target={{ dest: "/p", repo: null }} initial={preview} onClose={() => {}} />);
+      expect(screen.getAllByText("4.0 KB").length).toBeGreaterThan(0);
       expect(screen.getAllByText("Non-text file · 4.0 KB").length).toBeGreaterThan(0);
       expect(commands.clipPastePreviewFile).not.toHaveBeenCalled();
     });
