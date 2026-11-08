@@ -714,7 +714,10 @@ mod commits_mode {
             let preview = CommitReplayPreview::capture(&dest.root, &payload).unwrap();
             let result = preview.apply().unwrap();
             assert!(result.failure.is_none(), "{:?}", result.failure);
-            assert_eq!(result.created.len(), 3);
+            // Excluded, the two commits that only add and change images have nothing to apply: they are not
+            // created as empty commits and the deletion still replays.
+            let (created, not_created) = if mode == NonTextMode::Include { (3, 0) } else { (1, 2) };
+            assert_eq!((result.created.len(), result.not_created.len()), (created, not_created), "{mode:?}");
             assert_eq!(tree(&dest), tree(&src), "{mode:?}");
             assert!(!dest.root.join("pics/x.png").exists());
             assert!(!dest.root.join("img/del.gif").exists());
