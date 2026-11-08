@@ -79,6 +79,8 @@ pub enum SkipReason {
     /// A non-text entry whose Base64 does not decode, or whose size or
     /// SHA-256 differs from its placeholder line.
     CorruptNonText,
+    /// The target path exists and is not a regular file (a directory): paste never replaces it.
+    TargetNotFile,
 }
 
 impl SkipReason {
@@ -91,6 +93,7 @@ impl SkipReason {
             Self::PlaceholderBody => "PLACEHOLDER_BODY",
             Self::NonUtf8Target => "NON_UTF8_TARGET",
             Self::CorruptNonText => "CORRUPT_NON_TEXT",
+            Self::TargetNotFile => "TARGET_NOT_FILE",
         }
     }
 }
@@ -277,6 +280,12 @@ pub fn plan_restore<P: AsRef<Path>>(roots: &[P], entries: &[RestoreEntry]) -> Re
         // Git directory.
         if has_git_segment(&t.relative_path) || lands_in_git_dir(&t.absolute_path) {
             plan.skipped_operations.push(protected());
+            continue;
+        }
+
+        // A directory (or another non-file) at the target: this row is skipped, the others go on.
+        if fs::metadata(&t.absolute_path).is_ok_and(|m| !m.is_file()) {
+            plan.skipped_operations.push(skip(Some(t.relative_path), SkipReason::TargetNotFile));
             continue;
         }
 
