@@ -14,7 +14,10 @@ project with a `static/` folder of images lost the images.
 - Every non-text file the copy reaches is carried byte for byte as Base64, when the user agrees (see
   [Asking the user](#asking-the-user)).
 - Files that cannot be read (permission denied, dangling symlink, a directory that cannot be listed) are still
-  skipped. The completion notice counts them and names the first few paths.
+  skipped. The completion notice counts them and names the first few paths, including those dropped while a
+  selected folder is expanded or a selection is resolved, not only those that fail at read time.
+- **Exclude** keeps today's result exactly, including today's "Nothing to copy" when nothing but size
+  placeholders would be copied from a files selection.
 - File modes (the executable bit) and Git LFS are out of scope: text files carry neither today.
 - Deleted entries (`[DELETED]`) keep today's body: paste deletes the file and never reads it.
 
@@ -45,9 +48,23 @@ The dialog shows:
 - the first 10 paths with their sizes, then "and N more";
 - how many non-text files are over the non-text limit and will not be copied.
 
+- how many files over both per-file limits were not read (their kind is unknown) and are copied as size
+  placeholders.
+
+Every number, path and the estimate describe exactly what **Include** would put on the clipboard, after the
+file-count limit (`setMaxFileCount` / `fileCountLimit`) is applied. Non-text files count toward that limit like
+text files, in the copy's normal file order. When the limit cuts files off, the dialog says so (how many files the
+limit left out), and the decision to ask is made on the Include result: a copy whose Exclude result has no
+non-text file but whose Include result would carry some (for example text files filling the limit first under
+Exclude) still asks. (Found by deep testing: the dialog said 40 files while 30 were copied, and with text files
+first the images were dropped without a dialog.)
+
 Buttons: **Include** (default focus), **Exclude** (today's behaviour: non-text files are left out) and
 **Cancel** (nothing is copied). Include is disabled, with the reason shown, when the estimate is over the
-whole-payload limit. The choice is not remembered.
+whole-payload limit; focus then starts on Exclude. Esc is Cancel. The choice is not remembered.
+
+Counts in UI text are phrased so they read correctly for 1 and for many (e.g. "Non-text files copied as Base64:
+1."), unless the platform has plural support. Long paths ellipsize; sizes never wrap.
 
 UI text says "non-text file" (Simplified zh: 非文本文件; Traditional zh: 非文字檔), never "binary file" or "non-UTF-8 file".
 
@@ -68,10 +85,16 @@ jwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAAZdEVYdFNvZnR3YXJlAHBhaW50Lm5ldCA0LjAu
   `^// File skipped: non-text file, (\d+) bytes, sha256 ([0-9a-f]{64}); base64 follows$`
   (after stripping a trailing `\r`). Size is the raw byte count in decimal; the hash is lowercase hex SHA-256 of
   the raw bytes.
-- The Base64 is standard (RFC 4648 §4, `A–Z a–z 0–9 + /`, `=` padding), wrapped at 76 characters per line. - The body goes through the same content escaping as any other body (`//clipcode-esc: ` before header-shaped
+- The Base64 is standard (RFC 4648 §4, `A–Z a–z 0–9 + /`, `=` padding), wrapped at 76 characters per line.
+- The body goes through the same content escaping as any other body (`//clipcode-esc: ` before header-shaped
   lines), and the reader un-escapes before decoding. Base64 has no space or `:`, so the built-in header pattern
   cannot match it; the escaping covers a loose custom `headerFormat`.
 - Header labels (`[NEW]`, `[MOVED]`, ...) and the `clipcode-root` line work as for text entries.
+- A **text** entry whose first body line matches the placeholder pattern above (a real text file that happens to
+  start with that line) is escaped on copy: the writer prefixes that first line with `//clipcode-esc: `. The
+  reader tests for the non-text placeholder on the raw first line, before un-escaping, so an escaped line is
+  never decoded; after un-escaping, the text is restored as written. (Found by deep testing: without this, such a
+  text file was pasted as the 3 decoded bytes.)
 
 ### Why the placeholder prefix
 
@@ -99,6 +122,15 @@ Only OpenIDEA implements commits mode (`// snip-sync commits v1`). The marker st
 - `base64` is unwrapped (JSON has no line-length concern).
 - An older OpenIDEA ignores the unknown field and skips the file as not copied, exactly as today. Putting Base64
   in `content` would make it commit the Base64 text, so that is never done.
+- **Deletions and renames of non-text files are replayed whatever the mode.** A deletion needs no content: the
+  replay deletes the path (and a rename moves it) even without `nonText`. Before this spec, a deleted non-text
+  file was marked `notCopied` and the replay skipped it, so a commit that deleted an image left the image in
+  place (pre-existing behaviour found by deep testing; fixed together with this feature).
+- Several commits are replayed as one sequence: a later commit may rewrite a path an earlier commit of the same
+  batch wrote as non-text (for example Big5 → UTF-8), and that rewrite must not be refused by the non-UTF-8
+  overwrite guard.
+- The replay preview labels a non-text row "non-text file · <size>" and a corrupt one with a Corrupt badge; it
+  never shows the raw `notCopied` enum (`BINARY`, `NON_UTF8`).
 
 ## Pasting
 
@@ -111,7 +143,18 @@ Only OpenIDEA implements commits mode (`// snip-sync commits v1`). The marker st
   decoded bytes is reported unchanged and not written.
 - The paste preview shows a non-text entry as "non-text file · 4.0 KB" and, for an existing target, whether it
   is identical or different. It never shows the Base64 or a diff.
+- An identical target shows an **Unchanged** badge, is not counted in "Overwrite all N existing files", and needs
+  no overwrite permission.
+- A corrupt entry shows a **Corrupt** badge (not a long inline note), with "Corrupt non-text file" in the tooltip
+  and the detail pane. The file name keeps priority in the row: notes shrink or drop before the name does, and
+  30–60 character names that share a prefix stay distinguishable.
 - Commits replay writes and commits the decoded bytes, after the same length and SHA-256 check.
+- The whole-payload limit on paste counts the payload as the parser sees it: each CRLF pair counts as one byte (a
+  Windows clipboard must not push a valid payload over the limit), but a lone CR counts in full (it must not let
+  oversized input bypass the limit).
+- Known, not handled: with `core.autocrlf=true` in the destination repository, git's own line-ending conversion
+  can rewrite a committed non-text file that has no NUL (e.g. Big5 with CRLF); the working-tree file is correct.
+  This is git's documented behaviour for that setting and applies to text files too.
 
 ## Required test cases
 
@@ -129,3 +172,32 @@ Each implementation adds these to its contract tests (OpenIDEA: `clipboard-contr
 9. Existing identical target is unchanged; existing different target follows the overwrite option.
 10. Commits mode: a commit adding an image replays with the image; an older reader skips it.
 11. Exclude in the dialog produces today's payload byte for byte.
+12. A text file whose first line is a valid-looking non-text placeholder round-trips as the original text.
+13. Commits mode: image added, modified, then deleted across three commits replays to the same tree as the
+    source (the deletion happens); a rename of an image moves it.
+14. Commits mode: Big5 file rewritten as UTF-8 in a later commit of the same batch keeps the rewrite.
+15. File-count limit: 40 small images with a limit of 30 — the dialog's count, list and estimate match the
+    Include payload; 30 text files ordered before 5 images still ask and report what the limit left out.
+16. Unreadable files dropped during folder expansion (chmod 000 file and folder, dangling symlink) are named in
+    the completion notice.
+17. CRLF growth near the whole-payload limit is accepted on paste; lone CRs past the limit are refused.
+18. Base64 strictness is the same in all implementations: missing padding, non-zero trailing bits and characters
+    outside the alphabet (other than ASCII whitespace) make the entry corrupt.
+
+## Open items for the other implementations
+
+- `clipboard-contract.json` is generated by `ClipCodeVSCode/scripts/gen-contract-fixtures.cjs`; its
+  `nonTextBuildCases` / `nonTextRestoreCases` were added in OpenIDEA by hand. Teach the generator these sections
+  (and cases 12–18) before regenerating, or they are lost.
+
+## Change log
+
+Each review or test round folds its findings back into this spec.
+
+- Round 1 review (3 Opus lenses + Codex): commits batch rewrite (Big5 → UTF-8) kept; Exclude keeps "Nothing to
+  copy"; CRLF counting on the paste limit. Round 2 (Codex): lone CR must count. Round 3 (Codex): approved.
+- Hands-on testers, round 1: identical targets as Unchanged; corrupt rows and replay preview labels; count
+  phrasing for 1; long paths; focus when Include is disabled. Round 2: unreadable paths from folder expansion;
+  Corrupt badge instead of a squeezed note.
+- Deep testers, round 1: commits-mode deletion of non-text files (pre-existing); dialog vs file-count limit
+  (spec gap); placeholder-shaped text (spec gap); long-name readability in the preview.
