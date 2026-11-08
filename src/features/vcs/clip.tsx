@@ -50,7 +50,7 @@ function notifyCopied(r: ClipCopyResult) {
     parts.push(tx`${commits} commits copied (${files} files).`);
     if (r.skipped) {
       const skipped = r.skipped;
-      parts.push(tx`${skipped} files not copied (non-text files, not UTF-8 or a symlink).`);
+      parts.push(tx`Not copied (non-text files, not UTF-8 or a symlink): ${skipped}.`);
     }
   } else {
     const files = r.files;
@@ -64,11 +64,11 @@ function notifyCopied(r: ClipCopyResult) {
     }
     if (r.nonTextCopied) {
       const carried = r.nonTextCopied;
-      parts.push(tx`${carried} non-text files copied as Base64.`);
+      parts.push(tx`Non-text files copied as Base64: ${carried}.`);
     }
     if (r.skippedUnreadable) {
       const skipped = r.skippedUnreadable;
-      parts.push(tx`${skipped} skipped: non-text file or unreadable.`);
+      parts.push(tx`Skipped (non-text file or unreadable): ${skipped}.`);
     }
   }
   const [chars, lines, words, tokens] = [r.chars, r.lines, r.words, r.tokens].map(grouped);
@@ -226,12 +226,12 @@ function reportPaste(r: ClipPasteResult, commits: boolean) {
   const lines = [...r.errors];
   if (r.unchanged) {
     const unchanged = r.unchanged;
-    lines.push(tx`${unchanged} non-text files already identical, left unchanged.`);
+    lines.push(tx`Non-text files already identical, left unchanged: ${unchanged}.`);
   }
   if (r.corruptNonText.length) {
     const shown = r.corruptNonText.slice(0, 3).join(", ");
     const count = r.corruptNonText.length;
-    lines.push(tx`${count} non-text files skipped, corrupt: ${shown}`);
+    lines.push(tx`Corrupt non-text files skipped (${count}): ${shown}`);
   }
   notifications().notify({
     group: "clipcode",
