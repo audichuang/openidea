@@ -200,6 +200,35 @@ pub struct ClipCopyResult {
     pub skipped_symlink_dir_paths: Vec<String>,
 }
 
+impl ClipCopyResult {
+    /// A files result that copied nothing, for a selection that was refused whole.
+    fn empty() -> Self {
+        Self {
+            text: String::new(),
+            mode: "files".into(),
+            files: 0,
+            commits: 0,
+            chars: 0,
+            lines: 0,
+            words: 0,
+            tokens: 0,
+            skipped: 0,
+            skipped_size: 0,
+            skipped_unreadable: 0,
+            truncated: false,
+            file_limit: 0,
+            notify: true,
+            non_text: ClipNonTextSummary::default(),
+            non_text_copied: 0,
+            skipped_unreadable_paths: Vec::new(),
+            skipped_unportable: 0,
+            skipped_unportable_paths: Vec::new(),
+            skipped_symlink_dirs: 0,
+            skipped_symlink_dir_paths: Vec::new(),
+        }
+    }
+}
+
 fn n(v: usize) -> u32 {
     u32::try_from(v).unwrap_or(u32::MAX)
 }
@@ -274,19 +303,6 @@ fn outside_root(p: &Path) -> PathBuf {
     let at = if p.is_dir() && std::fs::read_dir(p).is_err() { p.parent().unwrap_or(p) } else { p };
     repo_root(at)
         .unwrap_or_else(|_| if at.is_dir() { at.to_path_buf() } else { at.parent().unwrap_or(at).to_path_buf() })
-}
-
-/// The error text when no selected path could be read: names the symlinked folders and unportable names
-/// that were refused, which the generic text would hide.
-fn nothing_selected_message(refusals: &WalkRefusals) -> String {
-    let mut reasons = Vec::new();
-    if refusals.symlink_dirs > 0 {
-        reasons.push(format!("symlinked folder not followed: {}", refusals.symlink_dir_paths.join(", ")));
-    }
-    if refusals.unportable > 0 {
-        reasons.push(format!("name not portable: {}", refusals.unportable_paths.join(", ")));
-    }
-    if reasons.is_empty() { "Nothing to copy".to_string() } else { format!("Nothing to copy ({})", reasons.join("; ")) }
 }
 
 fn file_copy(
@@ -471,15 +487,10 @@ pub fn copy_in_with(
                     None => groups.push((root, vec![p.clone()])),
                 }
             }
-            // The project is the primary root (relative headers) wherever it sits in the batch;
-            // without one, the first content root, else the first root.
-            let primary_idx = groups
-                .iter()
-                .position(|(r, _)| r == project)
-                .or_else(|| groups.iter().position(|(r, _)| !absolute.contains(r)))
-                .unwrap_or(0);
             // Plan every group first, then validate the merged selection once: the primary,
-            // the roots and the absolute spelling must all be known before validation.
+            // the roots and the absolute spelling must all be known before validation. A group
+            // refused whole leaves no part, so parts keep their group's root and every lookup
+            // below goes by root, never by the group's index.
             let mut parts = Vec::with_capacity(groups.len());
             for (root, list) in &groups {
                 match selection_from_paths_or_refused(root, root, list).map_err(err)? {
@@ -487,7 +498,7 @@ pub fn copy_in_with(
                         skipped += part.skipped;
                         skipped_paths.extend(part.skipped_paths);
                         refusals.merge(part.detail);
-                        parts.push(part.sel);
+                        parts.push((root.clone(), part.sel));
                     }
                     Err(refused) => {
                         skipped += refused.skipped;
@@ -497,16 +508,39 @@ pub fn copy_in_with(
                 }
             }
             if parts.is_empty() {
-                // Every selected path was refused: say why where the reason is not "unreadable".
-                return Err(IdeError::invalid(nothing_selected_message(&refusals)));
+                // Every selected path was refused: an empty result that names what was refused, which the
+                // UI reports as "Nothing to copy". An error would reach the user as a raw `IpcError`.
+                let unreadable = skipped.saturating_sub(refusals.unportable + refusals.symlink_dirs);
+                return Ok(ClipCopyResult {
+                    mode: "files".into(),
+                    skipped: n(skipped),
+                    skipped_unreadable: n(unreadable),
+                    skipped_unreadable_paths: skipped_paths.into_iter().take(SKIPPED_PATHS_SHOWN).collect(),
+                    skipped_unportable: n(refusals.unportable),
+                    skipped_unportable_paths: refusals.unportable_paths,
+                    skipped_symlink_dirs: n(refusals.symlink_dirs),
+                    skipped_symlink_dir_paths: refusals.symlink_dir_paths,
+                    file_limit: n(file_limit(settings)),
+                    notify: settings.show_copy_notification,
+                    ..ClipCopyResult::empty()
+                });
             }
+            // A refused group's root was never declared to the selection.
+            absolute.retain(|r| parts.iter().any(|(root, _)| root == r));
             // The `clipcode-root` name is the project's own spelling, never another root's.
-            let source_root = groups.iter().position(|(r, _)| r == project).and_then(|i| parts[i].source_root.clone());
-            let spelled_root = parts[primary_idx].spelled_root.clone();
-            let primary = parts[primary_idx].primary_root.as_ref().map(|r| r.path().to_path_buf());
+            let source_root = parts.iter().find(|(r, _)| r == project).and_then(|(_, part)| part.source_root.clone());
+            // The project is the primary root (relative headers) wherever it sits in the batch;
+            // without one, the first content root, else the first root.
+            let primary_idx = parts
+                .iter()
+                .position(|(r, _)| r == project)
+                .or_else(|| parts.iter().position(|(r, _)| !absolute.contains(r)))
+                .unwrap_or(0);
+            let spelled_root = parts[primary_idx].1.spelled_root.clone();
+            let primary = parts[primary_idx].1.primary_root.as_ref().map(|r| r.path().to_path_buf());
             let mut roots: Vec<PathBuf> = Vec::new();
             let mut items = Vec::new();
-            for part in parts {
+            for (_, part) in parts {
                 roots.extend(part.roots.iter().map(|r| r.path().to_path_buf()));
                 items.extend(part.items);
             }
@@ -754,11 +788,25 @@ pub struct ClipPasteResult {
     /// Commit ids the replay created, oldest first.
     pub commits: Vec<String>,
     pub errors: Vec<String>,
+    /// Commits the replay did not create, each with its reason as a code the UI words (never English text).
+    pub not_created: Vec<ClipNotCreated>,
     /// Non-text targets that already held the pasted bytes: not written.
     pub unchanged: u32,
     /// Non-text entries skipped because their Base64, size or SHA-256 did not verify (counted in
     /// `skipped`), by payload path.
     pub corrupt_non_text: Vec<String>,
+}
+
+/// A replayed commit that was not created because every file change of it was refused or skipped.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipNotCreated {
+    /// 1-based position among the replayed commits.
+    pub number: u32,
+    /// The commit message's first line.
+    pub subject: String,
+    /// A skip reason code, as in the preview rows (`NON_UTF8_TARGET`, ...).
+    pub reason: String,
 }
 
 enum Pending {
@@ -1110,6 +1158,7 @@ pub fn paste_apply_with_paths(req: ClipPasteApply) -> IdeResult<(ClipPasteResult
                 skipped: n(r.total_skipped()),
                 commits: Vec::new(),
                 errors: r.errors,
+                not_created: Vec::new(),
                 unchanged: n(r.unchanged_count),
                 corrupt_non_text,
             };
@@ -1129,18 +1178,16 @@ pub fn paste_apply_with_paths(req: ClipPasteApply) -> IdeResult<(ClipPasteResult
                 .map(|f| f.path.clone())
                 .collect();
             let r = preview.apply().map_err(|e| IdeError::invalid(e.paste_message()))?;
-            let mut errors: Vec<String> = r
+            let not_created: Vec<ClipNotCreated> = r
                 .not_created
                 .iter()
-                .map(|c| {
-                    format!(
-                        "Commit {} ({}) not created: {}",
-                        c.index + 1,
-                        c.message.lines().next().unwrap_or(""),
-                        c.reason.describe()
-                    )
+                .map(|c| ClipNotCreated {
+                    number: n(c.index + 1),
+                    subject: c.message.lines().next().unwrap_or("").to_string(),
+                    reason: tag(&c.reason),
                 })
                 .collect();
+            let mut errors: Vec<String> = Vec::new();
             if let Some(f) = &r.failure {
                 errors.push(format!(
                     "Commit {} ({}) failed: {}",
@@ -1149,7 +1196,10 @@ pub fn paste_apply_with_paths(req: ClipPasteApply) -> IdeResult<(ClipPasteResult
                     f.error
                 ));
             }
-            Ok((ClipPasteResult { commits: r.created, errors, corrupt_non_text, ..Default::default() }, Vec::new()))
+            Ok((
+                ClipPasteResult { commits: r.created, errors, not_created, corrupt_non_text, ..Default::default() },
+                Vec::new(),
+            ))
         }
     }
 }
@@ -2484,5 +2534,27 @@ mod tests {
         assert!(paste_branch_series(&c, &series.text, "clash", true).is_err());
         assert_eq!(git(&c, &["rev-parse", "--abbrev-ref", "HEAD"]), "main");
         assert!(git(&c, &["branch", "--list", "clash"]).is_empty());
+    }
+
+    /// A group refused whole (here: a non-portable name outside the project) leaves no part, so the groups after
+    /// it must not be looked up by the group's index.
+    #[cfg(unix)]
+    #[test]
+    fn a_group_refused_whole_does_not_break_the_groups_after_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = repo(&tmp.path().join("proj"));
+        fs::write(a.join("ok.txt"), "ok\n").unwrap();
+        let outside = dunce::canonicalize(tmp.path()).unwrap().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("bad\".txt"), "bad\n").unwrap();
+        for paths in
+            [vec![outside.join("bad\".txt"), a.join("ok.txt")], vec![a.join("ok.txt"), outside.join("bad\".txt")]]
+        {
+            let copied =
+                copy_in_with(&a, &[], ClipCopySource::Files { paths }, &Settings::default(), ClipNonTextMode::Exclude)
+                    .unwrap();
+            assert_eq!(copied.files, 1, "{}", copied.text);
+            assert!(copied.text.contains("// file: ok.txt"), "{}", copied.text);
+        }
     }
 }
