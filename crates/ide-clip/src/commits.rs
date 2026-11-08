@@ -12,10 +12,12 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::blob::{BlobRead, BlobReader, NotText};
-use crate::fsutil::{must_not_overwrite, write_text_file};
+use crate::fsutil::{must_not_overwrite, write_bytes_file, write_text_file};
 use crate::gitrun::{CancelToken, Overflow, RunOptions};
 use crate::gitsrc::{Git, GitError, RawZ};
+use crate::nontext::{self, NonTextError, NonTextHeader, NonTextSummary};
 use crate::paths::{escapes_all_roots, lands_in_git_dir, resolve_write_target};
+use crate::settings::NonTextMode;
 
 /// Replay replaces a symlink at the target instead of writing through it,
 /// so only the folder it lands in decides whether it is inside Git.
@@ -72,6 +74,74 @@ pub enum CommitError {
 pub struct CommitExport {
     pub payload: CommitsPayload,
     pub text: String,
+    /// What the copy dialog shows; under Exclude, what Include would add.
+    pub non_text: NonTextSummary,
+}
+
+/// How a commit export treats non-text files. Commits mode has no text size
+/// limit, so the non-text limit travels with the mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommitNonTextOptions {
+    pub mode: NonTextMode,
+    /// `maxNonTextFileSizeKB` in bytes ([`crate::settings::Settings::max_non_text_file_bytes`]).
+    pub max_file_bytes: u64,
+}
+
+impl Default for CommitNonTextOptions {
+    /// Exclude, with the default 2 MB limit for the summary.
+    fn default() -> Self {
+        Self {
+            mode: NonTextMode::Exclude,
+            max_file_bytes: crate::settings::Settings::default().max_non_text_file_bytes(),
+        }
+    }
+}
+
+impl CommitNonTextOptions {
+    pub fn from_settings(settings: &crate::settings::Settings, mode: NonTextMode) -> Self {
+        Self { mode, max_file_bytes: settings.max_non_text_file_bytes() }
+    }
+}
+
+/// A non-text file's bytes in commits mode, next to `"content": null` and its
+/// `notCopied` reason. An older reader ignores the field and skips the file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitNonText {
+    pub size: u64,
+    /// Lowercase hex SHA-256 of the raw bytes.
+    pub sha256: String,
+    /// Standard Base64, unwrapped.
+    pub base64: String,
+}
+
+impl CommitNonText {
+    pub fn new(bytes: &[u8]) -> Self {
+        Self { size: bytes.len() as u64, sha256: nontext::sha256_hex(bytes), base64: nontext::encode(bytes) }
+    }
+
+    /// The bytes, after the same length and SHA-256 check as files mode.
+    pub fn decode(&self) -> Result<Vec<u8>, NonTextError> {
+        let header = NonTextHeader { size: self.size, sha256: self.sha256.clone() };
+        nontext::decode_verified(&self.base64, &header)
+    }
+
+    /// What the field adds to a file's JSON (`,"nonText":{...}`) for `size`
+    /// raw bytes, without encoding them.
+    fn wire_len(size: u64) -> usize {
+        let empty = Self { size, sha256: "0".repeat(64), base64: String::new() };
+        let json = serde_json::to_string(&empty).expect("non-text field serializes");
+        ",\"nonText\":".len() + json.len() + nontext::encoded_len(size) as usize
+    }
+}
+
+/// Non-text bookkeeping of one export.
+#[derive(Default)]
+struct NonTextState {
+    options: CommitNonTextOptions,
+    summary: NonTextSummary,
+    /// Exclude: what the `nonText` fields would add.
+    include_extra: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,6 +185,10 @@ pub struct CommitFile {
     /// Full content after the change; `None` for deletions and not-copied.
     pub content: Option<String>,
     pub not_copied: Option<NotCopiedReason>,
+    /// A non-text file's bytes (`BINARY` / `NON_UTF8`), when the copy
+    /// included them. Absent otherwise, so the wire stays today's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub non_text: Option<CommitNonText>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,7 +226,8 @@ impl CommitsPayload {
                 bytes = bytes
                     .saturating_add(file.path.capacity())
                     .saturating_add(file.old_path.as_ref().map_or(0, String::capacity))
-                    .saturating_add(file.content.as_ref().map_or(0, String::capacity));
+                    .saturating_add(file.content.as_ref().map_or(0, String::capacity))
+                    .saturating_add(file.non_text.as_ref().map_or(0, |n| n.sha256.capacity() + n.base64.capacity()));
             }
         }
         bytes
@@ -232,7 +307,8 @@ fn lossy(bytes: &[u8]) -> String {
 /// A UI that must cancel or bound the clipboard uses [`copy_commits_with`].
 /// Both share one reader. This wrapper does not apply the strict cap.
 pub fn copy_commits(git: &Git, shas: &[String]) -> Result<CommitsPayload, CommitError> {
-    let (payload, _) = export_commits_counted(git, shas, &RunOptions::default(), None)?;
+    let mut non_text = NonTextState::default();
+    let (payload, _) = export_commits_counted(git, shas, &RunOptions::default(), None, &mut non_text)?;
     Ok(payload)
 }
 
@@ -277,10 +353,27 @@ pub fn copy_commits_with(
     opts: &RunOptions,
     max_serialized_bytes: usize,
 ) -> Result<CommitExport, CommitError> {
-    let (payload, total_wire_len) = export_commits_counted(git, shas, opts, Some(max_serialized_bytes))?;
+    copy_commits_with_non_text(git, shas, opts, max_serialized_bytes, CommitNonTextOptions::default())
+}
+
+/// [`copy_commits_with`] that carries non-text files under
+/// [`NonTextMode::Include`] (`nonText`, within `non_text.max_file_bytes`).
+/// Exclude writes today's payload and reports what Include would add in
+/// [`CommitExport::non_text`].
+pub fn copy_commits_with_non_text(
+    git: &Git,
+    shas: &[String],
+    opts: &RunOptions,
+    max_serialized_bytes: usize,
+    non_text: CommitNonTextOptions,
+) -> Result<CommitExport, CommitError> {
+    let mut state = NonTextState { options: non_text, ..Default::default() };
+    let (payload, total_wire_len) = export_commits_counted(git, shas, opts, Some(max_serialized_bytes), &mut state)?;
     let text = to_clipboard_text_bounded(&payload, total_wire_len, max_serialized_bytes, opts.cancel.as_ref())?;
     debug_assert_eq!(text.len(), total_wire_len);
-    Ok(CommitExport { payload, text })
+    let mut summary = state.summary;
+    summary.estimated_include_payload_bytes = text.len().saturating_add(state.include_extra);
+    Ok(CommitExport { payload, text, non_text: summary })
 }
 
 const EMPTY_PAYLOAD_WIRE_LEN: usize = COMMIT_MARKER.len() + 1 + 14;
@@ -308,6 +401,7 @@ fn export_commits_counted(
     shas: &[String],
     opts: &RunOptions,
     limit: Option<usize>,
+    non_text: &mut NonTextState,
 ) -> Result<(CommitsPayload, usize), CommitError> {
     refuse_if_cancelled(opts, "commits")?;
     let empty_wire_len = EMPTY_PAYLOAD_WIRE_LEN;
@@ -320,7 +414,7 @@ fn export_commits_counted(
     let mut current_wire_len = empty_wire_len;
     for sha in shas {
         refuse_if_cancelled(opts, "commits")?;
-        export_one(git, sha, opts, limit, &mut commits, &mut current_wire_len)?;
+        export_one(git, sha, opts, limit, &mut commits, &mut current_wire_len, non_text)?;
     }
     refuse_if_cancelled(opts, "commits")?;
     Ok((CommitsPayload { commits }, current_wire_len))
@@ -333,6 +427,7 @@ fn export_one(
     limit: Option<usize>,
     commits: &mut Vec<CommitRecord>,
     current_wire_len: &mut usize,
+    non_text: &mut NonTextState,
 ) -> Result<(), CommitError> {
     refuse_if_cancelled(opts, "export commit")?;
     let out = read_commit_meta_stdout(git, sha, opts, limit, *current_wire_len)?;
@@ -378,7 +473,8 @@ fn export_one(
         refuse_if_cancelled(opts, "diff-tree scan")?;
         match entry {
             Ok(entry) => {
-                if let Err(err) = admit_entry(git, opts, limit, commits, current_wire_len, &mut blobs, entry) {
+                if let Err(err) = admit_entry(git, opts, limit, commits, current_wire_len, &mut blobs, entry, non_text)
+                {
                     failed = Some(err);
                     break;
                 }
@@ -484,6 +580,7 @@ struct CommitRecordMetaView<'a> {
     files: &'a [CommitFile],
 }
 
+#[allow(clippy::too_many_arguments)]
 fn admit_entry(
     git: &Git,
     opts: &RunOptions,
@@ -492,6 +589,7 @@ fn admit_entry(
     current_wire_len: &mut usize,
     blobs: &mut BlobReader,
     entry: crate::gitsrc::RawEntry,
+    non_text: &mut NonTextState,
 ) -> Result<(), CommitError> {
     let change = match entry.status {
         b'A' | b'C' => FileChange::Added,
@@ -512,6 +610,7 @@ fn admit_entry(
         change,
         content: None,
         not_copied: None,
+        non_text: None,
     };
     if !path_ok {
         file.not_copied = Some(NotCopiedReason::NonUtf8Path);
@@ -530,7 +629,7 @@ fn admit_entry(
         file.not_copied = blobs.deleted_not_text(git, &entry.old_oid)?.map(NotCopiedReason::from);
         return push_file(commits, current_wire_len, file, limit, opts);
     }
-    admit_blob(commits, current_wire_len, file, git, blobs, &entry.new_oid, opts, limit)
+    admit_blob(commits, current_wire_len, file, git, blobs, &entry.new_oid, opts, limit, non_text)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -543,6 +642,7 @@ fn admit_blob(
     oid: &str,
     opts: &RunOptions,
     limit: Option<usize>,
+    non_text: &mut NonTextState,
 ) -> Result<(), CommitError> {
     let (max_retain, len_empty) = if let Some(max) = limit {
         file.content = Some(String::new());
@@ -561,14 +661,44 @@ fn admit_blob(
     };
     file.content = None;
     file.not_copied = None;
-    match blobs.read(git, oid, max_retain)? {
+    let max_non_text = non_text.options.max_file_bytes;
+    let include = non_text.options.mode == NonTextMode::Include;
+    // Include reads a non-text body up to its own limit; a body that then does
+    // not fit the document fails it in `push_file`, as text does.
+    let read_cap = if include { max_retain.max(max_non_text) } else { max_retain };
+    match blobs.read_keeping_non_text(git, oid, read_cap)? {
         BlobRead::Missing => {
             file.not_copied = Some(NotCopiedReason::Unreadable);
         }
         BlobRead::Text(t) => {
             file.content = Some(t);
         }
-        BlobRead::NotText(r) | BlobRead::NonText { kind: r, .. } | BlobRead::TooLarge { not_text: Some(r), .. } => {
+        BlobRead::NonText { kind, bytes } => {
+            file.not_copied = Some(kind.into());
+            let size = bytes.len() as u64;
+            if size > max_non_text {
+                non_text.summary.over_limit_count += 1;
+            } else {
+                non_text.summary.found(&file.path, size);
+                if include {
+                    file.non_text = Some(CommitNonText::new(&bytes));
+                } else {
+                    non_text.include_extra += CommitNonText::wire_len(size);
+                }
+            }
+        }
+        BlobRead::TooLarge { size, not_text: Some(r) } => {
+            file.not_copied = Some(r.into());
+            // Over the bytes left for the document (Exclude), or over the
+            // non-text limit (Include reads up to it).
+            if size > max_non_text {
+                non_text.summary.over_limit_count += 1;
+            } else {
+                non_text.summary.found(&file.path, size);
+                non_text.include_extra += CommitNonText::wire_len(size);
+            }
+        }
+        BlobRead::NotText(r) => {
             file.not_copied = Some(r.into());
         }
         BlobRead::NotABlob { .. } => {
@@ -929,6 +1059,9 @@ pub enum ReplaySkipReason {
     UnsafePath,
     /// The file on disk is not UTF-8 or cannot be verified.
     NonUtf8Target,
+    /// The file's `nonText` Base64 does not decode, or its size or SHA-256
+    /// differs from the recorded one.
+    CorruptNonText,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1026,6 +1159,10 @@ pub struct FilePlan {
     pub before: ReplayContentSource,
     #[serde(default)]
     pub old_before: ReplayContentSource,
+    /// Raw size of a verified non-text file this row writes; the preview
+    /// shows "non-text file" and never its Base64.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub non_text_size: Option<u64>,
 }
 
 impl FilePlan {
@@ -1095,6 +1232,7 @@ impl CommitReplayPlan {
                             a.layout_conflict,
                             &a.absolute_path,
                             &a.old_absolute_path,
+                            a.non_text_size,
                         ) == (
                             &b.path,
                             &b.old_path,
@@ -1107,6 +1245,7 @@ impl CommitReplayPlan {
                             b.layout_conflict,
                             &b.absolute_path,
                             &b.old_absolute_path,
+                            b.non_text_size,
                         )
                     })
             })
@@ -1191,9 +1330,20 @@ fn plan_file(root: &Path, f: &CommitFile, layout: &PlannedLayout) -> FilePlan {
         old_absolute_path: None,
         before: ReplayContentSource::default(),
         old_before: ReplayContentSource::default(),
+        non_text_size: None,
     };
     let deleted = f.change == FileChange::Deleted;
-    if !deleted && f.content.is_none() && plan.not_copied.is_none() {
+    // The bytes are verified before anything is planned as writable.
+    if let Some(nt) = f.non_text.as_ref().filter(|_| !deleted) {
+        if nt.decode().is_err() {
+            plan.skip_reason = Some(ReplaySkipReason::CorruptNonText);
+            return plan;
+        }
+        plan.not_copied = None;
+        plan.non_text_size = Some(nt.size);
+    }
+    let non_text = plan.non_text_size.is_some();
+    if !deleted && !non_text && f.content.is_none() && plan.not_copied.is_none() {
         plan.not_copied = Some(NotCopiedReason::Unreadable);
     }
     if plan.not_copied.is_some() {
@@ -1213,7 +1363,8 @@ fn plan_file(root: &Path, f: &CommitFile, layout: &PlannedLayout) -> FilePlan {
     // checked on disk.
     // A hard link needs no check of its own: the write replaces this entry,
     // never the shared file (see `fsutil::write_text_file`).
-    if !deleted && !layout.replaced(&abs) && !is_symlink(&abs) && must_not_overwrite(&abs) {
+    // Raw bytes have no encoding to preserve: the non-UTF-8 guard is for text.
+    if !deleted && !non_text && !layout.replaced(&abs) && !is_symlink(&abs) && must_not_overwrite(&abs) {
         plan.skip_reason = Some(ReplaySkipReason::NonUtf8Target);
         plan.existed = abs.exists();
         plan.absolute_path = Some(abs);
@@ -1485,7 +1636,13 @@ impl PlannedLayout {
             };
             self.tracked.insert(&f.path);
             self.set(abs, Node::File);
-            self.contents.insert(self.key(abs), ReplayContentSource::Payload { commit_index, file_index });
+            // A non-text write is never shown as text to a later row.
+            let source = if f.non_text_size.is_some() {
+                ReplayContentSource::Unavailable(ReplayPreviewUnavailable::Binary)
+            } else {
+                ReplayContentSource::Payload { commit_index, file_index }
+            };
+            self.contents.insert(self.key(abs), source);
             for a in abs.ancestors().skip(1) {
                 if a == root || !a.starts_with(root) {
                     break;
@@ -1977,14 +2134,23 @@ fn replay_commit(git: &Git, scope: &Path, commit: &CommitRecord, no_hooks: &str)
     // Recheck every write target before anything destructive happens, so a
     // target that changed since planning stops the replay instead of
     // leaving a commit that only records the rename's deletion.
+    // A non-text row's bytes, verified again (`plan_file` checked them too).
+    let mut bytes: Vec<Option<Vec<u8>>> = Vec::with_capacity(plan.files.len());
     for (f, src) in plan.files.iter().zip(&commit.files) {
-        let (ReplayAction::Write, Some(abs), Some(_)) = (f.action, &f.absolute_path, &src.content) else {
+        let non_text = match (&f.non_text_size, &src.non_text) {
+            (Some(_), Some(nt)) => Some(nt.decode().map_err(|e| format!("{}: {e}", f.path))?),
+            _ => None,
+        };
+        let writes = src.content.is_some() || non_text.is_some();
+        let is_text = non_text.is_none();
+        bytes.push(non_text);
+        let (ReplayAction::Write, Some(abs), true) = (f.action, &f.absolute_path, writes) else {
             continue;
         };
         if unsafe_replay_target(scope, abs) {
             return Err(format!("{}: unsafe path", f.path).into());
         }
-        if !is_symlink(abs) && must_not_overwrite(abs) {
+        if is_text && !is_symlink(abs) && must_not_overwrite(abs) {
             return Err(format!("{}: target is not UTF-8 or cannot be verified", f.path).into());
         }
     }
@@ -2004,16 +2170,24 @@ fn replay_commit(git: &Git, scope: &Path, commit: &CommitRecord, no_hooks: &str)
     let err = |e: GitError| e.to_string();
 
     let mut paths: Vec<&str> = Vec::new();
-    for (f, src) in plan.files.iter().zip(&commit.files) {
-        let (ReplayAction::Write, Some(abs), Some(content)) = (f.action, &f.absolute_path, &src.content) else {
+    for ((f, src), non_text) in plan.files.iter().zip(&commit.files).zip(&bytes) {
+        let (ReplayAction::Write, Some(abs)) = (f.action, &f.absolute_path) else {
             continue;
         };
+        if src.content.is_none() && non_text.is_none() {
+            continue;
+        }
         if unsafe_replay_target(root, abs) {
             return Err(format!("{}: unsafe path", f.path).into());
         }
         // The write replaces the entry: a symlink or a hard link here is
         // itself replaced, never written through.
-        write_text_file(abs, content).map_err(|e| format!("{}: {e}", f.path))?;
+        match (non_text, &src.content) {
+            (Some(bytes), _) => write_bytes_file(abs, bytes),
+            (None, Some(content)) => write_text_file(abs, content),
+            (None, None) => unreachable!(),
+        }
+        .map_err(|e| format!("{}: {e}", f.path))?;
         paths.push(&f.path);
     }
 
@@ -2409,6 +2583,7 @@ mod tests {
             change: FileChange::Added,
             content: Some("x\n".into()),
             not_copied: None,
+            non_text: None,
         };
         let record = |msg: &str, files| CommitRecord {
             message: msg.into(),
@@ -2460,6 +2635,7 @@ mod tests {
             change,
             content: Some("data\n".into()),
             not_copied: None,
+            non_text: None,
         };
         let record = |msg: &str, files| CommitRecord {
             message: msg.into(),
@@ -2512,6 +2688,7 @@ mod tests {
             change: FileChange::Added,
             content: Some("x\n".into()),
             not_copied: None,
+            non_text: None,
         };
         let payload = CommitsPayload {
             commits: vec![
@@ -2565,6 +2742,7 @@ mod tests {
             change: FileChange::Added,
             content: Some("x\n".into()),
             not_copied: None,
+            non_text: None,
         };
         let payload = CommitsPayload {
             commits: vec![CommitRecord {
@@ -2595,6 +2773,7 @@ mod tests {
             change,
             content: (change != FileChange::Deleted).then(|| "x\n".into()),
             not_copied: None,
+            non_text: None,
         }
     }
 
@@ -3266,6 +3445,7 @@ mod tests {
             change,
             content: None,
             not_copied,
+            non_text: None,
         };
         let payload = CommitsPayload {
             commits: vec![
@@ -3301,6 +3481,7 @@ mod tests {
             change,
             content: content.map(Into::into),
             not_copied: None,
+            non_text: None,
         };
         let payload = CommitsPayload {
             commits: vec![CommitRecord {
@@ -3345,6 +3526,7 @@ mod tests {
             change,
             content: content.map(Into::into),
             not_copied: None,
+            non_text: None,
         };
         let payload = CommitsPayload {
             commits: vec![CommitRecord {
@@ -3439,6 +3621,7 @@ mod tests {
             change: FileChange::Renamed,
             content: content.map(str::to_string),
             not_copied: reason,
+            non_text: None,
         };
         let payload = CommitsPayload {
             commits: vec![
@@ -3497,6 +3680,7 @@ mod tests {
                     change: FileChange::Added,
                     content: Some("hello \"world\"\n\\escaped\n".into()),
                     not_copied: None,
+                    non_text: None,
                 }],
             }],
         };
@@ -3523,6 +3707,7 @@ mod tests {
             change: FileChange::Added,
             content: Some("a".repeat(1000)),
             not_copied: None,
+            non_text: None,
         };
         let (tx, rx) = std::sync::mpsc::channel();
         let token_clone = token.clone();
@@ -3568,6 +3753,7 @@ mod tests {
                     change: FileChange::Added,
                     content: Some("hello world".to_string()),
                     not_copied: None,
+                    non_text: None,
                 }],
             }],
         };
@@ -3687,7 +3873,14 @@ mod tests {
     }
 
     fn change(path: &str, change: FileChange, content: Option<&str>) -> CommitFile {
-        CommitFile { path: path.into(), old_path: None, change, content: content.map(Into::into), not_copied: None }
+        CommitFile {
+            path: path.into(),
+            old_path: None,
+            change,
+            content: content.map(Into::into),
+            not_copied: None,
+            non_text: None,
+        }
     }
 
     #[cfg(unix)]
@@ -3867,6 +4060,7 @@ mod tests {
                     change: FileChange::Added,
                     content: Some("owned\n".into()),
                     not_copied: None,
+                    non_text: None,
                 }],
             }],
         };
@@ -3911,6 +4105,7 @@ mod tests {
                         change: FileChange::Added,
                         content: Some("out\n".into()),
                         not_copied: None,
+                        non_text: None,
                     },
                     CommitFile {
                         path: "sub/inside.txt".into(),
@@ -3918,6 +4113,7 @@ mod tests {
                         change: FileChange::Added,
                         content: Some("in\n".into()),
                         not_copied: None,
+                        non_text: None,
                     },
                 ],
             }],
@@ -3958,6 +4154,7 @@ mod tests {
                     change: FileChange::Deleted,
                     content: None,
                     not_copied: None,
+                    non_text: None,
                 }],
             }],
         };
@@ -4008,6 +4205,7 @@ mod tests {
             change: FileChange::Added,
             content: Some("x\n".into()),
             not_copied: None,
+            non_text: None,
         };
         let payload = CommitsPayload {
             commits: vec![CommitRecord {
@@ -4050,6 +4248,7 @@ mod tests {
                 change: FileChange::Added,
                 content: None,
                 not_copied: Some(NotCopiedReason::Binary),
+                non_text: None,
             },
             // 一般 Write
             CommitFile {
@@ -4058,6 +4257,7 @@ mod tests {
                 change: FileChange::Added,
                 content: Some("write\n".into()),
                 not_copied: None,
+                non_text: None,
             },
             // rename
             CommitFile {
@@ -4066,6 +4266,7 @@ mod tests {
                 change: FileChange::Renamed,
                 content: Some("renamed\n".into()),
                 not_copied: None,
+                non_text: None,
             },
             // 非 UTF-8 目標 (NonUtf8Target)
             CommitFile {
@@ -4074,6 +4275,7 @@ mod tests {
                 change: FileChange::Modified,
                 content: Some("utf8 payload\n".into()),
                 not_copied: None,
+                non_text: None,
             },
         ];
 
@@ -4084,6 +4286,7 @@ mod tests {
             change: FileChange::Added,
             content: Some("sub\n".into()),
             not_copied: None,
+            non_text: None,
         });
 
         let payload = CommitsPayload {
@@ -4145,6 +4348,7 @@ mod tests {
             old_absolute_path: None,
             before: ReplayContentSource::default(),
             old_before: ReplayContentSource::default(),
+            non_text_size: None,
         }
     }
 
