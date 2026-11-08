@@ -140,6 +140,16 @@ export const CLIPCODE_PAGE: PageSpec = {
           max: WORKFLOW_LIMITS.clipFileSizeKb.max,
           hint: "Larger files are copied as a placeholder that is never restored.",
         },
+        {
+          kind: "number",
+          key: "vcs.clipCode.maxNonTextFileSizeKB",
+          label: "Max non-text file size (KB)",
+          unit: "KB",
+          integer: true,
+          min: WORKFLOW_LIMITS.clipFileSizeKb.min,
+          max: WORKFLOW_LIMITS.clipFileSizeKb.max,
+          hint: "Larger non-text files (images, archives) are copied as a placeholder that is never restored.",
+        },
       ],
     },
     {
