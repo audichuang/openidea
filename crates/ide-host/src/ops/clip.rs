@@ -122,6 +122,10 @@ pub struct ClipNonTextSummary {
     pub files: Vec<ClipNonTextFile>,
     /// Non-text files over the non-text limit: not copied either way.
     pub over_limit_count: u32,
+    /// Files over both per-file limits: never read, copied as size placeholders.
+    pub unread_over_limit_count: u32,
+    /// The larger per-file limit in bytes, which those files exceed.
+    pub unread_limit_bytes: f64,
     /// The estimate is over the whole-payload limit: `Include` would fail.
     pub exceeds_payload_cap: bool,
 }
@@ -138,6 +142,8 @@ fn non_text_summary(s: &NonTextSummary) -> ClipNonTextSummary {
             .map(|f| ClipNonTextFile { path: f.path.clone(), size: f.size as f64 })
             .collect(),
         over_limit_count: n(s.over_limit_count),
+        unread_over_limit_count: n(s.unread_over_limit_count),
+        unread_limit_bytes: s.unread_limit_bytes as f64,
         exceeds_payload_cap: s.estimated_include_payload_bytes > CLIPBOARD_PAYLOAD_MAX,
     }
 }
