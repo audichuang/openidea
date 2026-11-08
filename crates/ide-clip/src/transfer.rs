@@ -44,7 +44,7 @@ mod select;
 pub use crate::commits::ReplayPreviewUnavailable;
 pub use changes::{ChangedItems, changed_items};
 pub use select::{
-    CopyOutcome, CopyReport, FolderExpansion, PathSelection, copy_selection, copy_selection_detailed,
+    CopyOutcome, CopyReport, FolderExpansion, PathSelection, WalkRefusals, copy_selection, copy_selection_detailed,
     expand_folder_items, expand_folder_items_in_input_order, is_safe_dir_symlink, plan_export_expanding,
     selection_from_paths,
 };
