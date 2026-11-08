@@ -265,23 +265,6 @@ pub(crate) fn write_payload_file<W: std::fmt::Write>(
     Ok(())
 }
 
-/// What [`write_payload_file`] adds for a non-text file of `size` bytes after
-/// a line was already written (its leading newline included), computed
-/// without encoding. Escape markers a custom header format may add to Base64
-/// lines are not counted.
-pub(crate) fn non_text_entry_len(
-    header_format: &str,
-    path: &str,
-    change_type: Option<ChangeType>,
-    add_extra_line_between_files: bool,
-    size: u64,
-) -> usize {
-    let header = format_header(header_format, path, change_type).len();
-    let placeholder = crate::nontext::placeholder_line(size, &"0".repeat(64)).len();
-    let base64 = crate::nontext::encoded_len(size) + crate::nontext::wrapped_line_count(size);
-    1 + header + 1 + placeholder + base64 as usize + usize::from(add_extra_line_between_files)
-}
-
 pub(crate) fn write_payload_footer<W: std::fmt::Write>(
     writer: &mut PayloadLineWriter<'_, W>,
     opts: &BorrowedPayloadOptions<'_, '_>,
@@ -746,22 +729,6 @@ mod tests {
         let entries = parse_clipboard(&payload, DEFAULT);
         assert_eq!(entries.len(), 1);
         assert_eq!(crate::nontext::parse_body(&entries[0].content), Some(Ok(bytes)));
-    }
-
-    #[test]
-    fn non_text_entry_len_matches_the_writer() {
-        for (header, extra, label) in
-            [(DEFAULT, true, None), ("### $FILE_PATH ###", false, Some(ChangeType::New)), (DEFAULT, false, None)]
-        {
-            for n in [1usize, 57, 58, 1000] {
-                let bytes = vec![0u8; n];
-                let file = PayloadFile { change_type: label, ..non_text("a/b.bin", &bytes) };
-                let mut counter = CountingWriter::default();
-                let mut w = PayloadLineWriter::new_with_written(&mut counter, true);
-                write_payload_file(&mut w, &file, header, extra, HeaderPattern::new(header).as_ref()).unwrap();
-                assert_eq!(non_text_entry_len(header, "a/b.bin", label, extra, n as u64), counter.count, "{n}");
-            }
-        }
     }
 
     #[test]
