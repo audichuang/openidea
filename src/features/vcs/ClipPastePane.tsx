@@ -5,7 +5,7 @@ import type { ClipPasteFile, ClipPasteFileContent } from "@/bindings";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { languageFor, viewerBase } from "./cm";
-import { pasteNonTextLabel } from "./clipNonText";
+import { isUnchanged, pasteNonTextLabel, pasteRowTitle } from "./clipNonText";
 import styles from "./clip.module.css";
 
 const ACTION_HINT: Record<string, string> = {
@@ -77,12 +77,16 @@ export function ClipPastePane({ previewId, file }: { previewId: number; file: Cl
         <span className={styles.path} title={file.target ?? file.path}>
           {file.path}
         </span>
-        {ACTION_HINT[file.action] && <span className={styles.note}>{tx(ACTION_HINT[file.action]!)}</span>}
+        {ACTION_HINT[file.action] && !isUnchanged(file) && (
+          <span className={styles.note}>{tx(ACTION_HINT[file.action]!)}</span>
+        )}
       </div>
       {nonText ? (
         <div className={styles.paneEmpty}>{pasteNonTextLabel(file)}</div>
       ) : file.action === "skip" ? (
-        <div className={styles.paneEmpty}>{tx`Skipped: ${reason}`}</div>
+        <div className={styles.paneEmpty}>
+          {reason === "CORRUPT_NON_TEXT" ? pasteRowTitle(file) : tx`Skipped: ${reason}`}
+        </div>
       ) : error ? (
         <div className={styles.paneEmpty}>{error}</div>
       ) : content?.note ? (

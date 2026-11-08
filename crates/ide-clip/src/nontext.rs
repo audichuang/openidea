@@ -139,6 +139,13 @@ pub struct NonTextSummary {
     pub total_bytes: u64,
     /// Non-text files over the non-text limit: not copied either way.
     pub over_limit_count: usize,
+    /// Working-tree files over both the text and the non-text limit: never read, so their
+    /// kind is unknown; they travel as size placeholders.
+    #[serde(default)]
+    pub unread_over_limit_count: usize,
+    /// The larger of the two per-file limits, in bytes: what `unread_over_limit_count` exceeds.
+    #[serde(default)]
+    pub unread_limit_bytes: u64,
     /// The payload size with the non-text files included. Exact for an
     /// Include copy; for an Exclude copy it is the Exclude payload plus each
     /// entry's arithmetic size (escape markers a custom header format may
