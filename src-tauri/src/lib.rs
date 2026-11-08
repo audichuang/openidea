@@ -121,14 +121,13 @@ pub fn run() {
     #[cfg(target_os = "linux")]
     let app = app.plugin(linux_window_state::plugin());
     #[cfg(not(target_os = "linux"))]
-    let window_state = tauri_plugin_window_state::Builder::default()
-        .with_state_flags(window_state_flags())
-        // One remembered geometry per kind of auxiliary window (all projects' settings windows share one).
-        .map_label(windows::state_key);
-    #[cfg(target_os = "macos")]
-    let window_state = window_state.with_filter(windows::keeps_window_state);
-    #[cfg(not(target_os = "linux"))]
-    let app = app.plugin(window_state.build());
+    let app = app.plugin(
+        tauri_plugin_window_state::Builder::default()
+            .with_state_flags(window_state_flags())
+            // One remembered geometry per kind of auxiliary window (all projects' settings windows share one).
+            .map_label(windows::state_key)
+            .build(),
+    );
     let app = app
         // Inert until an endpoint is configured (see `commands::window::app_check_update`).
         .plugin(tauri_plugin_updater::Builder::new().build());
@@ -217,10 +216,6 @@ pub fn run() {
         #[cfg(target_os = "macos")]
         macos::intercept_system_quit(app.handle());
         #[cfg(target_os = "macos")]
-        if let Some(mtm) = objc2::MainThreadMarker::new() {
-            macos::prepare_window_tabbing(mtm);
-        }
-        #[cfg(target_os = "macos")]
         application_focus::observe(app.handle());
         app.manage(menu_state);
         cli::serve(app.handle(), &app.config().identifier);
@@ -234,13 +229,8 @@ pub fn run() {
         Ok(())
     })
     .on_window_event(|window, event| match event {
-        tauri::WindowEvent::CloseRequested { .. } => {
-            #[cfg(target_os = "linux")]
-            linux_window_state::save_before_close(window.app_handle());
-            if let Some(w) = window.try_state::<WindowsState>() {
-                w.close_requested(window.label());
-            }
-        }
+        #[cfg(target_os = "linux")]
+        tauri::WindowEvent::CloseRequested { .. } => linux_window_state::save_before_close(window.app_handle()),
         tauri::WindowEvent::Focused(true) => {
             application_focus::changed(window.app_handle(), true);
             if let Some(w) = window.try_state::<WindowsState>() {
@@ -256,7 +246,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             {
                 page_swipe::forget(window.label());
-                titlebar::forget(window);
+                macos::forget_fullscreen(window.label());
             }
             if windows::auxiliary_parent(window.label()).is_none() {
                 window_groups::destroyed(window.app_handle(), window.label());
