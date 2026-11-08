@@ -146,10 +146,9 @@ pub struct NonTextSummary {
     /// The larger of the two per-file limits, in bytes: what `unread_over_limit_count` exceeds.
     #[serde(default)]
     pub unread_limit_bytes: u64,
-    /// The payload size with the non-text files included. Exact for an
-    /// Include copy; for an Exclude copy it is the Exclude payload plus each
-    /// entry's arithmetic size, less what Include's earlier file-count cutoff drops (escape markers a
-    /// custom header format may add to Base64 lines are not counted).
+    /// The payload size with the non-text files included: the length of the Include payload, taken from an
+    /// Include plan of the same selection also when the copy itself is Exclude. When that plan cannot be
+    /// built under the whole-payload limit, only a size above the limit is known.
     pub estimated_include_payload_bytes: usize,
     /// Files the file-count limit leaves out of what Include would copy: every file from Include's cutoff
     /// on that passes the filters. Non-text files count toward the limit like text files.
