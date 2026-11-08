@@ -34,6 +34,7 @@ import { refreshNow, useVcs } from "./store";
 import { ClipPastePane } from "./ClipPastePane";
 import {
   askNonText,
+  errorLineText,
   isCorruptRow,
   isUnchanged,
   pasteRowNote,
@@ -269,7 +270,7 @@ export function reportPaste(r: ClipPasteResult, commits: boolean) {
       const [number, subject, reason] = [c.number, c.subject, skipReasonText(c.reason)];
       return tx`Commit ${number} (${subject}) not created: ${reason}`;
     }),
-    ...r.errors,
+    ...r.errors.map(errorLineText),
   ];
   if (r.unchanged) {
     const unchanged = r.unchanged;
