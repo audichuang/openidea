@@ -1197,17 +1197,21 @@ fn query_is_bounded_when_descendants_keep_pipes_open() {
         }
     }
     let _descendant = Descendant(pid.clone());
+    // The deadline starts at spawn and the wrapper sh must finish within it
+    // on loaded CI runners too.
+    let timeout = std::time::Duration::from_secs(5);
     let started = std::time::Instant::now();
     let out = crate::exec::query_in(
         Path::new("/bin/sh"),
         &["-c", "sleep 120 & echo $! > \"$1\"; printf /global/root", "wrapper", pid.to_str().unwrap()],
         None,
         &[("PATH", "/usr/bin:/bin")],
-        std::time::Duration::from_secs(30),
+        timeout,
     );
+    let elapsed = started.elapsed();
     assert_eq!(out.as_deref(), Some("/global/root"));
     // The descendant keeps both pipes open for longer than the query deadline.
-    assert!(started.elapsed() < std::time::Duration::from_secs(90));
+    assert!(elapsed >= timeout && elapsed < timeout + std::time::Duration::from_secs(2), "took {elapsed:?}");
 }
 
 #[cfg(unix)]
