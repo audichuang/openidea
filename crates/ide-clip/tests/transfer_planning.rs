@@ -4990,12 +4990,12 @@ fn test_from_restore_base_root_through_symlink() {
 }
 
 // ---------------------------------------------------------------------------
-// 35. Phase 2: CLIPBOARD_PAYLOAD_MAX constant is 32 MiB
+// 35. Phase 2: CLIPBOARD_PAYLOAD_MAX constant is 50 MiB
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_clipboard_payload_max_is_32_mib() {
-    assert_eq!(CLIPBOARD_PAYLOAD_MAX, 32 * 1024 * 1024);
+fn test_clipboard_payload_max_is_50_mib() {
+    assert_eq!(CLIPBOARD_PAYLOAD_MAX, 50 * 1024 * 1024);
 }
 
 // ---------------------------------------------------------------------------
