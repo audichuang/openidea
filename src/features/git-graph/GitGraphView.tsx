@@ -10,6 +10,7 @@ import { findMatches, useGraphData, useGraphExtras, useRepoState, type GraphFilt
 import { BottomPane } from "./Details";
 import { buildEntries, layoutInput } from "./entries";
 import { BisectBanner } from "./panels";
+import { PrView } from "./PrView";
 import { Toolbar } from "./Toolbar";
 import { useGraphView } from "./viewState";
 import styles from "./GitGraph.module.css";
@@ -47,6 +48,7 @@ export function GitGraphEditor() {
   const data = useGraphData(activeRepo, filters, repoState.version);
   const extras = useGraphExtras(activeRepo, repoState.version);
   const repoExtras = useRepoExtras(activeRepo, repoState.version);
+  const [prReload, setPrReload] = useState(0);
   const head = activeRepo ? (repoState.heads[activeRepo] ?? null) : null;
   const entries = useMemo(
     () =>
@@ -83,6 +85,8 @@ export function GitGraphEditor() {
   return (
     <div className={styles.root}>
       <Toolbar
+        mode={view.mode}
+        onMode={(mode) => set({ mode })}
         roots={repoState.roots}
         repo={activeRepo}
         onRepo={(repo) => set({ repo })}
@@ -95,53 +99,59 @@ export function GitGraphEditor() {
         onQuery={(q) => set({ query: q, matchIndex: 0 })}
         matchText={query ? (matches.length ? `${matchIndex + 1}/${matches.length}` : tx("No matches")) : ""}
         onStep={step}
-        loading={data.loading}
-        onRefresh={data.reload}
+        loading={view.mode === "graph" && data.loading}
+        onRefresh={view.mode === "graph" ? data.reload : () => setPrReload((n) => n + 1)}
         operation={repoState.operations[activeRepo] ?? null}
       />
-      {data.error ? (
-        <div className={styles.error} role="alert">
-          {data.error}
-        </div>
-      ) : null}
-      {repoExtras.bisect ? (
-        <BisectBanner repo={activeRepo} state={repoExtras.bisect} onJump={jumpTo} onChange={repoExtras.setBisect} />
-      ) : null}
-      <SplitGroup orientation="vertical" id="git-graph" className={styles.split}>
-        <SplitPanel id="graph" defaultSize="65%" minSize="20%">
-          <CommitList
-            entries={entries}
-            rows={rows}
-            width={width}
-            done={data.done}
-            loading={data.loading}
-            loadMore={data.loadMore}
-            selected={selected}
-            onSelect={setSelected}
-            head={head}
-            branches={data.branches}
-            remotes={repoExtras.remotes}
-            remoteBranches={remoteBranches}
-            matches={matches}
-            current={matches[matchIndex] ?? -1}
-            repo={activeRepo}
-            bisect={repoExtras.bisect}
-          />
-        </SplitPanel>
-        <SplitHandle />
-        <SplitPanel id="details" defaultSize="35%" minSize="10%">
-          <BottomPane
-            panel={view.panel}
-            onPanel={(panel) => set({ panel, ...(panel === "tree" ? { treeRev: null } : {}) })}
-            entries={selectedEntries}
-            repo={activeRepo}
-            version={repoState.version}
-            treeRev={view.treeRev}
-            onJump={jumpTo}
-            remoteBranches={remoteBranches}
-          />
-        </SplitPanel>
-      </SplitGroup>
+      {view.mode === "pr" ? (
+        <PrView repo={activeRepo} current={head?.head ?? null} version={repoState.version} reload={prReload} />
+      ) : (
+        <>
+          {data.error ? (
+            <div className={styles.error} role="alert">
+              {data.error}
+            </div>
+          ) : null}
+          {repoExtras.bisect ? (
+            <BisectBanner repo={activeRepo} state={repoExtras.bisect} onJump={jumpTo} onChange={repoExtras.setBisect} />
+          ) : null}
+          <SplitGroup orientation="vertical" id="git-graph" className={styles.split}>
+            <SplitPanel id="graph" defaultSize="65%" minSize="20%">
+              <CommitList
+                entries={entries}
+                rows={rows}
+                width={width}
+                done={data.done}
+                loading={data.loading}
+                loadMore={data.loadMore}
+                selected={selected}
+                onSelect={setSelected}
+                head={head}
+                branches={data.branches}
+                remotes={repoExtras.remotes}
+                remoteBranches={remoteBranches}
+                matches={matches}
+                current={matches[matchIndex] ?? -1}
+                repo={activeRepo}
+                bisect={repoExtras.bisect}
+              />
+            </SplitPanel>
+            <SplitHandle />
+            <SplitPanel id="details" defaultSize="35%" minSize="10%">
+              <BottomPane
+                panel={view.panel}
+                onPanel={(panel) => set({ panel, ...(panel === "tree" ? { treeRev: null } : {}) })}
+                entries={selectedEntries}
+                repo={activeRepo}
+                version={repoState.version}
+                treeRev={view.treeRev}
+                onJump={jumpTo}
+                remoteBranches={remoteBranches}
+              />
+            </SplitPanel>
+          </SplitGroup>
+        </>
+      )}
     </div>
   );
 }
