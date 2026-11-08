@@ -600,3 +600,18 @@ fn a_commit_refused_by_the_non_utf8_guard_is_not_created_and_named() {
     assert_eq!(fs::read(dst.join("legacy.txt")).unwrap(), BIG5);
     assert_eq!(fs::read_to_string(dst.join("b.txt")).unwrap(), "b\n");
 }
+
+/// Required case 25: a `headerFormat` with no fixed text before `$FILE_PATH` cannot be escaped; the summary says
+/// so (the dialog then disables Include) and Exclude still copies.
+#[test]
+fn an_unescapable_header_format_is_reported_in_the_summary() {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (_tmp, src) = source();
+    let loose = Settings { header_format: "$FILE_PATH".into(), ..Settings::default() };
+    let r = copy_with(&src, all(&src), &loose, ClipNonTextMode::Exclude).unwrap();
+    assert_eq!(r.non_text.count, 2);
+    assert!(r.non_text.header_cannot_be_escaped);
+    assert_eq!(r.files, 1);
+    let normal = copy_with(&src, all(&src), &Settings::default(), ClipNonTextMode::Exclude).unwrap();
+    assert!(!normal.non_text.header_cannot_be_escaped);
+}
