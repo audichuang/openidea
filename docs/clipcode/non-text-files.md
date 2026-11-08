@@ -15,7 +15,12 @@ project with a `static/` folder of images lost the images.
   [Asking the user](#asking-the-user)).
 - Files that cannot be read (permission denied, dangling symlink, a directory that cannot be listed) are still
   skipped. The completion notice counts them and names the first few paths, including those dropped while a
-  selected folder is expanded or a selection is resolved, not only those that fail at read time.
+  selected folder is expanded or a selection is resolved, not only those that fail at read time. A selected
+  folder that cannot be listed is skipped and named like any other unreadable item; it never fails the whole copy.
+- A symlink to a directory is not followed; it is counted and named as skipped (reason: symlinked folder). A
+  symlink to a file is followed and carries the target's bytes.
+- A file whose name cannot be carried portably (it contains `\`, `"`, a tab or another character the payload path
+  rules reject) is skipped and named with that reason and its real name, not reported as unreadable.
 - **Exclude** keeps today's result exactly, including today's "Nothing to copy" when nothing but size
   placeholders would be copied from a files selection.
 - File modes (the executable bit) and Git LFS are out of scope: text files carry neither today.
@@ -64,7 +69,9 @@ Buttons: **Include** (default focus), **Exclude** (today's behaviour: non-text f
 whole-payload limit; focus then starts on Exclude. Esc is Cancel. The choice is not remembered.
 
 Counts in UI text are phrased so they read correctly for 1 and for many (e.g. "Non-text files copied as Base64:
-1."), unless the platform has plural support. Long paths ellipsize; sizes never wrap.
+1."), unless the platform has plural support. Long paths are shortened in the middle so the file name stays
+visible (e.g. `d11long/a-really-long…/name-alpha.png`); sizes never wrap. After Include, the completion notice
+says "Unreadable" for what was skipped, not "non-text file or unreadable".
 
 UI text says "non-text file" (Simplified zh: 非文本文件; Traditional zh: 非文字檔), never "binary file" or "non-UTF-8 file".
 
@@ -152,6 +159,10 @@ Only OpenIDEA implements commits mode (`// snip-sync commits v1`). The marker st
 - The whole-payload limit on paste counts the payload as the parser sees it: each CRLF pair counts as one byte (a
   Windows clipboard must not push a valid payload over the limit), but a lone CR counts in full (it must not let
   oversized input bypass the limit).
+- One entry that cannot be applied (its target path is a directory, a parent is not writable) skips that row
+  with its reason; the rest of the paste continues. It never aborts the whole paste.
+- The paste and replay previews never show raw reason codes (`BINARY`, `NON_UTF8`, `NON_UTF8_TARGET`); each
+  reason has user text.
 - Known, not handled: with `core.autocrlf=true` in the destination repository, git's own line-ending conversion
   can rewrite a committed non-text file that has no NUL (e.g. Big5 with CRLF); the working-tree file is correct.
   This is git's documented behaviour for that setting and applies to text files too.
@@ -183,6 +194,9 @@ Each implementation adds these to its contract tests (OpenIDEA: `clipboard-contr
 17. CRLF growth near the whole-payload limit is accepted on paste; lone CRs past the limit are refused.
 18. Base64 strictness is the same in all implementations: missing padding, non-zero trailing bits and characters
     outside the alphabet (other than ASCII whitespace) make the entry corrupt.
+19. A selected unreadable folder plus a readable file: the file is copied, the folder is named as unreadable.
+20. Paste where a target path is a directory: only that row is skipped; the others restore.
+21. Names shown in the dialog and preview: three 58–60 character names sharing a prefix are distinguishable.
 
 ## Open items for the other implementations
 
@@ -199,5 +213,10 @@ Each review or test round folds its findings back into this spec.
 - Hands-on testers, round 1: identical targets as Unchanged; corrupt rows and replay preview labels; count
   phrasing for 1; long paths; focus when Include is disabled. Round 2: unreadable paths from folder expansion;
   Corrupt badge instead of a squeezed note.
+- Deep testers, round 2 (three testers, D1–D13 matrix): selected unreadable folder fails the copy
+  (pre-existing); directory at a target path aborts the paste (pre-existing); symlinked folders silently dropped
+  (pre-existing); non-portable names reported as unreadable; raw reason codes in previews; middle ellipsis for
+  long paths; Include notice wording. Open for the user: a Big5 → UTF-8 rewrite outside a batch is refused by the
+  non-UTF-8 overwrite guard; read-only (444) targets are replaced without a note (text files too).
 - Deep testers, round 1: commits-mode deletion of non-text files (pre-existing); dialog vs file-count limit
   (spec gap); placeholder-shaped text (spec gap); long-name readability in the preview.
