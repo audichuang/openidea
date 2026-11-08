@@ -573,7 +573,12 @@ pub struct ExportPlan {
     pub non_text_file_count: usize,
     /// What the copy dialog shows: see [`NonTextSummary`].
     pub non_text: NonTextSummary,
+    /// The first [`SKIPPED_PATHS_SHOWN`] unreadable files' payload paths, so a notice can name them.
+    pub skipped_unreadable_paths: Vec<String>,
 }
+
+/// How many unreadable file paths a copy reports by name.
+pub const SKIPPED_PATHS_SHOWN: usize = 10;
 
 impl ExportPlan {
     /// Revalidates freshness right before clipboard writing.
@@ -2109,6 +2114,7 @@ pub fn plan_export_with(
         let mut file_limit_reached = false;
         let mut non_text_file_count = 0usize;
         let mut non_text_summary = NonTextSummary::default();
+        let mut skipped_unreadable_paths: Vec<String> = Vec::new();
         // Exclude: what the non-text entries would add to the payload.
         let mut include_extra = 0isize;
         let non_text_max = settings.max_non_text_file_bytes();
@@ -2580,6 +2586,10 @@ pub fn plan_export_with(
                     include_extra += len as isize;
                 }
                 skipped_unreadable_count += 1;
+                // An excluded non-text file is counted here too, but it is not unreadable.
+                if include_len.is_none() && skipped_unreadable_paths.len() < SKIPPED_PATHS_SHOWN {
+                    skipped_unreadable_paths.push(wire_path.clone());
+                }
                 continue;
             }
 
@@ -2594,6 +2604,9 @@ pub fn plan_export_with(
                 copied_file_count += 1;
             } else if content.as_deref() == Some(UNREADABLE_FILE_MARKER) {
                 skipped_unreadable_count += 1;
+                if skipped_unreadable_paths.len() < SKIPPED_PATHS_SHOWN {
+                    skipped_unreadable_paths.push(wire_path.clone());
+                }
             } else {
                 copied_file_count += 1;
             }
@@ -2675,6 +2688,7 @@ pub fn plan_export_with(
             file_limit_reached,
             non_text_file_count,
             non_text: non_text_summary,
+            skipped_unreadable_paths,
         })
     })();
     finish_reader(&mut blobs, outcome)
