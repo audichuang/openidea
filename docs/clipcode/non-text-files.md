@@ -49,7 +49,7 @@ Buttons: **Include** (default focus), **Exclude** (today's behaviour: non-text f
 **Cancel** (nothing is copied). Include is disabled, with the reason shown, when the estimate is over the
 whole-payload limit. The choice is not remembered.
 
-UI text says "non-text file" (zh: 非文字檔), never "binary file" or "non-UTF-8 file".
+UI text says "non-text file" (Simplified zh: 非文本文件; Traditional zh: 非文字檔), never "binary file" or "non-UTF-8 file".
 
 ## Files-mode wire format
 
