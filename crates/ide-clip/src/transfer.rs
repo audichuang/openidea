@@ -3580,7 +3580,7 @@ impl CommitReplayPreview {
             Ok(s) => s,
             Err(refused) => {
                 cancelled_err(opts, "replay-apply")?;
-                return Ok(refused);
+                return Ok(*refused);
             }
         };
         self.revalidate_with(opts)?; // under the heavy lock, right before the first write
