@@ -248,10 +248,6 @@ pub fn run() {
         #[cfg(target_os = "macos")]
         macos::intercept_system_quit(app.handle());
         #[cfg(target_os = "macos")]
-        if let Some(mtm) = objc2::MainThreadMarker::new() {
-            macos::prepare_window_tabbing(mtm);
-        }
-        #[cfg(target_os = "macos")]
         application_focus::observe(app.handle());
         app.manage(menu_state);
         cli::serve(app.handle(), &app.config().identifier);
@@ -265,13 +261,8 @@ pub fn run() {
         Ok(())
     })
     .on_window_event(|window, event| match event {
-        tauri::WindowEvent::CloseRequested { .. } => {
-            #[cfg(target_os = "linux")]
-            linux_window_state::save_before_close(window.app_handle());
-            if let Some(w) = window.try_state::<WindowsState>() {
-                w.close_requested(window.label());
-            }
-        }
+        #[cfg(target_os = "linux")]
+        tauri::WindowEvent::CloseRequested { .. } => linux_window_state::save_before_close(window.app_handle()),
         tauri::WindowEvent::Focused(true) => {
             application_focus::changed(window.app_handle(), true);
             if let Some(w) = window.try_state::<WindowsState>() {
@@ -287,7 +278,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             {
                 page_swipe::forget(window.label());
-                titlebar::forget(window);
+                macos::forget_fullscreen(window.label());
             }
             if windows::auxiliary_parent(window.label()).is_none() {
                 window_groups::destroyed(window.app_handle(), window.label());
