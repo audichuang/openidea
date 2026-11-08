@@ -235,8 +235,16 @@ jobs:
         run: cargo clippy --workspace --all-targets --message-format=json -- -D warnings | node .github/actions/target-cache/artifacts.mjs record "$RUNNER_TEMP/target-artifacts.jsonl"
       # Test fixtures write LF files; keep Git from converting them on checkout.
       - run: git config --global core.autocrlf false
-      - run: cargo nextest run --workspace --no-fail-fast ${{ matrix.partition && format('--partition slice:{0}', matrix.partition) || '' }} ${{ matrix.threads && format('--test-threads {0}', matrix.threads) || '' }}
+      # --timings: per-crate build times in target/cargo-timings, uploaded below.
+      - run: cargo nextest run --workspace --no-fail-fast --timings ${{ matrix.partition && format('--partition slice:{0}', matrix.partition) || '' }} ${{ matrix.threads && format('--test-threads {0}', matrix.threads) || '' }}
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-timings-test-${{ runner.os }}-${{ strategy.job-index }}
+          path: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}/target/cargo-timings/cargo-timing.html
+          retention-days: 14
+          if-no-files-found: warn
       - name: Measure live target artifacts
         if: ${{ !cancelled() }}
         id: artifacts
