@@ -112,9 +112,12 @@
   gap: 6px;
 }
 .nodeName {
-  /* The file name has priority: the note shrinks (and ellipsizes) first, and a long name elides in its middle. */
+  /*
+   * The file name has priority: the note, then the badge, shrink first (their shrink factors are far larger,
+   * so the name loses nothing until they are gone), and a long name elides in its middle.
+   */
   flex: 0 1 auto;
-  min-width: 12ch;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -124,7 +127,7 @@
   display: flex;
 }
 .nodeNote {
-  flex: 0 100 auto;
+  flex: 0 1000000000 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -143,7 +146,7 @@
   flex: none;
   white-space: nowrap;
 }
-/* A path: folders elide first, then the name's head; the name's tail stays. */
+/* A path: the folders elide first, down to the first segment and an ellipsis; then the name's head; the tail stays. */
 .pathText {
   flex: 0 1 auto;
   min-width: 0;
@@ -153,20 +156,29 @@
 .nonTextPath {
   flex: 1 1 auto;
 }
-.pathDir {
-  flex: 0 8 auto;
-  min-width: 0;
+.pathDirFirst {
+  flex: none;
+}
+/* The shrink factor dwarfs the name's, so the name keeps every character until this part is at its minimum. */
+.pathDirRest {
+  flex: 0 1000000 auto;
+  min-width: 1em;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .pathName {
   flex: 0 1 auto;
-  min-width: 8ch;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .nodeRow > .badge {
   margin-left: auto;
+  /* A badge drops before the name loses a character, after the note has gone. */
+  flex: 0 1000000 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
 }
 .nodeName[data-action="skip"] {
   color: var(--fg-subtle);
