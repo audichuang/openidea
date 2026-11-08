@@ -246,6 +246,18 @@ Each review or test round folds its findings back into this spec.
 - Hands-on testers, round 1: identical targets as Unchanged; corrupt rows and replay preview labels; count
   phrasing for 1; long paths; focus when Include is disabled. Round 2: unreadable paths from folder expansion;
   Corrupt badge instead of a squeezed note.
+- Codex review round 4 (approved by the user): five findings, all confirmed and all in code this branch added:
+  a non-text rename chain bypassed overwrite consent; a custom `headerFormat` made a real non-text entry paste as
+  text; a skipped rename aborted the replay; a fully refused source group crashed the copy; a folder symlink to
+  the project root was followed. Fixed.
+- Deep testers, round 4 (three testers, D1–D18): D1–D10 pass for all three. Open: (1) spec hole — under a custom
+  `headerFormat` that matches the placeholder line (e.g. `// $FILE_PATH`), a real placeholder (header escape) and a
+  placeholder-shaped text line (placeholder escape) both carry one `//clipcode-esc: ` prefix, so the reader
+  cannot tell them apart (text pasted as decoded bytes or reported Corrupt); escape rule pending the user. (2) A
+  header format with no fixed prefix (`$FILE_PATH`) cannot be escaped at all: Base64 lines become file headers
+  (text payloads break the same way, pre-existing). (3) Over the whole-payload limit the dialog's estimate is the
+  size where planning stopped, below the raw total (introduced by the round 3 fix). (4) Badges shrunk to an 8 px
+  sliver instead of dropping. (5) A row's reason can be a raw OS error (`Permission denied (os error 13)`).
 - Deep testers, round 3 (three testers, D1–D17 matrix): a directly selected symlinked folder was followed (code
   did not match the rule; rule now says "selected or expanded"); dialog numbers disagreed with Include when size
   placeholders shared the file-count limit (code bug in the round 2 fix); dialog paths and nested preview rows cut
