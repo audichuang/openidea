@@ -529,28 +529,25 @@ export function PastePreviewDialog({
                   const on = keys.filter((k) => checked.has(k)).length;
                   return (
                     <span className={styles.nodeRow}>
-                      <CheckMark
-                        checked={keys.length > 0 && on === keys.length}
-                        indeterminate={on > 0 && on < keys.length}
-                        disabled={keys.length === 0}
-                        label={n.file ? tx`Restore ${n.file.path}` : tx`Restore the files in ${n.name}`}
-                        onToggle={() => toggleFiles(files)}
-                      />
-                      <span
-                        className={styles.nodeName}
-                        data-action={n.file?.action}
-                        data-elided={isElided(n.name) ? "" : undefined}
-                        title={
-                          n.file && isCorruptRow(n.file) ? `${n.file.path}\n${pasteRowTitle(n.file)}` : n.file?.path
-                        }
-                      >
-                        <NameText name={n.name} />
-                      </span>
-                      {n.file && pasteRowNote(n.file) && (
-                        <span className={styles.nodeNote} title={pasteRowTitle(n.file) ?? undefined}>
-                          {pasteRowNote(n.file)}
+                      <span className={styles.nodeMain}>
+                        <CheckMark
+                          checked={keys.length > 0 && on === keys.length}
+                          indeterminate={on > 0 && on < keys.length}
+                          disabled={keys.length === 0}
+                          label={n.file ? tx`Restore ${n.file.path}` : tx`Restore the files in ${n.name}`}
+                          onToggle={() => toggleFiles(files)}
+                        />
+                        <span
+                          className={styles.nodeName}
+                          data-action={n.file?.action}
+                          data-elided={isElided(n.name) ? "" : undefined}
+                          title={
+                            n.file && isCorruptRow(n.file) ? `${n.file.path}\n${pasteRowTitle(n.file)}` : n.file?.path
+                          }
+                        >
+                          <NameText name={n.name} />
                         </span>
-                      )}
+                      </span>
                       {n.file ? (
                         isCorruptRow(n.file) ? (
                           <span
@@ -570,6 +567,11 @@ export function PastePreviewDialog({
                         )
                       ) : (
                         <span className={styles.count}>{files.length}</span>
+                      )}
+                      {n.file && pasteRowNote(n.file) && (
+                        <span className={styles.nodeNote} title={pasteRowTitle(n.file) ?? undefined}>
+                          {pasteRowNote(n.file)}
+                        </span>
                       )}
                     </span>
                   );
