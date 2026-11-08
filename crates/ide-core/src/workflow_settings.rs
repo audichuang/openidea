@@ -207,6 +207,9 @@ pub struct ClipCodeSettings {
     /// Larger files are copied as a "size exceeds limit" placeholder.
     #[serde(rename = "maxFileSizeKB")]
     pub max_file_size_kb: u32,
+    /// Non-text files (images, archives, Big5 or UTF-16 text) larger than this are not copied.
+    #[serde(rename = "maxNonTextFileSizeKB")]
+    pub max_non_text_file_size_kb: u32,
     pub show_copy_notification: bool,
     pub use_filters: bool,
     pub use_include_filters: bool,
@@ -224,6 +227,7 @@ impl Default for ClipCodeSettings {
             set_max_file_count: true,
             file_count_limit: 30,
             max_file_size_kb: 500,
+            max_non_text_file_size_kb: 2048,
             show_copy_notification: true,
             use_filters: false,
             use_include_filters: true,
