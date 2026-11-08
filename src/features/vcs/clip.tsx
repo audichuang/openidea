@@ -32,7 +32,7 @@ import { commitsArg } from "./historyActions";
 import { saveAll } from "./ops";
 import { refreshNow, useVcs } from "./store";
 import { ClipPastePane } from "./ClipPastePane";
-import { askNonText, pasteNonTextLabel, replayFileNote, resolveNonText } from "./clipNonText";
+import { askNonText, isUnchanged, pasteRowNote, pasteRowTitle, replayFileNote, resolveNonText } from "./clipNonText";
 import { buildPasteTree, fileKey, filesUnder, rowKey, type PasteNode } from "./clipPasteTree";
 import styles from "./clip.module.css";
 
@@ -281,6 +281,9 @@ function CheckMark({
   );
 }
 
+/** Rows on until chosen otherwise: new files, deletions and unchanged targets (never overwrites). */
+const defaultChecked = (f: ClipPasteFile) => f.action === "create" || f.action === "delete" || isUnchanged(f);
+
 /** Folders open, and the first file to restore selected, so the pane shows something at once. */
 function initialSelection(files: readonly ClipPasteFile[]): string | null {
   const first = files.find((f) => f.action !== "skip") ?? files[0];
@@ -305,12 +308,7 @@ export function PastePreviewDialog({
   const [preview, setPreview] = useState(initial);
   // Overwrites are off until chosen, as in ClipCode; new files and deletions are on.
   const [checked, setChecked] = useState<Set<string>>(
-    () =>
-      new Set(
-        initial.files
-          .filter((f) => f.action === "create" || f.action === "delete")
-          .map((f) => rowKey(f.action, f.index)),
-      ),
+    () => new Set(initial.files.filter(defaultChecked).map((f) => rowKey(f.action, f.index))),
   );
   const [allowOverwrite, setAllowOverwrite] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -329,7 +327,10 @@ export function PastePreviewDialog({
       return next;
     });
   const commits = preview.mode === "commits";
-  const overwriteKeys = preview.files.filter((f) => f.action === "overwrite").map((f) => rowKey(f.action, f.index));
+  // An identical non-text target is left untouched: it is no overwrite and needs no permission.
+  const overwriteKeys = preview.files
+    .filter((f) => f.action === "overwrite" && !isUnchanged(f))
+    .map((f) => rowKey(f.action, f.index));
   const overwriteCount = overwriteKeys.length;
   const existing = preview.commits.reduce((n, c) => n + c.files.filter((f) => f.overwrites).length, 0);
 
@@ -338,11 +339,7 @@ export function PastePreviewDialog({
     if (!next) return;
     setPreview(next);
     setSelectedKey(initialSelection(next.files));
-    setChecked(
-      new Set(
-        next.files.filter((f) => f.action === "create" || f.action === "delete").map((f) => rowKey(f.action, f.index)),
-      ),
-    );
+    setChecked(new Set(next.files.filter(defaultChecked).map((f) => rowKey(f.action, f.index))));
   };
 
   const apply = async () => {
@@ -487,12 +484,14 @@ export function PastePreviewDialog({
                       <span className={styles.nodeName} data-action={n.file?.action} title={n.file?.path}>
                         {n.name}
                       </span>
-                      {n.file && pasteNonTextLabel(n.file) && (
-                        <span className={styles.note}>{pasteNonTextLabel(n.file)}</span>
+                      {n.file && pasteRowNote(n.file) && (
+                        <span className={styles.nodeNote} title={pasteRowTitle(n.file) ?? undefined}>
+                          {pasteRowNote(n.file)}
+                        </span>
                       )}
                       {n.file ? (
-                        <span className={styles.badge} data-action={n.file.action}>
-                          {tx(ACTION_LABEL[n.file.action] ?? n.file.action)}
+                        <span className={styles.badge} data-action={isUnchanged(n.file) ? "unchanged" : n.file.action}>
+                          {tx(isUnchanged(n.file) ? "Unchanged" : (ACTION_LABEL[n.file.action] ?? n.file.action))}
                         </span>
                       ) : (
                         <span className={styles.count}>{files.length}</span>

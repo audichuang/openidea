@@ -2118,6 +2118,7 @@ pub fn plan_export_with(
         // Exclude: what the non-text entries would add to the payload.
         let mut include_extra = 0isize;
         let non_text_max = settings.max_non_text_file_bytes();
+        non_text_summary.unread_limit_bytes = non_text_max.max((settings.max_file_size_kb * 1024.0) as u64);
 
         for item in &selection.items {
             cancelled_err(opts, "plan-export")?;
@@ -2455,6 +2456,9 @@ pub fn plan_export_with(
                             });
                         }
                     } else if over_per_file {
+                        if file_size > non_text_max {
+                            non_text_summary.unread_over_limit_count += 1;
+                        }
                         (None, Some(format!("size exceeds limit ({file_size} bytes)")), None, None, None)
                     } else if over_budget {
                         let budget = remaining_budget.unwrap_or(usize::MAX);
