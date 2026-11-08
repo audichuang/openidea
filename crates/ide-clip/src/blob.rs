@@ -285,7 +285,7 @@ pub(crate) enum BlobRead {
     /// size > cap（不論 kind）；body 以 8 KiB 分塊掃描後丟棄，not_text 是 classify 對完整 body 會給的結論。
     ///
     /// 超出容量的內容一律經由 [`scan_discarded_body`] 進行分塊掃描：此掃描僅耗費 CPU，記憶體用量嚴格維持有界（bounded），
-    /// 保留此行為是為了讓刪除檔分類政策（`deleted_not_text`、`first_deleted_text`）能區分二進位與超限純文字。
+    /// 保留此行為是為了讓刪除檔分類政策（`first_deleted_text`）能區分二進位與超限純文字。
     TooLarge {
         size: u64,
         not_text: Option<NotText>,
@@ -402,11 +402,6 @@ impl BlobReader {
         first_deleted_text(specs, |s| self.read(git, s, cap))
     }
 
-    pub(crate) fn deleted_not_text(&mut self, git: &Git, spec: &str) -> Result<Option<NotText>, GitError> {
-        let read = self.read(git, spec, 0)?;
-        Ok(not_text_of(read))
-    }
-
     pub(crate) fn close(&mut self) -> Result<(), GitError> {
         if let Some((_, cat)) = self.open.take() {
             cat.close()?;
@@ -446,18 +441,6 @@ where
         }
     }
     Ok(DeletedContent::Marker)
-}
-
-// kind 在此刻意被忽略：commits 的 admit_entry 以 is_special_mode 守門（commits.rs），
-// gitlink 與 tree 不會走到這裡，所以呼叫端只會拿到 blob。
-// NotText 與超限且非文字的 TooLarge{not_text: Some} 都對應到同一個原因。
-pub(crate) fn not_text_of(read: BlobRead) -> Option<NotText> {
-    match read {
-        BlobRead::NotText(r) | BlobRead::NonText { kind: r, .. } | BlobRead::TooLarge { not_text: Some(r), .. } => {
-            Some(r)
-        }
-        _ => None,
-    }
 }
 
 pub(crate) fn not_a_file(spec: &str, kind: &str) -> GitError {
@@ -760,24 +743,6 @@ mod tests {
         .unwrap();
         assert_eq!(visited, vec!["huge_txt"]);
         assert_eq!(res, DeletedContent::TooLarge { spec: "huge_txt".into(), size: 50_000 });
-    }
-
-    #[test]
-    fn not_text_of_maps_every_variant() {
-        assert_eq!(not_text_of(BlobRead::NotText(NotText::Binary)), Some(NotText::Binary));
-        assert_eq!(not_text_of(BlobRead::NotText(NotText::NotUtf8)), Some(NotText::NotUtf8));
-        assert_eq!(
-            not_text_of(BlobRead::TooLarge { size: 10, not_text: Some(NotText::Binary) }),
-            Some(NotText::Binary)
-        );
-        assert_eq!(
-            not_text_of(BlobRead::TooLarge { size: 10, not_text: Some(NotText::NotUtf8) }),
-            Some(NotText::NotUtf8)
-        );
-        assert_eq!(not_text_of(BlobRead::Text("text".into())), None);
-        assert_eq!(not_text_of(BlobRead::Missing), None);
-        assert_eq!(not_text_of(BlobRead::NotABlob { kind: "tree".into() }), None);
-        assert_eq!(not_text_of(BlobRead::TooLarge { size: 10, not_text: None }), None);
     }
 
     #[test]
