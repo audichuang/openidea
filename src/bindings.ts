@@ -2430,6 +2430,17 @@ export type ClipCopyResult = {
 	 *  (files mode; commits mode names none).
 	 */
 	skippedUnreadablePaths: string[],
+	/**
+	 *  Of `skipped`: files whose name the payload cannot carry portably (a backslash, a double quote, a tab
+	 *  or another refused character), not unreadable ones.
+	 */
+	skippedUnportable: number,
+	/**  The first 10 of them by their real names (files mode). */
+	skippedUnportablePaths: string[],
+	/**  Of `skipped`: symlinks to a folder inside a copied folder, which are not followed. */
+	skippedSymlinkDirs: number,
+	/**  The first 10 of them (files mode). */
+	skippedSymlinkDirPaths: string[],
 };
 
 /**
@@ -2507,6 +2518,10 @@ export type ClipNonTextSummary = {
 	unreadLimitBytes: number | null,
 	/**  The estimate is over the whole-payload limit: `Include` would fail. */
 	exceedsPayloadCap: boolean,
+	/**  Files the file-count limit leaves out of what `Include` copies. */
+	limitLeftOut: number,
+	/**  `limit_left_out` is a lower bound (a folder walk stopped at the limit). */
+	limitLeftOutAtLeast: boolean,
 };
 
 export type ClipPasteApply = {
