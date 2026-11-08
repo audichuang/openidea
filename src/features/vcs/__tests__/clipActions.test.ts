@@ -59,6 +59,8 @@ describe("ClipCode: Copy to Clipboard without an argument", () => {
       words: 1,
       tokens: 1,
       notify: false,
+      nonText: { count: 0, files: [], overLimitCount: 0, exceedsPayloadCap: false },
+      skippedUnreadablePaths: [],
     });
     unregister = registerClipActions();
   });
@@ -152,6 +154,8 @@ describe("ClipCode: Copy to Clipboard from a non-filesystem editor", () => {
       words: 1,
       tokens: 1,
       notify: false,
+      nonText: { count: 0, files: [], overLimitCount: 0, exceedsPayloadCap: false },
+      skippedUnreadablePaths: [],
     });
     unregister = registerClipActions();
   });
