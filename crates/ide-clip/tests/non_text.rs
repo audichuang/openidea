@@ -538,4 +538,78 @@ mod commits_mode {
         assert!(!dest.root.join("img/logo.png").exists());
         assert_eq!(fs::read(dest.root.join("a.txt")).unwrap(), b"a\n");
     }
+
+    fn tree(repo: &Repo) -> String {
+        repo.git(&["ls-tree", "-r", "HEAD"])
+    }
+
+    fn export_last(repo: &Repo, n: usize, mode: NonTextMode) -> ide_clip::commits::CommitExport {
+        let git = Git::open(&repo.root).unwrap();
+        plan_commit_export_with_non_text(
+            &git,
+            None,
+            Some(n),
+            &RunOptions::default(),
+            CLIPBOARD_PAYLOAD_MAX,
+            options(mode),
+        )
+        .unwrap()
+    }
+
+    /// Deleting a non-text file replays whatever the mode: the file must not stay behind.
+    #[test]
+    fn a_deleted_image_replays_as_a_deletion_in_either_mode() {
+        for mode in [NonTextMode::Include, NonTextMode::Exclude] {
+            let src = Repo::new();
+            src.write("base.txt", b"base\n");
+            src.git(&["add", "-A"]);
+            src.git(&["commit", "-q", "-m", "base"]);
+            let dest = Repo::new();
+            dest.git(&["pull", "-q", src.root.to_str().unwrap(), "main"]);
+            src.write("pics/x.png", &png(300));
+            src.write("img/del.gif", &png(40));
+            src.git(&["add", "-A"]);
+            src.git(&["commit", "-q", "-m", "b1"]);
+            src.write("pics/x.png", &png(310));
+            src.git(&["add", "-A"]);
+            src.git(&["commit", "-q", "-m", "b2"]);
+            src.git(&["rm", "-q", "pics/x.png", "img/del.gif"]);
+            src.git(&["commit", "-q", "-m", "b3"]);
+
+            let export = export_last(&src, 3, mode);
+            let deleted = &export.payload.commits[2].files;
+            assert!(deleted.iter().all(|f| f.not_copied.is_none()), "{deleted:?}");
+            assert_eq!(export.clone().outcome().not_copied.iter().filter(|(n, _)| *n == 2).count(), 0);
+            let payload = parse_commit_payload(&export.text).unwrap();
+            let preview = CommitReplayPreview::capture(&dest.root, &payload).unwrap();
+            let result = preview.apply().unwrap();
+            assert!(result.failure.is_none(), "{:?}", result.failure);
+            assert_eq!(result.created.len(), 3);
+            assert_eq!(tree(&dest), tree(&src), "{mode:?}");
+            assert!(!dest.root.join("pics/x.png").exists());
+            assert!(!dest.root.join("img/del.gif").exists());
+        }
+    }
+
+    /// A payload copied before this rule marks a deleted image as not copied; it is still deleted.
+    #[test]
+    fn a_deletion_marked_not_copied_by_an_older_copy_is_still_replayed() {
+        let src = Repo::new();
+        src.write("img/old.png", &png(30));
+        src.git(&["add", "-A"]);
+        src.git(&["commit", "-q", "-m", "base"]);
+        src.git(&["rm", "-q", "img/old.png"]);
+        src.git(&["commit", "-q", "-m", "del"]);
+        let mut payload = export_last(&src, 1, NonTextMode::Exclude).payload;
+        payload.commits[0].files[0].not_copied = Some(NotCopiedReason::Binary);
+        let dest = Repo::new();
+        dest.write("img/old.png", &png(30));
+        dest.git(&["add", "-A"]);
+        dest.git(&["commit", "-q", "-m", "base"]);
+        let preview = CommitReplayPreview::capture(&dest.root, &payload).unwrap();
+        assert_eq!(preview.plan().commits[0].files[0].action, ReplayAction::Delete);
+        let result = preview.apply().unwrap();
+        assert!(result.failure.is_none(), "{:?}", result.failure);
+        assert!(!dest.root.join("img/old.png").exists());
+    }
 }
