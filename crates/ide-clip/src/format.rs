@@ -329,6 +329,17 @@ fn needs_escape(line: &str, custom: Option<&HeaderPattern>) -> bool {
     find_header_path(&format!("{ESCAPE_MARKER}{as_parsed}"), custom).is_none()
 }
 
+/// An escaped placeholder first line is ambiguous under a custom `headerFormat` that matches the placeholder
+/// itself: a real non-text entry gets the generic header escape, a text file that starts with the placeholder
+/// gets the placeholder-specific one, and both read `//clipcode-esc: // File skipped: ...`. Only the former is
+/// followed by Base64 lines, so a body that is the placeholder plus nothing but Base64 is the non-text entry.
+fn header_escaped_non_text(content: &str, custom: Option<&HeaderPattern>) -> bool {
+    let (first, rest) = content.split_once('\n').unwrap_or((content, ""));
+    needs_escape(first, custom)
+        && !rest.trim().is_empty()
+        && rest.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=') || b.is_ascii_whitespace())
+}
+
 // Inverse of escape_content: strip exactly one leading marker per line.
 fn unescape_content(text: &str) -> String {
     text.split('\n').map(|line| line.strip_prefix(ESCAPE_MARKER).unwrap_or(line)).collect::<Vec<_>>().join("\n")
@@ -356,12 +367,14 @@ pub fn parse_clipboard(content: &str, header_format: &str) -> Vec<ParsedEntry> {
     let mut flush = |current: &mut Option<(String, BTreeSet<ChangeType>)>, body: &mut Vec<&str>| {
         if let Some((path, change_types)) = current.take() {
             let raw = join_content(body);
+            let content = unescape_content(&raw);
             let escaped_placeholder = raw
                 .split('\n')
                 .next()
                 .and_then(|l| l.strip_prefix(ESCAPE_MARKER))
-                .is_some_and(|l| crate::nontext::parse_placeholder_line(l).is_some());
-            entries.push(ParsedEntry { path, content: unescape_content(&raw), change_types, escaped_placeholder });
+                .is_some_and(|l| crate::nontext::parse_placeholder_line(l).is_some())
+                && !header_escaped_non_text(&content, custom);
+            entries.push(ParsedEntry { path, content, change_types, escaped_placeholder });
         }
         body.clear();
     };

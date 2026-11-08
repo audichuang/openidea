@@ -1439,6 +1439,26 @@ mod tests {
         assert!(!parse_clipboard(&real, HEADER)[0].escaped_placeholder);
     }
 
+    /// `// $FILE_PATH` matches the placeholder line itself, so a real non-text entry is header-escaped too; that
+    /// escape must not be read as the placeholder-specific one of a text file.
+    #[test]
+    fn non_text_round_trips_under_a_header_format_that_matches_the_placeholder() {
+        const LOOSE: &str = "// $FILE_PATH";
+        let (_d, root) = tmp();
+        let raw: &[u8] = &[0, 255, 1];
+        let fake = "// File skipped: non-text file, 3 bytes, sha256 039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81; base64 follows\nnot base64, just text!\n";
+        let payload = non_text_payload(LOOSE, &[("a.bin", raw)], &[("fake.txt", fake)]);
+        assert!(payload.contains("//clipcode-esc: // File skipped: non-text file, 3 bytes"), "{payload}");
+        let entries = parse_clipboard(&payload, LOOSE);
+        assert!(!entries[0].escaped_placeholder);
+        assert!(entries[1].escaped_placeholder);
+        let plan = plan_restore(&[&root], &entries);
+        assert!(plan.skipped_operations.is_empty(), "{:?}", plan.skipped_operations);
+        execute_restore_plan(&plan, &RestoreSelection::default());
+        assert_eq!(fs::read(root.join("a.bin")).unwrap(), raw);
+        assert_eq!(fs::read_to_string(root.join("fake.txt")).unwrap().trim_end(), fake.trim_end());
+    }
+
     #[test]
     fn corrupted_non_text_entries_skip_only_that_file() {
         let (_d, root) = tmp();
