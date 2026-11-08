@@ -114,10 +114,12 @@ describe("reasons read as text, never as codes", () => {
       "AMBIGUOUS_PATH",
       "PLACEHOLDER_BODY",
       "TARGET_NOT_FILE",
+      "TARGET_COLLISION",
     ];
     for (const code of codes) expect(skipReasonText(code), code).not.toMatch(/^[A-Z_]+$/);
     expect(skipReasonText("NON_UTF8_TARGET")).toBe("Existing file is not UTF-8; not overwritten");
     expect(skipReasonText("BINARY")).toBe("Non-text file, not copied");
+    expect(skipReasonText("TARGET_COLLISION")).toBe("Another entry maps to the same file; not applied");
   });
 
   it("a replayed row shows the reason text", () => {
