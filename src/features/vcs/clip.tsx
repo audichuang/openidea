@@ -40,6 +40,7 @@ import {
   pasteRowTitle,
   replayFileNote,
   resolveNonText,
+  skipReasonText,
   visibleName,
 } from "./clipNonText";
 import { isElided, NameText, PathText } from "./PathText";
@@ -101,22 +102,27 @@ function notifyCopied(r: ClipCopyResult, included = false) {
   const level = r.tokens >= 2_000_000 ? "error" : r.tokens >= 1_000_000 ? "warning" : "info";
   if (level === "error") body += ` ${tx("Over 2,000,000 tokens.")}`;
   else if (level === "warning") body += ` ${tx("Over 1,000,000 tokens.")}`;
-  if (r.mode !== "commits") {
-    const lists: [string[], (names: string) => string][] = [
-      [r.skippedUnreadablePaths, (names) => tx`Unreadable: ${names}`],
-      [r.skippedUnportablePaths, (names) => tx`Name not portable: ${names}`],
-      [r.skippedSymlinkDirPaths, (names) => tx`Symlinked folder: ${names}`],
-    ];
-    for (const [paths, line] of lists) {
-      if (!paths.length) continue;
-      const shown = paths.slice(0, 3);
-      const rest = paths.length - shown.length;
-      body += `\n${line(shown.map(visibleName).join(", "))}`;
-      if (rest > 0) body += ` ${tx`and ${rest} more`}`;
-    }
-  }
+  if (r.mode !== "commits") body += namedSkips(r);
   if (!r.notify && level === "info") return;
   notifications().notify({ group: "clipcode", level, title: parts.join(" "), body });
+}
+
+/** One line per refused category, naming the first few paths (files mode). */
+function namedSkips(r: ClipCopyResult): string {
+  let out = "";
+  const lists: [string[], (names: string) => string][] = [
+    [r.skippedUnreadablePaths, (names) => tx`Unreadable: ${names}`],
+    [r.skippedUnportablePaths, (names) => tx`Name not portable: ${names}`],
+    [r.skippedSymlinkDirPaths, (names) => tx`Symlinked folder: ${names}`],
+  ];
+  for (const [paths, line] of lists) {
+    if (!paths.length) continue;
+    const shown = paths.slice(0, 3);
+    const rest = paths.length - shown.length;
+    out += `\n${line(shown.map(visibleName).join(", "))}`;
+    if (rest > 0) out += ` ${tx`and ${rest} more`}`;
+  }
+  return out;
 }
 
 /** Builds the payload for `source` and puts it on the clipboard, reporting what was copied. */
@@ -146,11 +152,13 @@ export async function copyClip(source: ClipCopySource): Promise<boolean> {
   result = chosen;
   // A files copy that kept no file is Nothing to copy, even when a size placeholder fills the text.
   if (result.files === 0 && (result.mode === "files" || result.text === "")) {
+    // Not a failure: name what was refused (a symlinked folder, a non-portable name) so the user sees why.
+    const named = namedSkips(result).trim();
     notifications().notify({
       group: "clipcode",
       level: "warning",
-      title: "ClipCode copy failed",
-      body: "Nothing to copy",
+      title: "Nothing to copy",
+      body: named || undefined,
     });
     return false;
   }
@@ -251,12 +259,18 @@ async function loadPreview(text: string, target: PasteTarget, adjust: boolean): 
   }
 }
 
-function reportPaste(r: ClipPasteResult, commits: boolean) {
+export function reportPaste(r: ClipPasteResult, commits: boolean) {
   const created = r.commits.length;
   const title = commits
     ? tx`${created} commits created`
     : tx`Restored: ${r.created} created, ${r.overwritten} overwritten, ${r.deleted} deleted, ${r.skipped} skipped`;
-  const lines = [...r.errors];
+  const lines = [
+    ...r.notCreated.map((c) => {
+      const [number, subject, reason] = [c.number, c.subject, skipReasonText(c.reason)];
+      return tx`Commit ${number} (${subject}) not created: ${reason}`;
+    }),
+    ...r.errors,
+  ];
   if (r.unchanged) {
     const unchanged = r.unchanged;
     lines.push(tx`Non-text files already identical, left unchanged: ${unchanged}.`);
@@ -268,7 +282,7 @@ function reportPaste(r: ClipPasteResult, commits: boolean) {
   }
   notifications().notify({
     group: "clipcode",
-    level: r.errors.length || r.corruptNonText.length ? "warning" : "info",
+    level: r.errors.length || r.notCreated.length || r.corruptNonText.length ? "warning" : "info",
     title,
     body: lines.length ? lines.join("\n") : undefined,
   });
