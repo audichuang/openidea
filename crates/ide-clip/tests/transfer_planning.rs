@@ -981,7 +981,7 @@ content 2
 }
 
 #[test]
-fn test_paste_destination_not_regular_refuses_overwrite() {
+fn test_paste_destination_not_regular_skips_only_that_row() {
     let dst = TestRepo::new("destination-not-regular");
     let build_dir = dst.path().join("build");
     fs::create_dir_all(&build_dir).unwrap();
@@ -989,19 +989,20 @@ fn test_paste_destination_not_regular_refuses_overwrite() {
     let clipboard_text = "\
 // file: build
 content
+// file: ok.txt
+fine
 ";
     let mapping = ImportMapping::with_primary(dst.canonical_id());
-    let err = plan_import(clipboard_text, "// file: $FILE_PATH", &[dst.path().to_path_buf()], &mapping).unwrap_err();
-
-    let msg = err.paste_message();
-    assert!(
-        msg.contains("refuses to overwrite"),
-        "expected paste message to contain 'refuses to overwrite', got: {msg}"
-    );
-    assert!(!msg.contains("exported"), "expected paste message not to contain 'exported', got: {msg}");
-    let disp = err.to_string();
-    assert!(disp.contains("refuses to overwrite"), "expected display to contain 'refuses to overwrite', got: {disp}");
-    assert!(!disp.contains("exported"), "expected display not to contain 'exported', got: {disp}");
+    let plan = plan_import(clipboard_text, "// file: $FILE_PATH", &[dst.path().to_path_buf()], &mapping).unwrap();
+    let created: Vec<_> = plan.create_operations().iter().map(|o| o.relative_path.as_str()).collect();
+    assert_eq!(created, ["ok.txt"]);
+    let skipped = &plan.restore_plan().skipped_operations;
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(skipped[0].relative_path.as_deref(), Some("build"));
+    assert_eq!(skipped[0].reason.as_str(), "TARGET_NOT_FILE");
+    plan.apply(&RestoreSelection::default()).unwrap();
+    assert!(build_dir.is_dir());
+    assert_eq!(fs::read_to_string(dst.path().join("ok.txt")).unwrap().trim_end(), "fine");
 }
 
 #[test]
