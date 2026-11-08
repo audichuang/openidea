@@ -180,7 +180,7 @@ export function PrView(p: {
             icon="copy"
             title="ClipCode: Copy Changed Files"
             disabled={!ready.files.length}
-            onClick={() => void bridge?.copyRange(repo, ready.mergeBase, head)}
+            onClick={() => ready.commits[0] && void bridge?.copyRange(repo, ready.mergeBase, ready.commits[0].id)}
           />
         ) : null}
       </div>
