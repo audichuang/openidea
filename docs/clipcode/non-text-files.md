@@ -65,9 +65,10 @@ text files, in the copy's normal file order. When the limit cuts files off, the 
 limit left out), and the decision to ask is made on the Include result: the dialog appears exactly when
 Include would carry at least one non-text file. When files ordered first fill the limit so that Include would
 carry no non-text file, Include and Exclude are the same payload, so there is no dialog; the completion notice
-still says how many files the limit left out. Size placeholders (files over both limits, or over their own
-limit) take a slot under the limit like any entry, so the count, the list, the left-out number and the estimate
-are computed from the same ordered entry list Include writes; the dialog and the Include notice must agree.
+still says how many files the limit left out. The count, the list, the left-out number and the estimate are
+derived from the Include result itself (the same ordered entry list and the same counting of size placeholders
+and unreadable items toward the limit that the Include copy uses), not from a parallel estimate kept while the
+Exclude copy runs; the dialog and the Include notice must agree.
 (Found by deep testing: the dialog said 40 files while 30 were copied; in round 3 it said 31 non-text files and
 11 left out while Include carried 29 and left out 13, with size placeholders in the selection.)
 
