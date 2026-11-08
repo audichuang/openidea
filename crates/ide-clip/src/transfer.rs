@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::blob::{BlobRead, BlobReader, DeletedContent};
-use crate::commits::{self, CommitError, CommitExport, CommitsPayload};
+use crate::commits::{self, CommitError, CommitExport, CommitNonTextOptions, CommitsPayload};
 use crate::filter;
 use crate::format::{self, BorrowedPayloadOptions, ChangeType, ParsedEntry, PayloadFile};
 use crate::fsutil::{FileBody, decode_utf8_or_bytes, decode_utf8_or_skip};
@@ -3081,8 +3081,21 @@ pub fn plan_commit_export_with(
     opts: &RunOptions,
     max_serialized_bytes: usize,
 ) -> Result<CommitExport, TransferError> {
+    plan_commit_export_with_non_text(git, range, last, opts, max_serialized_bytes, CommitNonTextOptions::default())
+}
+
+/// [`plan_commit_export_with`] with the copy dialog's non-text choice; see
+/// [`commits::copy_commits_with_non_text`].
+pub fn plan_commit_export_with_non_text(
+    git: &Git,
+    range: Option<(&str, &str)>,
+    last: Option<usize>,
+    opts: &RunOptions,
+    max_serialized_bytes: usize,
+    non_text: CommitNonTextOptions,
+) -> Result<CommitExport, TransferError> {
     let shas = select_commit_shas(git, range, last)?;
-    commits::copy_commits_with(git, &shas, opts, max_serialized_bytes).map_err(TransferError::Commit)
+    commits::copy_commits_with_non_text(git, &shas, opts, max_serialized_bytes, non_text).map_err(TransferError::Commit)
 }
 
 /// Exports exactly the commits in `selected`, which must be the contiguous
@@ -3110,8 +3123,29 @@ pub fn plan_commit_export_exact_with(
     opts: &RunOptions,
     max_serialized_bytes: usize,
 ) -> Result<CommitExport, TransferError> {
+    plan_commit_export_exact_with_non_text(
+        git,
+        tip,
+        selected,
+        opts,
+        max_serialized_bytes,
+        CommitNonTextOptions::default(),
+    )
+}
+
+/// [`plan_commit_export_exact_with`] with the copy dialog's non-text choice;
+/// see [`commits::copy_commits_with_non_text`].
+pub fn plan_commit_export_exact_with_non_text(
+    git: &Git,
+    tip: &str,
+    selected: &[String],
+    opts: &RunOptions,
+    max_serialized_bytes: usize,
+    non_text: CommitNonTextOptions,
+) -> Result<CommitExport, TransferError> {
     let chain = select_exact_chain(git, tip, selected, opts, Some(max_serialized_bytes))?;
-    commits::copy_commits_with(git, &chain, opts, max_serialized_bytes).map_err(TransferError::Commit)
+    commits::copy_commits_with_non_text(git, &chain, opts, max_serialized_bytes, non_text)
+        .map_err(TransferError::Commit)
 }
 
 /// First-parent chain of `selected` ending at `tip`, oldest first.
@@ -3266,6 +3300,11 @@ impl CommitReplayPreview {
             || self.replay.commits[..=commit_index].iter().any(|c| c.refused_by().is_some())
         {
             preview.unavailable = Some(ReplayPreviewUnavailable::Skipped);
+            return Ok(preview);
+        }
+        // A non-text row is never shown as text, nor is its Base64.
+        if side == ReplayFileSide::Target && file.non_text_size.is_some() {
+            preview.unavailable = Some(ReplayPreviewUnavailable::Binary);
             return Ok(preview);
         }
         let limit = limit.min(crate::browser::PREVIEW_LIMIT);
@@ -3839,6 +3878,7 @@ mod preview_target_hash_cancel {
             change: if content.is_some() { FileChange::Modified } else { FileChange::Deleted },
             content: content.map(str::to_string),
             not_copied: None,
+            non_text: None,
         }
     }
 
@@ -4170,6 +4210,7 @@ mod preview_target_hash_cancel {
                         change: FileChange::Modified,
                         content: Some("text\n".into()),
                         not_copied: None,
+                        non_text: None,
                     },
                     CommitFile {
                         path: "other.txt".into(),
@@ -4177,6 +4218,7 @@ mod preview_target_hash_cancel {
                         change: FileChange::Modified,
                         content: Some("changed\n".into()),
                         not_copied: None,
+                        non_text: None,
                     },
                 ],
             }],
@@ -4241,6 +4283,7 @@ replacement-two
                     change: FileChange::Modified,
                     content: Some("changed\n".into()),
                     not_copied: None,
+                    non_text: None,
                 }],
             }],
         };
@@ -4279,6 +4322,7 @@ replacement-two
                     change: FileChange::Modified,
                     content: Some("changed\n".into()),
                     not_copied: None,
+                    non_text: None,
                 }],
             }],
         };
