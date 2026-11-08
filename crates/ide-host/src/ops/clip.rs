@@ -14,7 +14,7 @@ use ide_clip::restore::{FsProbe, RestoreBase, RestoreSelection, SkipReason, sugg
 use ide_clip::settings::{NonTextMode, Settings};
 use ide_clip::transfer::{
     self, CLIPBOARD_PAYLOAD_MAX, CanonicalRootId, CommitReplayPreview, ExportItem, ExportSelection, ImportMapping,
-    SKIPPED_PATHS_SHOWN, TransferError, TransferImportPlan, changed_items, copy_selection_detailed,
+    SKIPPED_PATHS_SHOWN, TransferError, TransferImportPlan, WalkRefusals, changed_items, copy_selection_detailed,
     selection_from_paths,
 };
 use ide_core::{IdeError, IdeResult};
@@ -183,6 +183,15 @@ pub struct ClipCopyResult {
     /// The first 10 files counted in `skippedUnreadable` that were unreadable, by payload path
     /// (files mode; commits mode names none).
     pub skipped_unreadable_paths: Vec<String>,
+    /// Of `skipped`: files whose name the payload cannot carry portably (a backslash, a double quote, a tab
+    /// or another refused character), not unreadable ones.
+    pub skipped_unportable: u32,
+    /// The first 10 of them by their real names (files mode).
+    pub skipped_unportable_paths: Vec<String>,
+    /// Of `skipped`: symlinks to a folder inside a copied folder, which are not followed.
+    pub skipped_symlink_dirs: u32,
+    /// The first 10 of them (files mode).
+    pub skipped_symlink_dir_paths: Vec<String>,
 }
 
 fn n(v: usize) -> u32 {
@@ -252,10 +261,20 @@ fn by_repo(paths: &[PathBuf]) -> IdeResult<Vec<(PathBuf, Vec<PathBuf>)>> {
     Ok(out)
 }
 
+/// The root a selected path outside every project root is read under: its repository, else its folder (a
+/// file's parent). A folder that cannot be listed is not a root: it is read from its parent, where the copy
+/// skips and names it instead of failing.
+fn outside_root(p: &Path) -> PathBuf {
+    let at = if p.is_dir() && std::fs::read_dir(p).is_err() { p.parent().unwrap_or(p) } else { p };
+    repo_root(at)
+        .unwrap_or_else(|_| if at.is_dir() { at.to_path_buf() } else { at.parent().unwrap_or(at).to_path_buf() })
+}
+
 fn file_copy(
     sel: ExportSelection,
     primary_skipped: usize,
     primary_skipped_paths: Vec<String>,
+    primary_refusals: WalkRefusals,
     settings: &Settings,
     mode: ClipNonTextMode,
 ) -> IdeResult<ClipCopyResult> {
@@ -268,6 +287,9 @@ fn file_copy(
             }
         })?;
     let o = report.outcome;
+    let mut refusals = report.skip_detail;
+    let primary_refusals_count = primary_refusals.unportable + primary_refusals.symlink_dirs;
+    refusals.merge(primary_refusals);
     // Only non-text files were found and Exclude left them out: the result still carries the
     // summary (empty text), so the UI can ask before giving up.
     if o.copied == 0 && o.non_text.count() == 0 {
@@ -283,7 +305,8 @@ fn file_copy(
         tokens: n(o.tokens),
         skipped: n(o.skipped + primary_skipped),
         skipped_size: n(report.skipped_file_size),
-        skipped_unreadable: n(report.skipped_unreadable + primary_skipped),
+        // `primary_skipped` counts the selection's refusals, unportable names included.
+        skipped_unreadable: n((report.skipped_unreadable + primary_skipped).saturating_sub(primary_refusals_count)),
         truncated: o.truncated,
         file_limit: n(file_limit(settings)),
         notify: settings.show_copy_notification,
@@ -295,6 +318,10 @@ fn file_copy(
             .chain(primary_skipped_paths)
             .take(SKIPPED_PATHS_SHOWN)
             .collect(),
+        skipped_unportable: n(refusals.unportable),
+        skipped_unportable_paths: refusals.unportable_paths,
+        skipped_symlink_dirs: n(refusals.symlink_dirs),
+        skipped_symlink_dir_paths: refusals.symlink_dir_paths,
         text: o.payload,
     })
 }
@@ -340,6 +367,10 @@ fn commit_result(export: commits::CommitExport, settings: &Settings) -> ClipCopy
         non_text: non_text_summary(&export.non_text),
         non_text_copied: n(carried),
         skipped_unreadable_paths: Vec::new(),
+        skipped_unportable: 0,
+        skipped_unportable_paths: Vec::new(),
+        skipped_symlink_dirs: 0,
+        skipped_symlink_dir_paths: Vec::new(),
         text: export.text,
     }
 }
@@ -395,6 +426,7 @@ pub fn copy_in_with(
         ClipCopySource::Files { paths } => {
             let mut skipped = 0;
             let mut skipped_paths: Vec<String> = Vec::new();
+            let mut refusals = WalkRefusals::default();
             // Files of one root plan together; several roots join one selection,
             // anchored on the project like the git sources.
             let mut groups: Vec<(PathBuf, Vec<PathBuf>)> = Vec::new();
@@ -409,8 +441,7 @@ pub fn copy_in_with(
                 } else if let Some(r) = content_roots.iter().find(|r| p.starts_with(r)) {
                     r.clone()
                 } else {
-                    let dir = repo_root(p)
-                        .unwrap_or_else(|_| if p.is_dir() { p.clone() } else { p.parent().unwrap_or(p).to_path_buf() });
+                    let dir = outside_root(p);
                     if !absolute.contains(&dir) {
                         absolute.push(dir.clone());
                     }
@@ -435,6 +466,7 @@ pub fn copy_in_with(
                 let part = selection_from_paths(root, root, list).map_err(err)?;
                 skipped += part.skipped;
                 skipped_paths.extend(part.skipped_paths);
+                refusals.merge(part.detail);
                 parts.push(part.sel);
             }
             if parts.is_empty() {
@@ -454,7 +486,7 @@ pub fn copy_in_with(
                 .map_err(err)?
                 .with_source_root(source_root)
                 .with_spelled_root(spelled_root);
-            file_copy(sel, skipped, skipped_paths, settings, non_text)
+            file_copy(sel, skipped, skipped_paths, refusals, settings, non_text)
         }
         ClipCopySource::Changes { paths, side } => {
             let repos = by_repo(&paths)?;
@@ -467,7 +499,14 @@ pub fn copy_in_with(
                     item.source = transfer::SourceKind::Unstaged;
                 }
             }
-            file_copy(git_selection(project, content_roots, items)?, skipped, Vec::new(), settings, non_text)
+            file_copy(
+                git_selection(project, content_roots, items)?,
+                skipped,
+                Vec::new(),
+                WalkRefusals::default(),
+                settings,
+                non_text,
+            )
         }
         ClipCopySource::CommitFiles { repo, rev, paths } => {
             let root = repo_root(&repo)?;
@@ -476,7 +515,14 @@ pub fn copy_in_with(
             if items.is_empty() && no_filter {
                 return Err(IdeError::no_net_changes());
             }
-            file_copy(git_selection(project, content_roots, items)?, skipped, Vec::new(), settings, non_text)
+            file_copy(
+                git_selection(project, content_roots, items)?,
+                skipped,
+                Vec::new(),
+                WalkRefusals::default(),
+                settings,
+                non_text,
+            )
         }
         ClipCopySource::Range { repo, base, tip, paths } => {
             let root = repo_root(&repo)?;
@@ -485,7 +531,14 @@ pub fn copy_in_with(
             if items.is_empty() && no_filter {
                 return Err(IdeError::no_net_changes());
             }
-            file_copy(git_selection(project, content_roots, items)?, skipped, Vec::new(), settings, non_text)
+            file_copy(
+                git_selection(project, content_roots, items)?,
+                skipped,
+                Vec::new(),
+                WalkRefusals::default(),
+                settings,
+                non_text,
+            )
         }
         ClipCopySource::RootRange { repo, tip, paths } => {
             let root = repo_root(&repo)?;
@@ -496,7 +549,14 @@ pub fn copy_in_with(
             if items.is_empty() && no_filter {
                 return Err(IdeError::no_net_changes());
             }
-            file_copy(git_selection(project, content_roots, items)?, skipped, Vec::new(), settings, non_text)
+            file_copy(
+                git_selection(project, content_roots, items)?,
+                skipped,
+                Vec::new(),
+                WalkRefusals::default(),
+                settings,
+                non_text,
+            )
         }
         ClipCopySource::CommitList { repo, revs, paths } => {
             let root = repo_root(&repo)?;
@@ -523,7 +583,14 @@ pub fn copy_in_with(
             if items.is_empty() && no_filter {
                 return Err(IdeError::no_net_changes());
             }
-            file_copy(git_selection(project, content_roots, items)?, skipped, Vec::new(), settings, non_text)
+            file_copy(
+                git_selection(project, content_roots, items)?,
+                skipped,
+                Vec::new(),
+                WalkRefusals::default(),
+                settings,
+                non_text,
+            )
         }
         ClipCopySource::Commits { repo, tip, selected } => {
             let git = Git::open(&repo).map_err(err)?;
