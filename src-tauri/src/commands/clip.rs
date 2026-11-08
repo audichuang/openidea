@@ -3,21 +3,23 @@
 use crate::state::AppState;
 use ide_core::IdeResult;
 use ide_host::ops::clip::{
-    ClipBranchRestore, ClipBranchSeries, ClipCopyResult, ClipCopySource, ClipPasteApply, ClipPasteFileContent,
-    ClipPastePreview, ClipPasteResult,
+    ClipBranchRestore, ClipBranchSeries, ClipCopyResult, ClipCopySource, ClipNonTextMode, ClipPasteApply,
+    ClipPasteFileContent, ClipPastePreview, ClipPasteResult,
 };
 use std::path::PathBuf;
 use tauri::{State, Window};
 
-/// The clipboard text for `source` (file or commit payload); the UI writes it.
+/// The clipboard text for `source` (file or commit payload); the UI writes it. `non_text`
+/// `Exclude` still reports the non-text files found, for the dialog that asks before `Include`.
 #[tauri::command]
 #[specta::specta]
 pub async fn clip_copy(
     window: Window,
     state: State<'_, AppState>,
     source: ClipCopySource,
+    non_text: ClipNonTextMode,
 ) -> IdeResult<ClipCopyResult> {
-    ide_host::ops::clip::clip_copy(&state.host, window.label(), source).await
+    ide_host::ops::clip::clip_copy(&state.host, window.label(), source, non_text).await
 }
 
 /// Plans pasting `text`: files restore under `dest` (default: the project root),
