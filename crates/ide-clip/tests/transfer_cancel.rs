@@ -753,6 +753,7 @@ fn inflight_cancel_during_replay_preview_after_head_and_index_git() {
                     change: FileChange::Modified,
                     content: Some("incoming\n".into()),
                     not_copied: None,
+                    non_text: None,
                 },
                 CommitFile {
                     path: "added.txt".into(),
@@ -760,6 +761,7 @@ fn inflight_cancel_during_replay_preview_after_head_and_index_git() {
                     change: FileChange::Added,
                     content: Some("new\n".into()),
                     not_copied: None,
+                    non_text: None,
                 },
             ],
         }],
@@ -823,6 +825,7 @@ fn precancel_replay_preview_and_plan_import_write_nothing() {
                 change: FileChange::Added,
                 content: Some("new\n".into()),
                 not_copied: None,
+                non_text: None,
             }],
         }],
     };
@@ -867,6 +870,7 @@ fn inflight_cancel_during_replay_revalidate_after_head_and_index_git() {
                     change: FileChange::Modified,
                     content: Some("incoming\n".into()),
                     not_copied: None,
+                    non_text: None,
                 },
                 CommitFile {
                     path: "added.txt".into(),
@@ -874,6 +878,7 @@ fn inflight_cancel_during_replay_revalidate_after_head_and_index_git() {
                     change: FileChange::Added,
                     content: Some("new\n".into()),
                     not_copied: None,
+                    non_text: None,
                 },
             ],
         }],
@@ -906,6 +911,7 @@ fn precancel_replay_revalidate_writes_nothing() {
                 change: FileChange::Modified,
                 content: Some("new\n".into()),
                 not_copied: None,
+                non_text: None,
             }],
         }],
     };
@@ -938,6 +944,7 @@ fn precancel_replay_apply_writes_nothing() {
                 change: FileChange::Modified,
                 content: Some("new\n".into()),
                 not_copied: None,
+                non_text: None,
             }],
         }],
     };
