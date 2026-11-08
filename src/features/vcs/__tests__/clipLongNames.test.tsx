@@ -10,7 +10,8 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 import { PastePreviewDialog } from "../clip";
 import { ClipPastePane } from "../ClipPastePane";
 import { NonTextDialog, replayFileNote, skipReasonText, visibleName } from "../clipNonText";
-import { PathText, splitDir, splitTail } from "../PathText";
+import { PathText, splitDir, splitFirstSegment, splitTail } from "../PathText";
+import { readFileSync } from "node:fs";
 
 const names = [
   "name-alpha-0123456789-0123456789-0123456789-0123456789-first.png",
@@ -136,5 +137,58 @@ describe("reasons read as text, never as codes", () => {
   it("shows control characters in a name", () => {
     expect(visibleName("tab\tname.txt")).toBe("tab\\tname.txt");
     expect(visibleName("back\\slash.txt")).toBe("back\\slash.txt");
+  });
+});
+
+const css = readFileSync("src/features/vcs/clip.module.css", "utf8");
+
+/** The declarations of one rule in the module's source (class names are unmangled there). */
+function rule(selector: string): string {
+  const m = new RegExp(`(?:^|\\n)${selector.replace(/[.[\]="]/g, "\\$&")}\\s*\\{([^}]*)\\}`).exec(css);
+  if (!m) throw new Error(`no rule for ${selector}`);
+  return m[1]!;
+}
+const shrink = (selector: string) => Number(/flex:\s*0\s+(\d+)\s+auto/.exec(rule(selector))?.[1]);
+
+describe("the file name has layout priority over folders, notes and badges", () => {
+  const dir = `d3/${"a-really-long-folder-segment/".repeat(5)}`;
+  const name = "pppp-sssssssssssssssssssssss-final.png";
+
+  it("splits a path into first segment, the rest of the folders and the name", () => {
+    expect(splitFirstSegment("d3/a/b/")).toEqual(["d3/", "a/b/"]);
+    expect(splitFirstSegment("d3/")).toEqual(["d3/", ""]);
+    expect(splitFirstSegment("")).toEqual(["", ""]);
+    const { container } = render(<PathText path={`${dir}${name}`} />);
+    expect(container.querySelector("[class*=pathDirFirst]")!.textContent).toBe("d3/");
+    expect(container.querySelector("[class*=pathDirRest]")!.textContent).toBe(dir.slice(3));
+    // The whole name, extension included, is in the name part.
+    expect(container.querySelector("[class*=pathName]")!.textContent).toBe(name);
+    expect(container.querySelector("[title]")!.textContent).toBe(`${dir}${name}`);
+  });
+
+  it("elides a name longer than 20 characters in the middle and keeps a short one whole", () => {
+    const long = "alpha-readable-name-28chars.png";
+    expect(splitTail(long)).toEqual([long.slice(0, -14), long.slice(-14)]);
+    expect(splitTail("12345678901234567890")).toEqual(["12345678901234567890", ""]);
+    expect(splitTail("alpha.png")).toEqual(["alpha.png", ""]);
+  });
+
+  it("the folder part shrinks first, down to its first segment and an ellipsis", () => {
+    expect(rule(".pathDirFirst")).toMatch(/flex:\s*none/);
+    expect(rule(".pathDirRest")).toMatch(/text-overflow:\s*ellipsis/);
+    expect(rule(".pathDirRest")).toMatch(/min-width:\s*1em/);
+    // Flex shrinks in proportion to factor x size: a factor this much larger leaves the name every
+    // character until the folder part is at its minimum.
+    expect(shrink(".pathDirRest")).toBeGreaterThanOrEqual(shrink(".pathName") * 1_000_000);
+    expect(rule(".pathName")).toMatch(/min-width:\s*0/);
+    expect(rule(".nameTail")).toMatch(/flex:\s*none/);
+  });
+
+  it("a note and then a badge shrink before the name in a preview row", () => {
+    expect(shrink(".nodeNote")).toBeGreaterThan(shrink(".nodeRow > .badge"));
+    expect(shrink(".nodeRow > .badge")).toBeGreaterThanOrEqual(shrink(".nodeName") * 1_000_000);
+    expect(rule(".nodeRow > .badge")).toMatch(/min-width:\s*0/);
+    // No floor above the head and tail: the name may not keep a fixed width that clips its end.
+    expect(rule(".nodeName")).toMatch(/min-width:\s*0/);
   });
 });
