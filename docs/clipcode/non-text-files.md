@@ -22,11 +22,29 @@ project with a `static/` folder of images lost the images.
   is expanded; a project tree that shows the symlink as a folder does not change this. A symlink to a file is
   followed and carries the target's bytes. (Found by deep testing round 3: a directly selected symlinked folder
   was followed and its contents copied.)
-- A file whose name cannot be carried portably (it contains `\`, `"`, a tab or another character the payload path
-  rules reject) is skipped and named with that reason and its real name, not reported as unreadable.
+- A file or folder whose name is not portable is skipped and named under "Name not portable" with its real name,
+  not reported as unreadable. The check is OpenIDEA's `is_exportable_relative_path` (`crates/ide-clip/src/paths.rs`)
+  applied to the file's path relative to its copy root, segments joined with `/`. The path is not portable when:
+  - a name in it is not valid UTF-8 (Windows: not valid UTF-16);
+  - a segment is `..`;
+  - a segment contains `<`, `>`, `:`, `"`, `|`, `?`, `*`, `\` (on Unix, where it is not a separator) or a control
+    character U+0000–U+001F (tab and newline included);
+  - the whole path starts or ends with ASCII whitespace (space, tab, LF, VT, FF, CR): a trailing space on the file
+    name fails, a trailing space on a folder in the middle of the path does not.
+
+  Every other character is allowed: U+007F, non-ASCII letters, emoji, spaces inside a name. On every platform the
+  same rule applies, so one payload restores identically everywhere. OpenIDEA applies it per file: a UTF-8 folder
+  with a non-portable name is still walked and each file under it is skipped and named with its full path; a
+  non-UTF-8 name directly under the project root, when the root itself is selected, is named once and not walked.
+  Another implementation may name such a folder once instead, as long as none of its files is copied. Symlinked
+  folders are never followed (above).
+
 - **Exclude** keeps today's result exactly, including today's "Nothing to copy" when nothing but size
   placeholders would be copied from a files selection.
 - File modes (the executable bit) and Git LFS are out of scope: text files carry neither today.
+- Non-text content read from Git rather than the working tree (staged changes, a file at a past commit, commits
+  mode) is optional per implementation; one that does not carry it leaves those files out as today. IntelliJ
+  supports working-tree files only (decided by the user, cross-implementation port).
 - Deleted entries (`[DELETED]`) keep today's body: paste deletes the file and never reads it.
 
 ## Size limits
@@ -65,10 +83,13 @@ text files, in the copy's normal file order. When the limit cuts files off, the 
 limit left out), and the decision to ask is made on the Include result: the dialog appears exactly when
 Include would carry at least one non-text file. When files ordered first fill the limit so that Include would
 carry no non-text file, Include and Exclude are the same payload, so there is no dialog; the completion notice
-still says how many files the limit left out. The count, the list, the left-out number and the estimate are
-derived from the Include result itself (the same ordered entry list and the same counting of size placeholders
-and unreadable items toward the limit that the Include copy uses), not from a parallel estimate kept while the
-Exclude copy runs; the dialog and the Include notice must agree.
+still says how many files the limit left out. The left-out number is counted up to 1000; beyond that it is shown
+as "1000+" (OpenIDEA: `limitLeftOut` 1000 with `limitLeftOutAtLeast`). Implementations must not walk the rest of
+the tree only to count: a folder walk stops at the limit, and a number it could not finish counting is shown with
+"+" as well. The payload never depends on this number. The count, the list, the left-out number and the estimate
+are derived from the Include result itself (the same ordered entry list and the same counting of size
+placeholders and unreadable items toward the limit that the Include copy uses), not from a parallel estimate kept
+while the Exclude copy runs; the dialog and the Include notice must agree.
 (Found by deep testing: the dialog said 40 files while 30 were copied; in round 3 it said 31 non-text files and
 11 left out while Include carried 29 and left out 13, with size placeholders in the selection.)
 
@@ -246,7 +267,8 @@ Each implementation adds these to its contract tests (OpenIDEA: `clipboard-contr
 8. A reader without this feature (the previous release) skips the entry and leaves the target untouched.
 9. Existing identical target is unchanged; existing different target follows the overwrite option.
 10. Commits mode: a commit adding an image replays with the image; an older reader skips it.
-11. Exclude in the dialog produces today's payload byte for byte.
+11. Exclude in the dialog produces today's payload byte for byte, when nothing was skipped as unreadable, as a
+    symlinked folder or as not portable (those are named in the notice now, which today's copy did not do).
 12. A text file whose first line is a valid-looking non-text placeholder round-trips as the original text, under
     the built-in header and under `// $FILE_PATH` (also when its second line is valid Base64, e.g. `YWJj`), in
     the same payload as a real non-text file that round-trips byte for byte; a text file whose first line is
@@ -257,7 +279,9 @@ Each implementation adds these to its contract tests (OpenIDEA: `clipboard-contr
 15. File-count limit: 40 small images with a limit of 30 — the dialog's count, list and estimate match the
     Include payload; the same with size placeholders in the selection (a folder with files over both limits
     plus 40 images): dialog numbers equal the Include payload and notice. 30 text files ordered before 5 images:
-    no dialog, and the notice reports 5 left out by the limit.
+    no dialog, and the notice reports 5 left out by the limit. 1,101 picked files with a limit of 3: the left-out
+    number is "1000+" in the dialog and the notice (exactly 1,000 past the limit still reads "1000"), and the
+    payload is the same as without the cap.
 16. Unreadable files dropped during folder expansion (chmod 000 file and folder, dangling symlink) are named in
     the completion notice.
 17. CRLF growth near the whole-payload limit is accepted on paste; lone CRs past the limit are refused.
@@ -292,6 +316,14 @@ Each implementation adds these to its contract tests (OpenIDEA: `clipboard-contr
 ## Change log
 
 Each review or test round folds its findings back into this spec.
+
+- Cross-implementation port (IntelliJ, VS Code, Orca), 2026-11-09. User decisions: (D1) the file-count limit's
+  left-out number is counted up to 1000 and shown as "1000+" beyond that, without walking the rest of the tree to
+  count; OpenIDEA counted every remaining file before. (D2) a file or folder with a non-portable name is skipped
+  and named under "Name not portable", with the portability rule spelled out; symlinked folders are never
+  followed; case 11 holds when nothing was skipped as unreadable, symlinked folder or not portable. (D3) non-text
+  content from Git staged changes or history is optional per implementation; IntelliJ supports working-tree files
+  only.
 
 - Round 1 review (3 Opus lenses + Codex): commits batch rewrite (Big5 → UTF-8) kept; Exclude keeps "Nothing to
   copy"; CRLF counting on the paste limit. Round 2 (Codex): lone CR must count. Round 3 (Codex): approved.
