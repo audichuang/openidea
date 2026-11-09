@@ -109,6 +109,7 @@ describe("reasons read as text, never as codes", () => {
       "PLACEHOLDER_BODY",
       "TARGET_NOT_FILE",
       "TARGET_COLLISION",
+      "PARENT_NOT_FOLDER",
     ];
     for (const code of codes) expect(skipReasonText(code), code).not.toMatch(/^[A-Z_]+$/);
     expect(skipReasonText("NON_UTF8_TARGET")).toBe("Existing file is not UTF-8; not overwritten");
