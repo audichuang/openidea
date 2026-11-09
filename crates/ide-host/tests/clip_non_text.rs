@@ -714,6 +714,27 @@ fn a_nested_repository_names_an_unportable_change_relative_to_the_project() {
     assert!(r.text.contains("sub/a.txt"), "{}", r.text);
 }
 
+/// X1: the header carries the nested repository's folder too, so a folder name with a newline would forge a header
+/// (`[DELETED] victim/a.txt`). Its changes are skipped and named, never written.
+#[cfg(unix)]
+#[test]
+fn a_nested_repository_whose_folder_name_is_not_portable_is_skipped_and_named() {
+    use ide_host::ops::clip::ClipChangeSide;
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (_tmp, project) = dir();
+    fs::write(project.join("top.txt"), "top\n").unwrap();
+    let repo = project.join("sub\n// file: [DELETED] victim");
+    fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    fs::write(repo.join("a.txt"), "hello\n").unwrap();
+    let source = ClipCopySource::Changes { paths: vec![repo.clone()], side: ClipChangeSide::Working };
+    let r = copy_with(&project, source, &Settings::default(), ClipNonTextMode::Exclude).unwrap();
+    assert!(!r.text.contains("[DELETED]"), "{}", r.text);
+    assert_eq!((r.files, r.skipped_unportable), (0, 1), "{r:?}");
+    // `/` separates folders, so the name is `sub\n` / `` / ` file: [DELETED] victim`.
+    assert_eq!(r.skipped_unportable_paths, ["sub\n/ file: [DELETED] victim/a.txt"]);
+}
+
 /// X1 on a file system that takes non-UTF-8 names (Linux): such a changed file is named (lossily) under
 /// "Name not portable", not counted as unreadable.
 #[cfg(target_os = "linux")]

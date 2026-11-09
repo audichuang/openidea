@@ -316,8 +316,21 @@ fn git_copy(
     for (root, name) in found.non_utf8 {
         refusals.unportable(shown(&root, name));
     }
-    let (items, unportable): (Vec<_>, Vec<_>) =
-        found.items.into_iter().partition(|i| ide_clip::paths::is_exportable_relative_path(&i.relative_path));
+    // The header carries the repository's folder too: inside the project its project-relative path follows the
+    // same rule; outside, the absolute path is spelled, which must hold no control character (a newline would
+    // start a forged header).
+    let portable = |i: &ExportItem| {
+        let rel = &i.relative_path;
+        ide_clip::paths::is_exportable_relative_path(rel)
+            && match i.root.path().strip_prefix(&project_canon) {
+                Ok(sub) if !sub.as_os_str().is_empty() => {
+                    ide_clip::paths::is_exportable_relative_path(&shown(i.root.path(), rel.clone()))
+                }
+                Ok(_) => true,
+                Err(_) => !i.root.path().to_string_lossy().chars().any(char::is_control),
+            }
+    };
+    let (items, unportable): (Vec<_>, Vec<_>) = found.items.into_iter().partition(portable);
     for item in unportable {
         refusals.unportable(shown(item.root.path(), item.relative_path));
     }
