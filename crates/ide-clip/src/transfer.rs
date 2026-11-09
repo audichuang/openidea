@@ -28,7 +28,7 @@ use crate::format::{self, BorrowedPayloadOptions, ChangeType, ParsedEntry, Paylo
 use crate::fsutil::{FileBody, decode_utf8_or_bytes, decode_utf8_or_skip};
 use crate::gitrun::{CancelToken, RunOptions, RunOutput};
 use crate::gitsrc::{DELETED_FILE_MARKER, Git, GitError, UNREADABLE_FILE_MARKER};
-use crate::nontext::NonTextSummary;
+use crate::nontext::{self, NonTextSummary};
 use crate::paths::{self, escapes_all_roots, sanitize_relative_path};
 use crate::restore::{
     self, CreateOperation, DeleteOperation, RestoreExecutionResult, RestorePlan, RestoreSelection, SkipReason,
@@ -2657,12 +2657,16 @@ fn plan_export_once(
             files.push(payload_file);
         }
 
-        non_text_summary.limit_left_out = limit_cut_idx.map_or(0, |i| {
+        // Counted up to one past the cap: beyond it the number only reads "more than 1000".
+        let left_out = limit_cut_idx.map_or(0, |i| {
             selection.items[i..]
                 .iter()
                 .filter(|it| item_passes_filters(selection, settings, primary.as_ref(), anchor.as_ref(), it))
+                .take(nontext::LIMIT_LEFT_OUT_MAX + 1)
                 .count()
         });
+        non_text_summary.limit_left_out = left_out.min(nontext::LIMIT_LEFT_OUT_MAX);
+        non_text_summary.limit_left_out_lower_bound = left_out > nontext::LIMIT_LEFT_OUT_MAX;
 
         let final_source_root = if is_graph && files.is_empty() { None } else { default_source_root };
 
