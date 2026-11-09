@@ -9,7 +9,7 @@ use specta::Type;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::ipc::Channel;
-use tauri::{AppHandle, State, WebviewWindow};
+use tauri::{AppHandle, State, WebviewWindow, Window};
 
 /// Opens `path` in a new window (`new_window`) or tells the caller to open it
 /// itself (`current`). A project already open in some window is focused instead.
@@ -264,8 +264,10 @@ pub struct CloseContext {
 
 #[tauri::command]
 #[specta::specta]
-pub fn window_close_context(app: AppHandle, windows: State<'_, WindowsState>) -> CloseContext {
-    CloseContext { quitting: windows.quitting(), windows: windows::project_window_labels(&app).len() as u32 }
+pub fn window_close_context(app: AppHandle, window: Window, windows: State<'_, WindowsState>) -> CloseContext {
+    let all = windows::project_window_labels(&app);
+    let count = windows::close_window_count(&all, &windows.pending_closes(), window.label());
+    CloseContext { quitting: windows.quitting(), windows: count as u32 }
 }
 
 /// Quits: closes every window, each of which runs its own unsaved-changes check.
