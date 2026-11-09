@@ -204,6 +204,9 @@ pub struct WindowsState {
     /// The last closed project opted out of Welcome; macOS keeps its app in the Dock.
     #[cfg(target_os = "macos")]
     pub keep_alive: AtomicBool,
+    /// Windows asked to close whose close guards have not finished. AppKit closes a whole native
+    /// tab group at once (the red close button), so its members ask together.
+    close_requests: Mutex<Vec<String>>,
     /// Project tabs closing one by one (Close Other Tabs and friends).
     pub tab_closes: Mutex<Option<crate::window_groups::TabCloses>>,
     /// Relaunch once the quit completes (after installing an update).
@@ -213,6 +216,22 @@ pub struct WindowsState {
 }
 
 impl WindowsState {
+    pub fn close_requested(&self, label: &str) {
+        let mut requests = self.close_requests.lock();
+        if !requests.iter().any(|l| l == label) {
+            requests.push(label.to_owned());
+        }
+    }
+
+    /// `label`'s close guard finished without closing it (cancelled, or back to the welcome screen).
+    pub fn close_settled(&self, label: &str) {
+        self.close_requests.lock().retain(|l| l != label);
+    }
+
+    pub fn pending_closes(&self) -> Vec<String> {
+        self.close_requests.lock().clone()
+    }
+
     pub fn set_launch(&self, label: &str, launch: Launch) {
         self.launches.lock().insert(label.to_owned(), launch);
     }
@@ -292,6 +311,7 @@ impl WindowsState {
     }
 
     pub fn forget(&self, label: &str) {
+        self.close_settled(label);
         {
             let mut launches = self.launches.lock();
             let mut opening = self.opening.lock();
@@ -341,6 +361,8 @@ impl WindowsState {
             *self.tab_closes.lock() = None;
         } else {
             self.restart.store(false, Ordering::SeqCst);
+            // The window that vetoed the quit stays open; no close it asked for is pending anymore.
+            self.close_requests.lock().clear();
         }
     }
 
@@ -491,6 +513,17 @@ fn order_key(label: &str) -> (u8, u64, String) {
         (1, n, String::new())
     } else {
         (2, 0, label.to_owned())
+    }
+}
+
+/// How many project windows `caller`'s close guard should count as open. Windows asking to close
+/// together (a native tab group) are one window closing: the first of them in label order is the
+/// last window left (it returns to the welcome screen); the others just close.
+pub fn close_window_count(all: &[String], pending: &[String], caller: &str) -> usize {
+    let closing = sorted_labels(pending.iter().map(String::as_str).filter(|l| all.iter().any(|a| a == l)));
+    match closing.first() {
+        Some(keeper) if closing.len() > 1 && keeper == caller => all.len() - closing.len() + 1,
+        _ => all.len(),
     }
 }
 
@@ -1912,6 +1945,42 @@ mod tests {
             sorted_labels(["project-10", "project-2", "main", "x"]),
             s(&["main", "project-2", "project-10", "x"])
         );
+    }
+
+    // A tab group closing as a whole counts as one window: its first member (label order) is the
+    // last window left when nothing else is open, the others close; open windows outside it count.
+    #[test]
+    fn tab_group_closing_together_counts_as_one_window() {
+        let group = s(&["main", "project-2", "project-10"]);
+        assert_eq!(close_window_count(&group, &s(&["project-10", "main", "project-2"]), "main"), 1);
+        assert_eq!(close_window_count(&group, &group, "project-2"), 3);
+        assert_eq!(close_window_count(&group, &group, "project-10"), 3);
+
+        let with_standalone = s(&["main", "project-2", "project-10", "project-3"]);
+        assert_eq!(close_window_count(&with_standalone, &group, "main"), 2);
+        assert_eq!(close_window_count(&with_standalone, &group, "project-2"), 4);
+
+        // One window closing alone, or none recorded: every open project window counts.
+        assert_eq!(close_window_count(&s(&["main"]), &s(&["main"]), "main"), 1);
+        assert_eq!(close_window_count(&group, &s(&["project-2"]), "project-2"), 3);
+        assert_eq!(close_window_count(&group, &[], "main"), 3);
+        // Requests from windows already gone (or auxiliary ones) are ignored.
+        assert_eq!(close_window_count(&s(&["project-2"]), &s(&["main", "project-2"]), "project-2"), 1);
+    }
+
+    // A window that vetoed Quit stays open: its close request must not count when a later window closes.
+    #[test]
+    fn cancelled_quit_settles_close_requests() {
+        let st = WindowsState::default();
+        st.close_requested("project-2");
+        st.close_requested("project-2");
+        assert_eq!(st.pending_closes(), s(&["project-2"]));
+        st.set_quitting(true);
+        st.set_quitting(false);
+        assert!(st.pending_closes().is_empty());
+        st.close_requested("main");
+        st.forget("main");
+        assert!(st.pending_closes().is_empty());
     }
 
     #[test]
