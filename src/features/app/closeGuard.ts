@@ -248,6 +248,8 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
           throw e;
         }
       }
+      // This window stays open: settle its close request (and any tab-close batch it belonged to).
+      await commands.windowGroupCancelClose();
       return false;
     }
     const confirmTerminate = workflowSettings().run.confirmTerminate;
