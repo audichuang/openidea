@@ -344,7 +344,7 @@ export function Composer(props: ComposerProps) {
   };
 
   const pasteClipboardImage = async () => {
-    const url = await call(commands.clipboardImage());
+    const url = await call(commands.clipboardImageDataUrl());
     const image = url ? imageFromDataUrl(url, "image") : null;
     if (image && fitsLimit("image", (image.data.length * 3) / 4)) addImages([image]);
   };

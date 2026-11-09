@@ -89,6 +89,7 @@
       status.setAttribute("role", "status");
       copy.addEventListener("click", async () => {
         try {
+          // eslint-disable-next-line no-restricted-properties -- the boot error page runs before the app and its clipboard IPC load
           await navigator.clipboard.writeText(details.value);
           status.textContent = text.copied;
         } catch {
