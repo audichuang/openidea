@@ -7291,7 +7291,6 @@
   "Folder is not writable": "文件夹不可写",
   "File or folder not found": "找不到文件或文件夹",
   "A file or folder already exists at that path": "该路径已存在文件或文件夹",
-  "A file is in the way of a folder": "有文件挡住了文件夹",
   "The target is a folder": "目标是文件夹",
   "The disk is full": "磁盘已满",
   "The file system is read-only": "文件系统为只读",
