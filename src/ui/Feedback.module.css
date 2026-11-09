@@ -165,6 +165,8 @@
 }
 .toastBody {
   color: var(--fg-secondary);
+  /* A body of several lines (one category per line) keeps its line breaks. */
+  white-space: pre-line;
   overflow-wrap: anywhere;
   -webkit-user-select: text;
   user-select: text;

@@ -11,6 +11,7 @@ const file = (path: string, action: string, index: number, reason: string | null
   target: `/p/${path}`,
   action,
   reason,
+  nonText: null,
 });
 
 const shape = (nodes: readonly PasteNode[]): unknown[] =>
@@ -65,7 +66,7 @@ describe("PastePreviewDialog files mode", () => {
     vi.stubGlobal("__TAURI_INTERNALS__", {});
     vi.spyOn(commands, "clipPastePreviewFile").mockResolvedValue({
       status: "ok",
-      data: { incoming: "new\n", current: "old\n", note: null },
+      data: { incoming: "new\n", current: "old\n", note: null, nonText: null },
     });
   });
   afterEach(() => {
@@ -78,7 +79,17 @@ describe("PastePreviewDialog files mode", () => {
   it("shows the folders, toggles a folder's files together, and applies as before", async () => {
     const apply = vi.spyOn(commands, "clipPasteApply").mockResolvedValue({
       status: "ok",
-      data: { created: 1, overwritten: 0, deleted: 1, skipped: 1, commits: [], errors: [] },
+      data: {
+        created: 1,
+        overwritten: 0,
+        deleted: 1,
+        skipped: 1,
+        commits: [],
+        errors: [],
+        notCreated: [],
+        unchanged: 0,
+        corruptNonText: [],
+      },
     });
     render(<PastePreviewDialog text="" target={{ dest: "/p", repo: null }} initial={preview} onClose={() => {}} />);
     // The first file to restore is shown at once: the overwrite, against the disk.

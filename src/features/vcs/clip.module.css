@@ -28,6 +28,10 @@
 .file {
   padding-left: 16px;
 }
+.file > .note {
+  flex: none;
+  white-space: nowrap;
+}
 .commit + .commit {
   margin-top: 8px;
 }
@@ -64,7 +68,12 @@
   background: color-mix(in srgb, var(--vcs-deleted) 14%, transparent);
   color: var(--vcs-deleted);
 }
-.badge[data-action="skip"] {
+.badge[data-action="corrupt"] {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+.badge[data-action="skip"],
+.badge[data-action="unchanged"] {
   background: none;
   color: var(--fg-subtle);
 }
@@ -95,18 +104,76 @@
 .treePane > * {
   flex: 1;
 }
+/*
+ * A badge or a size note shows whole or not at all. The row wraps and clips its second line: the check mark
+ * and name (`.nodeMain`, always the first item, so it shrinks and elides) come first, then the badge, then
+ * the note; an item that does not fit whole wraps to the hidden second line instead of being squeezed.
+ */
 .nodeRow {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  align-items: center;
+  column-gap: 6px;
+  row-gap: 40px;
+  height: 22px;
+  overflow: hidden;
+}
+.nodeMain {
+  flex: 0 1 auto;
   min-width: 0;
   display: flex;
   align-items: center;
   gap: 6px;
 }
 .nodeName {
+  /*
+   * The file name has priority: the note, then the badge, shrink first (their shrink factors are far larger,
+   * so the name loses nothing until they are gone), and a long name elides in its middle.
+   */
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.nodeNote {
+  flex: none;
+  white-space: nowrap;
+  color: var(--fg-subtle);
+}
+/*
+ * Text shortened in JS (see PathText.tsx): the box asks for the full text's width through its hidden
+ * `::after`, the flex rules decide how much it gets, and what is drawn is cut on whole characters. The
+ * folders-before-name priority lives in `fitPath`.
+ */
+.fit {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.fit::after {
+  content: attr(data-full);
+  display: block;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+}
+.nonTextPath {
+  flex: 1 1 auto;
+}
+.nodeRow > .badge {
+  margin-left: auto;
+  /* Whole or wrapped away (see .nodeRow); the note is the first thing to go. */
+  flex: none;
+  white-space: nowrap;
+}
+.nodeRow > .count {
+  margin-left: auto;
 }
 .nodeName[data-action="skip"] {
   color: var(--fg-subtle);
@@ -162,4 +229,35 @@
   flex: 1;
   padding: 12px;
   color: var(--fg-subtle);
+}
+
+.nonText {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 var(--space-2);
+}
+.nonTextList {
+  margin: 0;
+  padding: 4px 8px;
+  list-style: none;
+  max-height: 40vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+}
+.nonTextRow > .note {
+  flex: none;
+  white-space: nowrap;
+}
+.nonTextRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 22px;
+}
+.warn {
+  color: var(--warning);
 }

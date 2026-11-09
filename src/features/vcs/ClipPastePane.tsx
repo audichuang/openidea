@@ -5,6 +5,8 @@ import type { ClipPasteFile, ClipPasteFileContent } from "@/bindings";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { languageFor, viewerBase } from "./cm";
+import { isUnchanged, pasteNonTextLabel, pasteRowTitle, skipReasonText } from "./clipNonText";
+import { PathText } from "./PathText";
 import styles from "./clip.module.css";
 
 const ACTION_HINT: Record<string, string> = {
@@ -23,13 +25,14 @@ export function ClipPastePane({ previewId, file }: { previewId: number; file: Cl
   const action = file?.action;
   const index = file?.index;
   const key = `${previewId}:${action}:${index}`;
+  const nonText = !!file?.nonText;
   // What was read, for the file it was read for: a newer selection ignores an older read.
   const [loaded, setLoaded] = useState<{ key: string; content?: ClipPasteFileContent; error?: string } | null>(null);
   const content = loaded?.key === key ? (loaded.content ?? null) : null;
   const error = loaded?.key === key ? (loaded.error ?? null) : null;
 
   useEffect(() => {
-    if (action === undefined || index === undefined || action === "skip") return;
+    if (action === undefined || index === undefined || action === "skip" || nonText) return;
     let alive = true;
     call(commands.clipPastePreviewFile(previewId, action, index)).then(
       (c) => alive && setLoaded({ key, content: c }),
@@ -38,7 +41,7 @@ export function ClipPastePane({ previewId, file }: { previewId: number; file: Cl
     return () => {
       alive = false;
     };
-  }, [previewId, action, index, key]);
+  }, [previewId, action, index, key, nonText]);
 
   const path = file?.path;
   useEffect(() => {
@@ -72,13 +75,17 @@ export function ClipPastePane({ previewId, file }: { previewId: number; file: Cl
   return (
     <div className={styles.pane}>
       <div className={styles.paneHeader}>
-        <span className={styles.path} title={file.target ?? file.path}>
-          {file.path}
-        </span>
-        {ACTION_HINT[file.action] && <span className={styles.note}>{tx(ACTION_HINT[file.action]!)}</span>}
+        <PathText path={file.path} title={file.target ?? file.path} />
+        {ACTION_HINT[file.action] && !isUnchanged(file) && (
+          <span className={styles.note}>{tx(ACTION_HINT[file.action]!)}</span>
+        )}
       </div>
-      {file.action === "skip" ? (
-        <div className={styles.paneEmpty}>{tx`Skipped: ${reason}`}</div>
+      {nonText ? (
+        <div className={styles.paneEmpty}>{pasteNonTextLabel(file)}</div>
+      ) : file.action === "skip" ? (
+        <div className={styles.paneEmpty}>
+          {reason === "CORRUPT_NON_TEXT" ? pasteRowTitle(file) : tx`Skipped: ${skipReasonText(reason)}`}
+        </div>
       ) : error ? (
         <div className={styles.paneEmpty}>{error}</div>
       ) : content?.note ? (

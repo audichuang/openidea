@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 
 const FIXTURE: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/clipboard-contract.json"));
 
-const EXPECTED_FIXTURE_SHA: &str = "df317eb7b412d4bd71222d71d4cd64a1652fbcac2d82468ec417e4ce95ec2468";
+const EXPECTED_FIXTURE_SHA: &str = "ca6da6eb43d66a7cf2932d9246d09540e0541abdbc4dfd6f155f3fbb25ce3d5f";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -28,6 +28,50 @@ pub struct Fixture {
     pub path_cases: Vec<PathCase>,
     pub restore_layout: RestoreLayout,
     pub restore_cases: Vec<RestoreCase>,
+    pub non_text_build_cases: Vec<NonTextBuildCase>,
+    pub non_text_restore_cases: Vec<NonTextRestoreCase>,
+}
+
+// ---- nonTextBuildCases + nonTextRestoreCases (docs/clipcode/non-text-files.md) ----
+
+/// A files-mode payload with non-text entries; regular build, empty pre/post
+/// text, an extra line between files.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NonTextBuildCase {
+    pub name: String,
+    pub header_format: String,
+    pub files: Vec<NonTextFile>,
+    pub wire: String,
+}
+
+/// A non-text file (`base64`: its raw bytes) or a text file (`content`).
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NonTextFile {
+    pub path: String,
+    #[serde(default)]
+    pub base64: Option<String>,
+    #[serde(default)]
+    pub content: Option<String>,
+}
+
+/// Restore into an empty root: the files written and the entries skipped.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NonTextRestoreCase {
+    pub name: String,
+    pub header_format: String,
+    pub payload: String,
+    pub creates: Vec<NonTextFile>,
+    pub skips: Vec<NonTextSkip>,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NonTextSkip {
+    pub raw_path: String,
+    pub reason: String,
 }
 
 // ---- buildCases ----
@@ -210,6 +254,61 @@ fn fixture_deserializes() {
     assert!(!f.token_cases.is_empty());
     assert!(!f.path_cases.is_empty());
     assert!(!f.restore_cases.is_empty());
+    assert!(!f.non_text_build_cases.is_empty());
+    assert!(!f.non_text_restore_cases.is_empty());
+}
+
+#[test]
+fn non_text_build_cases() {
+    use ide_clip::format::{BuildPayloadOptions, PayloadFile, build_payload};
+    for c in load().non_text_build_cases {
+        let files = c
+            .files
+            .into_iter()
+            .map(|f| PayloadFile {
+                path: f.path,
+                content: f.content,
+                non_text: f.base64.map(|b| base64_decode(&b)),
+                ..Default::default()
+            })
+            .collect();
+        let options = BuildPayloadOptions {
+            header_format: c.header_format,
+            add_extra_line_between_files: true,
+            files,
+            ..Default::default()
+        };
+        assert_eq!(build_payload(&options), c.wire, "non-text build: {}", c.name);
+    }
+}
+
+#[test]
+fn non_text_restore_cases() {
+    use ide_clip::format::parse_clipboard;
+    use ide_clip::restore::plan_restore;
+    for c in load().non_text_restore_cases {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let plan = plan_restore(&[&root], &parse_clipboard(&c.payload, &c.header_format));
+        let creates: Vec<NonTextFile> = plan
+            .create_operations
+            .iter()
+            .map(|op| match &op.non_text {
+                Some(n) => NonTextFile {
+                    path: op.relative_path.clone(),
+                    base64: Some(ide_clip::nontext::encode(&n.bytes)),
+                    content: None,
+                },
+                None => NonTextFile { path: op.relative_path.clone(), base64: None, content: Some(op.content.clone()) },
+            })
+            .collect();
+        let skips: Vec<NonTextSkip> = plan
+            .skipped_operations
+            .iter()
+            .map(|op| NonTextSkip { raw_path: op.raw_path.clone(), reason: op.reason.as_str().to_string() })
+            .collect();
+        assert_eq!((creates, skips), (c.creates, c.skips), "non-text restore: {}", c.name);
+    }
 }
 
 #[test]
@@ -231,6 +330,7 @@ fn build_cases() {
                     content: f.content,
                     skipped_reason: f.skipped_reason,
                     change_type: f.change_type.map(|t| ChangeType::from_label(&t).expect("known label")),
+                    non_text: None,
                 })
                 .collect(),
         };

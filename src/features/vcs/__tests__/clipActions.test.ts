@@ -42,7 +42,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 import { executeAction } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { menuGroupItems } from "@/workbench/contributions";
-import { registerClipActions } from "../clip";
+import { copyClip, registerClipActions } from "../clip";
 import { useVcs } from "../store";
 
 describe("ClipCode: Copy to Clipboard without an argument", () => {
@@ -59,6 +59,10 @@ describe("ClipCode: Copy to Clipboard without an argument", () => {
       words: 1,
       tokens: 1,
       notify: false,
+      nonText: { count: 0, files: [], overLimitCount: 0, exceedsPayloadCap: false },
+      skippedUnreadablePaths: [],
+      skippedUnportablePaths: [],
+      skippedSymlinkDirPaths: [],
     });
     unregister = registerClipActions();
   });
@@ -152,6 +156,10 @@ describe("ClipCode: Copy to Clipboard from a non-filesystem editor", () => {
       words: 1,
       tokens: 1,
       notify: false,
+      nonText: { count: 0, files: [], overLimitCount: 0, exceedsPayloadCap: false },
+      skippedUnreadablePaths: [],
+      skippedUnportablePaths: [],
+      skippedSymlinkDirPaths: [],
     });
     unregister = registerClipActions();
   });
@@ -171,5 +179,34 @@ describe("ClipCode: Copy to Clipboard from a non-filesystem editor", () => {
     await executeAction("clip.copyOpenTabs");
     expect(call).toHaveBeenCalledWith({ source: { kind: "files", paths: ["/p/a.txt"] } });
     openPaths = [];
+  });
+});
+
+describe("ClipCode: Copy to Clipboard with unreadable entries", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("counts and names the unreadable paths in the notice", async () => {
+    call.mockResolvedValue({
+      text: "x",
+      mode: "files",
+      files: 1,
+      chars: 1,
+      lines: 1,
+      words: 1,
+      tokens: 1,
+      notify: true,
+      skippedUnreadable: 3,
+      nonText: { count: 0, files: [], overLimitCount: 0, exceedsPayloadCap: false },
+      skippedUnreadablePaths: ["mix/dangling", "mix/locked.txt", "mix/locked_dir"],
+      skippedUnportablePaths: [],
+      skippedSymlinkDirPaths: [],
+    });
+    await expect(copyClip({ kind: "files", paths: ["/p/mix"] })).resolves.toBe(true);
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: expect.stringContaining("Skipped (non-text file or unreadable): 3."),
+        body: expect.stringContaining("Unreadable: mix/dangling, mix/locked.txt, mix/locked_dir"),
+      }),
+    );
   });
 });

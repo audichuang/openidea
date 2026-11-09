@@ -210,8 +210,11 @@ export const commands = {
 	 *  definition). Prefers the unsaved buffer when the file is open.
 	 */
 	fsReadText: (path: string) => typedError<string, IdeError>(__TAURI_INVOKE("fs_read_text", { path })),
-	/**  The clipboard text for `source` (file or commit payload); the UI writes it. */
-	clipCopy: (source: ClipCopySource) => typedError<ClipCopyResult, IdeError>(__TAURI_INVOKE("clip_copy", { source })),
+	/**
+	 *  The clipboard text for `source` (file or commit payload); the UI writes it. `non_text`
+	 *  `Exclude` still reports the non-text files found, for the dialog that asks before `Include`.
+	 */
+	clipCopy: (source: ClipCopySource, nonText: ClipNonTextMode) => typedError<ClipCopyResult, IdeError>(__TAURI_INVOKE("clip_copy", { source, nonText })),
 	/**
 	 *  Plans pasting `text`: files restore under `dest` (default: the project root),
 	 *  commits replay into `repo` (the selected repository; default: `dest`'s). Nothing
@@ -2382,6 +2385,8 @@ export type ClipCodeSettings = {
 	fileCountLimit?: number,
 	/**  Larger files are copied as a "size exceeds limit" placeholder. */
 	maxFileSizeKB?: number,
+	/**  Non-text files (images, archives, Big5 or UTF-16 text) larger than this are not copied. */
+	maxNonTextFileSizeKB?: number,
 	showCopyNotification?: boolean,
 	useFilters?: boolean,
 	useIncludeFilters?: boolean,
@@ -2416,6 +2421,26 @@ export type ClipCopyResult = {
 	fileLimit: number,
 	/**  Settings › ClipCode › "Show notification after copying". */
 	notify: boolean,
+	/**  Non-text files found (see [`ClipNonTextSummary`]). */
+	nonText: ClipNonTextSummary,
+	/**  Of `files`: non-text files carried as Base64 (`Include` only). */
+	nonTextCopied: number,
+	/**
+	 *  The first 10 files counted in `skippedUnreadable` that were unreadable, by payload path
+	 *  (files mode; commits mode names none).
+	 */
+	skippedUnreadablePaths: string[],
+	/**
+	 *  Of `skipped`: files whose name the payload cannot carry portably (a backslash, a double quote, a tab
+	 *  or another refused character), not unreadable ones.
+	 */
+	skippedUnportable: number,
+	/**  The first 10 of them by their real names (files mode). */
+	skippedUnportablePaths: string[],
+	/**  Of `skipped`: symlinks to a folder inside a copied folder, which are not followed. */
+	skippedSymlinkDirs: number,
+	/**  The first 10 of them (files mode). */
+	skippedSymlinkDirPaths: string[],
 };
 
 /**
@@ -2459,6 +2484,58 @@ export type ClipFilterRule = {
 	enabled?: boolean,
 };
 
+export type ClipNonTextFile = {
+	/**  The path as the payload spells it. */
+	path: string,
+	/**  Raw bytes. */
+	size: number | null,
+};
+
+/**
+ *  Whether a copy carries non-text files as Base64 (`docs/clipcode/non-text-files.md`).
+ *  A copy that finds some reports them in [`ClipCopyResult::non_text`]; the UI asks, then
+ *  copies again with `Include`. Never stored.
+ */
+export type ClipNonTextMode = 
+/**  Today's payload: non-text files are left out. */
+"exclude" | "include";
+
+/**  What the copy dialog shows. Under `Exclude` it is what `Include` would add. */
+export type ClipNonTextSummary = {
+	/**  Non-text files within the non-text limit. */
+	count: number,
+	/**  Σ raw size of those files. */
+	totalBytes: number | null,
+	/**  The payload size with them included. */
+	estimatedIncludeBytes: number | null,
+	/**  The first 10, in payload order. */
+	files: ClipNonTextFile[],
+	/**  Non-text files over the non-text limit: not copied either way. */
+	overLimitCount: number,
+	/**  Files over both per-file limits: never read, copied as size placeholders. */
+	unreadOverLimitCount: number,
+	/**  The larger per-file limit in bytes, which those files exceed. */
+	unreadLimitBytes: number | null,
+	/**  The estimate is over the whole-payload limit: `Include` would fail. */
+	exceedsPayloadCap: boolean,
+	/**  Files the file-count limit leaves out of what `Include` copies. */
+	limitLeftOut: number,
+	/**  `limit_left_out` is a lower bound (a folder walk stopped at the limit). */
+	limitLeftOutAtLeast: boolean,
+	/**  The `headerFormat` cannot be escaped: `Include` would write Base64 lines that read as file headers. */
+	headerCannotBeEscaped: boolean,
+};
+
+/**  A replayed commit that was not created because every file change of it was refused or skipped. */
+export type ClipNotCreated = {
+	/**  1-based position among the replayed commits. */
+	number: number,
+	/**  The commit message's first line. */
+	subject: string,
+	/**  A skip reason code, as in the preview rows (`NON_UTF8_TARGET`, ...). */
+	reason: string,
+};
+
 export type ClipPasteApply = {
 	id: number,
 	/**  Creates (by index) whose target exists and may be overwritten. */
@@ -2482,6 +2559,8 @@ export type ClipPasteFile = {
 	action: string,
 	/**  Why it is skipped (`skip` only). */
 	reason: string | null,
+	/**  A non-text file (`create` / `overwrite`): shown as "non-text file · size", never as text. */
+	nonText: ClipPasteNonText | null,
 };
 
 /**
@@ -2495,6 +2574,19 @@ export type ClipPasteFileContent = {
 	current: string | null,
 	/**  Why `current` is missing although the file exists: binary, too large, unreadable. */
 	note: string | null,
+	/**
+	 *  Set for a non-text entry: the pane shows "non-text file · size" and whether the target is
+	 *  identical, with no content and no diff (`incoming` and `current` stay empty).
+	 */
+	nonText: ClipPasteNonText | null,
+};
+
+/**  A non-text entry of a paste preview. Its Base64 is never exposed. */
+export type ClipPasteNonText = {
+	/**  Raw bytes the paste writes. */
+	size: number | null,
+	/**  The target exists and already holds exactly these bytes: left unchanged, no overwrite needed. */
+	identical: boolean,
 };
 
 export type ClipPastePreview = {
@@ -2519,6 +2611,15 @@ export type ClipPasteResult = {
 	/**  Commit ids the replay created, oldest first. */
 	commits: string[],
 	errors: string[],
+	/**  Commits the replay did not create, each with its reason as a code the UI words (never English text). */
+	notCreated: ClipNotCreated[],
+	/**  Non-text targets that already held the pasted bytes: not written. */
+	unchanged: number,
+	/**
+	 *  Non-text entries skipped because their Base64, size or SHA-256 did not verify (counted in
+	 *  `skipped`), by payload path.
+	 */
+	corruptNonText: string[],
 };
 
 export type ClipReplayCommit = {
@@ -2542,6 +2643,8 @@ export type ClipReplayFile = {
 	/**  The write replaces a file that exists in the destination. */
 	overwrites: boolean,
 	reason: string | null,
+	/**  Raw size of a non-text file this row writes (shown as "non-text file", never as a diff). */
+	nonTextSize: number | null,
 };
 
 /**  An image read from the clipboard, encoded as `mime`. */

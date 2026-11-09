@@ -32,6 +32,19 @@ import { commitsArg } from "./historyActions";
 import { saveAll } from "./ops";
 import { refreshNow, useVcs } from "./store";
 import { ClipPastePane } from "./ClipPastePane";
+import {
+  askNonText,
+  errorLineText,
+  isCorruptRow,
+  isUnchanged,
+  pasteRowNote,
+  pasteRowTitle,
+  replayFileNote,
+  resolveNonText,
+  skipReasonText,
+  visibleName,
+} from "./clipNonText";
+import { NameText, PathText } from "./PathText";
 import { buildPasteTree, fileKey, filesUnder, rowKey, type PasteNode } from "./clipPasteTree";
 import styles from "./clip.module.css";
 
@@ -42,14 +55,14 @@ const grouped = (n: number) => n.toLocaleString("en-US");
  * clipboard's chars · lines · words · ~tokens; a warning from 1,000,000 tokens and an
  * error from 2,000,000 (pasting that much into a chat model fails).
  */
-function notifyCopied(r: ClipCopyResult) {
+function notifyCopied(r: ClipCopyResult, included = false) {
   const parts: string[] = [];
   if (r.mode === "commits") {
     const { commits, files } = r;
     parts.push(tx`${commits} commits copied (${files} files).`);
     if (r.skipped) {
       const skipped = r.skipped;
-      parts.push(tx`${skipped} files not copied (binary, not UTF-8 or a symlink).`);
+      parts.push(tx`Not copied (non-text files, not UTF-8 or a symlink): ${skipped}.`);
     }
   } else {
     const files = r.files;
@@ -59,11 +72,30 @@ function notifyCopied(r: ClipCopyResult) {
     } else parts.push(tx`${files} files copied.`);
     if (r.truncated) {
       const limit = r.fileLimit;
-      parts.push(tx`File limit ${limit} reached.`);
+      // The count describes what Include copies, so it only fits a result nobody was asked about or one
+      // that included the non-text files.
+      const leftOut = r.nonText.count === 0 || included ? r.nonText.limitLeftOut : 0;
+      if (leftOut > 0) {
+        const more = r.nonText.limitLeftOutAtLeast ? `${leftOut}+` : String(leftOut);
+        parts.push(tx`File limit ${limit} reached, files left out: ${more}.`);
+      } else parts.push(tx`File limit ${limit} reached.`);
+    }
+    if (r.nonTextCopied) {
+      const carried = r.nonTextCopied;
+      parts.push(tx`Non-text files copied as Base64: ${carried}.`);
     }
     if (r.skippedUnreadable) {
       const skipped = r.skippedUnreadable;
-      parts.push(tx`${skipped} skipped: not UTF-8 text or unreadable.`);
+      // After Include no non-text file was left out for being non-text, so only unreadable ones remain.
+      parts.push(included ? tx`Unreadable: ${skipped}.` : tx`Skipped (non-text file or unreadable): ${skipped}.`);
+    }
+    if (r.skippedUnportable) {
+      const skipped = r.skippedUnportable;
+      parts.push(tx`Name not portable: ${skipped}.`);
+    }
+    if (r.skippedSymlinkDirs) {
+      const skipped = r.skippedSymlinkDirs;
+      parts.push(tx`Symlinked folder not followed: ${skipped}.`);
     }
   }
   const [chars, lines, words, tokens] = [r.chars, r.lines, r.words, r.tokens].map(grouped);
@@ -71,15 +103,34 @@ function notifyCopied(r: ClipCopyResult) {
   const level = r.tokens >= 2_000_000 ? "error" : r.tokens >= 1_000_000 ? "warning" : "info";
   if (level === "error") body += ` ${tx("Over 2,000,000 tokens.")}`;
   else if (level === "warning") body += ` ${tx("Over 1,000,000 tokens.")}`;
+  if (r.mode !== "commits") body += namedSkips(r);
   if (!r.notify && level === "info") return;
   notifications().notify({ group: "clipcode", level, title: parts.join(" "), body });
 }
 
+/** One line per refused category, naming the first few paths (files mode). */
+function namedSkips(r: ClipCopyResult): string {
+  let out = "";
+  const lists: [string[], (names: string) => string][] = [
+    [r.skippedUnreadablePaths, (names) => tx`Unreadable: ${names}`],
+    [r.skippedUnportablePaths, (names) => tx`Name not portable: ${names}`],
+    [r.skippedSymlinkDirPaths, (names) => tx`Symlinked folder: ${names}`],
+  ];
+  for (const [paths, line] of lists) {
+    if (!paths.length) continue;
+    const shown = paths.slice(0, 3);
+    const rest = paths.length - shown.length;
+    out += `\n${line(shown.map(visibleName).join(", "))}`;
+    if (rest > 0) out += ` ${tx`and ${rest} more`}`;
+  }
+  return out;
+}
+
 /** Builds the payload for `source` and puts it on the clipboard, reporting what was copied. */
 export async function copyClip(source: ClipCopySource): Promise<boolean> {
-  let result;
+  let result: ClipCopyResult;
   try {
-    result = await call(commands.clipCopy(source));
+    result = await call(commands.clipCopy(source, "exclude"));
   } catch (e) {
     // A commit with no net file changes is not a failure (IntelliJ: information, clipboard untouched).
     if (e instanceof IpcError && e.data?.type === "noNetChanges") {
@@ -89,8 +140,31 @@ export async function copyClip(source: ClipCopySource): Promise<boolean> {
     notifications().notify({ group: "clipcode", level: "warning", title: "ClipCode copy failed", body: String(e) });
     return false;
   }
+  const first = result;
+  const chosen = await resolveNonText(result, askNonText, async () => {
+    try {
+      return await call(commands.clipCopy(source, "include"));
+    } catch (e) {
+      notifications().notify({ group: "clipcode", level: "warning", title: "ClipCode copy failed", body: String(e) });
+      return null;
+    }
+  });
+  if (!chosen) return false;
+  result = chosen;
+  // A files copy that kept no file is Nothing to copy, even when a size placeholder fills the text.
+  if (result.files === 0 && (result.mode === "files" || result.text === "")) {
+    // Not a failure: name what was refused (a symlinked folder, a non-portable name) so the user sees why.
+    const named = namedSkips(result).trim();
+    notifications().notify({
+      group: "clipcode",
+      level: "warning",
+      title: "Nothing to copy",
+      body: named || undefined,
+    });
+    return false;
+  }
   await copyText(result.text);
-  notifyCopied(result);
+  notifyCopied(result, result !== first);
   return true;
 }
 
@@ -186,16 +260,32 @@ async function loadPreview(text: string, target: PasteTarget, adjust: boolean): 
   }
 }
 
-function reportPaste(r: ClipPasteResult, commits: boolean) {
+export function reportPaste(r: ClipPasteResult, commits: boolean) {
   const created = r.commits.length;
   const title = commits
     ? tx`${created} commits created`
     : tx`Restored: ${r.created} created, ${r.overwritten} overwritten, ${r.deleted} deleted, ${r.skipped} skipped`;
+  const lines = [
+    ...r.notCreated.map((c) => {
+      const [number, subject, reason] = [c.number, c.subject, skipReasonText(c.reason)];
+      return tx`Commit ${number} (${subject}) not created: ${reason}`;
+    }),
+    ...r.errors.map(errorLineText),
+  ];
+  if (r.unchanged) {
+    const unchanged = r.unchanged;
+    lines.push(tx`Non-text files already identical, left unchanged: ${unchanged}.`);
+  }
+  if (r.corruptNonText.length) {
+    const shown = r.corruptNonText.slice(0, 3).join(", ");
+    const count = r.corruptNonText.length;
+    lines.push(tx`Corrupt non-text files skipped (${count}): ${shown}`);
+  }
   notifications().notify({
     group: "clipcode",
-    level: r.errors.length ? "warning" : "info",
+    level: r.errors.length || r.notCreated.length || r.corruptNonText.length ? "warning" : "info",
     title,
-    body: r.errors.length ? r.errors.join("\n") : undefined,
+    body: lines.length ? lines.join("\n") : undefined,
   });
 }
 
@@ -240,6 +330,9 @@ function CheckMark({
   );
 }
 
+/** Rows on until chosen otherwise: new files, deletions and unchanged targets (never overwrites). */
+const defaultChecked = (f: ClipPasteFile) => f.action === "create" || f.action === "delete" || isUnchanged(f);
+
 /** Folders open, and the first file to restore selected, so the pane shows something at once. */
 function initialSelection(files: readonly ClipPasteFile[]): string | null {
   const first = files.find((f) => f.action !== "skip") ?? files[0];
@@ -264,12 +357,7 @@ export function PastePreviewDialog({
   const [preview, setPreview] = useState(initial);
   // Overwrites are off until chosen, as in ClipCode; new files and deletions are on.
   const [checked, setChecked] = useState<Set<string>>(
-    () =>
-      new Set(
-        initial.files
-          .filter((f) => f.action === "create" || f.action === "delete")
-          .map((f) => rowKey(f.action, f.index)),
-      ),
+    () => new Set(initial.files.filter(defaultChecked).map((f) => rowKey(f.action, f.index))),
   );
   const [allowOverwrite, setAllowOverwrite] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -288,7 +376,10 @@ export function PastePreviewDialog({
       return next;
     });
   const commits = preview.mode === "commits";
-  const overwriteKeys = preview.files.filter((f) => f.action === "overwrite").map((f) => rowKey(f.action, f.index));
+  // An identical non-text target is left untouched: it is no overwrite and needs no permission.
+  const overwriteKeys = preview.files
+    .filter((f) => f.action === "overwrite" && !isUnchanged(f))
+    .map((f) => rowKey(f.action, f.index));
   const overwriteCount = overwriteKeys.length;
   const existing = preview.commits.reduce((n, c) => n + c.files.filter((f) => f.overwrites).length, 0);
 
@@ -297,11 +388,7 @@ export function PastePreviewDialog({
     if (!next) return;
     setPreview(next);
     setSelectedKey(initialSelection(next.files));
-    setChecked(
-      new Set(
-        next.files.filter((f) => f.action === "create" || f.action === "delete").map((f) => rowKey(f.action, f.index)),
-      ),
-    );
+    setChecked(new Set(next.files.filter(defaultChecked).map((f) => rowKey(f.action, f.index))));
   };
 
   const apply = async () => {
@@ -404,12 +491,18 @@ export function PastePreviewDialog({
                 </div>
                 {c.files.map((f, j) => (
                   <div key={j} className={styles.file}>
-                    <span className={styles.badge} data-change={f.change}>
-                      {f.change}
-                    </span>
-                    <span className={styles.path}>{f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}</span>
+                    {f.reason === "CORRUPT_NON_TEXT" ? (
+                      <span className={styles.badge} data-action="corrupt" title={tx("Corrupt non-text file")}>
+                        {tx("Corrupt")}
+                      </span>
+                    ) : (
+                      <span className={styles.badge} data-change={f.change}>
+                        {f.change}
+                      </span>
+                    )}
+                    <PathText path={f.oldPath ? `${f.oldPath} → ${f.path}` : f.path} />
                     {f.overwrites && <span className={styles.note}>{tx("overwrites")}</span>}
-                    {f.reason && <span className={styles.note}>{f.reason}</span>}
+                    {replayFileNote(f) && <span className={styles.note}>{replayFileNote(f)}</span>}
                   </div>
                 ))}
               </div>
@@ -436,22 +529,48 @@ export function PastePreviewDialog({
                   const on = keys.filter((k) => checked.has(k)).length;
                   return (
                     <span className={styles.nodeRow}>
-                      <CheckMark
-                        checked={keys.length > 0 && on === keys.length}
-                        indeterminate={on > 0 && on < keys.length}
-                        disabled={keys.length === 0}
-                        label={n.file ? tx`Restore ${n.file.path}` : tx`Restore the files in ${n.name}`}
-                        onToggle={() => toggleFiles(files)}
-                      />
-                      <span className={styles.nodeName} data-action={n.file?.action} title={n.file?.path}>
-                        {n.name}
+                      <span className={styles.nodeMain}>
+                        <CheckMark
+                          checked={keys.length > 0 && on === keys.length}
+                          indeterminate={on > 0 && on < keys.length}
+                          disabled={keys.length === 0}
+                          label={n.file ? tx`Restore ${n.file.path}` : tx`Restore the files in ${n.name}`}
+                          onToggle={() => toggleFiles(files)}
+                        />
+                        <span
+                          className={styles.nodeName}
+                          data-action={n.file?.action}
+                          title={
+                            n.file && isCorruptRow(n.file) ? `${n.file.path}\n${pasteRowTitle(n.file)}` : n.file?.path
+                          }
+                        >
+                          <NameText name={n.name} />
+                        </span>
                       </span>
                       {n.file ? (
-                        <span className={styles.badge} data-action={n.file.action}>
-                          {tx(ACTION_LABEL[n.file.action] ?? n.file.action)}
-                        </span>
+                        isCorruptRow(n.file) ? (
+                          <span
+                            className={styles.badge}
+                            data-action="corrupt"
+                            title={pasteRowTitle(n.file) ?? undefined}
+                          >
+                            {tx("Corrupt")}
+                          </span>
+                        ) : (
+                          <span
+                            className={styles.badge}
+                            data-action={isUnchanged(n.file) ? "unchanged" : n.file.action}
+                          >
+                            {tx(isUnchanged(n.file) ? "Unchanged" : (ACTION_LABEL[n.file.action] ?? n.file.action))}
+                          </span>
+                        )
                       ) : (
                         <span className={styles.count}>{files.length}</span>
+                      )}
+                      {n.file && pasteRowNote(n.file) && (
+                        <span className={styles.nodeNote} title={pasteRowTitle(n.file) ?? undefined}>
+                          {pasteRowNote(n.file)}
+                        </span>
                       )}
                     </span>
                   );

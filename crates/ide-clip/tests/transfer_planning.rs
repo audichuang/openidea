@@ -918,8 +918,20 @@ fn test_outsidepath_and_traversal_rejected_before_io() {
 // 16. Duplicate mapped destination target rejected before write
 // ---------------------------------------------------------------------------
 
+/// Relative paths of the rows skipped because several entries map to the same file.
+fn collision_rows(plan: &ide_clip::transfer::TransferImportPlan) -> Vec<String> {
+    let mut rows: Vec<String> = plan
+        .skipped_operations()
+        .iter()
+        .filter(|s| s.reason == SkipReason::TargetCollision)
+        .map(|s| s.relative_path.clone().unwrap())
+        .collect();
+    rows.sort();
+    rows
+}
+
 #[test]
-fn test_duplicate_mapped_destination_target_rejected() {
+fn test_duplicate_mapped_destination_target_skips_every_colliding_row() {
     let dst = TestRepo::new("collision-target");
 
     let clipboard_text = "\
@@ -927,28 +939,23 @@ fn test_duplicate_mapped_destination_target_rejected() {
 content 1
 // file: item2.txt
 content 2
+// file: other.txt
+other
 ";
 
     // Both item1 and item2 explicitly map to the SAME destination path "target.txt"
-    let mut mapping = ImportMapping::new();
+    let mut mapping = ImportMapping::with_primary(dst.canonical_id());
     mapping.map_entry("item1.txt", dst.canonical_id(), Some("target.txt".to_string()));
     mapping.map_entry("item2.txt", dst.canonical_id(), Some("target.txt".to_string()));
 
-    let err = plan_import(clipboard_text, "// file: $FILE_PATH", &[dst.path().to_path_buf()], &mapping).unwrap_err();
-
-    match &err {
-        TransferError::TargetCollision { path, msg } => {
-            assert_eq!(path, &dst.canonical_id().path().join("target.txt"));
-            assert_eq!(msg, "previous was 'create target.txt', current is 'create target.txt'");
-            let full = err.to_string();
-            assert_eq!(full.matches(&path.display().to_string()).count(), 1, "path should appear once, got: {full}");
-            assert!(!full.contains("identity"), "identity should not appear, got: {full}");
-            assert!(full.contains("previous was 'create target.txt'"));
-            assert!(full.contains("current is 'create target.txt'"));
-        }
-        other => panic!("expected TargetCollision, got {other:?}"),
-    }
+    let plan = plan_import(clipboard_text, "// file: $FILE_PATH", &[dst.path().to_path_buf()], &mapping).unwrap();
+    // The paste is not aborted: both colliding rows are skipped, the other entry stays.
+    assert_eq!(collision_rows(&plan), ["target.txt", "target.txt"]);
+    let created: Vec<_> = plan.create_operations().iter().map(|o| o.relative_path.as_str()).collect();
+    assert_eq!(created, ["other.txt"]);
+    plan.apply(&RestoreSelection::default()).unwrap();
     assert!(!dst.canonical_id().path().join("target.txt").exists());
+    assert!(dst.canonical_id().path().join("other.txt").exists());
 
     #[cfg(unix)]
     {
@@ -956,32 +963,14 @@ content 2
         let symlink_root = symlink_dir.path().join("symlink_collision_dst");
         std::os::unix::fs::symlink(dst.path(), &symlink_root).unwrap();
 
-        // Even when destination root is spelled through a symlink alias,
-        // plan_import canonicalizes it, rejects duplicate target, and reports the canonical target.
-        let err_symlink = plan_import(clipboard_text, "// file: $FILE_PATH", &[symlink_root], &mapping).unwrap_err();
-
-        match &err_symlink {
-            TransferError::TargetCollision { path, msg } => {
-                assert_eq!(path, &dst.canonical_id().path().join("target.txt"));
-                assert_eq!(msg, "previous was 'create target.txt', current is 'create target.txt'");
-                let full = err_symlink.to_string();
-                assert_eq!(
-                    full.matches(&path.display().to_string()).count(),
-                    1,
-                    "path should appear once, got: {full}"
-                );
-                assert!(!full.contains("identity"), "identity should not appear, got: {full}");
-                assert!(full.contains("previous was 'create target.txt'"));
-                assert!(full.contains("current is 'create target.txt'"));
-            }
-            other => panic!("expected TargetCollision, got {other:?}"),
-        }
-        assert!(!dst.canonical_id().path().join("target.txt").exists());
+        // Even when the destination root is spelled through a symlink alias, the collision is found.
+        let plan = plan_import(clipboard_text, "// file: $FILE_PATH", &[symlink_root], &mapping).unwrap();
+        assert_eq!(collision_rows(&plan), ["target.txt", "target.txt"]);
     }
 }
 
 #[test]
-fn test_paste_destination_not_regular_refuses_overwrite() {
+fn test_paste_destination_not_regular_skips_only_that_row() {
     let dst = TestRepo::new("destination-not-regular");
     let build_dir = dst.path().join("build");
     fs::create_dir_all(&build_dir).unwrap();
@@ -989,19 +978,65 @@ fn test_paste_destination_not_regular_refuses_overwrite() {
     let clipboard_text = "\
 // file: build
 content
+// file: ok.txt
+fine
 ";
     let mapping = ImportMapping::with_primary(dst.canonical_id());
-    let err = plan_import(clipboard_text, "// file: $FILE_PATH", &[dst.path().to_path_buf()], &mapping).unwrap_err();
+    let plan = plan_import(clipboard_text, "// file: $FILE_PATH", &[dst.path().to_path_buf()], &mapping).unwrap();
+    let created: Vec<_> = plan.create_operations().iter().map(|o| o.relative_path.as_str()).collect();
+    assert_eq!(created, ["ok.txt"]);
+    let skipped = &plan.restore_plan().skipped_operations;
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(skipped[0].relative_path.as_deref(), Some("build"));
+    assert_eq!(skipped[0].reason.as_str(), "TARGET_NOT_FILE");
+    plan.apply(&RestoreSelection::default()).unwrap();
+    assert!(build_dir.is_dir());
+    assert_eq!(fs::read_to_string(dst.path().join("ok.txt")).unwrap().trim_end(), "fine");
+}
 
-    let msg = err.paste_message();
-    assert!(
-        msg.contains("refuses to overwrite"),
-        "expected paste message to contain 'refuses to overwrite', got: {msg}"
+/// A payload whose entries sit under `d3/a`, which is a file in the destination, plus `d3/ok.txt`.
+fn parent_is_file_payload() -> String {
+    // Non-text placeholder for the bytes [0, 1, 2].
+    use sha2::{Digest, Sha256};
+    let bytes = [0u8, 1, 2];
+    let hash: String = Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect();
+    let png = format!("// File skipped: non-text file, 3 bytes, sha256 {hash}; base64 follows\nAAEC\n");
+    format!(
+        "// file: d3/a/deep.png\n{png}// file: d3/a/b/deep.png\n{png}// file: d3/a/text.txt\nhello\n// file: d3/ok.txt\nfine\n"
+    )
+}
+
+#[test]
+fn test_paste_parent_path_is_a_file_skips_only_those_rows() {
+    let dst = TestRepo::new("parent-is-file");
+    fs::create_dir_all(dst.path().join("d3")).unwrap();
+    fs::write(dst.path().join("d3/a"), "i am a file").unwrap();
+
+    let mapping = ImportMapping::with_primary(dst.canonical_id());
+    let plan =
+        plan_import(&parent_is_file_payload(), "// file: $FILE_PATH", &[dst.path().to_path_buf()], &mapping).unwrap();
+    let created: Vec<_> = plan.create_operations().iter().map(|o| o.relative_path.as_str()).collect();
+    assert_eq!(created, ["d3/ok.txt"]);
+    let mut skipped: Vec<_> = plan
+        .restore_plan()
+        .skipped_operations
+        .iter()
+        .map(|s| (s.relative_path.clone().unwrap_or_default(), s.reason.as_str()))
+        .collect();
+    skipped.sort();
+    assert_eq!(
+        skipped,
+        [
+            ("d3/a/b/deep.png".to_string(), "PARENT_NOT_FOLDER"),
+            ("d3/a/deep.png".to_string(), "PARENT_NOT_FOLDER"),
+            ("d3/a/text.txt".to_string(), "PARENT_NOT_FOLDER"),
+        ]
     );
-    assert!(!msg.contains("exported"), "expected paste message not to contain 'exported', got: {msg}");
-    let disp = err.to_string();
-    assert!(disp.contains("refuses to overwrite"), "expected display to contain 'refuses to overwrite', got: {disp}");
-    assert!(!disp.contains("exported"), "expected display not to contain 'exported', got: {disp}");
+    let result = plan.apply(&RestoreSelection::default()).unwrap();
+    assert_eq!(result.created_count, 1);
+    assert_eq!(result.planned_skipped_count, 3);
+    assert_eq!(fs::read_to_string(dst.path().join("d3/a")).unwrap(), "i am a file");
+    assert_eq!(fs::read_to_string(dst.path().join("d3/ok.txt")).unwrap().trim_end(), "fine");
 }
 
 #[test]
@@ -1398,18 +1433,17 @@ fn test_d10_case_collision_new_targets() {
     let mapping = ImportMapping::with_primary(repo.canonical_id());
 
     // [NEW] B.txt + [NEW] b.txt
-    let payload_bb = "// file: B.txt\ncontent B\n// file: b.txt\ncontent b\n";
-    let res_bb = plan_import(payload_bb, "// file: $FILE_PATH", &[repo.path().to_path_buf()], &mapping);
+    let payload_bb = "// file: B.txt\ncontent B\n// file: b.txt\ncontent b\n// file: ok.txt\nfine\n";
+    let plan = plan_import(payload_bb, "// file: $FILE_PATH", &[repo.path().to_path_buf()], &mapping).unwrap();
     if is_ci {
-        assert!(
-            matches!(res_bb, Err(TransferError::TargetCollision { .. })),
-            "expected TargetCollision on case-insensitive FS, got {res_bb:?}"
-        );
-        assert!(!repo.path().join("B.txt").exists());
-        assert!(!repo.path().join("b.txt").exists());
+        assert_eq!(collision_rows(&plan), ["B.txt", "b.txt"]);
+        assert_eq!(plan.create_operations().len(), 1);
+        plan.apply(&RestoreSelection { overwrite_existing: true, ..RestoreSelection::default() }).unwrap();
+        assert!(repo.path().join("ok.txt").exists());
+        assert!(!repo.path().join("B.txt").exists() && !repo.path().join("b.txt").exists());
     } else {
-        let plan = res_bb.unwrap();
-        assert_eq!(plan.create_operations().len(), 2);
+        assert!(collision_rows(&plan).is_empty());
+        assert_eq!(plan.create_operations().len(), 3);
         let _ = plan.apply(&RestoreSelection { overwrite_existing: true, ..RestoreSelection::default() }).unwrap();
         assert!(repo.path().join("B.txt").exists());
         assert!(repo.path().join("b.txt").exists());
@@ -1419,15 +1453,12 @@ fn test_d10_case_collision_new_targets() {
     let repo2 = TestRepo::new("d10-collision-dir");
     let mapping2 = ImportMapping::with_primary(repo2.canonical_id());
     let payload_dx = "// file: D/x.txt\ncontent 1\n// file: d/x.txt\ncontent 2\n";
-    let res_dx = plan_import(payload_dx, "// file: $FILE_PATH", &[repo2.path().to_path_buf()], &mapping2);
+    let plan_dx = plan_import(payload_dx, "// file: $FILE_PATH", &[repo2.path().to_path_buf()], &mapping2).unwrap();
     if is_ci {
-        assert!(
-            matches!(res_dx, Err(TransferError::TargetCollision { .. })),
-            "expected TargetCollision on case-insensitive FS, got {res_dx:?}"
-        );
+        // The directories collide, not the files: the whole payload has nowhere to go.
+        assert_eq!(plan_dx.create_operations().len() + collision_rows(&plan_dx).len(), 2);
     } else {
-        let plan = res_dx.unwrap();
-        assert_eq!(plan.create_operations().len(), 2);
+        assert_eq!(plan_dx.create_operations().len(), 2);
     }
 
     // [NEW] A.txt + [DELETED] a.txt (a.txt exists)
@@ -1435,16 +1466,15 @@ fn test_d10_case_collision_new_targets() {
     repo3.write("a.txt", "existing a\n");
     let mapping3 = ImportMapping::with_primary(repo3.canonical_id());
     let payload_ad = "// file: A.txt\nnew A content\n// file: [DELETED] a.txt\n";
-    let res_ad = plan_import(payload_ad, "// file: $FILE_PATH", &[repo3.path().to_path_buf()], &mapping3);
+    let plan_ad = plan_import(payload_ad, "// file: $FILE_PATH", &[repo3.path().to_path_buf()], &mapping3).unwrap();
     if is_ci {
-        assert!(
-            matches!(res_ad, Err(TransferError::TargetCollision { .. })),
-            "expected TargetCollision on case-insensitive FS, got {res_ad:?}"
-        );
+        assert_eq!(collision_rows(&plan_ad).len(), 2);
+        assert!(plan_ad.create_operations().is_empty() && plan_ad.delete_operations().is_empty());
+        plan_ad.apply(&RestoreSelection { overwrite_existing: true, ..RestoreSelection::default() }).unwrap();
+        assert_eq!(fs::read_to_string(repo3.path().join("a.txt")).unwrap(), "existing a\n");
     } else {
-        let plan = res_ad.unwrap();
-        assert_eq!(plan.create_operations().len(), 1);
-        assert_eq!(plan.delete_operations().len(), 1);
+        assert_eq!(plan_ad.create_operations().len(), 1);
+        assert_eq!(plan_ad.delete_operations().len(), 1);
     }
 
     #[cfg(unix)]
@@ -1453,11 +1483,11 @@ fn test_d10_case_collision_new_targets() {
         let symlink_root = symlink_dir.path().join("symlink_d10_dst");
         std::os::unix::fs::symlink(repo.path(), &symlink_root).unwrap();
 
-        let res_sym = plan_import(payload_bb, "// file: $FILE_PATH", &[symlink_root], &mapping);
+        let plan_sym = plan_import(payload_bb, "// file: $FILE_PATH", &[symlink_root], &mapping).unwrap();
         if is_ci {
-            assert!(matches!(res_sym, Err(TransferError::TargetCollision { .. })));
+            assert_eq!(collision_rows(&plan_sym).len(), 2);
         } else {
-            assert_eq!(res_sym.unwrap().create_operations().len(), 2);
+            assert_eq!(plan_sym.create_operations().len(), 3);
         }
     }
 }
@@ -1469,11 +1499,12 @@ fn test_d10_probe_fs_case_insensitive_behavior() {
     let mapping = ImportMapping::with_primary(repo.canonical_id());
 
     let payload = "// file: ProbeFile.txt\n1\n// file: probefile.txt\n2\n";
-    let res = plan_import(payload, "// file: $FILE_PATH", &[repo.path().to_path_buf()], &mapping);
-    assert_eq!(res.is_err(), is_ci, "target collision presence must match runtime case-insensitivity probe");
-    if is_ci {
-        assert!(matches!(res.unwrap_err(), TransferError::TargetCollision { .. }));
-    }
+    let plan = plan_import(payload, "// file: $FILE_PATH", &[repo.path().to_path_buf()], &mapping).unwrap();
+    assert_eq!(
+        collision_rows(&plan).len(),
+        if is_ci { 2 } else { 0 },
+        "target collision presence must match runtime case-insensitivity probe"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1947,31 +1978,18 @@ fn test_alias_target_collision_inside_root_symlink() {
 first content
 // file: link_dir/target.txt
 second content
+// file: other.txt
+fine
 ";
         let mapping = ImportMapping::with_primary(dst.canonical_id());
-        let err =
-            plan_import(clipboard_text, "// file: $FILE_PATH", &[dst.path().to_path_buf()], &mapping).unwrap_err();
+        let plan = plan_import(clipboard_text, "// file: $FILE_PATH", &[dst.path().to_path_buf()], &mapping).unwrap();
+        assert_eq!(collision_rows(&plan), ["link_dir/target.txt", "real_dir/target.txt"]);
+        plan.apply(&RestoreSelection::default()).unwrap();
 
-        match &err {
-            TransferError::TargetCollision { path, msg } => {
-                assert!(path.to_string_lossy().contains("target.txt"));
-                assert_eq!(msg, "previous was 'create real_dir/target.txt', current is 'create link_dir/target.txt'");
-                let full = err.to_string();
-                assert_eq!(
-                    full.matches(&path.display().to_string()).count(),
-                    1,
-                    "path should appear once, got: {full}"
-                );
-                assert!(!full.contains("identity"), "identity should not appear, got: {full}");
-                assert!(full.contains("previous was 'create real_dir/target.txt'"));
-                assert!(full.contains("current is 'create link_dir/target.txt'"));
-            }
-            other => panic!("expected TargetCollision, got: {other:?}"),
-        }
-
-        // Ensure no-write-on-invalid-plan: neither alias was created on disk!
+        // Neither alias was written; the other entry was restored.
         assert!(!dst.exists("real_dir/target.txt"));
         assert!(!dst.exists("link_dir/target.txt"));
+        assert!(dst.exists("other.txt"));
     }
 }
 
@@ -2868,6 +2886,7 @@ fn commit_replay_preview_rejects_head_index_content_and_absence_changes() {
                 change: FileChange::Modified,
                 content: Some("incoming\n".into()),
                 not_copied: None,
+                non_text: None,
             }],
         }],
     };
@@ -2894,6 +2913,7 @@ fn commit_replay_preview_rejects_head_index_content_and_absence_changes() {
                 change: FileChange::Added,
                 content: Some("new\n".into()),
                 not_copied: None,
+                non_text: None,
             }],
         }],
     };
@@ -2944,6 +2964,7 @@ fn skipped_non_utf8_replay_target_becomes_stale_when_it_turns_writable() {
                 change: FileChange::Modified,
                 content: Some("incoming\n".into()),
                 not_copied: None,
+                non_text: None,
             }],
         }],
     };
@@ -2976,6 +2997,7 @@ fn skipped_non_utf8_replay_target_becomes_stale_when_it_turns_writable() {
                 change: FileChange::Modified,
                 content: None,
                 not_copied: Some(ide_clip::commits::NotCopiedReason::Binary),
+                non_text: None,
             }],
         }],
     };
@@ -3000,6 +3022,7 @@ fn commit_replay_preview_treats_a_file_in_the_way_as_an_unsafe_skip() {
         change: FileChange::Added,
         content: Some("x\n".into()),
         not_copied: None,
+        non_text: None,
     };
     let payload = CommitsPayload {
         commits: vec![CommitRecord {
@@ -3040,6 +3063,7 @@ fn unsafe_symlink_replay_parent_is_not_followed_and_becomes_stale() {
                 change: ide_clip::commits::FileChange::Added,
                 content: Some("incoming\n".into()),
                 not_copied: None,
+                non_text: None,
             }],
         }],
     };
@@ -3117,6 +3141,7 @@ fn commit_replay_apply_replays_the_previewed_payload() {
                 change: FileChange::Added,
                 content: Some("payload bytes\n".into()),
                 not_copied: None,
+                non_text: None,
             }],
         }],
     };
@@ -3205,6 +3230,7 @@ fn commit_replay_preserves_0755_and_0600_through_a_symlinked_root() {
                     change: FileChange::Modified,
                     content: Some("replayed\n".into()),
                     not_copied: None,
+                    non_text: None,
                 })
                 .collect(),
         }],
@@ -3238,6 +3264,7 @@ fn commit_replay_apply_refuses_a_destination_changed_after_preview() {
                 change: FileChange::Modified,
                 content: Some("incoming a\n".into()),
                 not_copied: None,
+                non_text: None,
             }],
         }],
     };
@@ -3286,6 +3313,7 @@ fn commit_replay_apply_refuses_a_destination_changed_after_preview() {
                 change: FileChange::Added,
                 content: Some("incoming b\n".into()),
                 not_copied: None,
+                non_text: None,
             }],
         }],
     };
@@ -3325,6 +3353,7 @@ fn commit_replay_apply_refuses_after_head_moved() {
                 change: FileChange::Added,
                 content: Some("incoming\n".into()),
                 not_copied: None,
+                non_text: None,
             }],
         }],
     };
@@ -3368,6 +3397,7 @@ fn commit_replay_apply_through_a_symlinked_root() {
                 change: FileChange::Added,
                 content: Some("content in a\n".into()),
                 not_copied: None,
+                non_text: None,
             }],
         }],
     };
@@ -3394,6 +3424,7 @@ fn commit_replay_apply_through_a_symlinked_root() {
                 change: FileChange::Modified,
                 content: Some("content v2\n".into()),
                 not_copied: None,
+                non_text: None,
             }],
         }],
     };
@@ -3424,6 +3455,7 @@ fn commit_replay_apply_leaves_a_not_copied_target_alone() {
                     change: FileChange::Modified,
                     content: None,
                     not_copied: Some(NotCopiedReason::Binary),
+                    non_text: None,
                 },
                 CommitFile {
                     path: "added.txt".into(),
@@ -3431,6 +3463,7 @@ fn commit_replay_apply_leaves_a_not_copied_target_alone() {
                     change: FileChange::Added,
                     content: Some("added\n".into()),
                     not_copied: None,
+                    non_text: None,
                 },
             ],
         }],
@@ -3471,6 +3504,7 @@ fn commit_replay_apply_is_refused_while_the_worktree_lock_is_held() {
                 change: FileChange::Added,
                 content: Some("new content\n".into()),
                 not_copied: None,
+                non_text: None,
             }],
         }],
     };
@@ -3732,6 +3766,7 @@ fn assert_commit_replay_respects_nested_repo_lock(only_change: Option<ide_clip::
                     change: FileChange::Added,
                     content: Some("outer content\n".into()),
                     not_copied: None,
+                    non_text: None,
                 },
                 CommitFile {
                     path: "child/new/deep.txt".into(),
@@ -3739,6 +3774,7 @@ fn assert_commit_replay_respects_nested_repo_lock(only_change: Option<ide_clip::
                     change: FileChange::Added,
                     content: Some("new content\n".into()),
                     not_copied: None,
+                    non_text: None,
                 },
                 CommitFile {
                     path: "child/keep.txt".into(),
@@ -3746,6 +3782,7 @@ fn assert_commit_replay_respects_nested_repo_lock(only_change: Option<ide_clip::
                     change: FileChange::Modified,
                     content: Some("replacement\n".into()),
                     not_copied: None,
+                    non_text: None,
                 },
                 CommitFile {
                     path: "child/delete.txt".into(),
@@ -3753,6 +3790,7 @@ fn assert_commit_replay_respects_nested_repo_lock(only_change: Option<ide_clip::
                     change: FileChange::Deleted,
                     content: None,
                     not_copied: None,
+                    non_text: None,
                 },
                 CommitFile {
                     path: "moved.txt".into(),
@@ -3760,6 +3798,7 @@ fn assert_commit_replay_respects_nested_repo_lock(only_change: Option<ide_clip::
                     change: FileChange::Renamed,
                     content: Some("rename me\n".into()),
                     not_copied: None,
+                    non_text: None,
                 },
             ],
         }],
@@ -4827,20 +4866,18 @@ fn test_selection_from_paths_labels_and_explicit_dir_symlink() {
     assert!(plan_file.payload.contains("// clipcode-root: repo_alias"));
     assert!(plan_file.payload.contains("// file: linkdir/s.txt"));
 
-    // 2. Explicitly passed directory symlink `linkdir`:
-    let res_dir = selection_from_paths(&alias_path, &alias_path, &[PathBuf::from("linkdir")]).unwrap();
+    // 2. Explicitly passed directory symlink `linkdir` is never followed: it is named as a symlinked folder
+    // (docs/clipcode/non-text-files.md), next to a file that is carried.
+    let res_dir =
+        selection_from_paths(&alias_path, &alias_path, &[PathBuf::from("linkdir"), PathBuf::from("sub/s.txt")])
+            .unwrap();
     assert_eq!(res_dir.sel.source_root, Some("repo_alias".to_string()));
-    assert_eq!(res_dir.sel.items.len(), 1);
-    assert_eq!(res_dir.sel.items[0].relative_path, "linkdir");
-
-    let expanded_dir = expand_folder_items(res_dir.sel, 100, &cancel).unwrap();
-    assert_eq!(expanded_dir.sel.source_root, Some("repo_alias".to_string()));
-    let dir_rels: Vec<_> = expanded_dir.sel.items.iter().map(|it| it.relative_path.as_str()).collect();
-    assert_eq!(dir_rels, vec!["linkdir/s.txt"]);
-
-    let plan_dir = plan_export(&expanded_dir.sel, &Settings::default(), None).unwrap();
-    assert!(plan_dir.payload.contains("// clipcode-root: repo_alias"));
-    assert!(plan_dir.payload.contains("// file: linkdir/s.txt"));
+    let rels: Vec<_> = res_dir.sel.items.iter().map(|it| it.relative_path.as_str()).collect();
+    assert_eq!(rels, vec!["sub/s.txt"]);
+    assert_eq!((res_dir.skipped, res_dir.detail.symlink_dirs), (1, 1));
+    assert_eq!(res_dir.detail.symlink_dir_paths, vec!["linkdir"]);
+    let alone = selection_from_paths(&alias_path, &alias_path, &[PathBuf::from("linkdir")]);
+    assert!(matches!(alone, Err(TransferError::EmptySelection)));
 }
 
 // ---------------------------------------------------------------------------
@@ -4887,6 +4924,7 @@ fn test_from_restore_base_equivalence() {
             path: expected_rel.clone(),
             content: c.to_string(),
             change_types: std::collections::BTreeSet::from([ChangeType::New]),
+            escaped_placeholder: false,
         };
         let expected_plan = restore::plan_restore(&[repo.path()], &[parsed]);
         let actual_op = plan_strip
@@ -4928,6 +4966,7 @@ fn test_from_restore_base_equivalence() {
             path: expected_path,
             content: c.to_string(),
             change_types: std::collections::BTreeSet::from([ChangeType::New]),
+            escaped_placeholder: false,
         };
         let expected_plan = restore::plan_restore(&[repo.path()], &[parsed]);
         let expected_rel = &expected_plan.create_operations[0].relative_path;
@@ -4969,12 +5008,12 @@ fn test_from_restore_base_root_through_symlink() {
 }
 
 // ---------------------------------------------------------------------------
-// 35. Phase 2: CLIPBOARD_PAYLOAD_MAX constant is 32 MiB
+// 35. Phase 2: CLIPBOARD_PAYLOAD_MAX constant is 50 MiB
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_clipboard_payload_max_is_32_mib() {
-    assert_eq!(CLIPBOARD_PAYLOAD_MAX, 32 * 1024 * 1024);
+fn test_clipboard_payload_max_is_50_mib() {
+    assert_eq!(CLIPBOARD_PAYLOAD_MAX, 50 * 1024 * 1024);
 }
 
 // ---------------------------------------------------------------------------

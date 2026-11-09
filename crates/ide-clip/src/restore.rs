@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::format::{ChangeType, ParsedEntry, ascii_trim};
-use crate::fsutil::{delete_file, must_not_overwrite, write_text_file};
+use crate::fsutil::{delete_file, must_not_overwrite, write_bytes_file, write_text_file};
+use crate::nontext;
 use crate::paths::{
     RejectReason, escapes_all_roots, has_git_segment, lands_in_git_dir, resolve_delete_target, resolve_write_target,
 };
@@ -24,10 +25,38 @@ pub type RestoreEntry = ParsedEntry;
 pub struct CreateOperation {
     pub relative_path: String,
     pub absolute_path: PathBuf,
+    /// The text to write; empty for a non-text entry (see `non_text`), whose
+    /// Base64 is never exposed to a preview.
     pub content: String,
     pub existed: bool,
     /// The root this target was validated against.
     pub root_path: PathBuf,
+    /// A non-text entry's verified bytes: written as is instead of `content`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub non_text: Option<NonTextWrite>,
+}
+
+impl CreateOperation {
+    /// Raw size of a non-text entry, for a preview's "non-text file · 4.0 KB".
+    pub fn non_text_size(&self) -> Option<u64> {
+        self.non_text.as_ref().map(|n| n.bytes.len() as u64)
+    }
+
+    /// An existing target that already holds exactly these bytes: reported
+    /// unchanged, never written, and no overwrite permission is needed.
+    pub fn is_identical(&self) -> bool {
+        self.existed && self.non_text.as_ref().is_some_and(|n| n.identical)
+    }
+}
+
+/// The bytes of a non-text entry, length and SHA-256 already verified.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NonTextWrite {
+    #[serde(with = "nontext::serde_bytes_base64")]
+    pub bytes: Vec<u8>,
+    /// The target held exactly these bytes when the plan was made.
+    pub identical: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +76,16 @@ pub enum SkipReason {
     /// The file on disk is not UTF-8 (or cannot be verified). Writing UTF-8
     /// over it would silently change its encoding.
     NonUtf8Target,
+    /// A non-text entry whose Base64 does not decode, or whose size or
+    /// SHA-256 differs from its placeholder line.
+    CorruptNonText,
+    /// The target path exists and is not a regular file (a directory): paste never replaces it.
+    TargetNotFile,
+    /// Two or more entries map to the same file (letter case on a case-insensitive file system, a symlinked
+    /// folder, an explicit mapping): every one of them is skipped.
+    TargetCollision,
+    /// One of the target's parent paths is an existing file, so no folder can be created for it.
+    ParentNotFolder,
 }
 
 impl SkipReason {
@@ -58,6 +97,10 @@ impl SkipReason {
             Self::AmbiguousPath => "AMBIGUOUS_PATH",
             Self::PlaceholderBody => "PLACEHOLDER_BODY",
             Self::NonUtf8Target => "NON_UTF8_TARGET",
+            Self::CorruptNonText => "CORRUPT_NON_TEXT",
+            Self::TargetNotFile => "TARGET_NOT_FILE",
+            Self::TargetCollision => "TARGET_COLLISION",
+            Self::ParentNotFolder => "PARENT_NOT_FOLDER",
         }
     }
 }
@@ -105,7 +148,8 @@ impl RestorePlan {
                 .saturating_add(op.relative_path.capacity())
                 .saturating_add(op.absolute_path.capacity())
                 .saturating_add(op.content.capacity())
-                .saturating_add(op.root_path.capacity());
+                .saturating_add(op.root_path.capacity())
+                .saturating_add(op.non_text.as_ref().map_or(0, |n| n.bytes.capacity()));
         }
         for op in &self.delete_operations {
             bytes = bytes.saturating_add(op.relative_path.capacity()).saturating_add(op.absolute_path.capacity());
@@ -119,9 +163,10 @@ impl RestorePlan {
     }
 
     /// Create operations whose target exists now: the overwrites a paste needs
-    /// permission for.
+    /// permission for. A non-text target that already holds the same bytes is
+    /// not one: it is left unchanged.
     pub fn existing_targets(&self) -> usize {
-        self.create_operations.iter().filter(|o| o.existed).count()
+        self.create_operations.iter().filter(|o| o.existed && !o.is_identical()).count()
     }
 }
 
@@ -142,6 +187,9 @@ pub struct RestoreExecutionResult {
     pub created_count: usize,
     pub overwritten_count: usize,
     pub skipped_existing_count: usize,
+    /// Non-text targets that already held the pasted bytes: not written.
+    #[serde(default)]
+    pub unchanged_count: usize,
     /// Entries refused during planning, separate from keeping existing files.
     #[serde(default)]
     pub planned_skipped_count: usize,
@@ -150,8 +198,10 @@ pub struct RestoreExecutionResult {
 }
 
 impl RestoreExecutionResult {
+    /// Rows that wrote nothing: refused at planning, kept as existing files, or failed while writing (each
+    /// failed row has one entry in `errors`).
     pub fn total_skipped(&self) -> usize {
-        self.planned_skipped_count.saturating_add(self.skipped_existing_count)
+        self.planned_skipped_count.saturating_add(self.skipped_existing_count).saturating_add(self.errors.len())
     }
 }
 
@@ -203,7 +253,21 @@ pub fn plan_restore<P: AsRef<Path>>(roots: &[P], entries: &[RestoreEntry]) -> Re
             continue;
         }
 
-        if is_placeholder_body(&entry.content) {
+        // Before the generic guard: the non-text placeholder starts like any
+        // other placeholder, which is what makes an older reader skip it.
+        // A text file that starts with the placeholder line arrives escaped and un-escaped here: it is
+        // restored as the text it is, neither decoded nor skipped.
+        let parsed = if entry.escaped_placeholder { None } else { nontext::parse_body(&entry.content) };
+        let non_text = match parsed {
+            Some(Ok(bytes)) => Some(bytes),
+            Some(Err(_)) => {
+                plan.skipped_operations.push(skip(None, SkipReason::CorruptNonText));
+                continue;
+            }
+            None => None,
+        };
+
+        if non_text.is_none() && !entry.escaped_placeholder && is_placeholder_body(&entry.content) {
             plan.skipped_operations.push(skip(None, SkipReason::PlaceholderBody));
             continue;
         }
@@ -228,22 +292,61 @@ pub fn plan_restore<P: AsRef<Path>>(roots: &[P], entries: &[RestoreEntry]) -> Re
             continue;
         }
 
-        if must_not_overwrite(&t.absolute_path) {
+        // A directory (or another non-file) at the target: this row is skipped, the others go on.
+        if fs::metadata(&t.absolute_path).is_ok_and(|m| !m.is_file()) {
+            plan.skipped_operations.push(skip(Some(t.relative_path), SkipReason::TargetNotFile));
+            continue;
+        }
+
+        // A file where a parent folder must be: nothing can be created below it. This row is skipped too.
+        if parent_is_file(&t.absolute_path) {
+            plan.skipped_operations.push(skip(Some(t.relative_path), SkipReason::ParentNotFolder));
+            continue;
+        }
+
+        // Raw bytes are written as is: there is no encoding to preserve.
+        if non_text.is_none() && must_not_overwrite(&t.absolute_path) {
             plan.skipped_operations.push(skip(Some(t.relative_path), SkipReason::NonUtf8Target));
             continue;
         }
 
         let existed = t.existed || t.absolute_path.exists();
+        let non_text =
+            non_text.map(|bytes| NonTextWrite { identical: existed && holds_bytes(&t.absolute_path, &bytes), bytes });
+        let content = if non_text.is_some() { String::new() } else { entry.content.clone() };
         plan.create_operations.push(CreateOperation {
             relative_path: t.relative_path,
             absolute_path: t.absolute_path,
-            content: entry.content.clone(),
+            content,
             existed,
             root_path: t.root_path,
+            non_text,
         });
     }
 
     plan
+}
+
+/// Whether the nearest existing ancestor of `path` is not a folder (an existing file lies where a parent
+/// folder is needed). Missing ancestors are fine: the write creates them.
+fn parent_is_file(path: &Path) -> bool {
+    for ancestor in path.ancestors().skip(1) {
+        match fs::metadata(ancestor) {
+            Ok(m) => return !m.is_dir(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            // Not a directory further up (a file above a missing name): same situation.
+            Err(e) if e.kind() == std::io::ErrorKind::NotADirectory => return true,
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
+/// Whether the regular file at `path` holds exactly `bytes` (size first, so a
+/// different-sized file is not read).
+fn holds_bytes(path: &Path, bytes: &[u8]) -> bool {
+    fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() == bytes.len() as u64)
+        && fs::read(path).is_ok_and(|on_disk| on_disk == bytes)
 }
 
 /// The copy side substitutes a one-line comment for a file it could not
@@ -289,11 +392,12 @@ pub fn execute_restore_plan_observed(
                 match outcome {
                     CreateOutcome::Created => result.created_count += 1,
                     CreateOutcome::Overwritten => result.overwritten_count += 1,
-                    CreateOutcome::Skipped => unreachable!(),
+                    CreateOutcome::Skipped | CreateOutcome::Unchanged => unreachable!(),
                 }
                 after_write(op, &outcome);
             }
             Ok(CreateOutcome::Skipped) => result.skipped_existing_count += 1,
+            Ok(CreateOutcome::Unchanged) => result.unchanged_count += 1,
             Err(message) => result.errors.push(message),
         }
     }
@@ -314,7 +418,7 @@ pub fn execute_restore_plan_observed(
         if op.absolute_path.exists() {
             match delete_file(&op.absolute_path) {
                 Ok(()) => result.deleted_count += 1,
-                Err(e) => result.errors.push(format!("{}: {e}", op.relative_path)),
+                Err(e) => result.errors.push(format!("{}: {}", op.relative_path, io_error_text(&e))),
             }
         }
     }
@@ -327,6 +431,8 @@ pub enum CreateOutcome {
     Created,
     Overwritten,
     Skipped,
+    /// A non-text target already held the bytes; nothing was written.
+    Unchanged,
 }
 
 fn run_create(roots: &[PathBuf], selection: &RestoreSelection, op: &CreateOperation) -> Result<CreateOutcome, String> {
@@ -336,19 +442,41 @@ fn run_create(roots: &[PathBuf], selection: &RestoreSelection, op: &CreateOperat
     {
         return Err(format!("{}: unsafe path", op.relative_path));
     }
-    if must_not_overwrite(&op.absolute_path) {
+    let non_text = op.non_text.as_ref().map(|n| n.bytes.as_slice());
+    if non_text.is_none() && must_not_overwrite(&op.absolute_path) {
         return Ok(CreateOutcome::Skipped);
     }
     let outcome = match fs::metadata(&op.absolute_path) {
         Ok(info) if info.is_dir() => return Ok(CreateOutcome::Skipped),
+        Ok(_) if non_text.is_some_and(|b| holds_bytes(&op.absolute_path, b)) => return Ok(CreateOutcome::Unchanged),
         Ok(_) if selection.skip_existing || !selection.overwrite_existing => return Ok(CreateOutcome::Skipped),
         // A hard link that appeared after the preview needs no check of its
         // own: the write replaces this entry, never the shared file.
         Ok(_) => CreateOutcome::Overwritten,
         Err(_) => CreateOutcome::Created,
     };
-    write_text_file(&op.absolute_path, &op.content).map_err(|e| format!("{}: {e}", op.relative_path))?;
+    match non_text {
+        Some(bytes) => write_bytes_file(&op.absolute_path, bytes),
+        None => write_text_file(&op.absolute_path, &op.content),
+    }
+    .map_err(|e| format!("{}: {}", op.relative_path, io_error_text(&e)))?;
     Ok(outcome)
+}
+
+/// What a failed write or delete says to the user (spec "Pasting": never the raw OS message). The UI
+/// translates these exact texts (`src/features/vcs/clipNonText.tsx`, `errorLineText`).
+fn io_error_text(e: &std::io::Error) -> &'static str {
+    use std::io::ErrorKind::*;
+    match e.kind() {
+        PermissionDenied => "Folder is not writable",
+        NotFound => "File or folder not found",
+        AlreadyExists => "A file or folder already exists at that path",
+        NotADirectory => "A file is in the way of its parent folder",
+        IsADirectory => "The target is a folder",
+        StorageFull => "The disk is full",
+        ReadOnlyFilesystem => "The file system is read-only",
+        _ => "Could not apply the change",
+    }
 }
 
 /// True if any path equals another, or is an ancestor directory of another
@@ -573,7 +701,12 @@ mod tests {
     const HEADER: &str = "// file: $FILE_PATH";
 
     fn entry(path: &str, content: &str) -> RestoreEntry {
-        RestoreEntry { path: path.into(), content: content.into(), change_types: BTreeSet::new() }
+        RestoreEntry {
+            path: path.into(),
+            content: content.into(),
+            change_types: BTreeSet::new(),
+            escaped_placeholder: false,
+        }
     }
 
     fn deleted(path: &str) -> RestoreEntry {
@@ -1232,6 +1365,7 @@ mod tests {
             content: "evil".to_string(),
             existed: false,
             root_path: root.clone(),
+            non_text: None,
         };
         let plan = RestorePlan {
             roots: vec![root.clone()],
@@ -1250,6 +1384,254 @@ mod tests {
         assert!(result.errors[1].contains(".git/config: unsafe path"));
     }
 
+    // ---- non-text files (docs/clipcode/non-text-files.md) ----
+
+    const PNG: &[u8] =
+        &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, b'I', b'H', b'D', b'R'];
+    const BIG5: &[u8] = &[0xa4, 0xe9, 0xa5, 0xbb, 0x0a, 0xb4, 0xfa, 0xb8, 0xd5, 0x0a];
+
+    fn non_text_payload(header: &str, files: &[(&str, &[u8])], text: &[(&str, &str)]) -> String {
+        let mut list: Vec<PayloadFile> = files
+            .iter()
+            .map(|(p, b)| PayloadFile { path: (*p).into(), non_text: Some(b.to_vec()), ..Default::default() })
+            .collect();
+        list.extend(text.iter().map(|(p, c)| PayloadFile {
+            path: (*p).into(),
+            content: Some((*c).into()),
+            ..Default::default()
+        }));
+        build_payload(&BuildPayloadOptions {
+            header_format: header.into(),
+            add_extra_line_between_files: true,
+            files: list,
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn non_text_files_round_trip_byte_for_byte() {
+        let big: Vec<u8> = (0..5000u32).map(|i| (i * 31 % 256) as u8).collect();
+        let files: [(&str, &[u8]); 4] =
+            [("img/logo.png", PNG), ("legacy/big5.txt", BIG5), ("nul.bin", &[0x00]), ("big.bin", &big)];
+        let payload = non_text_payload(HEADER, &files, &[("src/a.ts", "a")]);
+        for (name, text) in [("LF", payload.clone()), ("CRLF", payload.replace('\n', "\r\n"))] {
+            let (_d, root) = tmp();
+            let plan = plan_restore(&[&root], &parse_clipboard(&text, HEADER));
+            assert!(plan.skipped_operations.is_empty(), "{name}: {:?}", plan.skipped_operations);
+            for op in &plan.create_operations[..4] {
+                assert!(op.content.is_empty(), "{name}: the Base64 never reaches content");
+            }
+            let r = execute_restore_plan(&plan, &RestoreSelection::default());
+            assert_eq!(r.created_count, 5, "{name}");
+            for (path, bytes) in files {
+                assert_eq!(fs::read(root.join(path)).unwrap(), bytes, "{name}: {path}");
+            }
+            assert_eq!(read(root.join("src/a.ts")), "a");
+        }
+    }
+
+    #[test]
+    fn an_empty_file_stays_a_text_entry() {
+        let payload = build_payload(&BuildPayloadOptions {
+            header_format: HEADER.into(),
+            files: vec![PayloadFile { path: "empty.txt".into(), content: Some(String::new()), ..Default::default() }],
+            ..Default::default()
+        });
+        assert!(!payload.contains("non-text"));
+        assert_eq!(nontext::parse_body(&parse_clipboard(&payload, HEADER)[0].content), None);
+    }
+
+    #[test]
+    fn header_shaped_base64_lines_round_trip_through_escaping() {
+        let (_d, root) = tmp();
+        // `A$FILE_PATH` matches any line starting with `A`; a zero byte at the
+        // start of every 57-byte chunk makes each Base64 line start with `A`.
+        let header = "A$FILE_PATH";
+        let bytes: Vec<u8> = (0..300usize).map(|i| if i % 57 == 0 { 0 } else { (i % 251) as u8 + 1 }).collect();
+        let payload = non_text_payload(header, &[("img/a.bin", &bytes)], &[]);
+        assert!(payload.contains("\n//clipcode-esc: A"), "{payload}");
+        let entries = parse_clipboard(&payload, header);
+        assert_eq!(entries.len(), 1);
+        let plan = plan_restore(&[&root], &entries);
+        execute_restore_plan(&plan, &RestoreSelection::default());
+        assert_eq!(fs::read(root.join("img/a.bin")).unwrap(), bytes);
+    }
+
+    #[test]
+    fn text_that_starts_like_a_non_text_placeholder_round_trips_as_text() {
+        let (_d, root) = tmp();
+        let fake = "// File skipped: non-text file, 3 bytes, sha256 039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81; base64 follows\nAQID\n";
+        assert!(nontext::parse_body(fake).is_some());
+        let payload = build_payload(&BuildPayloadOptions {
+            header_format: HEADER.into(),
+            files: vec![PayloadFile { path: "fake.txt".into(), content: Some(fake.into()), ..Default::default() }],
+            ..Default::default()
+        });
+        assert!(
+            payload.contains("\n//clipcode-esc: //clipcode-esc: // File skipped: non-text file, 3 bytes"),
+            "{payload}"
+        );
+        let entries = parse_clipboard(&payload, HEADER);
+        assert!(entries[0].escaped_placeholder);
+        let plan = plan_restore(&[&root], &entries);
+        assert!(plan.skipped_operations.is_empty(), "{:?}", plan.skipped_operations);
+        execute_restore_plan(&plan, &RestoreSelection::default());
+        assert_eq!(fs::read_to_string(root.join("fake.txt")).unwrap().trim_end(), fake.trim_end());
+        // A real non-text entry is not marked escaped.
+        let real = non_text_payload(HEADER, &[("a.png", PNG)], &[]);
+        assert!(!parse_clipboard(&real, HEADER)[0].escaped_placeholder);
+    }
+
+    /// `// $FILE_PATH` matches the placeholder line itself, so a real non-text entry is header-escaped too; that
+    /// escape must not be read as the placeholder-specific one of a text file.
+    #[test]
+    fn non_text_round_trips_under_a_header_format_that_matches_the_placeholder() {
+        const LOOSE: &str = "// $FILE_PATH";
+        let (_d, root) = tmp();
+        let raw: &[u8] = &[0, 255, 1];
+        let fake = "// File skipped: non-text file, 3 bytes, sha256 039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81; base64 follows\nnot base64, just text!\n";
+        let payload = non_text_payload(LOOSE, &[("a.bin", raw)], &[("fake.txt", fake)]);
+        assert!(
+            payload.contains("\n//clipcode-esc: //clipcode-esc: // File skipped: non-text file, 3 bytes"),
+            "{payload}"
+        );
+        let entries = parse_clipboard(&payload, LOOSE);
+        assert!(!entries[0].escaped_placeholder);
+        assert!(entries[1].escaped_placeholder);
+        let plan = plan_restore(&[&root], &entries);
+        assert!(plan.skipped_operations.is_empty(), "{:?}", plan.skipped_operations);
+        execute_restore_plan(&plan, &RestoreSelection::default());
+        assert_eq!(fs::read(root.join("a.bin")).unwrap(), raw);
+        assert_eq!(fs::read_to_string(root.join("fake.txt")).unwrap().trim_end(), fake.trim_end());
+    }
+
+    /// A write error is user text, never the raw OS message, and keeps the path.
+    #[cfg(unix)]
+    #[test]
+    fn a_permission_error_is_user_text_not_the_os_message() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_d, root) = tmp();
+        fs::create_dir_all(root.join("ro")).unwrap();
+        fs::set_permissions(root.join("ro"), fs::Permissions::from_mode(0o555)).unwrap();
+        // A superuser writes anyway: nothing to observe.
+        if fs::write(root.join("ro/probe"), "x").is_ok() {
+            return;
+        }
+        let payload = non_text_payload(HEADER, &[("ro/new.png", PNG)], &[("ro/new.txt", "t")]);
+        let plan = plan_restore(&[&root], &parse_clipboard(&payload, HEADER));
+        let result = execute_restore_plan(&plan, &RestoreSelection::default());
+        fs::set_permissions(root.join("ro"), fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(result.errors, ["ro/new.png: Folder is not writable", "ro/new.txt: Folder is not writable"]);
+    }
+
+    #[test]
+    fn io_errors_map_to_user_text() {
+        use std::io::{Error, ErrorKind};
+        let text = |k| io_error_text(&Error::from(k));
+        assert_eq!(text(ErrorKind::PermissionDenied), "Folder is not writable");
+        assert_eq!(text(ErrorKind::NotFound), "File or folder not found");
+        assert_eq!(text(ErrorKind::StorageFull), "The disk is full");
+        assert_eq!(text(ErrorKind::ReadOnlyFilesystem), "The file system is read-only");
+        // An unknown error never leaks the OS wording.
+        // EACCES on Unix, ERROR_ACCESS_DENIED on Windows.
+        let denied = if cfg!(windows) { 5 } else { 13 };
+        assert_eq!(io_error_text(&Error::from_raw_os_error(denied)), "Folder is not writable");
+        assert_eq!(io_error_text(&Error::other("boom (os error 99)")), "Could not apply the change");
+    }
+
+    #[test]
+    fn corrupted_non_text_entries_skip_only_that_file() {
+        let (_d, root) = tmp();
+        let payload = non_text_payload(HEADER, &[("ok.png", PNG)], &[("src/a.ts", "a")]);
+        let good = parse_clipboard(&payload, HEADER);
+        let body = &good[0].content;
+        let truncated = body[..body.len() - 4].to_string();
+        let first = body.split('\n').next().unwrap();
+        let wrong_sha = body.replacen(&first[first.len() - 70..first.len() - 16], &"0".repeat(54), 1);
+        assert_ne!(&wrong_sha, body);
+        let entries = [
+            entry("trunc.png", &truncated),
+            entry("sha.png", &wrong_sha),
+            good[0].clone(),
+            good[1].clone(),
+            entry("short.png", &format!("{first}\nAAAA")),
+        ];
+        let plan = plan_restore(&[&root], &entries);
+        assert_eq!(rels(&plan), ["ok.png", "src/a.ts"]);
+        let skipped: Vec<_> = plan.skipped_operations.iter().map(|s| (s.raw_path.as_str(), s.reason)).collect();
+        assert_eq!(
+            skipped,
+            [
+                ("trunc.png", SkipReason::CorruptNonText),
+                ("sha.png", SkipReason::CorruptNonText),
+                ("short.png", SkipReason::CorruptNonText),
+            ]
+        );
+        assert_eq!(SkipReason::CorruptNonText.as_str(), "CORRUPT_NON_TEXT");
+        let r = execute_restore_plan(&plan, &RestoreSelection::default());
+        assert_eq!((r.created_count, r.planned_skipped_count), (2, 3));
+        assert!(!root.join("trunc.png").exists() && !root.join("sha.png").exists());
+        assert_eq!(fs::read(root.join("ok.png")).unwrap(), PNG);
+    }
+
+    /// The previous release only had the generic first-line guard: it skips
+    /// the entry and never writes Base64 into the target.
+    #[test]
+    fn a_reader_without_non_text_support_skips_the_entry() {
+        let payload = non_text_payload(HEADER, &[("img/logo.png", PNG)], &[]);
+        let entries = parse_clipboard(&payload, HEADER);
+        assert!(is_placeholder_body(&entries[0].content));
+        let crlf = parse_clipboard(&payload.replace('\n', "\r\n"), HEADER);
+        assert!(is_placeholder_body(&crlf[0].content));
+    }
+
+    #[test]
+    fn existing_targets_identical_unchanged_different_follows_overwrite() {
+        let payload = non_text_payload(HEADER, &[("same.png", PNG), ("diff.png", PNG), ("big5.txt", BIG5)], &[]);
+        let entries = parse_clipboard(&payload, HEADER);
+        let setup = || {
+            let (d, root) = tmp();
+            fs::write(root.join("same.png"), PNG).unwrap();
+            fs::write(root.join("diff.png"), b"old").unwrap();
+            // A non-UTF-8 target: the encoding guard does not apply to raw bytes.
+            fs::write(root.join("big5.txt"), [0xa4, 0xe9]).unwrap();
+            (d, root)
+        };
+
+        let (_d, root) = setup();
+        let plan = plan_restore(&[&root], &entries);
+        assert!(plan.skipped_operations.is_empty());
+        let identical: Vec<_> = plan.create_operations.iter().map(|o| (o.existed, o.is_identical())).collect();
+        assert_eq!(identical, [(true, true), (true, false), (true, false)]);
+        assert_eq!(plan.create_operations[0].non_text_size(), Some(PNG.len() as u64));
+        assert_eq!(plan.existing_targets(), 2);
+        let kept = execute_restore_plan(&plan, &RestoreSelection::default());
+        assert_eq!((kept.unchanged_count, kept.skipped_existing_count, kept.overwritten_count), (1, 2, 0));
+        assert_eq!(fs::read(root.join("diff.png")).unwrap(), b"old");
+
+        let (_d, root) = setup();
+        let mtime = fs::metadata(root.join("same.png")).unwrap().modified().unwrap();
+        let plan = plan_restore(&[&root], &entries);
+        let r = execute_restore_plan(&plan, &overwrite());
+        assert_eq!((r.unchanged_count, r.overwritten_count), (1, 2));
+        assert_eq!(fs::read(root.join("diff.png")).unwrap(), PNG);
+        assert_eq!(fs::read(root.join("big5.txt")).unwrap(), BIG5);
+        assert_eq!(fs::metadata(root.join("same.png")).unwrap().modified().unwrap(), mtime);
+    }
+
+    #[test]
+    fn non_text_operation_serializes_bytes_as_base64() {
+        let (_d, root) = tmp();
+        let plan = plan_restore(&[&root], &parse_clipboard(&non_text_payload(HEADER, &[("a.bin", PNG)], &[]), HEADER));
+        let json = serde_json::to_value(&plan).unwrap();
+        assert_eq!(json["createOperations"][0]["nonText"]["bytes"], nontext::encode(PNG));
+        let back: RestorePlan = serde_json::from_value(json).unwrap();
+        assert_eq!(back, plan);
+        // A text-only plan keeps today's wire shape.
+        let text = plan_restore(&[&root], &[entry("a.ts", "a")]);
+        assert!(serde_json::to_value(&text).unwrap()["createOperations"][0].get("nonText").is_none());
+    }
+
     #[test]
     fn existing_targets_counts_creates_onto_existing_files() {
         let create = |path: &str, existed: bool| CreateOperation {
@@ -1258,6 +1640,7 @@ mod tests {
             content: String::new(),
             existed,
             root_path: PathBuf::new(),
+            non_text: None,
         };
         let plan = RestorePlan {
             roots: Vec::new(),
