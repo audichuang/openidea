@@ -77,7 +77,7 @@ export function SelectListbox<V extends string = string>({
   ...aria
 }: SelectListboxProps<V>) {
   const given = useGivenTx();
-  const text = (o: SelectOption<V>) => (o.literal ? o.label : text(o));
+  const text = (o: SelectOption<V>) => (o.literal ? o.label : given(o.label));
   const [active, setActive] = useState(() =>
     Math.max(
       0,
