@@ -655,3 +655,99 @@ fn an_unescapable_header_format_is_reported_in_the_summary() {
     let normal = copy_with(&src, all(&src), &Settings::default(), ClipNonTextMode::Exclude).unwrap();
     assert!(!normal.non_text.header_cannot_be_escaped);
 }
+
+fn sorted(mut v: Vec<String>) -> Vec<String> {
+    v.sort();
+    v
+}
+
+/// X1: a Git copy (working changes, a commit) skips a changed file whose name a header cannot carry and names it
+/// under "Name not portable"; the other files are copied and the name never reaches a header. When that file is
+/// the only change, the result is empty and names it (the UI says "Nothing to copy" and leaves the clipboard).
+#[cfg(unix)]
+#[test]
+fn git_copies_skip_and_name_unportable_names() {
+    use ide_host::ops::clip::ClipChangeSide;
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (_tmp, root) = dir();
+    init_repo(&root);
+    fs::write(root.join("a.txt"), "hello\n").unwrap();
+    fs::write(root.join("q\"uote.txt"), "q\n").unwrap();
+    fs::write(root.join("tab\tname.txt"), "t\n").unwrap();
+    let settings = Settings::default();
+    let working = || ClipCopySource::Changes { paths: vec![root.clone()], side: ClipChangeSide::Working };
+    let check = |r: ide_host::ops::clip::ClipCopyResult| {
+        assert_eq!((r.files, r.skipped_unportable, r.skipped_unreadable), (1, 2, 0), "{r:?}");
+        assert_eq!(sorted(r.skipped_unportable_paths), ["q\"uote.txt", "tab\tname.txt"]);
+        assert!(r.text.contains("hello") && !r.text.contains("uote") && !r.text.contains("name.txt"), "{}", r.text);
+    };
+    check(copy_with(&root, working(), &settings, ClipNonTextMode::Exclude).expect("working copy"));
+    git(&root, &["add", "-A"]);
+    git(&root, &["commit", "-q", "-m", "c"]);
+    let rev = git(&root, &["rev-parse", "HEAD"]);
+    let commit = ClipCopySource::CommitFiles { repo: root.clone(), rev, paths: vec![] };
+    check(copy_with(&root, commit, &settings, ClipNonTextMode::Exclude).expect("commit copy"));
+
+    // The only change has a name that is not portable: an empty result that names it, not an error.
+    fs::write(root.join("q\"uote.txt"), "changed\n").unwrap();
+    let only = copy_with(&root, working(), &settings, ClipNonTextMode::Exclude).expect("an empty result");
+    assert_eq!((only.files, only.skipped_unportable), (0, 1), "{only:?}");
+    assert_eq!(only.skipped_unportable_paths, ["q\"uote.txt"]);
+}
+
+/// X1 on a file system that takes non-UTF-8 names (Linux): such a changed file is named (lossily) under
+/// "Name not portable", not counted as unreadable.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_git_copy_names_a_non_utf8_name_as_not_portable() {
+    use ide_host::ops::clip::ClipChangeSide;
+    use std::os::unix::ffi::OsStrExt;
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (_tmp, root) = dir();
+    init_repo(&root);
+    fs::write(root.join("a.txt"), "hello\n").unwrap();
+    fs::write(root.join(std::ffi::OsStr::from_bytes(b"bad\xff.txt")), "x\n").unwrap();
+    let source = ClipCopySource::Changes { paths: vec![root.clone()], side: ClipChangeSide::Working };
+    let r = copy_with(&root, source, &Settings::default(), ClipNonTextMode::Exclude).unwrap();
+    assert_eq!((r.files, r.skipped_unportable, r.skipped_unreadable), (1, 1, 0), "{r:?}");
+    assert_eq!(r.skipped_unportable_paths, ["bad\u{FFFD}.txt"]);
+}
+
+/// X3 (#198): a selection whose every file is skipped is an empty result that names each skipped file in its
+/// category, never a bare "Nothing to copy" error: a selected folder holding only an unreadable file, one holding
+/// only names that are not portable, and a lone unreadable folder.
+#[cfg(unix)]
+#[test]
+fn an_all_skipped_selection_names_what_was_skipped() {
+    use std::os::unix::fs::PermissionsExt;
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (_tmp, root) = dir();
+    fs::create_dir_all(root.join("locked")).unwrap();
+    fs::write(root.join("locked/secret.txt"), "s\n").unwrap();
+    fs::set_permissions(root.join("locked/secret.txt"), fs::Permissions::from_mode(0o000)).unwrap();
+    fs::create_dir_all(root.join("closed")).unwrap();
+    fs::set_permissions(root.join("closed"), fs::Permissions::from_mode(0o000)).unwrap();
+    fs::create_dir_all(root.join("odd")).unwrap();
+    fs::write(root.join("odd/q\"uote.txt"), "q\n").unwrap();
+    let readable_as_root = fs::File::open(root.join("locked/secret.txt")).is_ok();
+    let settings = Settings::default();
+    let copy_of = |p: &str| {
+        copy_with(&root, ClipCopySource::Files { paths: vec![root.join(p)] }, &settings, ClipNonTextMode::Exclude)
+    };
+    let (locked, closed, odd) = (copy_of("locked"), copy_of("closed"), copy_of("odd"));
+    let _ = fs::set_permissions(root.join("locked/secret.txt"), fs::Permissions::from_mode(0o644));
+    let _ = fs::set_permissions(root.join("closed"), fs::Permissions::from_mode(0o755));
+
+    let odd = odd.expect("an empty result, not an error");
+    assert_eq!((odd.files, odd.skipped_unportable), (0, 1), "{odd:?}");
+    assert_eq!(odd.skipped_unportable_paths, ["odd/q\"uote.txt"]);
+    if readable_as_root {
+        return;
+    }
+    let locked = locked.expect("an empty result, not an error");
+    assert_eq!((locked.files, locked.skipped_unreadable), (0, 1), "{locked:?}");
+    assert_eq!(locked.skipped_unreadable_paths, ["locked/secret.txt"]);
+    let closed = closed.expect("an empty result, not an error");
+    assert_eq!((closed.files, closed.skipped_unreadable), (0, 1), "{closed:?}");
+    assert_eq!(closed.skipped_unreadable_paths, ["closed"]);
+}
