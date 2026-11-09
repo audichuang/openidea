@@ -44,7 +44,7 @@ import {
   skipReasonText,
   visibleName,
 } from "./clipNonText";
-import { isElided, NameText, PathText } from "./PathText";
+import { NameText, PathText } from "./PathText";
 import { buildPasteTree, fileKey, filesUnder, rowKey, type PasteNode } from "./clipPasteTree";
 import styles from "./clip.module.css";
 
@@ -540,7 +540,6 @@ export function PastePreviewDialog({
                         <span
                           className={styles.nodeName}
                           data-action={n.file?.action}
-                          data-elided={isElided(n.name) ? "" : undefined}
                           title={
                             n.file && isCorruptRow(n.file) ? `${n.file.path}\n${pasteRowTitle(n.file)}` : n.file?.path
                           }
