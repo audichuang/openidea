@@ -60,31 +60,6 @@ pub fn set_height(window: &tauri::WebviewWindow, height: f64) -> tauri::Result<(
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn chrome_is_the_closest_to_the_web_bar_height() {
-        use NSWindowToolbarStyle as Style;
-        for (height, expected) in [
-            (28.0, Chrome::Plain),
-            (30.0, Chrome::Plain),
-            (32.0, Chrome::Plain),
-            (32.9, Chrome::Plain),
-            (33.0, Chrome::Toolbar(Style::UnifiedCompact)),
-            (38.0, Chrome::Toolbar(Style::UnifiedCompact)),
-            (40.0, Chrome::Toolbar(Style::UnifiedCompact)),
-            (44.9, Chrome::Toolbar(Style::UnifiedCompact)),
-            (45.0, Chrome::Toolbar(Style::Unified)),
-            (52.0, Chrome::Toolbar(Style::Unified)),
-            (120.0, Chrome::Toolbar(Style::Unified)),
-        ] {
-            assert_eq!(chrome_for(height), expected, "{height}");
-        }
-    }
-}
-
 type PresentationOptions = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject, usize) -> usize;
 
 /// tao's `window:willUseFullScreenPresentationOptions:`, called by the replacement.
@@ -124,4 +99,29 @@ unsafe extern "C-unwind" fn presentation_options(
     // AutoHideToolbar is only valid together with FullScreen and AutoHideMenuBar.
     let required = NSApplicationPresentationOptions::FullScreen | NSApplicationPresentationOptions::AutoHideMenuBar;
     if options.contains(required) { (options | NSApplicationPresentationOptions::AutoHideToolbar).0 } else { options.0 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chrome_is_the_closest_to_the_web_bar_height() {
+        use NSWindowToolbarStyle as Style;
+        for (height, expected) in [
+            (28.0, Chrome::Plain),
+            (30.0, Chrome::Plain),
+            (32.0, Chrome::Plain),
+            (32.9, Chrome::Plain),
+            (33.0, Chrome::Toolbar(Style::UnifiedCompact)),
+            (38.0, Chrome::Toolbar(Style::UnifiedCompact)),
+            (40.0, Chrome::Toolbar(Style::UnifiedCompact)),
+            (44.9, Chrome::Toolbar(Style::UnifiedCompact)),
+            (45.0, Chrome::Toolbar(Style::Unified)),
+            (52.0, Chrome::Toolbar(Style::Unified)),
+            (120.0, Chrome::Toolbar(Style::Unified)),
+        ] {
+            assert_eq!(chrome_for(height), expected, "{height}");
+        }
+    }
 }
