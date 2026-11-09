@@ -56,7 +56,7 @@ const native: OsClipboard = {
 
   async image() {
     if (!isTauri()) return null;
-    const url = await call(commands.clipboardImage());
+    const url = await call(commands.clipboardImageDataUrl());
     if (!url) return null;
     const binary = atob(url.slice(url.indexOf(",") + 1));
     return Uint8Array.from(binary, (c) => c.charCodeAt(0));

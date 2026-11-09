@@ -32,7 +32,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
           error: null,
         },
       }),
-      clipboardImage: () => clipboardImage(),
+      clipboardImageDataUrl: () => clipboardImage(),
       vcsBranchInfo: (root: string | null) => vcsBranchInfo(root),
       vcsBranches: (root: string | null) => vcsBranches(root),
     },

@@ -220,7 +220,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         clipboard::clipboard_has_files,
         clipboard::clipboard_has_image,
         clipboard::clipboard_image,
-        clipboard::clipboard_image,
+        clipboard::clipboard_image_data_url,
         clipboard::clipboard_set_file_list,
         notification::show_system_notification,
         fonts::system_font_families,
