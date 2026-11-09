@@ -15,7 +15,10 @@ vi.mock("../dialogs", async (original) => ({
   promptText: mocks.prompt,
   confirmDialog: mocks.confirm,
 }));
-vi.mock("@/workbench/contributions", () => ({ notifications: () => ({ notify: mocks.notify, expire: vi.fn() }) }));
+vi.mock("@/workbench/contributions", () => ({
+  notifications: () => ({ notify: mocks.notify, expire: vi.fn() }),
+  OWNS_FILE_DROP: {},
+}));
 vi.mock("@/platform/ipc", async (original) => {
   const real = await original<typeof import("@/platform/ipc")>();
   return {

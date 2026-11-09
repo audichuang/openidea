@@ -249,7 +249,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "clipboard_set_file_list"
             | "clipboard_text"
             | "clipboard_set_text"
-            | "clipboard_image"
+            | "clipboard_image_data_url"
             | "jdk_download_vendors"
             | "jdk_download_releases"
             | "jdk_download_location"
