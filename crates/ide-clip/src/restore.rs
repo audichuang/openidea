@@ -84,6 +84,8 @@ pub enum SkipReason {
     /// Two or more entries map to the same file (letter case on a case-insensitive file system, a symlinked
     /// folder, an explicit mapping): every one of them is skipped.
     TargetCollision,
+    /// One of the target's parent paths is an existing file, so no folder can be created for it.
+    ParentNotFolder,
 }
 
 impl SkipReason {
@@ -98,6 +100,7 @@ impl SkipReason {
             Self::CorruptNonText => "CORRUPT_NON_TEXT",
             Self::TargetNotFile => "TARGET_NOT_FILE",
             Self::TargetCollision => "TARGET_COLLISION",
+            Self::ParentNotFolder => "PARENT_NOT_FOLDER",
         }
     }
 }
@@ -295,6 +298,12 @@ pub fn plan_restore<P: AsRef<Path>>(roots: &[P], entries: &[RestoreEntry]) -> Re
             continue;
         }
 
+        // A file where a parent folder must be: nothing can be created below it. This row is skipped too.
+        if parent_is_file(&t.absolute_path) {
+            plan.skipped_operations.push(skip(Some(t.relative_path), SkipReason::ParentNotFolder));
+            continue;
+        }
+
         // Raw bytes are written as is: there is no encoding to preserve.
         if non_text.is_none() && must_not_overwrite(&t.absolute_path) {
             plan.skipped_operations.push(skip(Some(t.relative_path), SkipReason::NonUtf8Target));
@@ -316,6 +325,21 @@ pub fn plan_restore<P: AsRef<Path>>(roots: &[P], entries: &[RestoreEntry]) -> Re
     }
 
     plan
+}
+
+/// Whether the nearest existing ancestor of `path` is not a folder (an existing file lies where a parent
+/// folder is needed). Missing ancestors are fine: the write creates them.
+fn parent_is_file(path: &Path) -> bool {
+    for ancestor in path.ancestors().skip(1) {
+        match fs::metadata(ancestor) {
+            Ok(m) => return !m.is_dir(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            // Not a directory further up (a file above a missing name): same situation.
+            Err(e) if e.kind() == std::io::ErrorKind::NotADirectory => return true,
+            Err(_) => return false,
+        }
+    }
+    false
 }
 
 /// Whether the regular file at `path` holds exactly `bytes` (size first, so a
@@ -447,7 +471,7 @@ fn io_error_text(e: &std::io::Error) -> &'static str {
         PermissionDenied => "Folder is not writable",
         NotFound => "File or folder not found",
         AlreadyExists => "A file or folder already exists at that path",
-        NotADirectory => "A file is in the way of a folder",
+        NotADirectory => "A file is in the way of its parent folder",
         IsADirectory => "The target is a folder",
         StorageFull => "The disk is full",
         ReadOnlyFilesystem => "The file system is read-only",
