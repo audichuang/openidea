@@ -18,6 +18,7 @@ import type {
 } from "@/platform/ipc";
 import { tx, useTx, useTxTemplate } from "@/platform/i18n";
 import { call, commands, isCancelled, nextRequestId } from "@/platform/ipc";
+import { writePlainText } from "@/platform/clipboard";
 import { Button, EmptyState, IconButton, LogPane, Spinner, Tabs, T } from "@/ui";
 import type { MenuItem } from "@/ui";
 import {
@@ -359,7 +360,7 @@ function InspectView({ text, error }: { text: string | null; error: string | nul
           size="small"
           title="Copy"
           disabled={!text}
-          onClick={() => text && void navigator.clipboard?.writeText(text)}
+          onClick={() => text && void writePlainText(text).catch(() => {})}
         />
       </div>
       <pre

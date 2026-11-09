@@ -53,6 +53,7 @@ import {
   filesOf,
   groupFileNodes,
   groupOf,
+  stagingSide,
   ignoreTargets,
   isPartiallyStaged,
   planCommit,
@@ -88,7 +89,6 @@ import { stashTabOf, stashTabs, type ContentTab } from "./gitTabs";
 import {
   DIFF_KIND,
   changeNodeDiff,
-  changeNodeDiffData,
   diffInput,
   openVcsDiff,
   vcsDiffInFront,

@@ -19,6 +19,7 @@ import type {
   DockerVolume,
 } from "@/platform/ipc";
 import { call, commands, isTauri } from "@/platform/ipc";
+import { writePlainText } from "@/platform/clipboard";
 import { useTx, useTxTemplate } from "@/platform/i18n";
 import { Button, EmptyState, Icon, IconButton, Spinner, T } from "@/ui";
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
@@ -520,7 +521,7 @@ export function parseNetworkInspect(raw: string | null): ParsedNetworkInspect | 
 // ---------------------------------------------------------------------------
 // Shared UI primitives (adapted from openidea-kubernetes ResourceDetails.tsx)
 
-const copyText = (text: string) => void navigator.clipboard?.writeText(text);
+const copyText = (text: string) => void writePlainText(text).catch(() => {});
 
 async function openExternalUrl(url: string): Promise<void> {
   try {
