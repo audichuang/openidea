@@ -751,3 +751,20 @@ fn an_all_skipped_selection_names_what_was_skipped() {
     assert_eq!((closed.files, closed.skipped_unreadable), (0, 1), "{closed:?}");
     assert_eq!(closed.skipped_unreadable_paths, ["closed"]);
 }
+
+/// X4: on macOS the NFC and NFD spellings of one name are the same file, so both rows are skipped as a collision
+/// and the rest restores (only the macOS CI job runs this).
+#[cfg(target_os = "macos")]
+#[test]
+fn nfc_and_nfd_spellings_collide_on_macos() {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (_tmp, dst) = dir();
+    let settings = Settings::default();
+    let text = "// file: caf\u{e9}.png\none\n// file: cafe\u{301}.png\ntwo\n// file: ok.txt\nfine\n";
+    let preview = paste_preview_into(&dst, None, &[], text, false, &[], &settings).unwrap();
+    let skipped: Vec<_> = preview.files.iter().filter(|f| f.action == "skip").collect();
+    assert_eq!(skipped.len(), 2, "{:?}", preview.files);
+    assert!(skipped.iter().all(|f| f.reason.as_deref() == Some("TARGET_COLLISION")), "{skipped:?}");
+    let result = paste_apply(ClipPasteApply { id: preview.id, ..Default::default() }).unwrap();
+    assert_eq!((result.created, result.skipped), (1, 2), "{result:?}");
+}
