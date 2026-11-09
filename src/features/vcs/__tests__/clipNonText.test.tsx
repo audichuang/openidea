@@ -302,7 +302,7 @@ describe("NonTextDialog", () => {
     expect(onChoose.mock.calls.map((c) => c[0])).toEqual(["include", "exclude", "cancel"]);
   });
 
-  it("over the cap says more than 50 MB next to the raw total, never an estimate below it (case 26)", () => {
+  it("over the cap says more than 50 MiB next to the raw total, never an estimate below it (case 26)", () => {
     const MB = 1024 * 1024;
     render(
       <NonTextDialog
@@ -316,7 +316,7 @@ describe("NonTextDialog", () => {
       />,
     );
     expect(screen.getByText(/raw 54 MB/)).toBeTruthy();
-    expect(screen.getByText("Payload with them: more than 50 MB")).toBeTruthy();
+    expect(screen.getByText("Payload with them: more than 50 MiB")).toBeTruthy();
     expect(screen.queryByText(/about/)).toBeNull();
   });
 
