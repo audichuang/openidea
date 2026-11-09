@@ -52,6 +52,7 @@ import {
   checkOf,
   filesOf,
   groupOf,
+  stagingSide,
   ignoreTargets,
   isPartiallyStaged,
   planCommit,

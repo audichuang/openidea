@@ -119,7 +119,7 @@ pub fn clipboard_has_image() -> bool {
 /// the project view's Paste, which has no paste event. None when it holds no image.
 #[tauri::command]
 #[specta::specta]
-pub async fn clipboard_image(app: AppHandle) -> IdeResult<Option<String>> {
+pub async fn clipboard_image_data_url(app: AppHandle) -> IdeResult<Option<String>> {
     use base64::Engine;
     let data_url =
         |bytes: Vec<u8>| format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes));
