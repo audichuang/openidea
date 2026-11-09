@@ -22,7 +22,6 @@ import {
 import { confirmProjectTrust } from "@/platform/projectTrust";
 import { ask } from "@/workbench/messages";
 import { connectRemote, isRemoteWindow } from "@/platform/remote";
-import { confirmProjectTrust } from "@/platform/projectTrust";
 import { holdSplash } from "@/platform/splash";
 import { editorService, maybeEditorService, notifications } from "@/workbench/contributions";
 import { chooseProjectWindow } from "@/workbench/projectWindow";

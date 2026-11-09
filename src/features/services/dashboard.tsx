@@ -521,7 +521,7 @@ export function parseNetworkInspect(raw: string | null): ParsedNetworkInspect | 
 // ---------------------------------------------------------------------------
 // Shared UI primitives (adapted from openidea-kubernetes ResourceDetails.tsx)
 
-const copyText = (text: string) => void writeClipboardText(text);
+const copyText = (text: string) => void writeClipboardText(text).catch(() => {});
 
 async function openExternalUrl(url: string): Promise<void> {
   try {
