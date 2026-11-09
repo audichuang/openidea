@@ -555,6 +555,43 @@ fn colliding_entries_skip_their_rows_and_the_rest_restores() {
     assert!(!dst.join("real/img.png").exists());
 }
 
+/// Required case 27: a parent path of an entry is an existing file (`d3/a`). Only the rows under it are
+/// skipped, with a user reason; `d3/ok.txt` restores; nothing aborts the paste.
+#[test]
+fn a_parent_path_that_is_a_file_skips_only_its_rows() {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let bytes = png();
+    let line = nontext::placeholder_line(bytes.len() as u64, &nontext::sha256_hex(&bytes));
+    let body = nontext::encode_wrapped(&bytes);
+    let text = format!(
+        "// file: d3/a/deep.png\n{line}\n{body}\n\n// file: d3/a/b/deep.png\n{line}\n{body}\n\n\
+         // file: d3/a/text.txt\nhello\n// file: d3/ok.txt\nfine\n"
+    );
+    let (_tmp, dst) = dir();
+    fs::create_dir_all(dst.join("d3")).unwrap();
+    fs::write(dst.join("d3/a"), "a file").unwrap();
+    let preview = paste_preview_into(&dst, None, &[], &text, false, &[], &Settings::default()).unwrap();
+    let mut skipped: Vec<_> = preview
+        .files
+        .iter()
+        .filter(|f| f.action == "skip")
+        .map(|f| (f.path.clone(), f.reason.clone().unwrap()))
+        .collect();
+    skipped.sort();
+    assert_eq!(
+        skipped,
+        [
+            ("d3/a/b/deep.png".to_string(), "PARENT_NOT_FOLDER".to_string()),
+            ("d3/a/deep.png".to_string(), "PARENT_NOT_FOLDER".to_string()),
+            ("d3/a/text.txt".to_string(), "PARENT_NOT_FOLDER".to_string()),
+        ]
+    );
+    let result = paste_apply(ClipPasteApply { id: preview.id, ..Default::default() }).unwrap();
+    assert_eq!((result.created, result.skipped), (1, 3), "{result:?}");
+    assert_eq!(fs::read_to_string(dst.join("d3/a")).unwrap(), "a file");
+    assert_eq!(fs::read_to_string(dst.join("d3/ok.txt")).unwrap().trim_end(), "fine");
+}
+
 /// Required case 24: a replayed commit whose only change the non-UTF-8 guard refuses shows the reason in
 /// the preview, is not created as an empty commit and is named in the result; the next commit still applies.
 #[test]
