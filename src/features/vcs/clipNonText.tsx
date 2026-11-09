@@ -126,7 +126,7 @@ export function skipReasonText(code: string | null | undefined): string {
     case "TARGET_NOT_FILE":
       return tx("Target is a folder; not replaced");
     case "TARGET_COLLISION":
-      return tx("Another entry writes the same file; not applied");
+      return tx("Another entry writes the same file");
     case "PARENT_NOT_FOLDER":
       return tx("A file is in the way of its parent folder");
     case "the renamed-from path is a directory":
