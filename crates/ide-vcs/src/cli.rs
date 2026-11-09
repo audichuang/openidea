@@ -782,7 +782,7 @@ mod command_session_tests {
 
 #[cfg(test)]
 mod filter_override_tests {
-    use super::filter_overrides;
+    use super::filter_overrides_from;
 
     #[test]
     fn every_filter_driver_is_switched_off() {
