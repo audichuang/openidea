@@ -785,16 +785,23 @@ struct Change {
 
 /// Appends `entries` to `changes`, first entry per path wins (TS keys on
 /// `renameUri ?? uri`). A later deletion of the same path adds its old OID,
-/// and a later rename onto it adds its source.
-fn union_into(changes: &mut Vec<Change>, entries: Vec<RawEntry>, skipped: &mut usize) {
+/// and a later rename onto it adds its source. A path that is not UTF-8 is
+/// dropped and its lossy spelling recorded once in `skipped`.
+fn union_into(changes: &mut Vec<Change>, entries: Vec<RawEntry>, skipped: &mut Vec<String>) {
     // Path -> position in `changes`, rebuilt per union because the Working
     // source unions four listings into one vector: a linear `find` per
     // entry made huge untracked-file listings quadratic.
     let mut index: HashMap<String, usize> = changes.iter().enumerate().map(|(i, c)| (c.path.clone(), i)).collect();
     for e in entries {
-        let Ok(path) = String::from_utf8(e.path) else {
-            *skipped += 1;
-            continue;
+        let path = match String::from_utf8(e.path) {
+            Ok(path) => path,
+            Err(bad) => {
+                let lossy = String::from_utf8_lossy(bad.as_bytes()).into_owned();
+                if !skipped.contains(&lossy) {
+                    skipped.push(lossy);
+                }
+                continue;
+            }
         };
         let rename_source = if e.status == b'R' { e.old_path.and_then(|p| String::from_utf8(p).ok()) } else { None };
         if let Some(i) = index.get(&path).copied() {
@@ -918,6 +925,17 @@ pub fn list_changes_with(
     source: &GitSource,
     opts: &RunOptions,
 ) -> Result<(Vec<ChangedPathEntry>, usize), GitError> {
+    let (entries, skipped) = list_changes_named_with(git, source, opts)?;
+    Ok((entries, skipped.len()))
+}
+
+/// [`list_changes_with`], naming (lossily, `/`-separated from the repository
+/// root) the entries dropped because their path name was not UTF-8.
+pub fn list_changes_named_with(
+    git: &Git,
+    source: &GitSource,
+    opts: &RunOptions,
+) -> Result<(Vec<ChangedPathEntry>, Vec<String>), GitError> {
     let (changes, skipped) = collect_changes(git, source, opts)?;
     let entries = changes
         .into_iter()
@@ -963,7 +981,7 @@ pub fn list_changed_paths_and_gitlinks_with(
 
 /// Ordered change metadata without reading file contents, plus the number of
 /// entries dropped for a non-UTF-8 path name.
-fn collect_changes(git: &Git, source: &GitSource, opts: &RunOptions) -> Result<(Vec<Change>, usize), GitError> {
+fn collect_changes(git: &Git, source: &GitSource, opts: &RunOptions) -> Result<(Vec<Change>, Vec<String>), GitError> {
     collect_changes_in(git, source, None, opts)
 }
 
@@ -974,7 +992,7 @@ fn collect_changes_in(
     source: &GitSource,
     only: Option<&str>,
     opts: &RunOptions,
-) -> Result<(Vec<Change>, usize), GitError> {
+) -> Result<(Vec<Change>, Vec<String>), GitError> {
     already_cancelled(opts, "collect changes")?;
     let spec = only.map(|p| format!(":(literal){p}"));
     let only: Vec<&str> = spec.as_deref().map_or_else(Vec::new, |s| vec!["--", s]);
@@ -983,7 +1001,7 @@ fn collect_changes_in(
         args.extend_from_slice(&RAW);
         args
     };
-    let mut skipped = 0;
+    let mut skipped = Vec::new();
     let mut changes = Vec::new();
     match source {
         GitSource::Working => {
@@ -1062,7 +1080,7 @@ fn collect_changes_in(
 fn collect_raw(git: &Git, source: &GitSource) -> Result<(Vec<PayloadFile>, usize), GitError> {
     let opts = RunOptions::default();
     let (changes, skipped) = collect_changes(git, source, &opts)?;
-    Ok((read_changes(git, source, changes, None, &opts)?, skipped))
+    Ok((read_changes(git, source, changes, None, &opts)?, skipped.len()))
 }
 
 /// Read only the clicked path; listing a large repository never reads blobs.
@@ -1444,7 +1462,7 @@ mod tests {
             path: path.as_bytes().to_vec(),
         };
         let mut changes = Vec::new();
-        let mut skipped = 0;
+        let mut skipped = Vec::new();
 
         // First union: b, c, a, g.
         union_into(
@@ -1464,7 +1482,7 @@ mod tests {
 
         let paths: Vec<&str> = changes.iter().map(|c| c.path.as_str()).collect();
         assert_eq!(paths, ["b.txt", "c.txt", "a.txt", "g.txt", "d.txt"]);
-        assert_eq!(skipped, 0);
+        assert!(skipped.is_empty());
         // First sighting wins: c stays an M with the first union's OIDs.
         let c = &changes[1];
         assert_eq!(c.status, b'M');
@@ -1497,7 +1515,7 @@ mod tests {
             path: path.as_bytes().to_vec(),
         };
         let mut changes = Vec::new();
-        let mut skipped = 0;
+        let mut skipped = Vec::new();
         union_into(&mut changes, vec![entry(b'M', None, "b.txt"), entry(b'R', Some("x.txt"), "y.txt")], &mut skipped);
         union_into(
             &mut changes,
