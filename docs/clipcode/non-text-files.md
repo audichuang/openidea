@@ -16,7 +16,8 @@ project with a `static/` folder of images lost the images.
 - Files that cannot be read (permission denied, dangling symlink, a directory that cannot be listed) are still
   skipped. The completion notice counts them and names the first few paths, including those dropped while a
   selected folder is expanded or a selection is resolved, not only those that fail at read time. A selected
-  folder that cannot be listed is skipped and named like any other unreadable item; it never fails the whole copy.
+  folder that cannot be listed is skipped and named like any other unreadable item; it never fails the whole copy
+  (selected alone, nothing is left to copy: see "Nothing to copy" below).
 - A symlink to a directory is not followed; it is counted and named as skipped (reason: symlinked folder). This
   holds whether the symlink is selected directly (alone or in a multi-selection) or found while a selected folder
   is expanded; a project tree that shows the symlink as a folder does not change this. (Found by deep testing
@@ -46,7 +47,9 @@ project with a `static/` folder of images lost the images.
   with a non-portable name is still walked and each file under it is skipped and named with its full path; a
   non-UTF-8 name directly under the project root, when the root itself is selected, is named once and not walked.
   Another implementation may name such a folder once instead, as long as none of its files is copied. Symlinked
-  folders are never followed (above).
+  folders are never followed (above). Where the runtime cannot see a name's raw bytes (JVM, Node string readdir),
+  a non-UTF-8 name may be named as Unreadable instead; it is never copied either way. A name the platform's file
+  view does not list need not be named.
 
   Git-change copies apply the same rule to each changed path: a path that is not portable is skipped and named
   under "Name not portable"; it is never written into a header, and the other changes are still copied (decided
@@ -56,11 +59,9 @@ project with a `static/` folder of images lost the images.
 
   A file outside every copy root: if its header is an absolute path, a control character anywhere in that path
   or a non-portable file name skips it under "Name not portable"; other characters in its folders are allowed
-  (it may not resolve on paste, as today). Where the runtime cannot see a name's raw bytes (JVM, Node string
-  readdir), a non-UTF-8 name may be named as Unreadable instead; it is never copied either way. A name the
-  platform's file view does not list need not be named.
+  (it may not resolve on paste, as today).
 
-- **Exclude** keeps today's payload exactly.
+- **Exclude** keeps today's payload exactly, with the exceptions case 11 lists.
 - A copy that would carry no file (everything selected was skipped, or a files selection would copy nothing but
   size placeholders) never writes the clipboard: it says "Nothing to copy" and names what was skipped, one
   category per line (Unreadable, Name not portable, Symlinked folder), as the completion notice does. An empty or
@@ -129,10 +130,10 @@ while the Exclude copy runs; the dialog and the Include notice must agree.
 
 Buttons: **Include** (default focus), **Exclude** (today's behaviour: non-text files are left out) and
 **Cancel** (nothing is copied). A dialog line whose count is 0 is omitted. Include is disabled, with the reason
-shown, when the estimate is over the whole-payload limit; focus then starts on Exclude. In that case the dialog never shows an estimate below the raw
-total: it says the payload would be more than 50 MiB (or shows a real estimate of the full Include size), next
-to the raw total. Include is also disabled, with the reason shown, when the `headerFormat` cannot be escaped: some
-line Include writes (the placeholder line or a Base64 line) matches the header pattern both as written and with
+shown, when the estimate is over the whole-payload limit; focus then starts on Exclude. In that case the dialog
+never shows an estimate below the raw total: it says the payload would be more than 50 MiB (or shows a real
+estimate of the full Include size), next to the raw total. Include is also disabled, with the reason shown, when
+the `headerFormat` cannot be escaped: some line Include writes (the placeholder line or a Base64 line) matches the header pattern both as written and with
 `//clipcode-esc: ` in front, so it would be read as a file header. With one `$FILE_PATH` this happens when the text
 before `$FILE_PATH` is a prefix of `//clipcode-esc: ` (empty, `/`, `//`, ...) and such a line can end with the text
 after it: `$FILE_PATH` alone, `//$FILE_PATH` (matches the placeholder), `$FILE_PATH==` (matches a Base64 line
@@ -190,11 +191,11 @@ jwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAAZdEVYdFNvZnR3YXJlAHBhaW50Lm5ldCA0LjAu
 
   "First line" means the first body line that is not blank (only space, `\t`, `\n`, VT, `\f`, `\r`) in the text
   itself, on both sides: the writer applies the placeholder escape to that line, not to a blank one before it,
-  and the reader, after un-escaping one level, looks for the placeholder escape on its first non-blank line. A whitespace-only
-  line that the header format matches (e.g. `   ` under ` $FILE_PATH`) is escaped on the wire and kept by the
-  reader, so the reader cannot simply take line 0. (Found by Codex review: with leading blank lines the writer and
-  reader picked different lines; text lost a literal `//clipcode-esc: ` or was decoded as bytes.) The other
-  readers (IntelliJ, VS Code, Orca) need the same rule.
+  and the reader, after un-escaping one level, looks for the placeholder escape on its first non-blank line. A
+  whitespace-only line that the header format matches (e.g. `   ` under ` $FILE_PATH`) is escaped on the wire and
+  kept by the reader, so the reader cannot simply take line 0. (Found by Codex review: with leading blank lines
+  the writer and reader picked different lines; text lost a literal `//clipcode-esc: ` or was decoded as
+  bytes.) The other readers (IntelliJ, VS Code, Orca) need the same rule.
 
   A real non-text placeholder line carries zero prefixes (built-in header) or one (a custom `headerFormat` that
   matches it, e.g. `// $FILE_PATH`). The reader un-escapes one level per line as for any body, then looks at
@@ -277,9 +278,9 @@ Only OpenIDEA implements commits mode (`// snip-sync commits v1`). The marker st
   with the reason, and continues with the next commit.
 - Read-only targets (mode 444) follow the overwrite option like any other existing file, with no extra note; this
   is today's behaviour for text files too (decided by the user, deep round 3: keep as is).
-- The whole-payload limit on paste counts the payload as the parser sees it: each CRLF pair counts as one byte (a
-  Windows clipboard must not push a valid payload over the limit), but a lone CR counts in full (it must not let
-  oversized input bypass the limit).
+- A whole-payload limit on paste, where an implementation has one, counts the payload as the parser sees it: each
+  CRLF pair counts as one byte (a Windows clipboard must not push a valid payload over the limit), but a lone CR
+  counts in full (it must not let oversized input bypass the limit).
 - One entry that cannot be applied (its target path is a directory, one of its parent paths is an existing file
   ("A file is in the way of its parent folder"), a parent is not writable, two entries map to
   the same file on a case-insensitive file system such as `IMG.png` and `img.png` on APFS, or two spellings that
@@ -342,9 +343,10 @@ Each implementation adds these to its contract tests (OpenIDEA: `clipboard-contr
     payload is the same as without the cap.
 16. Unreadable files dropped during folder expansion (chmod 000 file and folder, dangling symlink) are named in
     the completion notice.
-17. CRLF growth near the whole-payload limit is accepted on paste; lone CRs past the limit are refused.
+17. Implementations with a paste-side limit: CRLF growth near the whole-payload limit is accepted on paste; lone
+    CRs past the limit are refused.
 18. Base64 strictness is the same in all implementations: missing padding, non-zero trailing bits and characters
-    outside the alphabet (other than ASCII whitespace) make the entry corrupt.
+    outside the alphabet (other than the whitespace removed in [Pasting](#pasting)) make the entry corrupt.
 19. A selected unreadable folder plus a readable file: the file is copied, the folder is named as unreadable.
 20. Paste where a target path is a directory: only that row is skipped; the others restore.
 21. Names shown in the dialog and preview: three 58–60 character names sharing a prefix are distinguishable; a
