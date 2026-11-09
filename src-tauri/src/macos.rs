@@ -316,6 +316,8 @@ thread_local! {
 /// `STUCK` is taken as over: its window may have closed without an end notification.
 const SETTLE: std::time::Duration = std::time::Duration::from_millis(300);
 const STUCK: std::time::Duration = std::time::Duration::from_secs(5);
+/// Longest a window counts as in a fullscreen transition (`in_fullscreen_transition`).
+pub const TRANSITION_WAIT: std::time::Duration = STUCK.saturating_add(SETTLE);
 
 /// Starts tracking every window's fullscreen transitions (main thread, once at startup).
 pub fn observe_fullscreen_transitions(_mtm: MainThreadMarker) {
