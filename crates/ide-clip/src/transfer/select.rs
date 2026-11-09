@@ -248,7 +248,7 @@ pub fn copy_selection_detailed(
     };
     let mut plan = plan;
     // The walk stopped at the limit: files it never listed are left out too.
-    plan.non_text.limit_left_out_lower_bound = expanded.truncated;
+    plan.non_text.limit_left_out_lower_bound |= expanded.truncated;
     let skipped = plan.skipped_unreadable_count + plan.skipped_file_size_count + expanded.skipped;
     // `expanded.skipped` also counts unportable names and symlinked folders: not unreadable.
     let walk_unreadable = expanded.skipped - expanded.detail.unportable - expanded.detail.symlink_dirs;
