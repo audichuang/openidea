@@ -127,6 +127,8 @@ export function skipReasonText(code: string | null | undefined): string {
       return tx("Target is a folder; not replaced");
     case "TARGET_COLLISION":
       return tx("Another entry maps to the same file; not applied");
+    case "PARENT_NOT_FOLDER":
+      return tx("A file is in the way of its parent folder");
     case "the renamed-from path is a directory":
       return tx("The renamed-from path is a folder");
     case "the path to delete is a directory":
@@ -157,8 +159,8 @@ export function errorLineText(line: string): string {
         return tx("File or folder not found");
       case "A file or folder already exists at that path":
         return tx("A file or folder already exists at that path");
-      case "A file is in the way of a folder":
-        return tx("A file is in the way of a folder");
+      case "A file is in the way of its parent folder":
+        return tx("A file is in the way of its parent folder");
       case "The target is a folder":
         return tx("The target is a folder");
       case "The disk is full":
