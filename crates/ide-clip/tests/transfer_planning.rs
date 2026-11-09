@@ -994,6 +994,51 @@ fine
     assert_eq!(fs::read_to_string(dst.path().join("ok.txt")).unwrap().trim_end(), "fine");
 }
 
+/// A payload whose entries sit under `d3/a`, which is a file in the destination, plus `d3/ok.txt`.
+fn parent_is_file_payload() -> String {
+    // Non-text placeholder for the bytes [0, 1, 2].
+    use sha2::{Digest, Sha256};
+    let bytes = [0u8, 1, 2];
+    let hash: String = Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect();
+    let png = format!("// File skipped: non-text file, 3 bytes, sha256 {hash}; base64 follows\nAAEC\n");
+    format!(
+        "// file: d3/a/deep.png\n{png}// file: d3/a/b/deep.png\n{png}// file: d3/a/text.txt\nhello\n// file: d3/ok.txt\nfine\n"
+    )
+}
+
+#[test]
+fn test_paste_parent_path_is_a_file_skips_only_those_rows() {
+    let dst = TestRepo::new("parent-is-file");
+    fs::create_dir_all(dst.path().join("d3")).unwrap();
+    fs::write(dst.path().join("d3/a"), "i am a file").unwrap();
+
+    let mapping = ImportMapping::with_primary(dst.canonical_id());
+    let plan =
+        plan_import(&parent_is_file_payload(), "// file: $FILE_PATH", &[dst.path().to_path_buf()], &mapping).unwrap();
+    let created: Vec<_> = plan.create_operations().iter().map(|o| o.relative_path.as_str()).collect();
+    assert_eq!(created, ["d3/ok.txt"]);
+    let mut skipped: Vec<_> = plan
+        .restore_plan()
+        .skipped_operations
+        .iter()
+        .map(|s| (s.relative_path.clone().unwrap_or_default(), s.reason.as_str()))
+        .collect();
+    skipped.sort();
+    assert_eq!(
+        skipped,
+        [
+            ("d3/a/b/deep.png".to_string(), "PARENT_NOT_FOLDER"),
+            ("d3/a/deep.png".to_string(), "PARENT_NOT_FOLDER"),
+            ("d3/a/text.txt".to_string(), "PARENT_NOT_FOLDER"),
+        ]
+    );
+    let result = plan.apply(&RestoreSelection::default()).unwrap();
+    assert_eq!(result.created_count, 1);
+    assert_eq!(result.planned_skipped_count, 3);
+    assert_eq!(fs::read_to_string(dst.path().join("d3/a")).unwrap(), "i am a file");
+    assert_eq!(fs::read_to_string(dst.path().join("d3/ok.txt")).unwrap().trim_end(), "fine");
+}
+
 #[test]
 fn test_plan_import_refuses_git_path_segment() {
     let repo = TestRepo::new("refuse-git-import");
