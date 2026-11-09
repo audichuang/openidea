@@ -75,11 +75,11 @@ async function openDialog(page?: string) {
 }
 
 describe("Settings dialog", () => {
-  it("offers only new window, current window and ask, including old attach settings", async () => {
+  it("offers new window, new tab, current window and ask, including old attach settings", async () => {
     current = setAt(current, "general.openProjectIn", "attach");
     const dialog = await openDialog("general");
     const group = within(dialog).getByRole("radiogroup", { name: "Open project in" });
-    expect(within(group).getAllByRole("radio")).toHaveLength(3);
+    expect(within(group).getAllByRole("radio")).toHaveLength(4);
     expect(within(group).getByRole("radio", { name: "Ask" })).toBeChecked();
     expect(within(group).queryByRole("radio", { name: "Attach" })).not.toBeInTheDocument();
   });
