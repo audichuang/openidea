@@ -374,7 +374,9 @@ Each implementation adds these to its contract tests (OpenIDEA: `clipboard-contr
     character before an ellipsis and no gap after it.
 29. Git copy (working changes and a commit; every Git source the implementation has) with a changed file named
     `q"uote.txt` or `tab<TAB>name.txt` next to `a.txt`: `a.txt` is copied, the others are named under "Name not
-    portable" and appear in no header; when such a file is the only change, case 30 applies. On Linux a
+    portable" and appear in no header; when such a file is the only change, case 30 applies. Also a repository
+    nested in the project whose folder name holds a newline: its changes are skipped and named, no header is
+    written. On Linux a
     non-UTF-8 name is named the same way (lossily) or, per the platform rule, as Unreadable.
 30. A selection whose every file is skipped (a folder holding only a mode-000 file, a folder holding only
     `q"uote.txt`, a lone unreadable folder, a lone symlinked folder): the clipboard keeps its previous content, the
