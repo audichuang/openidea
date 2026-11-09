@@ -81,7 +81,7 @@ pub async fn clipboard_set_file_list(app: AppHandle, paths: Vec<PathBuf>) -> Ide
 /// None when the clipboard holds no image, and always on other platforms.
 #[tauri::command]
 #[specta::specta]
-pub async fn clipboard_image(app: AppHandle) -> IdeResult<Option<String>> {
+pub async fn clipboard_image_data_url(app: AppHandle) -> IdeResult<Option<String>> {
     #[cfg(target_os = "linux")]
     {
         use base64::Engine;
