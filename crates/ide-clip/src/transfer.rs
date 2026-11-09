@@ -1529,6 +1529,17 @@ fn canonical_target_identity(path: &Path) -> String {
     paths::path_key(&full.to_string_lossy())
 }
 
+/// macOS file systems (APFS, HFS+) store the NFC and NFD spellings of a name as one file.
+const NFC_COLLISIONS: bool = cfg!(target_os = "macos");
+
+/// The key two paste targets collide on: `identity` in NFC when `nfc`, then lowercased on a case-insensitive
+/// file system.
+fn collision_key(identity: String, case_insensitive: bool, nfc: bool) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    let identity = if nfc { identity.nfc().collect() } else { identity };
+    if case_insensitive { identity.to_lowercase() } else { identity }
+}
+
 pub(crate) fn fs_is_case_insensitive(root: &Path) -> bool {
     probe_fs_case_insensitive(root).unwrap_or(cfg!(any(windows, target_os = "macos")))
 }
@@ -3028,10 +3039,7 @@ pub fn plan_import_parsed_with(
             &root_case_insensitive,
             mapping.primary_destination.as_ref(),
         );
-        let mut identity = canonical_target_identity(&op.absolute_path);
-        if is_ci {
-            identity = identity.to_lowercase();
-        }
+        let identity = collision_key(canonical_target_identity(&op.absolute_path), is_ci, NFC_COLLISIONS);
         target_identities.entry(identity).or_default().push((true, i));
     }
     for (i, op) in combined_deletes.iter().enumerate() {
@@ -3043,10 +3051,7 @@ pub fn plan_import_parsed_with(
             &root_case_insensitive,
             mapping.primary_destination.as_ref(),
         );
-        let mut identity = canonical_target_identity(&op.absolute_path);
-        if is_ci {
-            identity = identity.to_lowercase();
-        }
+        let identity = collision_key(canonical_target_identity(&op.absolute_path), is_ci, NFC_COLLISIONS);
         target_identities.entry(identity).or_default().push((false, i));
     }
     let mut colliding_creates: HashSet<usize> = HashSet::new();
@@ -4831,5 +4836,26 @@ mod parsed_import_tests {
                 assert_eq!(reasons, [SkipReason::AmbiguousPath], "nested={nested}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod collision_key_tests {
+    use super::collision_key;
+
+    /// X4: on macOS (APFS, HFS+) the NFC and NFD spellings of a name are one file, so they collide; elsewhere
+    /// they are two files. Letter case folds only on a case-insensitive file system.
+    #[test]
+    fn nfc_folds_only_where_asked_and_case_only_on_a_case_insensitive_file_system() {
+        let (nfc, nfd) = ("/d/caf\u{e9}.png".to_string(), "/d/cafe\u{301}.png".to_string());
+        assert_eq!(collision_key(nfc.clone(), false, true), collision_key(nfd.clone(), false, true));
+        assert_ne!(collision_key(nfc.clone(), false, false), collision_key(nfd.clone(), false, false));
+        assert_eq!(collision_key("/d/IMG.png".into(), true, false), collision_key("/d/img.png".into(), true, false));
+        assert_ne!(collision_key("/d/IMG.png".into(), false, true), collision_key("/d/img.png".into(), false, true));
+        // Both together: an NFD capital and an NFC small letter.
+        assert_eq!(
+            collision_key("/d/E\u{301}.png".into(), true, true),
+            collision_key("/d/\u{e9}.png".into(), true, true)
+        );
     }
 }
