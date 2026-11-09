@@ -362,7 +362,7 @@ function InspectView({ text, error }: { text: string | null; error: string | nul
           size="small"
           title="Copy"
           disabled={!text}
-          onClick={() => text && void writeClipboardText(text)}
+          onClick={() => text && void writeClipboardText(text).catch(() => {})}
         />
       </div>
       <pre

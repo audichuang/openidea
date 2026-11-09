@@ -54,6 +54,7 @@ import {
   filesOf,
   groupFileNodes,
   groupOf,
+  stagingSide,
   ignoreTargets,
   isPartiallyStaged,
   planCommit,
