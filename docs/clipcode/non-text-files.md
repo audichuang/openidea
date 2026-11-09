@@ -222,6 +222,11 @@ Only OpenIDEA implements commits mode (`// snip-sync commits v1`). The marker st
   pre-existing, found by deep testing round 3.)
 - The paste and replay previews never show raw reason codes (`BINARY`, `NON_UTF8`, `NON_UTF8_TARGET`); each
   reason has user text.
+- Known, not handled (deep round 6, judged not worth another round): a file name with consecutive spaces is
+  shortened in the preview although it fits; selecting only an unreadable folder (or only items that are all
+  skipped, with a folder among them) fails the copy with the raw "Nothing to copy" error and does not name the
+  folder (pre-existing, #198); a replayed commit whose every write is already identical at the destination is
+  created as an empty commit (text too, likely pre-existing).
 - Known, not handled: with `core.autocrlf=true` in the destination repository, git's own line-ending conversion
   can rewrite a committed non-text file that has no NUL (e.g. Big5 with CRLF); the working-tree file is correct.
   This is git's documented behaviour for that setting and applies to text files too.
@@ -262,7 +267,8 @@ Each implementation adds these to its contract tests (OpenIDEA: `clipboard-contr
 20. Paste where a target path is a directory: only that row is skipped; the others restore.
 21. Names shown in the dialog and preview: three 58–60 character names sharing a prefix are distinguishable; a
     file under a 150-character folder path shows its whole file name (extension included) in the dialog and in a
-    nested preview row with an Unchanged badge.
+    nested preview row whose target is identical (the Unchanged badge shows when it fits whole, otherwise it is
+    hidden; the name keeps priority).
 22. A symlink to a folder selected directly (alone and in a multi-selection) is not followed and is named as a
     symlinked folder.
 23. A payload with `IMG.png` and `img.png` pasted on a case-insensitive file system skips both with a collision
@@ -303,6 +309,10 @@ Each review or test round folds its findings back into this spec.
   lines" when the text starts with blank lines: a literal `//clipcode-esc: ` was lost, or `\n<placeholder>\nAQID`
   pasted as bytes (pre-existing). Fixed on both sides, including an escaped whitespace-only line under
   ` $FILE_PATH`; contract cases added.
+- Deep testers, round 6 (three testers): the ellipsis and parent-path-is-a-file fixes pass (cases 27, 28); every
+  data case (D1–D11, D13, D15, D16, D18) passes for all three. Remaining items are cosmetic or pre-existing and
+  were listed under Known instead of opening another round (user: avoid over-polishing). Case 21 reworded: a
+  nested row's Unchanged badge hides when it does not fit whole.
 - Deep testers, round 5 (three testers, D1–D18 plus their own cases): escape, unescapable header, estimate,
   badges and OS error text pass. Open: (1) the middle ellipsis cuts a letter in half before the `…` and leaves a
   ~3 px gap after a shortened folder part in the dialog and detail header (introduced by the round 4/5 layout
