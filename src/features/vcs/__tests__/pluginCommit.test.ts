@@ -14,6 +14,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 });
 
 import type { CommitSelection, FileStatus } from "@/bindings";
+import { useProject } from "@/platform/project";
 import { maybeCommitService, registerCommitCheckProvider } from "@/workbench/contributions";
 import { commitChanges } from "../changeOps";
 import { draftRevision, installDraftRevision, provideCommit } from "../commitSelection";
@@ -30,8 +31,13 @@ const files: FileStatus[] = ["a", "b"].map((n) => ({
 
 let disposers: Array<() => void> = [];
 
+function setStaging(on: boolean) {
+  useProject.setState({ settings: { vcs: { git: { stagingArea: on }, commit: { nonModal: true } } } } as never);
+}
+
 beforeEach(() => {
   localStorage.clear();
+  setStaging(false);
   commit.mockClear();
   useVcs.setState({
     available: false,
@@ -48,6 +54,7 @@ beforeEach(() => {
     checks: new Map([["/p/b.ts", "none" as const]]),
     excludedHunks: new Map(),
     checkProblems: [],
+    stagingExcludedRoots: new Set(),
   });
   disposers = [installDraftRevision(), provideCommit()];
 });
@@ -80,6 +87,58 @@ describe("the commit plugins see", () => {
     useVcs.setState({ root: null });
     expect(await maybeCommitService()!.selection()).toBeNull();
     expect(maybeCommitService()!.setMessage(draftRevision(), "x")).toBe(false);
+  });
+});
+
+describe("the commit plugins see with the staging area", () => {
+  /** b.ts is staged but unticked: the checkboxes and the index disagree. */
+  const staged: FileStatus[] = [files[0]!, { ...files[1]!, staged: "modified", unstaged: null }];
+
+  it("is the index as Commit commits it, not the checkboxes", async () => {
+    useVcs.setState({ status: staged });
+    expect((await maybeCommitService()!.selection())!.repositories).toEqual([
+      { root: "/p", options: expect.objectContaining({ stage: ["/p/a.ts"], exclude: ["/p/b.ts"], partial: [] }) },
+    ]);
+
+    setStaging(true);
+    expect((await maybeCommitService()!.selection())!.repositories).toEqual([
+      { root: "/p", options: expect.objectContaining({ stage: [], exclude: [], partial: [] }) },
+    ]);
+  });
+
+  it("leaves out the repositories unticked on their Staged node", async () => {
+    setStaging(true);
+    const q: FileStatus = { ...staged[1]!, path: "/q/c.ts", relPath: "c.ts" };
+    useVcs.setState({ roots: ["/p", "/q"], status: [...staged, q] });
+    useCommit.setState({ stagingExcludedRoots: new Set(["/p"]) });
+    const selection = (await maybeCommitService()!.selection())!;
+    expect(selection.repositories.map((r) => r.root)).toEqual(["/q"]);
+  });
+
+  it("is a new draft when the mode, the unticked repositories or the index change", () => {
+    useVcs.setState({ status: staged });
+    let before = draftRevision();
+    setStaging(true);
+    expect(draftRevision()).toBeGreaterThan(before);
+
+    before = draftRevision();
+    useCommit.setState({ stagingExcludedRoots: new Set(["/p"]) });
+    expect(draftRevision()).toBeGreaterThan(before);
+
+    // A refresh that finds the same index keeps the draft.
+    before = draftRevision();
+    useVcs.setState({ status: staged.map((f) => ({ ...f })) });
+    expect(draftRevision()).toBe(before);
+
+    useVcs.setState({ status: staged.map((f) => ({ ...f, staged: "modified" as const })) });
+    expect(draftRevision()).toBeGreaterThan(before);
+  });
+
+  it("keeps the draft when an unstaged edit appears without the staging area", () => {
+    useVcs.setState({ status: staged });
+    const before = draftRevision();
+    useVcs.setState({ status: staged.map((f) => ({ ...f, staged: "modified" as const })) });
+    expect(draftRevision()).toBe(before);
   });
 });
 
