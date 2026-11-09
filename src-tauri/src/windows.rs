@@ -524,6 +524,14 @@ pub fn close_window_count(all: &[String], pending: &[String], caller: &str) -> u
     }
 }
 
+/// The window, other than `caller`, whose close guard is still running (its prompt may be waiting
+/// for the user): the first open one in label order.
+pub fn still_closing(all: &[String], pending: &[String], caller: &str) -> Option<String> {
+    sorted_labels(pending.iter().map(String::as_str).filter(|l| *l != caller && all.iter().any(|a| a == l)))
+        .into_iter()
+        .next()
+}
+
 pub fn sorted_labels<'a>(labels: impl IntoIterator<Item = &'a str>) -> Vec<String> {
     let mut v: Vec<String> = labels.into_iter().map(str::to_owned).collect();
     v.sort_by_key(|l| order_key(l));
@@ -1961,6 +1969,20 @@ mod tests {
         assert_eq!(close_window_count(&group, &[], "main"), 3);
         // Requests from windows already gone (or auxiliary ones) are ignored.
         assert_eq!(close_window_count(&s(&["project-2"]), &s(&["main", "project-2"]), "project-2"), 1);
+    }
+
+    // After a group member settles (back to the welcome screen, or cancelled), a member whose close
+    // guard still runs is shown again; nothing is focused when no other close is pending.
+    #[test]
+    fn settled_member_hands_focus_to_a_member_still_closing() {
+        let all = s(&["main", "project-2", "project-10"]);
+        assert_eq!(still_closing(&all, &s(&["project-10", "main", "project-2"]), "main"), Some("project-2".into()));
+        assert_eq!(still_closing(&all, &s(&["project-10", "main"]), "main"), Some("project-10".into()));
+        assert_eq!(still_closing(&all, &s(&["main", "project-2"]), "project-2"), Some("main".into()));
+        // Only the caller, nothing, or windows already gone.
+        assert_eq!(still_closing(&all, &s(&["main"]), "main"), None);
+        assert_eq!(still_closing(&all, &[], "main"), None);
+        assert_eq!(still_closing(&s(&["main"]), &s(&["main", "project-2"]), "main"), None);
     }
 
     // A window that vetoed Quit stays open: its close request must not count when a later window closes.
