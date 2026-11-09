@@ -695,6 +695,25 @@ fn git_copies_skip_and_name_unportable_names() {
     assert_eq!(only.skipped_unportable_paths, ["q\"uote.txt"]);
 }
 
+/// X1 in a repository nested in the project: the skipped name is spelled as the payload would spell it.
+#[cfg(unix)]
+#[test]
+fn a_nested_repository_names_an_unportable_change_relative_to_the_project() {
+    use ide_host::ops::clip::ClipChangeSide;
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (_tmp, project) = dir();
+    let repo = project.join("sub");
+    fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    fs::write(repo.join("a.txt"), "hello\n").unwrap();
+    fs::write(repo.join("q\"uote.txt"), "q\n").unwrap();
+    let source = ClipCopySource::Changes { paths: vec![repo.clone()], side: ClipChangeSide::Working };
+    let r = copy_with(&project, source, &Settings::default(), ClipNonTextMode::Exclude).unwrap();
+    assert_eq!((r.files, r.skipped_unportable), (1, 1), "{r:?}");
+    assert_eq!(r.skipped_unportable_paths, ["sub/q\"uote.txt"]);
+    assert!(r.text.contains("sub/a.txt"), "{}", r.text);
+}
+
 /// X1 on a file system that takes non-UTF-8 names (Linux): such a changed file is named (lossily) under
 /// "Name not portable", not counted as unreadable.
 #[cfg(target_os = "linux")]
