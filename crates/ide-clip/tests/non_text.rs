@@ -247,6 +247,35 @@ fn the_summary_describes_the_include_payload_after_the_file_count_limit() {
     assert_eq!(exclude.payload, include.payload);
 }
 
+/// Test 15: past 1000 files the left-out number stops counting and reads "more than 1000".
+#[test]
+fn the_left_out_number_is_capped_at_1000() {
+    let settings = limited(3.0);
+    let repo = Repo::new();
+    let mut items: Vec<String> = (0..1100).map(|i| format!("t{i:04}.txt")).collect();
+    items.insert(1, "img/a.png".into());
+    for p in &items {
+        repo.write(p, &if p.ends_with(".png") { png(100) } else { b"text\n".to_vec() });
+    }
+    let list: Vec<(&str, SourceKind, Option<ChangeType>)> =
+        items.iter().map(|p| (p.as_str(), SourceKind::File, None)).collect();
+    let sel = repo.selection(&list);
+    let exclude = export(&sel, &settings, NonTextMode::Exclude);
+    let include = export(&sel, &settings, NonTextMode::Include);
+    assert_eq!(exclude.non_text.count(), 1);
+    for plan in [&exclude, &include] {
+        assert_eq!(plan.non_text.limit_left_out, nontext::LIMIT_LEFT_OUT_MAX);
+        assert!(plan.non_text.limit_left_out_lower_bound);
+    }
+    assert_eq!(exclude.copied_file_count, 3);
+
+    // Exactly 1000 past the limit is still an exact count.
+    let sel = repo.selection(&list[..1003]);
+    let exclude = export(&sel, &settings, NonTextMode::Exclude);
+    assert_eq!(exclude.non_text.limit_left_out, 1000);
+    assert!(!exclude.non_text.limit_left_out_lower_bound);
+}
+
 /// Test 7: each file is held to its own limit after classification.
 #[test]
 fn include_carries_non_text_within_its_limit_and_round_trips() {
