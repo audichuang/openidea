@@ -417,8 +417,13 @@ pub fn app_build_info(app: AppHandle) -> BuildInfo {
 use ide_core::updates::UpdateInfo;
 pub use ide_core::updates::{UpdateCheck, UpdateSource, UpdateStatus};
 
-pub(crate) /// Whether a fork update endpoint is configured.
-pub fn updates_configured<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
+/// `OPENIDEA_UPDATE_ENDPOINT`: a debug build checks for updates in the background only with it set.
+pub(crate) fn update_endpoint_env() -> Option<String> {
+    std::env::var("OPENIDEA_UPDATE_ENDPOINT").ok().filter(|s| !s.trim().is_empty())
+}
+
+/// Whether a fork update endpoint is configured.
+pub(crate) fn updates_configured<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
     !crate::fork_updater::UpdateEndpoints::configured(app.config()).urls.is_empty()
 }
 
