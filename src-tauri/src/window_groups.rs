@@ -507,9 +507,19 @@ pub fn close_tabs(app: &AppHandle, caller: &str, keep: &str, labels: Vec<String>
 pub fn cancel_close(app: &AppHandle, caller: &str) {
     let state = app.state::<WindowsState>();
     state.close_settled(caller);
-    let mut batch = state.tab_closes.lock();
-    if batch.as_ref().is_some_and(|b| b.pending.front().is_some_and(|l| l == caller)) {
-        *batch = None;
+    {
+        let mut batch = state.tab_closes.lock();
+        if batch.as_ref().is_some_and(|b| b.pending.front().is_some_and(|l| l == caller)) {
+            *batch = None;
+        }
+    }
+    // A tab group closing as a whole: the member that turned into the welcome screen was moved
+    // out of the group and ordered front, over a member still asking about its unsaved changes.
+    let all = windows::project_window_labels(app);
+    if let Some(window) =
+        windows::still_closing(&all, &state.pending_closes(), caller).and_then(|l| app.get_webview_window(&l))
+    {
+        windows::focus(&window);
     }
 }
 
