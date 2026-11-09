@@ -10,7 +10,8 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 import { PastePreviewDialog } from "../clip";
 import { ClipPastePane } from "../ClipPastePane";
 import { NonTextDialog, replayFileNote, skipReasonText, visibleName } from "../clipNonText";
-import { PathText, splitDir, splitFirstSegment, splitTail } from "../PathText";
+import { PathText } from "../PathText";
+import { splitDir, splitFirstSegment } from "../fitText";
 import { readFileSync } from "node:fs";
 
 const names = [
@@ -20,16 +21,7 @@ const names = [
 ];
 
 describe("long names keep their end visible", () => {
-  it("splits a long name into an eliding head and a whole tail", () => {
-    const ends = names.map((n) => splitTail(n)[1]);
-    expect(new Set(ends).size).toBe(3);
-    for (const n of names) {
-      const [head, tail] = splitTail(n);
-      expect(head + tail).toBe(n);
-      expect(tail.length).toBe(14);
-    }
-    // A short name is not split.
-    expect(splitTail("logo.png")).toEqual(["logo.png", ""]);
+  it("splits a path into folders and name", () => {
     expect(splitDir("a/b/c.png")).toEqual(["a/b/", "c.png"]);
     expect(splitDir("c.png")).toEqual(["", "c.png"]);
   });
@@ -48,13 +40,12 @@ describe("long names keep their end visible", () => {
     const title = container.querySelector("[title]")!;
     expect(title.getAttribute("title")).toBe(`/p/${path}`);
     expect(title.textContent).toBe(path);
-    const tail = container.querySelector("[class*=nameTail]")!;
-    expect(tail.textContent!.endsWith("-second.png")).toBe(true);
-    expect(tail.textContent!.length).toBeLessThanOrEqual(14);
+    // The full text is what the box asks its width for; the shown text is fitted to that width.
+    expect(title.getAttribute("data-full")).toBe(path);
     expect(screen.getByText("Skipped: Existing file is not UTF-8; not overwritten")).toBeTruthy();
   });
 
-  it("tree rows and the dialog list show each long name as head and tail", () => {
+  it("tree rows and the dialog list show each long name as a fitted box", () => {
     const files: ClipPasteFile[] = names.map((n, i) => ({
       index: i,
       path: `static/${n}`,
@@ -73,8 +64,10 @@ describe("long names keep their end visible", () => {
       adjusted: false,
     };
     render(<PastePreviewDialog text="" target={{ dest: "/p", repo: null }} initial={preview} onClose={() => {}} />);
-    const tails = [...document.querySelectorAll("[class*=nodeName] [class*=nameTail]")].map((e) => e.textContent);
-    expect(new Set(tails).size).toBe(3);
+    const fulls = [...document.querySelectorAll("[class*=nodeName] [data-full]")].map((e) =>
+      e.getAttribute("data-full"),
+    );
+    expect(fulls.filter((f) => f!.startsWith("name-"))).toEqual(names);
 
     const summary: ClipNonTextSummary = {
       count: 3,
@@ -91,8 +84,8 @@ describe("long names keep their end visible", () => {
     };
     const dialog = render(<NonTextDialog summary={summary} onChoose={() => {}} />);
     expect(dialog.getAllByText("Files left out by the file limit: 10")).toHaveLength(1);
-    const dialogTails = [...document.querySelectorAll("li [class*=nameTail]")].map((e) => e.textContent);
-    expect(new Set(dialogTails).size).toBe(3);
+    const dialogFulls = [...document.querySelectorAll("li [data-full]")].map((e) => e.getAttribute("data-full"));
+    expect(new Set(dialogFulls).size).toBe(3);
     dialog.unmount();
     render(<PathText path="x/y.png" />);
   });
@@ -151,45 +144,27 @@ function rule(selector: string): string {
   if (!m) throw new Error(`no rule for ${selector}`);
   return m[1]!;
 }
-const shrink = (selector: string) => Number(/flex:\s*0\s+(\d+)\s+auto/.exec(rule(selector))?.[1]);
 
 describe("the file name has layout priority over folders, notes and badges", () => {
   const dir = `d3/${"a-really-long-folder-segment/".repeat(5)}`;
   const name = "pppp-sssssssssssssssssssssss-final.png";
 
-  it("splits a path into first segment, the rest of the folders and the name", () => {
+  it("splits the folders into first segment and the rest", () => {
     expect(splitFirstSegment("d3/a/b/")).toEqual(["d3/", "a/b/"]);
     expect(splitFirstSegment("d3/")).toEqual(["d3/", ""]);
     expect(splitFirstSegment("")).toEqual(["", ""]);
     const { container } = render(<PathText path={`${dir}${name}`} />);
-    expect(container.querySelector("[class*=pathDirFirst]")!.textContent).toBe("d3/");
-    expect(container.querySelector("[class*=pathDirRest]")!.textContent).toBe(dir.slice(3));
-    // The whole name, extension included, is in the name part.
-    expect(container.querySelector("[class*=pathName]")!.textContent).toBe(name);
     expect(container.querySelector("[title]")!.textContent).toBe(`${dir}${name}`);
   });
 
-  it("a cut head is clipped and the tail draws the ellipsis, so the halves read as one name", () => {
-    expect(rule(".nameHead[data-clipped]")).toMatch(/text-overflow:\s*clip/);
-    expect(css).toMatch(/\.nameTail\[data-clipped\]::before\s*\{\s*content:\s*"…"/);
-  });
-
-  it("elides a name longer than 20 characters in the middle and keeps a short one whole", () => {
-    const long = "alpha-readable-name-28chars.png";
-    expect(splitTail(long)).toEqual([long.slice(0, -14), long.slice(-14)]);
-    expect(splitTail("12345678901234567890")).toEqual(["12345678901234567890", ""]);
-    expect(splitTail("alpha.png")).toEqual(["alpha.png", ""]);
-  });
-
-  it("the folder part shrinks first, down to its first segment and an ellipsis", () => {
-    expect(rule(".pathDirFirst")).toMatch(/flex:\s*none/);
-    expect(rule(".pathDirRest")).toMatch(/text-overflow:\s*ellipsis/);
-    expect(rule(".pathDirRest")).toMatch(/min-width:\s*1em/);
-    // Flex shrinks in proportion to factor x size: a factor this much larger leaves the name every
-    // character until the folder part is at its minimum.
-    expect(shrink(".pathDirRest")).toBeGreaterThanOrEqual(shrink(".pathName") * 1_000_000);
-    expect(rule(".pathName")).toMatch(/min-width:\s*0/);
-    expect(rule(".nameTail")).toMatch(/flex:\s*none/);
+  it("the box asks for the full text's width and shows a string cut in JS, not by CSS", () => {
+    expect(rule(".fit")).toMatch(/overflow:\s*hidden/);
+    expect(rule(".fit")).toMatch(/min-width:\s*0/);
+    expect(rule(".fit::after")).toMatch(/content:\s*attr\(data-full\)/);
+    expect(rule(".fit::after")).toMatch(/height:\s*0/);
+    // CSS eliding is what drew half a letter or left a gap before the next text.
+    expect(rule(".fit")).not.toMatch(/text-overflow/);
+    expect(css).not.toMatch(/nameHead|nameTail/);
   });
 
   it("a badge and a note show whole or not at all in a preview row", () => {
