@@ -89,7 +89,9 @@ Counts in UI text are phrased so they read correctly for 1 and for many (e.g. "N
 1."), unless the platform has plural support. Long paths are shortened in the middle so the file name stays
 visible (e.g. `d11long/a-really-long…/name-alpha.png`): the folder part shrinks first, down to its first segment
 and an ellipsis, before any character of the file name is dropped; a file name that alone does not fit is itself
-shortened in the middle, keeping its extension. Sizes never wrap. Notices that list several categories (e.g.
+shortened in the middle, keeping its extension. A shortened name or folder part ends on a whole character before
+the ellipsis (never half a letter, e.g. `lon…` not a cut `g` that reads as `ç`), and the ellipsis sits directly
+against the text that follows (no gap). Sizes never wrap. Notices that list several categories (e.g.
 Unreadable, Symlinked folder, Name not portable) show one category per line. After Include, the completion notice
 says "Unreadable" for what was skipped, not "non-text file or unreadable".
 
@@ -197,7 +199,8 @@ Only OpenIDEA implements commits mode (`// snip-sync commits v1`). The marker st
   and notes shrink or drop before the name does, a name that still does not fit is shortened in the middle
   keeping its extension, and 30–60 character names that share a prefix stay distinguishable. A badge or a size
   note shows whole or not at all: never a clipped word, a partial number or a sliver of padding. Middle
-  ellipsis shows as one continuous name (no visible gap between its two halves).
+  ellipsis shows as one continuous name (no visible gap between its two halves, no partly drawn character before
+  the ellipsis).
 - Commits replay writes and commits the decoded bytes, after the same length and SHA-256 check.
 - A **text** write over an existing non-UTF-8 file stays refused by the non-UTF-8 overwrite guard, outside the
   batch case in [Commits-mode](#commits-mode-wire-format-openidea-only) (decided by the user, deep round 3). The
@@ -209,7 +212,8 @@ Only OpenIDEA implements commits mode (`// snip-sync commits v1`). The marker st
 - The whole-payload limit on paste counts the payload as the parser sees it: each CRLF pair counts as one byte (a
   Windows clipboard must not push a valid payload over the limit), but a lone CR counts in full (it must not let
   oversized input bypass the limit).
-- One entry that cannot be applied (its target path is a directory, a parent is not writable, two entries map to
+- One entry that cannot be applied (its target path is a directory, one of its parent paths is an existing file
+  ("A file is in the way of its parent folder"), a parent is not writable, two entries map to
   the same file on a case-insensitive file system such as `IMG.png` and `img.png` on APFS) skips that row (for a
   collision: every colliding row) with its reason in user text (a write error such as permission denied is shown
   as user text, e.g. "Folder is not writable", not the raw OS message); the rest of the paste continues. It never aborts
@@ -268,6 +272,10 @@ Each implementation adds these to its contract tests (OpenIDEA: `clipboard-contr
 25. With `headerFormat` set to `$FILE_PATH`, the dialog disables Include with its reason; Exclude still works.
 26. Over the whole-payload limit (e.g. six 9 MB non-text files with a 10000 KB non-text limit), the dialog never
     shows an estimate below the raw total.
+27. Paste where a parent path of an entry is an existing file (`d3/a` is a file, the payload has `d3/a/deep.png`
+    and `d3/ok.txt`): only that row is skipped with user text; `d3/ok.txt` restores; no raw OS error.
+28. The names of case 21 at the default dialog and preview sizes, light and dark, en and zh: no partly drawn
+    character before an ellipsis and no gap after it.
 
 ## Open items for the other implementations
 
@@ -295,6 +303,14 @@ Each review or test round folds its findings back into this spec.
   lines" when the text starts with blank lines: a literal `//clipcode-esc: ` was lost, or `\n<placeholder>\nAQID`
   pasted as bytes (pre-existing). Fixed on both sides, including an escaped whitespace-only line under
   ` $FILE_PATH`; contract cases added.
+- Deep testers, round 5 (three testers, D1–D18 plus their own cases): escape, unescapable header, estimate,
+  badges and OS error text pass. Open: (1) the middle ellipsis cuts a letter in half before the `…` and leaves a
+  ~3 px gap after a shortened folder part in the dialog and detail header (introduced by the round 4/5 layout
+  fixes; rule made explicit above, case 28). (2) A non-text entry whose parent path is an existing file aborts the
+  whole paste with `IpcError: Not a directory (os error 20)` (text payloads abort the same way on develop,
+  pre-existing; for non-text entries it is new, since an older reader skips the placeholder); case 27. (3) Leading
+  blank or whitespace-only lines of a text file are dropped on paste under the built-in header and kept under
+  ` $FILE_PATH` (pre-existing, identical on develop; same class as the final-newline item); open for the user.
 - Deep testers, round 4 (three testers, D1–D18): D1–D10 pass for all three. Open: (1) spec hole — under a custom
   `headerFormat` that matches the placeholder line (e.g. `// $FILE_PATH`), a real placeholder (header escape) and a
   placeholder-shaped text line (placeholder escape) both carry one `//clipcode-esc: ` prefix, so the reader
