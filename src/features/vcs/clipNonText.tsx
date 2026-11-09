@@ -13,8 +13,8 @@ import styles from "./clip.module.css";
 export type NonTextChoice = "include" | "exclude" | "cancel";
 
 const MAX_LISTED = 10;
-/** The whole-payload limit of the Rust side (`CLIPBOARD_PAYLOAD_MAX`), for the over-limit wording. */
-const PAYLOAD_CAP_BYTES = 50 * 1024 * 1024;
+/** The whole-payload limit of the Rust side (`CLIPBOARD_PAYLOAD_MAX`, 50 × 1024 × 1024 bytes), as the spec spells it. */
+const PAYLOAD_CAP = "50 MiB";
 
 /** Raw byte counts the way the dialog and the paste preview spell them. */
 export function formatBytes(bytes: number | null | undefined): string {
@@ -126,7 +126,7 @@ export function skipReasonText(code: string | null | undefined): string {
     case "TARGET_NOT_FILE":
       return tx("Target is a folder; not replaced");
     case "TARGET_COLLISION":
-      return tx("Another entry maps to the same file; not applied");
+      return tx("Another entry writes the same file; not applied");
     case "PARENT_NOT_FOLDER":
       return tx("A file is in the way of its parent folder");
     case "the renamed-from path is a directory":
@@ -197,7 +197,7 @@ export function NonTextDialog({
   const { count, files } = summary;
   const raw = formatBytes(summary.totalBytes);
   const estimate = formatBytes(summary.estimatedIncludeBytes);
-  const cap = formatBytes(PAYLOAD_CAP_BYTES);
+  const cap = PAYLOAD_CAP;
   const includeBlocked = summary.exceedsPayloadCap || summary.headerCannotBeEscaped;
   const shown = files.slice(0, MAX_LISTED);
   const more = count - shown.length;
