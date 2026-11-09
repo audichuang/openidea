@@ -280,7 +280,7 @@ describe("NonTextDialog", () => {
     // shrinking; a long name keeps its end. The layout rules are asserted in clipLongNames.test.tsx.
     expect(/\.nodeName \{[^}]*flex: 0 1 auto;[^}]*min-width: 0/.test(css)).toBe(true);
     expect(/\.nodeNote \{[^}]*flex: none;[^}]*white-space: nowrap/.test(css)).toBe(true);
-    expect(/\.nameTail \{[^}]*flex: none/.test(css)).toBe(true);
+    expect(/\.fit \{[^}]*min-width: 0/.test(css)).toBe(true);
     expect(/\.badge\[data-action="corrupt"\] \{[^}]*var\(--danger\)/.test(css)).toBe(true);
   });
 
