@@ -6,14 +6,14 @@ import { Checkbox, Dialog, Icon, Input, T, fileIconName } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { groupOf, remainingOverrides, renamedFromPath } from "./changes";
 import { runCommitChecks } from "./commitChecks";
-import { contributedCheckProblems, currentPlan, selectionOf } from "./commitSelection";
+import { commitPlan, contributedCheckProblems, selectionOf } from "./commitSelection";
 import { forgetAmendDraft, keepMessageAfterCommit, rememberMessage, useCommit } from "./commitStore";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { notifyFileOperation } from "@/platform/fileOps";
 import { confirmDialog, openDialog } from "./dialogs";
 import { KIND_COLOR, baseName, dirName, effectiveKind, relTo, stripSlash } from "./model";
 import { logConsole, runOp, saveAll } from "./ops";
-import { isStagingArea, stagedFiles, stagingPlan } from "./staging";
+import { isStagingArea, stagedFiles } from "./staging";
 import { currentRepo, loadStashes, refreshNow, useVcs } from "./store";
 import styles from "./common.module.css";
 import { tx } from "@/platform/i18n";
@@ -39,7 +39,7 @@ export async function commitChanges(): Promise<string | undefined> {
   // With the staging area the index is committed as it is; otherwise the checkboxes decide.
   const staging = isStagingArea();
   const vcs = useVcs.getState();
-  const plan = staging ? stagingPlan(vcs.status, vcs.roots, useCommit.getState().stagingExcludedRoots) : currentPlan();
+  const plan = commitPlan(staging);
   // Concluding a merge needs no further changes (e.g. every conflict resolved as "yours").
   const merging = useVcs.getState().branch?.operation === "merge";
   if (!plan.included.length && !amend && !merging) {
