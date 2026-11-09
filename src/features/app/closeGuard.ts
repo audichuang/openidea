@@ -202,6 +202,8 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
     // screen (to open another one); closing the welcome screen, or quitting, closes the window.
     if (!ctx.quitting && ctx.windows <= 1 && (s.project || s.lightEdit)) {
       if (await confirmLeave(deps)) await closeProject();
+      // This window stays open: settle its close request (and any tab-close batch it belonged to).
+      await commands.windowGroupCancelClose();
       return false;
     }
     const confirmTerminate = workflowSettings().run.confirmTerminate;
