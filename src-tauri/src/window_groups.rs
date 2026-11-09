@@ -738,7 +738,7 @@ async fn restore_groups(app: &AppHandle, caller: &str, root: Option<&Path>) -> I
     // Every group is merged before any enters fullscreen, so no tab moves during a transition.
     let (mut fullscreen, mut failed) = (Vec::new(), Vec::new());
     for group in &plan {
-        match restore_group(app, caller, root, group) {
+        match restore_group(app, caller, root, group).await {
             Ok(Some(selected)) if group.fullscreen_change(main_fullscreen) == Some(true) => fullscreen.push(selected),
             Ok(_) => {}
             Err(e) => {
@@ -765,7 +765,7 @@ async fn restore_groups(app: &AppHandle, caller: &str, root: Option<&Path>) -> I
 }
 
 /// Opens `group`'s projects (`root` in `caller`) and tabs them together; returns the shown tab.
-fn restore_group(
+async fn restore_group(
     app: &AppHandle,
     caller: &str,
     root: Option<&Path>,
@@ -790,8 +790,35 @@ fn restore_group(
     }
     let anchor = if group.main { caller.to_owned() } else { labels[0].clone() };
     let selected = labels[group.selected].clone();
-    group_windows(app, labels, &anchor, &selected)?;
+    // macOS refuses to tab windows mid fullscreen transition. `main` can still be entering the
+    // fullscreen it reopened in (slower than usual at a busy launch, #212), or start only now.
+    wait_transitions(app, &labels).await;
+    if let Err(e) = group_windows(app, labels.clone(), &anchor, &selected) {
+        if !any_in_transition(app, &labels) {
+            return Err(e);
+        }
+        wait_transitions(app, &labels).await;
+        group_windows(app, labels, &anchor, &selected)?;
+    }
     Ok(Some(selected))
+}
+
+async fn wait_transitions(app: &AppHandle, labels: &[String]) {
+    for label in labels {
+        if let Some(window) = app.get_webview_window(label) {
+            wait_fullscreen_transition(app, &window).await;
+        }
+    }
+}
+
+fn any_in_transition(_app: &AppHandle, _labels: &[String]) -> bool {
+    #[cfg(target_os = "macos")]
+    return _labels
+        .iter()
+        .filter_map(|label| _app.get_webview_window(label))
+        .any(|window| crate::macos::fullscreen_transition(_app, &window));
+    #[cfg(not(target_os = "macos"))]
+    false
 }
 
 /// Whether `window`'s group is in fullscreen once grouped. Elsewhere than on macOS grouping leaves
@@ -803,10 +830,11 @@ fn in_fullscreen(_app: &AppHandle, _window: &tauri::WebviewWindow) -> bool {
     false
 }
 
-/// Waits (up to 3 s) for `window` to finish entering or leaving fullscreen.
+/// Waits for `window` to finish entering or leaving fullscreen, as long as `add_tabs` would refuse
+/// it: until the transition settles, or is taken as stuck.
 async fn wait_fullscreen_transition(_app: &AppHandle, _window: &tauri::WebviewWindow) {
     #[cfg(target_os = "macos")]
-    for _ in 0..30 {
+    for _ in 0..crate::macos::TRANSITION_WAIT.as_millis() / 100 {
         if !crate::macos::fullscreen_transition(_app, _window) {
             break;
         }
