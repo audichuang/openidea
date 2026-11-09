@@ -131,7 +131,7 @@ pub struct ClipNonTextSummary {
     pub exceeds_payload_cap: bool,
     /// Files the file-count limit leaves out of what `Include` copies.
     pub limit_left_out: u32,
-    /// `limit_left_out` is a lower bound (a folder walk stopped at the limit).
+    /// `limit_left_out` is a lower bound (a folder walk stopped at the limit, or more than 1000 were left out).
     pub limit_left_out_at_least: bool,
     /// The `headerFormat` cannot be escaped: `Include` would write Base64 lines that read as file headers.
     pub header_cannot_be_escaped: bool,

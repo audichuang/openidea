@@ -2520,7 +2520,7 @@ export type ClipNonTextSummary = {
 	exceedsPayloadCap: boolean,
 	/**  Files the file-count limit leaves out of what `Include` copies. */
 	limitLeftOut: number,
-	/**  `limit_left_out` is a lower bound (a folder walk stopped at the limit). */
+	/**  `limit_left_out` is a lower bound (a folder walk stopped at the limit, or more than 1000 were left out). */
 	limitLeftOutAtLeast: boolean,
 	/**  The `headerFormat` cannot be escaped: `Include` would write Base64 lines that read as file headers. */
 	headerCannotBeEscaped: boolean,
