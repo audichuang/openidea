@@ -156,29 +156,38 @@ pub fn write_text_file(path: &Path, content: &str) -> io::Result<()> {
 /// [`write_text_file`] for raw bytes (a non-text file): the same entry
 /// replacement, never a write through a link.
 pub fn write_bytes_file(path: &Path, content: &[u8]) -> io::Result<()> {
+    write_bytes_file_observed(path, content, &mut |_| {})
+}
+
+/// [`write_bytes_file`]; `written` sees the temporary file once the bytes are in it, before it gets its final
+/// mode.
+fn write_bytes_file_observed(path: &Path, content: &[u8], written: &mut dyn FnMut(&Path)) -> io::Result<()> {
     let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
     // Our own exclusive create: a fresh random name, never an existing
     // entry or link. tempfile's default would mark the file temporary on
-    // Windows and 0600 on Unix; a new file here gets 0666 less umask.
+    // Windows. It starts 0600, so no other user reads the bytes through it,
+    // and gets its final mode only once they are written.
     let mut tmp = tempfile::Builder::new().prefix(".snip-write.").make_in(parent, |p| {
         let mut opts = fs::OpenOptions::new();
         opts.write(true).create_new(true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o666);
+            opts.mode(0o600);
         }
         opts.open(p)
     })?;
     tmp.write_all(content)?;
     tmp.flush()?;
+    written(tmp.path());
     match fs::symlink_metadata(path) {
         Ok(info) if info.is_file() => {
             tmp.as_file().set_permissions(info.permissions())?;
         }
-        Ok(_) => {}
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+        // A symlink (never written through) or nothing at the target: a new file's mode.
+        Ok(_) => set_fresh_file_mode(&tmp, parent)?,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => set_fresh_file_mode(&tmp, parent)?,
         Err(err) => return Err(err),
     }
     tmp.as_file().sync_all()?;
@@ -188,6 +197,25 @@ pub fn write_bytes_file(path: &Path, content: &[u8]) -> io::Result<()> {
     let mut tmp = tmp.into_temp_path();
     fs::rename(&tmp, path)?;
     tmp.disable_cleanup(true);
+    Ok(())
+}
+
+/// Gives the temporary file of a new target the mode a new file created in `dir` gets (0666 less the umask, or
+/// what a default ACL makes of it), read from an empty probe file created there and removed at once. Reading
+/// the umask itself would need `umask(2)`, which sets it for every thread while it is read.
+#[cfg(unix)]
+fn set_fresh_file_mode(tmp: &tempfile::NamedTempFile, dir: &Path) -> io::Result<()> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let probe = tempfile::Builder::new()
+        .prefix(".snip-mode.")
+        .make_in(dir, |p| fs::OpenOptions::new().write(true).create_new(true).mode(0o666).open(p))?;
+    let mode = probe.as_file().metadata()?.permissions().mode() & 0o7777;
+    drop(probe);
+    tmp.as_file().set_permissions(fs::Permissions::from_mode(mode))
+}
+
+#[cfg(not(unix))]
+fn set_fresh_file_mode(_tmp: &tempfile::NamedTempFile, _dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
@@ -387,5 +415,36 @@ mod tests {
             !fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
             "the link entry itself is now a regular file"
         );
+    }
+
+    /// X12: the temporary file holds the new bytes as 0600 until it is set to the final mode, so another user
+    /// never reads them through a wider mode; a new file then ends up with the mode a fresh file gets here
+    /// (0666 less umask), an existing one keeps its own.
+    #[cfg(unix)]
+    #[test]
+    fn the_temporary_file_is_0600_until_it_gets_the_final_mode() {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let dir = tempfile::tempdir().unwrap();
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let fresh = dir.path().join("fresh");
+        fs::OpenOptions::new().write(true).create_new(true).mode(0o666).open(&fresh).unwrap();
+        let fresh_mode = mode(&fresh);
+
+        let mut seen = Vec::new();
+        let new = dir.path().join("new.bin");
+        write_bytes_file_observed(&new, b"\0secret", &mut |tmp| seen.push(mode(tmp))).unwrap();
+        assert_eq!(seen, [0o600], "while the bytes are written");
+        assert_eq!(mode(&new), fresh_mode, "a new file");
+
+        let existing = dir.path().join("existing.txt");
+        fs::write(&existing, "old").unwrap();
+        fs::set_permissions(&existing, fs::Permissions::from_mode(0o640)).unwrap();
+        seen.clear();
+        write_bytes_file_observed(&existing, b"new", &mut |tmp| seen.push(mode(tmp))).unwrap();
+        assert_eq!(seen, [0o600]);
+        assert_eq!(mode(&existing), 0o640, "an existing file keeps its mode");
+        assert_eq!(fs::read(&existing).unwrap(), b"new");
+        let left: Vec<_> = fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(left.len(), 3, "no temporary or probe file is left: {left:?}");
     }
 }

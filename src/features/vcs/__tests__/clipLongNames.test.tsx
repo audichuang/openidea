@@ -114,7 +114,7 @@ describe("reasons read as text, never as codes", () => {
     for (const code of codes) expect(skipReasonText(code), code).not.toMatch(/^[A-Z_]+$/);
     expect(skipReasonText("NON_UTF8_TARGET")).toBe("Existing file is not UTF-8; not overwritten");
     expect(skipReasonText("BINARY")).toBe("Non-text file, not copied");
-    expect(skipReasonText("TARGET_COLLISION")).toBe("Another entry maps to the same file; not applied");
+    expect(skipReasonText("TARGET_COLLISION")).toBe("Another entry writes the same file");
   });
 
   it("a replayed row shows the reason text", () => {

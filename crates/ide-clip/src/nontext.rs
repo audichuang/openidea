@@ -13,6 +13,10 @@ use sha2::{Digest, Sha256};
 /// Base64 characters per line in files mode.
 pub const BASE64_LINE_LEN: usize = 76;
 
+/// The most files past the file-count limit a copy counts: beyond this the left-out number reads "1000+"
+/// (`limit_left_out` = this, `limit_left_out_lower_bound` set), so a huge selection is not walked only to count.
+pub const LIMIT_LEFT_OUT_MAX: usize = 1000;
+
 const PLACEHOLDER_PREFIX: &str = "// File skipped: ";
 
 // `[0-9]`, never `\d`: the Rust regex `\d` matches every Unicode digit.
@@ -154,7 +158,8 @@ pub struct NonTextSummary {
     /// on that passes the filters. Non-text files count toward the limit like text files.
     #[serde(default)]
     pub limit_left_out: usize,
-    /// `limit_left_out` is a lower bound: a folder walk stopped at the limit before listing the rest.
+    /// `limit_left_out` is a lower bound: a folder walk stopped at the limit before listing the rest, or more
+    /// than [`LIMIT_LEFT_OUT_MAX`] files were left out (the count stops there).
     #[serde(default)]
     pub limit_left_out_lower_bound: bool,
     /// The `headerFormat` cannot be escaped (see `format::header_format_unescapable`): Base64 lines would be

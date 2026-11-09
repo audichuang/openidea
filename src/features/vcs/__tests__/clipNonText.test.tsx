@@ -163,6 +163,15 @@ describe("copyClip non-text decision", () => {
     expect(notify.mock.calls[0]![0].title).toContain("File limit 30 reached, files left out: 5.");
   });
 
+  it("reads 1000+ when more than 1000 files were left out", async () => {
+    const capped = summary({ limitLeftOut: 1000, limitLeftOutAtLeast: true });
+    call.mockResolvedValueOnce(result("TEXT", capped, { truncated: true }));
+    await copyClip(source);
+    expect(notify.mock.calls[0]![0].title).toContain("File limit 30 reached, files left out: 1000+.");
+    render(<NonTextDialog summary={{ ...found, limitLeftOut: 1000, limitLeftOutAtLeast: true }} onChoose={() => {}} />);
+    expect(screen.getByText("Files left out by the file limit: 1000+")).toBeTruthy();
+  });
+
   it("asks when the Include result has non-text files after the limit", async () => {
     call.mockResolvedValueOnce(result("TEXT", summary({ ...found, limitLeftOut: 10 }), { truncated: true }));
     ask.mockResolvedValueOnce("exclude");
@@ -293,7 +302,7 @@ describe("NonTextDialog", () => {
     expect(onChoose.mock.calls.map((c) => c[0])).toEqual(["include", "exclude", "cancel"]);
   });
 
-  it("over the cap says more than 50 MB next to the raw total, never an estimate below it (case 26)", () => {
+  it("over the cap says more than 50 MiB next to the raw total, never an estimate below it (case 26)", () => {
     const MB = 1024 * 1024;
     render(
       <NonTextDialog
@@ -307,7 +316,7 @@ describe("NonTextDialog", () => {
       />,
     );
     expect(screen.getByText(/raw 54 MB/)).toBeTruthy();
-    expect(screen.getByText("Payload with them: more than 50 MB")).toBeTruthy();
+    expect(screen.getByText("Payload with them: more than 50 MiB")).toBeTruthy();
     expect(screen.queryByText(/about/)).toBeNull();
   });
 
