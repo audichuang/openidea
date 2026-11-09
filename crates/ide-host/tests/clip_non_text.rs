@@ -656,6 +656,7 @@ fn an_unescapable_header_format_is_reported_in_the_summary() {
     assert!(!normal.non_text.header_cannot_be_escaped);
 }
 
+#[cfg(unix)]
 fn sorted(mut v: Vec<String>) -> Vec<String> {
     v.sort();
     v
