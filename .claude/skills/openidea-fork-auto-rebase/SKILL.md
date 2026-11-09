@@ -45,12 +45,14 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
    git push fork "${lock}:refs/heads/rebase/vNEW"
    ```
    之後每次推 `rebase/vNEW` 都用 `--force`。Fork CI 看到這個訊息開頭的 commit 會跳過。
-2. `git config rerere.enabled true`，`git checkout --detach OLD_DEVELOP`。上游基底取 `UPSTREAM_BASE=$(git merge-base OLD_DEVELOP origin/main)`（develop 可能停在 release 之後的上游 commit，用 vOLD 當基底會把那幾個上游 commit 當成 fork commit 重放）。
+2. `git config rerere.enabled true`，`git checkout --detach OLD_DEVELOP`。上游基底取 `UPSTREAM_BASE=$(git merge-base OLD_DEVELOP origin/main)`（develop 可能停在 release 之後的上游 commit，用 vOLD 當基底會把那幾個上游 commit 當成 fork commit 重放）。解衝突腳本是 fork 自己的檔，rebase 前段還沒重放到它，先取出：`RESOLVE=/tmp/ar-$RUN-resolve-conflicts.py; git show fork/develop:scripts/fork/resolve-conflicts.py > "$RESOLVE"`。
 3. `GIT_EDITOR=true git rebase --onto vNEW "$UPSTREAM_BASE"`，單獨跑、看結束碼（不要接 `| tail`）。每次停在衝突，對每個衝突檔照 FORK.md「Rebase conflicts」分類：
-   - locale JSON → `python3 scripts/fork/resolve-conflicts.py locale <檔>`
-   - 兩邊都在檔尾加東西的測試檔 → `python3 scripts/fork/resolve-conflicts.py append <檔>`
+   - locale JSON → `python3 "$RESOLVE" locale <檔>`
+   - 兩邊都在檔尾加東西的測試檔 → `python3 "$RESOLVE" append <檔>`
    - `Cargo.lock`、`pnpm-lock.yaml`、`src/bindings.ts` → `git checkout --ours -- <檔>`（rebase 時 ours 是上游），第 4 點重新產生
    - 腳本拒絕（exit 1）或其他任何檔 → MANUAL：保留 fork 功能、採上游新結構自己解；沒把握就 `git rebase --abort`，鎖留著，跳到第 7 步（開 PR、標 needs-human）。
+   - 上游改寫 macOS 專案視窗群組（Tab 或全螢幕）而衝突 → 不是交人的產品決策，照 FORK.md 的 standing decision：abort 後在 vNEW 上先 commit 一個退回上游視窗 commit 的 `revert(macos)`，再把 fork 重放到它上面（模式 MANUAL，照常跑完閘門）。
+   - abort 前在 PR 解法表標出哪些解法改到衝突 hunk 以外的地方（把 fork 的程式搬進上游新檔、補上游新呼叫點）：rerere 只重放 hunk，重跑時這些要手動補回並逐項確認（v0.1.39 漏掉 PR 的兩個 ClipCode 動作實作就是這樣）。
 
    腳本已經 `git checkout --conflict=diff3`（rerere 重放過的也會被重建後重解）；解完 `git add <檔>`、`GIT_EDITOR=true git rebase --continue`。把每個衝突檔、它的類別與 commit 記進 `$MAIN/.rebase-review/conflicts.txt`，PR 說明要用。
 
