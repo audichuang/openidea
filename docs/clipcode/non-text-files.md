@@ -22,9 +22,10 @@ project with a `static/` folder of images lost the images.
   is expanded; a project tree that shows the symlink as a folder does not change this. A symlink to a file is
   followed and carries the target's bytes. (Found by deep testing round 3: a directly selected symlinked folder
   was followed and its contents copied.)
-- A file or folder whose name is not portable is skipped and named under "Name not portable" with its real name,
-  not reported as unreadable. The check is OpenIDEA's `is_exportable_relative_path` (`crates/ide-clip/src/paths.rs`)
-  applied to the file's path relative to its copy root, segments joined with `/`. The path is not portable when:
+- In a files and folders copy, a file or folder whose name is not portable is skipped and named under "Name not
+  portable" with its real name, not reported as unreadable. The check is OpenIDEA's `is_exportable_relative_path`
+  (`crates/ide-clip/src/paths.rs`) applied to the file's path relative to its copy root, segments joined with `/`.
+  The path is not portable when:
   - a name in it is not valid UTF-8 (Windows: not valid UTF-16);
   - a segment is `..`;
   - a segment contains `<`, `>`, `:`, `"`, `|`, `?`, `*`, `\` (on Unix, where it is not a separator) or a control
@@ -37,7 +38,7 @@ project with a `static/` folder of images lost the images.
   with a non-portable name is still walked and each file under it is skipped and named with its full path; a
   non-UTF-8 name directly under the project root, when the root itself is selected, is named once and not walked.
   Another implementation may name such a folder once instead, as long as none of its files is copied. Symlinked
-  folders are never followed (above).
+  folders are never followed (above). OpenIDEA's Git-change and commit copies do not report this category.
 
 - **Exclude** keeps today's result exactly, including today's "Nothing to copy" when nothing but size
   placeholders would be copied from a files selection.
@@ -85,9 +86,9 @@ Include would carry at least one non-text file. When files ordered first fill th
 carry no non-text file, Include and Exclude are the same payload, so there is no dialog; the completion notice
 still says how many files the limit left out. The left-out number is counted up to 1000; beyond that it is shown
 as "1000+" (OpenIDEA: `limitLeftOut` 1000 with `limitLeftOutAtLeast`). Implementations must not walk the rest of
-the tree only to count: a folder walk stops at the limit, and a number it could not finish counting is shown with
-"+" as well. The payload never depends on this number. The count, the list, the left-out number and the estimate
-are derived from the Include result itself (the same ordered entry list and the same counting of size
+the tree only to count: a folder walk stops once the limit is filled, and a number it could not finish counting
+is shown with "+" as well. The payload never depends on this number. The count, the list, the left-out number and
+the estimate are derived from the Include result itself (the same ordered entry list and the same counting of size
 placeholders and unreadable items toward the limit that the Include copy uses), not from a parallel estimate kept
 while the Exclude copy runs; the dialog and the Include notice must agree.
 (Found by deep testing: the dialog said 40 files while 30 were copied; in round 3 it said 31 non-text files and
