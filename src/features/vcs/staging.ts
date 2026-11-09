@@ -17,7 +17,7 @@ import type { DiffData, DiffSide } from "./diffInput";
 import { effectiveKind, kindOf, rootOf, stripSlash } from "./model";
 
 /** The staging area only replaces the Commit tool window (the non-modal commit interface), as in IDEA. */
-const stagingOn = (w: WorkflowSettings) => w.vcs.git.stagingArea && w.vcs.commit.nonModal;
+export const stagingOn = (w: WorkflowSettings) => w.vcs.git.stagingArea && w.vcs.commit.nonModal;
 
 export const isStagingArea = () => stagingOn(workflowSettings());
 export const useStagingArea = () => useWorkflowSettings(stagingOn);
