@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const projectTrustStatus = vi.fn();
-vi.mock("@/platform/projectTrust", () => ({ confirmProjectTrust: vi.fn(async () => {}) }));
+vi.mock("@/platform/projectTrust", () => ({
+  confirmProjectTrust: vi.fn(async () => {}),
+  provideProjectTrustPrompt: vi.fn(() => () => {}),
+}));
 vi.mock("@/workbench/messages", () => ({ ask: vi.fn() }));
 const workspaceAttach = vi.fn();
 const workspaceUpdate = vi.fn();
@@ -80,7 +83,6 @@ const { isRemoteWindow, connectRemote } = await import("@/platform/remote");
 const { ask } = await import("@/workbench/messages");
 const { confirmProjectTrust } = await import("@/platform/projectTrust");
 const { IpcError } = await import("@/platform/ipc");
-const { provideProjectTrustPrompt } = await import("@/platform/projectTrust");
 provideNotificationService({ notify });
 
 const opened: string[] = [];
@@ -221,7 +223,10 @@ describe("replacing a project in this window", () => {
   it("asks about trust here before a new tab or window exists, and opens neither when declined", async () => {
     const asked: string[] = [];
     let answer = false;
-    const off = provideProjectTrustPrompt(async (path) => (asked.push(path), answer));
+    vi.mocked(confirmProjectTrust).mockImplementation(async (path) => {
+      asked.push(path);
+      if (!answer) throw new IpcError({ kind: "cancelled", message: "Project opening cancelled" });
+    });
     try {
       windowOpenProjectTab.mockResolvedValue(ok({ kind: "opened", label: "project-1" }));
       windowOpenProject.mockResolvedValue(ok({ kind: "opened", label: "project-2" }));
@@ -238,7 +243,7 @@ describe("replacing a project in this window", () => {
       await openProjectWithPolicy("/c");
       expect(windowOpenProject).toHaveBeenCalledWith("/c", true, []);
     } finally {
-      off();
+      vi.mocked(confirmProjectTrust).mockReset().mockResolvedValue();
     }
   });
 });
