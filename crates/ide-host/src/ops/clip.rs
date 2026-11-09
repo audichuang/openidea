@@ -5,14 +5,17 @@
 
 use crate::Host;
 use crate::rpc::Dispatcher;
-use ide_clip::commits::{self, CommitsPayload, FilePlan};
+use ide_clip::commits::CommitNonTextOptions;
+use ide_clip::commits::{self, CommitsPayload, FilePlan, ReplaySkipReason};
 use ide_clip::gitrun::RunOptions;
 use ide_clip::gitsrc::{Git, GitSource};
-use ide_clip::restore::{FsProbe, RestoreBase, RestoreSelection, suggest_restore_base};
-use ide_clip::settings::Settings;
+use ide_clip::nontext::NonTextSummary;
+use ide_clip::restore::{FsProbe, RestoreBase, RestoreSelection, SkipReason, suggest_restore_base};
+use ide_clip::settings::{NonTextMode, Settings};
 use ide_clip::transfer::{
     self, CLIPBOARD_PAYLOAD_MAX, CanonicalRootId, CommitReplayPreview, ExportItem, ExportSelection, ImportMapping,
-    TransferError, TransferImportPlan, changed_items, copy_selection_detailed, selection_from_paths,
+    SKIPPED_PATHS_SHOWN, TransferError, TransferImportPlan, WalkRefusals, changed_items, copy_selection_detailed,
+    selection_from_paths_or_refused,
 };
 use ide_core::{IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
@@ -73,6 +76,88 @@ pub enum ClipCopySource {
     CommitRange { repo: PathBuf, base: String, tip: String },
 }
 
+/// Whether a copy carries non-text files as Base64 (`docs/clipcode/non-text-files.md`).
+/// A copy that finds some reports them in [`ClipCopyResult::non_text`]; the UI asks, then
+/// copies again with `Include`. Never stored.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ClipNonTextMode {
+    /// Today's payload: non-text files are left out.
+    #[default]
+    Exclude,
+    Include,
+}
+
+impl From<ClipNonTextMode> for NonTextMode {
+    fn from(m: ClipNonTextMode) -> Self {
+        match m {
+            ClipNonTextMode::Exclude => NonTextMode::Exclude,
+            ClipNonTextMode::Include => NonTextMode::Include,
+        }
+    }
+}
+
+/// How many non-text files (and unreadable paths) a copy result lists by name.
+const LISTED_FILES: usize = 10;
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipNonTextFile {
+    /// The path as the payload spells it.
+    pub path: String,
+    /// Raw bytes.
+    pub size: f64,
+}
+
+/// What the copy dialog shows. Under `Exclude` it is what `Include` would add.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipNonTextSummary {
+    /// Non-text files within the non-text limit.
+    pub count: u32,
+    /// Σ raw size of those files.
+    pub total_bytes: f64,
+    /// The payload size with them included.
+    pub estimated_include_bytes: f64,
+    /// The first 10, in payload order.
+    pub files: Vec<ClipNonTextFile>,
+    /// Non-text files over the non-text limit: not copied either way.
+    pub over_limit_count: u32,
+    /// Files over both per-file limits: never read, copied as size placeholders.
+    pub unread_over_limit_count: u32,
+    /// The larger per-file limit in bytes, which those files exceed.
+    pub unread_limit_bytes: f64,
+    /// The estimate is over the whole-payload limit: `Include` would fail.
+    pub exceeds_payload_cap: bool,
+    /// Files the file-count limit leaves out of what `Include` copies.
+    pub limit_left_out: u32,
+    /// `limit_left_out` is a lower bound (a folder walk stopped at the limit).
+    pub limit_left_out_at_least: bool,
+    /// The `headerFormat` cannot be escaped: `Include` would write Base64 lines that read as file headers.
+    pub header_cannot_be_escaped: bool,
+}
+
+fn non_text_summary(s: &NonTextSummary) -> ClipNonTextSummary {
+    ClipNonTextSummary {
+        count: n(s.count()),
+        total_bytes: s.total_bytes as f64,
+        estimated_include_bytes: s.estimated_include_payload_bytes as f64,
+        files: s
+            .files
+            .iter()
+            .take(LISTED_FILES)
+            .map(|f| ClipNonTextFile { path: f.path.clone(), size: f.size as f64 })
+            .collect(),
+        over_limit_count: n(s.over_limit_count),
+        unread_over_limit_count: n(s.unread_over_limit_count),
+        unread_limit_bytes: s.unread_limit_bytes as f64,
+        exceeds_payload_cap: s.estimated_include_payload_bytes > CLIPBOARD_PAYLOAD_MAX,
+        limit_left_out: n(s.limit_left_out),
+        limit_left_out_at_least: s.limit_left_out_lower_bound,
+        header_cannot_be_escaped: s.header_cannot_be_escaped,
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ClipCopyResult {
@@ -100,6 +185,51 @@ pub struct ClipCopyResult {
     pub file_limit: u32,
     /// Settings › ClipCode › "Show notification after copying".
     pub notify: bool,
+    /// Non-text files found (see [`ClipNonTextSummary`]).
+    pub non_text: ClipNonTextSummary,
+    /// Of `files`: non-text files carried as Base64 (`Include` only).
+    pub non_text_copied: u32,
+    /// The first 10 files counted in `skippedUnreadable` that were unreadable, by payload path
+    /// (files mode; commits mode names none).
+    pub skipped_unreadable_paths: Vec<String>,
+    /// Of `skipped`: files whose name the payload cannot carry portably (a backslash, a double quote, a tab
+    /// or another refused character), not unreadable ones.
+    pub skipped_unportable: u32,
+    /// The first 10 of them by their real names (files mode).
+    pub skipped_unportable_paths: Vec<String>,
+    /// Of `skipped`: symlinks to a folder inside a copied folder, which are not followed.
+    pub skipped_symlink_dirs: u32,
+    /// The first 10 of them (files mode).
+    pub skipped_symlink_dir_paths: Vec<String>,
+}
+
+impl ClipCopyResult {
+    /// A files result that copied nothing, for a selection that was refused whole.
+    fn empty() -> Self {
+        Self {
+            text: String::new(),
+            mode: "files".into(),
+            files: 0,
+            commits: 0,
+            chars: 0,
+            lines: 0,
+            words: 0,
+            tokens: 0,
+            skipped: 0,
+            skipped_size: 0,
+            skipped_unreadable: 0,
+            truncated: false,
+            file_limit: 0,
+            notify: true,
+            non_text: ClipNonTextSummary::default(),
+            non_text_copied: 0,
+            skipped_unreadable_paths: Vec::new(),
+            skipped_unportable: 0,
+            skipped_unportable_paths: Vec::new(),
+            skipped_symlink_dirs: 0,
+            skipped_symlink_dir_paths: Vec::new(),
+        }
+    }
 }
 
 fn n(v: usize) -> u32 {
@@ -169,7 +299,24 @@ fn by_repo(paths: &[PathBuf]) -> IdeResult<Vec<(PathBuf, Vec<PathBuf>)>> {
     Ok(out)
 }
 
-fn file_copy(sel: ExportSelection, primary_skipped: usize, settings: &Settings) -> IdeResult<ClipCopyResult> {
+/// The root a selected path outside every project root is read under: its repository, else its folder (a
+/// file's parent). A folder that cannot be listed is not a root: it is read from its parent, where the copy
+/// skips and names it instead of failing.
+fn outside_root(p: &Path) -> PathBuf {
+    let at = if p.is_dir() && std::fs::read_dir(p).is_err() { p.parent().unwrap_or(p) } else { p };
+    repo_root(at)
+        .unwrap_or_else(|_| if at.is_dir() { at.to_path_buf() } else { at.parent().unwrap_or(at).to_path_buf() })
+}
+
+fn file_copy(
+    sel: ExportSelection,
+    primary_skipped: usize,
+    primary_skipped_paths: Vec<String>,
+    primary_refusals: WalkRefusals,
+    settings: &Settings,
+    mode: ClipNonTextMode,
+) -> IdeResult<ClipCopyResult> {
+    let sel = sel.with_non_text(mode.into());
     let report =
         copy_selection_detailed(sel, settings, file_limit(settings), &RunOptions::default(), |_| {}).map_err(|e| {
             match e {
@@ -178,7 +325,12 @@ fn file_copy(sel: ExportSelection, primary_skipped: usize, settings: &Settings) 
             }
         })?;
     let o = report.outcome;
-    if o.copied == 0 {
+    let mut refusals = report.skip_detail;
+    let primary_refusals_count = primary_refusals.unportable + primary_refusals.symlink_dirs;
+    refusals.merge(primary_refusals);
+    // Only non-text files were found and Exclude left them out: the result still carries the
+    // summary (empty text), so the UI can ask before giving up.
+    if o.copied == 0 && o.non_text.count() == 0 {
         return Err(IdeError::invalid("Nothing to copy"));
     }
     Ok(ClipCopyResult {
@@ -191,10 +343,23 @@ fn file_copy(sel: ExportSelection, primary_skipped: usize, settings: &Settings) 
         tokens: n(o.tokens),
         skipped: n(o.skipped + primary_skipped),
         skipped_size: n(report.skipped_file_size),
-        skipped_unreadable: n(report.skipped_unreadable + primary_skipped),
+        // `primary_skipped` counts the selection's refusals, unportable names included.
+        skipped_unreadable: n((report.skipped_unreadable + primary_skipped).saturating_sub(primary_refusals_count)),
         truncated: o.truncated,
         file_limit: n(file_limit(settings)),
         notify: settings.show_copy_notification,
+        non_text: non_text_summary(&o.non_text),
+        non_text_copied: n(o.non_text_files),
+        skipped_unreadable_paths: report
+            .skipped_unreadable_paths
+            .into_iter()
+            .chain(primary_skipped_paths)
+            .take(SKIPPED_PATHS_SHOWN)
+            .collect(),
+        skipped_unportable: n(refusals.unportable),
+        skipped_unportable_paths: refusals.unportable_paths,
+        skipped_symlink_dirs: n(refusals.symlink_dirs),
+        skipped_symlink_dir_paths: refusals.symlink_dir_paths,
         text: o.payload,
     })
 }
@@ -219,6 +384,9 @@ fn git_selection(project: &Path, content_roots: &[PathBuf], items: Vec<ExportIte
 
 fn commit_result(export: commits::CommitExport, settings: &Settings) -> ClipCopyResult {
     let summary = commits::copy_summary(&export.payload, &export.text);
+    // Carried non-text files keep their `notCopied` reason on the wire: not skipped.
+    let carried = export.payload.commits.iter().flat_map(|c| &c.files).filter(|f| f.non_text.is_some()).count();
+    let not_copied = summary.not_copied_count.saturating_sub(carried);
     let stats = ide_clip::stats::payload_stats(&export.text);
     ClipCopyResult {
         mode: "commits".into(),
@@ -228,12 +396,19 @@ fn commit_result(export: commits::CommitExport, settings: &Settings) -> ClipCopy
         lines: n(stats.lines),
         words: n(stats.words),
         tokens: n(stats.tokens),
-        skipped: n(summary.not_copied_count),
+        skipped: n(not_copied),
         skipped_size: 0,
-        skipped_unreadable: n(summary.not_copied_count),
+        skipped_unreadable: n(not_copied),
         truncated: false,
         file_limit: 0,
         notify: settings.show_copy_notification,
+        non_text: non_text_summary(&export.non_text),
+        non_text_copied: n(carried),
+        skipped_unreadable_paths: Vec::new(),
+        skipped_unportable: 0,
+        skipped_unportable_paths: Vec::new(),
+        skipped_symlink_dirs: 0,
+        skipped_symlink_dir_paths: Vec::new(),
         text: export.text,
     }
 }
@@ -246,6 +421,16 @@ pub fn copy(project: &Path, source: ClipCopySource, settings: &Settings) -> IdeR
     copy_in(project, &[], source, settings)
 }
 
+/// [`copy`] with the non-text choice.
+pub fn copy_with(
+    project: &Path,
+    source: ClipCopySource,
+    settings: &Settings,
+    non_text: ClipNonTextMode,
+) -> IdeResult<ClipCopyResult> {
+    copy_in_with(project, &[], source, settings, non_text)
+}
+
 /// [`copy`] for a project whose roots also include `content_roots` (workspace
 /// members or Project Structure content roots).
 pub fn copy_in(
@@ -254,10 +439,32 @@ pub fn copy_in(
     source: ClipCopySource,
     settings: &Settings,
 ) -> IdeResult<ClipCopyResult> {
+    let result = copy_in_with(project, content_roots, source, settings, ClipNonTextMode::Exclude)?;
+    // Today's contract: no copied file is nothing to copy, even when a size placeholder or the
+    // non-text files found make the payload text non-empty (`copy_in_with` reports them instead).
+    if result.files == 0 && (result.mode == "files" || result.text.is_empty()) {
+        return Err(IdeError::invalid("Nothing to copy"));
+    }
+    Ok(result)
+}
+
+/// [`copy_in`] with the non-text choice: `Include` carries non-text files within
+/// `maxNonTextFileSizeKB` as Base64; `Exclude` is today's payload plus the summary. When only
+/// non-text files are found and `Exclude` leaves them out, this returns an empty `text` with the
+/// summary (the dialog still has to ask) instead of failing with "Nothing to copy".
+pub fn copy_in_with(
+    project: &Path,
+    content_roots: &[PathBuf],
+    source: ClipCopySource,
+    settings: &Settings,
+    non_text: ClipNonTextMode,
+) -> IdeResult<ClipCopyResult> {
     let opts = RunOptions::default();
     match source {
         ClipCopySource::Files { paths } => {
             let mut skipped = 0;
+            let mut skipped_paths: Vec<String> = Vec::new();
+            let mut refusals = WalkRefusals::default();
             // Files of one root plan together; several roots join one selection,
             // anchored on the project like the git sources.
             let mut groups: Vec<(PathBuf, Vec<PathBuf>)> = Vec::new();
@@ -272,8 +479,7 @@ pub fn copy_in(
                 } else if let Some(r) = content_roots.iter().find(|r| p.starts_with(r)) {
                     r.clone()
                 } else {
-                    let dir = repo_root(p)
-                        .unwrap_or_else(|_| if p.is_dir() { p.clone() } else { p.parent().unwrap_or(p).to_path_buf() });
+                    let dir = outside_root(p);
                     if !absolute.contains(&dir) {
                         absolute.push(dir.clone());
                     }
@@ -284,31 +490,60 @@ pub fn copy_in(
                     None => groups.push((root, vec![p.clone()])),
                 }
             }
-            // The project is the primary root (relative headers) wherever it sits in the batch;
-            // without one, the first content root, else the first root.
-            let primary_idx = groups
-                .iter()
-                .position(|(r, _)| r == project)
-                .or_else(|| groups.iter().position(|(r, _)| !absolute.contains(r)))
-                .unwrap_or(0);
             // Plan every group first, then validate the merged selection once: the primary,
-            // the roots and the absolute spelling must all be known before validation.
+            // the roots and the absolute spelling must all be known before validation. A group
+            // refused whole leaves no part, so parts keep their group's root and every lookup
+            // below goes by root, never by the group's index.
             let mut parts = Vec::with_capacity(groups.len());
             for (root, list) in &groups {
-                let part = selection_from_paths(root, root, list).map_err(err)?;
-                skipped += part.skipped;
-                parts.push(part.sel);
+                match selection_from_paths_or_refused(root, root, list).map_err(err)? {
+                    Ok(part) => {
+                        skipped += part.skipped;
+                        skipped_paths.extend(part.skipped_paths);
+                        refusals.merge(part.detail);
+                        parts.push((root.clone(), part.sel));
+                    }
+                    Err(refused) => {
+                        skipped += refused.skipped;
+                        skipped_paths.extend(refused.skipped_paths);
+                        refusals.merge(refused.detail);
+                    }
+                }
             }
             if parts.is_empty() {
-                return Err(IdeError::invalid("Nothing to copy"));
+                // Every selected path was refused: an empty result that names what was refused, which the
+                // UI reports as "Nothing to copy". An error would reach the user as a raw `IpcError`.
+                let unreadable = skipped.saturating_sub(refusals.unportable + refusals.symlink_dirs);
+                return Ok(ClipCopyResult {
+                    mode: "files".into(),
+                    skipped: n(skipped),
+                    skipped_unreadable: n(unreadable),
+                    skipped_unreadable_paths: skipped_paths.into_iter().take(SKIPPED_PATHS_SHOWN).collect(),
+                    skipped_unportable: n(refusals.unportable),
+                    skipped_unportable_paths: refusals.unportable_paths,
+                    skipped_symlink_dirs: n(refusals.symlink_dirs),
+                    skipped_symlink_dir_paths: refusals.symlink_dir_paths,
+                    file_limit: n(file_limit(settings)),
+                    notify: settings.show_copy_notification,
+                    ..ClipCopyResult::empty()
+                });
             }
+            // A refused group's root was never declared to the selection.
+            absolute.retain(|r| parts.iter().any(|(root, _)| root == r));
             // The `clipcode-root` name is the project's own spelling, never another root's.
-            let source_root = groups.iter().position(|(r, _)| r == project).and_then(|i| parts[i].source_root.clone());
-            let spelled_root = parts[primary_idx].spelled_root.clone();
-            let primary = parts[primary_idx].primary_root.as_ref().map(|r| r.path().to_path_buf());
+            let source_root = parts.iter().find(|(r, _)| r == project).and_then(|(_, part)| part.source_root.clone());
+            // The project is the primary root (relative headers) wherever it sits in the batch;
+            // without one, the first content root, else the first root.
+            let primary_idx = parts
+                .iter()
+                .position(|(r, _)| r == project)
+                .or_else(|| parts.iter().position(|(r, _)| !absolute.contains(r)))
+                .unwrap_or(0);
+            let spelled_root = parts[primary_idx].1.spelled_root.clone();
+            let primary = parts[primary_idx].1.primary_root.as_ref().map(|r| r.path().to_path_buf());
             let mut roots: Vec<PathBuf> = Vec::new();
             let mut items = Vec::new();
-            for part in parts {
+            for (_, part) in parts {
                 roots.extend(part.roots.iter().map(|r| r.path().to_path_buf()));
                 items.extend(part.items);
             }
@@ -316,7 +551,7 @@ pub fn copy_in(
                 .map_err(err)?
                 .with_source_root(source_root)
                 .with_spelled_root(spelled_root);
-            file_copy(sel, skipped, settings)
+            file_copy(sel, skipped, skipped_paths, refusals, settings, non_text)
         }
         ClipCopySource::Changes { paths, side } => {
             let repos = by_repo(&paths)?;
@@ -329,7 +564,14 @@ pub fn copy_in(
                     item.source = transfer::SourceKind::Unstaged;
                 }
             }
-            file_copy(git_selection(project, content_roots, items)?, skipped, settings)
+            file_copy(
+                git_selection(project, content_roots, items)?,
+                skipped,
+                Vec::new(),
+                WalkRefusals::default(),
+                settings,
+                non_text,
+            )
         }
         ClipCopySource::CommitFiles { repo, rev, paths } => {
             let root = repo_root(&repo)?;
@@ -338,7 +580,14 @@ pub fn copy_in(
             if items.is_empty() && no_filter {
                 return Err(IdeError::no_net_changes());
             }
-            file_copy(git_selection(project, content_roots, items)?, skipped, settings)
+            file_copy(
+                git_selection(project, content_roots, items)?,
+                skipped,
+                Vec::new(),
+                WalkRefusals::default(),
+                settings,
+                non_text,
+            )
         }
         ClipCopySource::Range { repo, base, tip, paths } => {
             let root = repo_root(&repo)?;
@@ -347,7 +596,14 @@ pub fn copy_in(
             if items.is_empty() && no_filter {
                 return Err(IdeError::no_net_changes());
             }
-            file_copy(git_selection(project, content_roots, items)?, skipped, settings)
+            file_copy(
+                git_selection(project, content_roots, items)?,
+                skipped,
+                Vec::new(),
+                WalkRefusals::default(),
+                settings,
+                non_text,
+            )
         }
         ClipCopySource::RootRange { repo, tip, paths } => {
             let root = repo_root(&repo)?;
@@ -358,7 +614,14 @@ pub fn copy_in(
             if items.is_empty() && no_filter {
                 return Err(IdeError::no_net_changes());
             }
-            file_copy(git_selection(project, content_roots, items)?, skipped, settings)
+            file_copy(
+                git_selection(project, content_roots, items)?,
+                skipped,
+                Vec::new(),
+                WalkRefusals::default(),
+                settings,
+                non_text,
+            )
         }
         ClipCopySource::CommitList { repo, revs, paths } => {
             let root = repo_root(&repo)?;
@@ -385,19 +648,41 @@ pub fn copy_in(
             if items.is_empty() && no_filter {
                 return Err(IdeError::no_net_changes());
             }
-            file_copy(git_selection(project, content_roots, items)?, skipped, settings)
+            file_copy(
+                git_selection(project, content_roots, items)?,
+                skipped,
+                Vec::new(),
+                WalkRefusals::default(),
+                settings,
+                non_text,
+            )
         }
         ClipCopySource::Commits { repo, tip, selected } => {
             let git = Git::open(&repo).map_err(err)?;
-            let export = transfer::plan_commit_export_exact_with(&git, &tip, &selected, &opts, CLIPBOARD_PAYLOAD_MAX)
-                .map_err(err)?;
+            let options = CommitNonTextOptions::from_settings(settings, non_text.into());
+            let export = transfer::plan_commit_export_exact_with_non_text(
+                &git,
+                &tip,
+                &selected,
+                &opts,
+                CLIPBOARD_PAYLOAD_MAX,
+                options,
+            )
+            .map_err(err)?;
             Ok(commit_result(export, settings))
         }
         ClipCopySource::CommitRange { repo, base, tip } => {
             let git = Git::open(&repo).map_err(err)?;
-            let export =
-                transfer::plan_commit_export_with(&git, Some((&base, &tip)), None, &opts, CLIPBOARD_PAYLOAD_MAX)
-                    .map_err(err)?;
+            let options = CommitNonTextOptions::from_settings(settings, non_text.into());
+            let export = transfer::plan_commit_export_with_non_text(
+                &git,
+                Some((&base, &tip)),
+                None,
+                &opts,
+                CLIPBOARD_PAYLOAD_MAX,
+                options,
+            )
+            .map_err(err)?;
             Ok(commit_result(export, settings))
         }
     }
@@ -420,6 +705,22 @@ pub struct ClipPasteFile {
     pub action: String,
     /// Why it is skipped (`skip` only).
     pub reason: Option<String>,
+    /// A non-text file (`create` / `overwrite`): shown as "non-text file · size", never as text.
+    pub non_text: Option<ClipPasteNonText>,
+}
+
+/// A non-text entry of a paste preview. Its Base64 is never exposed.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipPasteNonText {
+    /// Raw bytes the paste writes.
+    pub size: f64,
+    /// The target exists and already holds exactly these bytes: left unchanged, no overwrite needed.
+    pub identical: bool,
+}
+
+fn paste_non_text(op: &ide_clip::restore::CreateOperation) -> Option<ClipPasteNonText> {
+    op.non_text_size().map(|size| ClipPasteNonText { size: size as f64, identical: op.is_identical() })
 }
 
 /// One file of a replayed commit.
@@ -435,6 +736,8 @@ pub struct ClipReplayFile {
     /// The write replaces a file that exists in the destination.
     pub overwrites: bool,
     pub reason: Option<String>,
+    /// Raw size of a non-text file this row writes (shown as "non-text file", never as a diff).
+    pub non_text_size: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -488,6 +791,25 @@ pub struct ClipPasteResult {
     /// Commit ids the replay created, oldest first.
     pub commits: Vec<String>,
     pub errors: Vec<String>,
+    /// Commits the replay did not create, each with its reason as a code the UI words (never English text).
+    pub not_created: Vec<ClipNotCreated>,
+    /// Non-text targets that already held the pasted bytes: not written.
+    pub unchanged: u32,
+    /// Non-text entries skipped because their Base64, size or SHA-256 did not verify (counted in
+    /// `skipped`), by payload path.
+    pub corrupt_non_text: Vec<String>,
+}
+
+/// A replayed commit that was not created because every file change of it was refused or skipped.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipNotCreated {
+    /// 1-based position among the replayed commits.
+    pub number: u32,
+    /// The commit message's first line.
+    pub subject: String,
+    /// A skip reason code, as in the preview rows (`NON_UTF8_TARGET`, ...).
+    pub reason: String,
 }
 
 enum Pending {
@@ -534,6 +856,7 @@ fn replay_file(f: &FilePlan) -> ClipReplayFile {
             .or_else(|| f.not_copied.map(|r| tag(&r)))
             .or_else(|| f.skip_reason.map(|r| tag(&r)))
             .or_else(|| absent.then(|| "ALREADY_ABSENT".into())),
+        non_text_size: f.non_text_size.map(|size| size as f64),
     }
 }
 
@@ -573,8 +896,11 @@ pub fn paste_preview_into(
     settings: &Settings,
 ) -> IdeResult<ClipPastePreview> {
     let opts = RunOptions::default();
-    if text.len() > CLIPBOARD_PAYLOAD_MAX {
-        return Err(IdeError::invalid("The clipboard holds more than 32 MiB"));
+    // The copy side caps the LF length; a CRLF pipe adds a byte per line (about 1.3% on wrapped
+    // Base64) that must not push a payload that fit over the cap.
+    let lf_len = text.len() - text.as_bytes().windows(2).filter(|w| w == b"\r\n").count();
+    if lf_len > CLIPBOARD_PAYLOAD_MAX {
+        return Err(IdeError::invalid("The clipboard holds more than 50 MiB"));
     }
     if commits::is_commit_payload(text) {
         let payload: CommitsPayload = commits::parse_commit_payload(text).map_err(err)?;
@@ -691,6 +1017,7 @@ pub fn paste_preview_into(
             target: Some(op.absolute_path.to_string_lossy().into_owned()),
             action: if op.existed { "overwrite" } else { "create" }.into(),
             reason: None,
+            non_text: paste_non_text(op),
         });
     }
     for (i, op) in restore.delete_operations.iter().enumerate() {
@@ -700,6 +1027,7 @@ pub fn paste_preview_into(
             target: Some(op.absolute_path.to_string_lossy().into_owned()),
             action: "delete".into(),
             reason: None,
+            non_text: None,
         });
     }
     for (i, op) in restore.skipped_operations.iter().enumerate() {
@@ -709,6 +1037,7 @@ pub fn paste_preview_into(
             target: None,
             action: "skip".into(),
             reason: Some(op.reason.as_str().to_string()),
+            non_text: None,
         });
     }
     let id = keep(Pending::Files(Box::new(plan)));
@@ -734,6 +1063,9 @@ pub struct ClipPasteFileContent {
     pub current: Option<String>,
     /// Why `current` is missing although the file exists: binary, too large, unreadable.
     pub note: Option<String>,
+    /// Set for a non-text entry: the pane shows "non-text file · size" and whether the target is
+    /// identical, with no content and no diff (`incoming` and `current` stay empty).
+    pub non_text: Option<ClipPasteNonText>,
 }
 
 /// Larger destination files are not shown: the pane is a preview, not an editor.
@@ -752,6 +1084,9 @@ pub fn paste_preview_file(id: u32, action: &str, index: u32) -> IdeResult<ClipPa
         match action {
             "create" | "overwrite" => {
                 let op = restore.create_operations.get(i).ok_or_else(|| IdeError::invalid("No such file"))?;
+                if let Some(non_text) = paste_non_text(op) {
+                    return Ok(ClipPasteFileContent { non_text: Some(non_text), ..Default::default() });
+                }
                 (Some(op.content.clone()), op.existed.then(|| op.absolute_path.clone()))
             }
             "delete" => {
@@ -773,7 +1108,7 @@ pub fn paste_preview_file(id: u32, action: &str, index: u32) -> IdeResult<ClipPa
             Err(error) => (None, Some(error.to_string())),
         },
     };
-    Ok(ClipPasteFileContent { incoming, current, note })
+    Ok(ClipPasteFileContent { incoming, current, note, non_text: None })
 }
 
 /// Writes the preview `req.id` as confirmed. Refuses when the destination changed since.
@@ -796,7 +1131,8 @@ pub fn paste_apply_with_paths(req: ClipPasteApply) -> IdeResult<(ClipPasteResult
             let mut unchecked: BTreeSet<usize> = req.unchecked_creates.iter().map(|&i| i as usize).collect();
             // An existing target not chosen for overwrite stays as it is.
             for (i, op) in restore.create_operations.iter().enumerate() {
-                if op.existed && !overwrite.contains(&i) {
+                // An identical non-text target needs no permission: it runs and is reported unchanged.
+                if op.existed && !op.is_identical() && !overwrite.contains(&i) {
                     unchecked.insert(i);
                 }
             }
@@ -809,6 +1145,12 @@ pub fn paste_apply_with_paths(req: ClipPasteApply) -> IdeResult<(ClipPasteResult
             // Only writes that actually committed are reported: a failed write
             // keeps its open buffer (and the user's unsaved edits).
             let mut written: Vec<PathBuf> = Vec::new();
+            let corrupt_non_text: Vec<String> = restore
+                .skipped_operations
+                .iter()
+                .filter(|op| op.reason == SkipReason::CorruptNonText)
+                .map(|op| op.relative_path.clone().unwrap_or_else(|| op.raw_path.clone()))
+                .collect();
             let r = plan
                 .apply_observed(&selection, &mut |op, _| written.push(op.absolute_path.clone()))
                 .map_err(|e| IdeError::invalid(e.paste_message()))?;
@@ -819,6 +1161,9 @@ pub fn paste_apply_with_paths(req: ClipPasteApply) -> IdeResult<(ClipPasteResult
                 skipped: n(r.total_skipped()),
                 commits: Vec::new(),
                 errors: r.errors,
+                not_created: Vec::new(),
+                unchanged: n(r.unchanged_count),
+                corrupt_non_text,
             };
             Ok((result, written))
         }
@@ -827,8 +1172,25 @@ pub fn paste_apply_with_paths(req: ClipPasteApply) -> IdeResult<(ClipPasteResult
             if !req.overwrite_existing && !preview.plan().existing_writes().is_empty() {
                 return Err(IdeError::invalid("Files of the commits exist in the destination; allow overwriting"));
             }
+            let corrupt_non_text: Vec<String> = preview
+                .plan()
+                .commits
+                .iter()
+                .flat_map(|c| &c.files)
+                .filter(|f| f.skip_reason == Some(ReplaySkipReason::CorruptNonText))
+                .map(|f| f.path.clone())
+                .collect();
             let r = preview.apply().map_err(|e| IdeError::invalid(e.paste_message()))?;
-            let mut errors = Vec::new();
+            let not_created: Vec<ClipNotCreated> = r
+                .not_created
+                .iter()
+                .map(|c| ClipNotCreated {
+                    number: n(c.index + 1),
+                    subject: c.message.lines().next().unwrap_or("").to_string(),
+                    reason: tag(&c.reason),
+                })
+                .collect();
+            let mut errors: Vec<String> = Vec::new();
             if let Some(f) = &r.failure {
                 errors.push(format!(
                     "Commit {} ({}) failed: {}",
@@ -837,7 +1199,10 @@ pub fn paste_apply_with_paths(req: ClipPasteApply) -> IdeResult<(ClipPasteResult
                     f.error
                 ));
             }
-            Ok((ClipPasteResult { commits: r.created, errors, ..Default::default() }, Vec::new()))
+            Ok((
+                ClipPasteResult { commits: r.created, errors, not_created, corrupt_non_text, ..Default::default() },
+                Vec::new(),
+            ))
         }
     }
 }
@@ -969,10 +1334,15 @@ pub fn paste_branch_series(repo: &Path, text: &str, name: &str, on_head: bool) -
 // ---------------------------------------------------------------------------
 // Commands
 
-pub async fn clip_copy(host: &Host, window: &str, source: ClipCopySource) -> IdeResult<ClipCopyResult> {
+pub async fn clip_copy(
+    host: &Host,
+    window: &str,
+    source: ClipCopySource,
+    non_text: ClipNonTextMode,
+) -> IdeResult<ClipCopyResult> {
     let project = host.project(window)?;
     let settings = clip_settings(&project.settings.effective().vcs.clip_code);
-    blocking(move || copy_in(&project.root, &project.content_roots(), source, &settings)).await
+    blocking(move || copy_in_with(&project.root, &project.content_roots(), source, &settings, non_text)).await
 }
 
 /// `dest` defaults to the project root; `repo` (the selected repository) is where
@@ -1059,7 +1429,10 @@ pub(crate) fn register(d: &mut Dispatcher) {
         clip_paste_branch_series(&c.host, &c.window, c.arg("repo")?, c.arg("text")?, c.arg("name")?, c.arg("onHead")?)
             .await
     });
-    d.add("clip_copy", |c| async move { clip_copy(&c.host, &c.window, c.arg("source")?).await });
+    d.add("clip_copy", |c| async move {
+        let non_text: Option<ClipNonTextMode> = c.arg("nonText")?;
+        clip_copy(&c.host, &c.window, c.arg("source")?, non_text.unwrap_or_default()).await
+    });
     d.add("clip_paste_preview", |c| async move {
         clip_paste_preview(
             &c.host,
@@ -2164,5 +2537,27 @@ mod tests {
         assert!(paste_branch_series(&c, &series.text, "clash", true).is_err());
         assert_eq!(git(&c, &["rev-parse", "--abbrev-ref", "HEAD"]), "main");
         assert!(git(&c, &["branch", "--list", "clash"]).is_empty());
+    }
+
+    /// A group refused whole (here: a non-portable name outside the project) leaves no part, so the groups after
+    /// it must not be looked up by the group's index.
+    #[cfg(unix)]
+    #[test]
+    fn a_group_refused_whole_does_not_break_the_groups_after_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = repo(&tmp.path().join("proj"));
+        fs::write(a.join("ok.txt"), "ok\n").unwrap();
+        let outside = dunce::canonicalize(tmp.path()).unwrap().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("bad\".txt"), "bad\n").unwrap();
+        for paths in
+            [vec![outside.join("bad\".txt"), a.join("ok.txt")], vec![a.join("ok.txt"), outside.join("bad\".txt")]]
+        {
+            let copied =
+                copy_in_with(&a, &[], ClipCopySource::Files { paths }, &Settings::default(), ClipNonTextMode::Exclude)
+                    .unwrap();
+            assert_eq!(copied.files, 1, "{}", copied.text);
+            assert!(copied.text.contains("// file: ok.txt"), "{}", copied.text);
+        }
     }
 }

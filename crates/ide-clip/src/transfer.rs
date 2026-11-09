@@ -22,18 +22,19 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::blob::{BlobRead, BlobReader, DeletedContent};
-use crate::commits::{self, CommitError, CommitExport, CommitsPayload};
+use crate::commits::{self, CommitError, CommitExport, CommitNonTextOptions, CommitsPayload};
 use crate::filter;
 use crate::format::{self, BorrowedPayloadOptions, ChangeType, ParsedEntry, PayloadFile};
-use crate::fsutil::decode_utf8_or_skip;
+use crate::fsutil::{FileBody, decode_utf8_or_bytes, decode_utf8_or_skip};
 use crate::gitrun::{CancelToken, RunOptions, RunOutput};
 use crate::gitsrc::{DELETED_FILE_MARKER, Git, GitError, UNREADABLE_FILE_MARKER};
+use crate::nontext::NonTextSummary;
 use crate::paths::{self, escapes_all_roots, sanitize_relative_path};
 use crate::restore::{
     self, CreateOperation, DeleteOperation, RestoreExecutionResult, RestorePlan, RestoreSelection, SkipReason,
     SkippedOperation,
 };
-use crate::settings::Settings;
+use crate::settings::{NonTextMode, Settings};
 use crate::stats::{PayloadStats, payload_stats};
 use crate::workspace::{HeavyGuard, RepoIdentity, lock_heavy};
 
@@ -43,9 +44,9 @@ mod select;
 pub use crate::commits::ReplayPreviewUnavailable;
 pub use changes::{ChangedItems, changed_items};
 pub use select::{
-    CopyOutcome, CopyReport, FolderExpansion, PathSelection, copy_selection, copy_selection_detailed,
-    expand_folder_items, expand_folder_items_in_input_order, is_safe_dir_symlink, plan_export_expanding,
-    selection_from_paths,
+    CopyOutcome, CopyReport, FolderExpansion, PathSelection, RefusedPaths, WalkRefusals, copy_selection,
+    copy_selection_detailed, expand_folder_items, expand_folder_items_in_input_order, is_dir_symlink,
+    plan_export_expanding, selection_from_paths, selection_from_paths_or_refused,
 };
 
 /// A rename has two visible rows: deleting the source and writing the target.
@@ -236,6 +237,10 @@ pub struct ExportSelection {
     /// content roots): with the anchor they are ClipCode's project roots, which
     /// label the paths and decide whether a `clipcode-root` line is written.
     pub project_roots: Vec<CanonicalRootId>,
+    /// Whether non-text files are carried. Exclude (the default) writes
+    /// today's payload and still reports in [`ExportPlan::non_text`] what
+    /// Include would add, so the copy dialog can ask first.
+    pub non_text: NonTextMode,
 }
 
 impl ExportSelection {
@@ -313,6 +318,7 @@ impl ExportSelection {
             absolute_roots: Vec::new(),
             anchor_root,
             project_roots,
+            non_text: NonTextMode::Exclude,
         };
         if !absolute.is_empty() {
             sel = sel.with_absolute_roots(absolute)?;
@@ -323,6 +329,12 @@ impl ExportSelection {
 
     pub fn with_source_root(mut self, source_root: Option<String>) -> Self {
         self.source_root = source_root;
+        self
+    }
+
+    /// See [`ExportSelection::non_text`].
+    pub fn with_non_text(mut self, mode: NonTextMode) -> Self {
+        self.non_text = mode;
         self
     }
 
@@ -394,8 +406,6 @@ pub enum TransferError {
     MixedSourceCollision { root: PathBuf, path: String, msg: String },
     #[error("wire header collision: multiple items map to identical wire path '{wire_path}'")]
     WireHeaderCollision { wire_path: String },
-    #[error("target collision: multiple operations target '{}': {msg}", .path.display())]
-    TargetCollision { path: PathBuf, msg: String },
     #[error("payload limit exceeded: limit {limit}, actual {actual} ({reason})")]
     PayloadLimitExceeded { limit: usize, actual: usize, reason: String },
     #[error("stale source in '{}': {reason}", .root.display())]
@@ -553,9 +563,20 @@ pub struct ExportPlan {
     pub freshness: SourceFreshnessSnapshot,
     pub copied_file_count: usize,
     pub skipped_file_size_count: usize,
+    /// Files left out as unreadable, or as non-text under
+    /// [`NonTextMode::Exclude`] (today's meaning).
     pub skipped_unreadable_count: usize,
     pub file_limit_reached: bool,
+    /// Non-text files carried as Base64 (Include only); also in `copied_file_count`.
+    pub non_text_file_count: usize,
+    /// What the copy dialog shows: see [`NonTextSummary`].
+    pub non_text: NonTextSummary,
+    /// The first [`SKIPPED_PATHS_SHOWN`] unreadable files' payload paths, so a notice can name them.
+    pub skipped_unreadable_paths: Vec<String>,
 }
+
+/// How many unreadable file paths a copy reports by name.
+pub const SKIPPED_PATHS_SHOWN: usize = 10;
 
 impl ExportPlan {
     /// Revalidates freshness right before clipboard writing.
@@ -569,11 +590,11 @@ impl ExportPlan {
     }
 }
 
-/// Single copy cap for CLI and GUI (32 MiB).
+/// Single copy cap for CLI and GUI (50 MiB).
 ///
 /// Guaranteed to not exceed GUI paste preview budget; exceeding the cap
 /// is a strict error, never silent truncation.
-pub const CLIPBOARD_PAYLOAD_MAX: usize = 32 * 1024 * 1024;
+pub const CLIPBOARD_PAYLOAD_MAX: usize = 50 * 1024 * 1024;
 
 /// Explicit destination mapping for a specific entry path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1715,14 +1736,44 @@ pub fn validate_export_selection(selection: &ExportSelection) -> Result<(), Tran
     Ok(())
 }
 
-/// Content (`None`: not UTF-8) and why it was skipped, if it was.
-type ReadContent = (Option<String>, Option<String>);
+/// What reading one item found out about a non-text file, whatever the mode.
+struct NonTextFact {
+    size: u64,
+    /// Within `maxNonTextFileSizeKB`.
+    within: bool,
+    /// The bytes, when within the limit and read; `None` when the file did not
+    /// fit the remaining payload budget and so was not retained.
+    bytes: Option<Vec<u8>>,
+}
+
+impl NonTextFact {
+    fn new(bytes: Vec<u8>, max: u64) -> Self {
+        let size = bytes.len() as u64;
+        let within = size <= max;
+        Self { size, within, bytes: within.then_some(bytes) }
+    }
+
+    fn unread(size: u64, max: u64) -> Self {
+        Self { size, within: size <= max, bytes: None }
+    }
+}
+
+/// Today's (Exclude) content (`None`: not UTF-8) and size-skip reason, plus
+/// what was learned about a non-text file.
+type ReadContent = (Option<String>, Option<String>, Option<NonTextFact>);
+
+/// One item's read in `plan_export_with`: [`ReadContent`] plus whether to
+/// record freshness (the inner `None` = absent) and the freshness of a file
+/// read only to carry it as non-text.
+type ItemRead =
+    (Option<String>, Option<String>, Option<Option<FileFreshness>>, Option<NonTextFact>, Option<FileFreshness>);
 
 struct BlobBudget {
     remaining_budget: Option<usize>,
     max_payload_bytes: Option<usize>,
     current_total_bytes: usize,
     max_file_size_kb: f64,
+    max_non_text_bytes: u64,
 }
 
 impl BlobBudget {
@@ -1734,9 +1785,17 @@ impl BlobBudget {
         self.remaining_budget.map_or(u64::MAX, |b| b as u64).min(per_file)
     }
 
+    /// How much of a blob is read before classifying: the larger per-file
+    /// limit, bounded by the payload budget. [`blob_content`] then holds a
+    /// text body to [`Self::cap`].
+    fn read_cap(&self) -> u64 {
+        let per_file = ((self.max_file_size_kb * 1024.0) as u64).max(self.max_non_text_bytes);
+        self.remaining_budget.map_or(u64::MAX, |b| b as u64).min(per_file)
+    }
+
     fn over_cap(&self, size: u64, cap: u64, wire_path: &str) -> Result<ReadContent, TransferError> {
         if size as f64 > self.max_file_size_kb * 1024.0 {
-            return Ok((None, Some(format!("size exceeds limit ({size} bytes)"))));
+            return Ok((None, Some(format!("size exceeds limit ({size} bytes)")), None));
         }
         Err(TransferError::PayloadLimitExceeded {
             limit: self.max_payload_bytes.unwrap_or(cap as usize),
@@ -1748,6 +1807,8 @@ impl BlobBudget {
 
 /// The header fixes OID and size before any body byte; a tree or commit is
 /// an error, not a missing file (blobs_only reader).
+/// `read` came from [`BlobBudget::read_cap`]; a text body is held to `cap`
+/// ([`BlobBudget::cap`]) exactly as a read capped there would be.
 fn blob_content(
     read: BlobRead,
     spec: &str,
@@ -1755,12 +1816,15 @@ fn blob_content(
     wire_path: &str,
     budget: &BlobBudget,
 ) -> Result<Option<ReadContent>, TransferError> {
+    let max = budget.max_non_text_bytes;
     match read {
         BlobRead::Missing => Ok(None),
         BlobRead::NotABlob { kind } => Err(TransferError::Git(crate::blob::not_a_file(spec, &kind))),
-        BlobRead::Text(s) => Ok(Some((Some(s), None))),
-        BlobRead::NotText(_) => Ok(Some((None, None))),
-        BlobRead::TooLarge { not_text: Some(_), .. } => Ok(Some((None, None))),
+        BlobRead::Text(s) if s.len() as u64 > cap => budget.over_cap(s.len() as u64, cap, wire_path).map(Some),
+        BlobRead::Text(s) => Ok(Some((Some(s), None, None))),
+        BlobRead::NonText { bytes, .. } => Ok(Some((None, None, Some(NonTextFact::new(bytes, max))))),
+        BlobRead::NotText(_) => Ok(Some((None, None, None))),
+        BlobRead::TooLarge { size, not_text: Some(_) } => Ok(Some((None, None, Some(NonTextFact::unread(size, max))))),
         BlobRead::TooLarge { size, .. } => budget.over_cap(size, cap, wire_path).map(Some),
     }
 }
@@ -1773,15 +1837,16 @@ fn gitlink_read(
     is_staged: bool,
 ) -> Result<ReadContent, TransferError> {
     match read {
-        BlobRead::Text(s) => Ok((Some(s), None)),
+        BlobRead::Text(s) => Ok((Some(s), None, None)),
         BlobRead::Missing
         | BlobRead::NotText(_)
+        | BlobRead::NonText { .. }
         | BlobRead::NotABlob { .. }
         | BlobRead::TooLarge { not_text: Some(_), .. } => {
             if is_staged {
-                Ok((Some(UNREADABLE_FILE_MARKER.to_string()), None))
+                Ok((Some(UNREADABLE_FILE_MARKER.to_string()), None, None))
             } else {
-                Ok((None, None))
+                Ok((None, None, None))
             }
         }
         BlobRead::TooLarge { size, .. } => budget.over_cap(size, cap, wire_path),
@@ -1795,8 +1860,8 @@ fn deleted_read(
     budget: &BlobBudget,
 ) -> Result<ReadContent, TransferError> {
     match content {
-        DeletedContent::Text(t) => Ok((Some(t), None)),
-        DeletedContent::Marker => Ok((Some(DELETED_FILE_MARKER.to_string()), None)),
+        DeletedContent::Text(t) => Ok((Some(t), None, None)),
+        DeletedContent::Marker => Ok((Some(DELETED_FILE_MARKER.to_string()), None, None)),
         DeletedContent::TooLarge { size, .. } => budget.over_cap(size, cap, wire_path),
     }
 }
@@ -1868,6 +1933,57 @@ fn finish_reader<T>(blobs: &mut BlobReader, outcome: Result<T, TransferError>) -
     }
 }
 
+/// Whether the copy's filter rules let `item` through (the file-count limit is not looked at).
+fn item_passes_filters(
+    selection: &ExportSelection,
+    settings: &Settings,
+    primary: Option<&CanonicalRootId>,
+    anchor: Option<&paths::PathResolver>,
+    item: &ExportItem,
+) -> bool {
+    if !settings.use_filters {
+        return true;
+    }
+    let wire_path = wire_path_of(selection, primary, anchor, item);
+    let absolute = item.root.path().join(&item.relative_path);
+    if matches!(item.source, SourceKind::File) {
+        let is_primary = primary == Some(&item.root) && !selection.absolute_roots.contains(&item.root);
+        let filter_absolute = if selection.roots.len() == 1 || is_primary {
+            selection.spelled_root.as_ref().map(|s| s.join(&item.relative_path)).unwrap_or_else(|| absolute.clone())
+        } else {
+            absolute.clone()
+        };
+        return filter::file_matches_filters(
+            &wire_path,
+            &settings.filter_rules,
+            settings.use_include_filters,
+            settings.use_exclude_filters,
+            Some(&filter_absolute.to_string_lossy()),
+        );
+    }
+    let filter_wire_path;
+    let filter_path = match (&selection.filter_root, &item.source) {
+        (Some(filter_root), SourceKind::Commit { .. } | SourceKind::Range { .. }) => {
+            let filter_root_canonical = dunce::canonicalize(filter_root).unwrap_or_else(|_| filter_root.clone());
+            let p = paths::to_clipboard_path_from_roots(&[filter_root_canonical], &absolute, None);
+            if p.is_empty() {
+                wire_path.as_str()
+            } else {
+                filter_wire_path = p;
+                filter_wire_path.as_str()
+            }
+        }
+        _ => wire_path.as_str(),
+    };
+    filter::file_matches_filters(
+        filter_path,
+        &settings.filter_rules,
+        settings.use_include_filters,
+        settings.use_exclude_filters,
+        Some(&absolute.to_string_lossy()),
+    )
+}
+
 /// Plans and generates an export payload across one or multiple repositories.
 /// Freezes revisions once, enforces cumulative budget before retention, and revalidates freshness.
 pub fn plan_export(
@@ -1883,6 +1999,38 @@ pub fn plan_export(
 /// Cancellation returns `TransferError::Git(GitError::Cancelled)` and never a
 /// partially usable plan.
 pub fn plan_export_with(
+    selection: &ExportSelection,
+    settings: &Settings,
+    max_payload_bytes: Option<usize>,
+    opts: &RunOptions,
+) -> Result<ExportPlan, TransferError> {
+    let mut plan = plan_export_once(selection, settings, max_payload_bytes, opts)?;
+    // What the copy dialog shows is what Include would put on the clipboard: take it from the Include plan
+    // of the same selection, never from an estimate kept while Exclude runs (the two count size
+    // placeholders, unreadable items and the file-count limit alike only because they are one code path).
+    if selection.non_text == NonTextMode::Exclude && (plan.non_text.count() > 0 || plan.non_text.over_limit_count > 0) {
+        let include = selection.clone().with_non_text(NonTextMode::Include);
+        match plan_export_once(&include, settings, max_payload_bytes, opts) {
+            Ok(include) => plan.non_text = include.non_text,
+            // Include cannot be built under the whole-payload limit: the dialog disables it, so only the
+            // size it needs to say so is known; the rest keeps what the Exclude walk found.
+            Err(TransferError::PayloadLimitExceeded { limit, actual, .. }) => {
+                // Never below the raw total: the size where planning stopped says nothing about the rest.
+                let full = plan.non_text.include_estimate(
+                    plan.payload.len(),
+                    &settings.header_format,
+                    settings.add_extra_line_between_files,
+                );
+                plan.non_text.estimated_include_payload_bytes = actual.max(limit.saturating_add(1)).max(full);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(plan)
+}
+
+/// One planning pass in the selection's own non-text mode (see [`plan_export_with`]).
+fn plan_export_once(
     selection: &ExportSelection,
     settings: &Settings,
     max_payload_bytes: Option<usize>,
@@ -2026,12 +2174,21 @@ pub fn plan_export_with(
         let mut skipped_file_size_count = 0usize;
         let mut skipped_unreadable_count = 0usize;
         let mut file_limit_reached = false;
+        let mut non_text_file_count = 0usize;
+        let mut non_text_summary = NonTextSummary {
+            header_cannot_be_escaped: format::header_format_unescapable(&settings.header_format),
+            ..NonTextSummary::default()
+        };
+        let mut skipped_unreadable_paths: Vec<String> = Vec::new();
+        let non_text_max = settings.max_non_text_file_bytes();
+        non_text_summary.unread_limit_bytes = non_text_max.max((settings.max_file_size_kb * 1024.0) as u64);
 
-        for item in &selection.items {
+        // Where the file-count limit stopped this pass: the files left out start here.
+        let mut limit_cut_idx: Option<usize> = None;
+
+        for (idx, item) in selection.items.iter().enumerate() {
             cancelled_err(opts, "plan-export")?;
             let wire_path = wire_path_of(selection, primary.as_ref(), anchor.as_ref(), item);
-            let is_primary = primary.as_ref() == Some(&item.root) && !selection.absolute_roots.contains(&item.root);
-
             let absolute = item.root.path().join(&item.relative_path);
 
             // Parity check:
@@ -2040,57 +2197,19 @@ pub fn plan_export_with(
             if matches!(item.source, SourceKind::File) {
                 if settings.set_max_file_count && copied_file_count as f64 >= settings.file_count_limit {
                     file_limit_reached = true;
+                    limit_cut_idx = Some(idx);
                     break;
                 }
-                let filter_absolute = if selection.roots.len() == 1 || is_primary {
-                    selection
-                        .spelled_root
-                        .as_ref()
-                        .map(|s| s.join(&item.relative_path))
-                        .unwrap_or_else(|| absolute.clone())
-                } else {
-                    absolute.clone()
-                };
-                if settings.use_filters
-                    && !filter::file_matches_filters(
-                        &wire_path,
-                        &settings.filter_rules,
-                        settings.use_include_filters,
-                        settings.use_exclude_filters,
-                        Some(&filter_absolute.to_string_lossy()),
-                    )
-                {
+                if !item_passes_filters(selection, settings, primary.as_ref(), anchor.as_ref(), item) {
                     continue;
                 }
             } else {
-                let filter_wire_path;
-                let filter_path = match (&selection.filter_root, &item.source) {
-                    (Some(filter_root), SourceKind::Commit { .. } | SourceKind::Range { .. }) => {
-                        let filter_root_canonical =
-                            dunce::canonicalize(filter_root).unwrap_or_else(|_| filter_root.clone());
-                        let p = paths::to_clipboard_path_from_roots(&[filter_root_canonical], &absolute, None);
-                        if p.is_empty() {
-                            wire_path.as_str()
-                        } else {
-                            filter_wire_path = p;
-                            filter_wire_path.as_str()
-                        }
-                    }
-                    _ => wire_path.as_str(),
-                };
-                if settings.use_filters
-                    && !filter::file_matches_filters(
-                        filter_path,
-                        &settings.filter_rules,
-                        settings.use_include_filters,
-                        settings.use_exclude_filters,
-                        Some(&absolute.to_string_lossy()),
-                    )
-                {
+                if !item_passes_filters(selection, settings, primary.as_ref(), anchor.as_ref(), item) {
                     continue;
                 }
                 if settings.set_max_file_count && copied_file_count as f64 >= settings.file_count_limit {
                     file_limit_reached = true;
+                    limit_cut_idx = Some(idx);
                     break;
                 }
             }
@@ -2102,6 +2221,7 @@ pub fn plan_export_with(
                 max_payload_bytes,
                 current_total_bytes,
                 max_file_size_kb: settings.max_file_size_kb,
+                max_non_text_bytes: non_text_max,
             };
 
             let deleted = item.change_type == Some(ChangeType::Deleted);
@@ -2114,12 +2234,9 @@ pub fn plan_export_with(
                 None => rel.clone(),
             };
             // The outer `Option` says whether to record freshness; the inner
-            // one is the file's state (`None` = absent).
-            let (content, skipped_reason, freshness_info): (
-                Option<String>,
-                Option<String>,
-                Option<Option<FileFreshness>>,
-            ) = match &item.source {
+            // one is the file's state (`None` = absent). The last field is
+            // the freshness of a file read only to carry it as non-text.
+            let (content, skipped_reason, freshness_info, fact, non_text_freshness): ItemRead = match &item.source {
                 SourceKind::Commit { rev } => {
                     let frozen_oid = frozen_commits
                         .get(&(item.root.clone(), rev.clone()))
@@ -2127,7 +2244,7 @@ pub fn plan_export_with(
                     let git = gits
                         .get(&item.root)
                         .ok_or_else(|| TransferError::UnknownRoot(item.root.path().to_path_buf()))?;
-                    let (text, reason) = if deleted {
+                    let (text, reason, fact) = if deleted {
                         // Every parent in order, like gitsrc: a merge may
                         // delete a file only one side had. The old body obeys
                         // the per-file size limit, as in ClipCode.
@@ -2147,11 +2264,11 @@ pub fn plan_export_with(
                         let spec = format!("{frozen_oid}:{toplevel_rel}");
                         let b = blob_budget();
                         let cap = b.cap();
-                        let read = blobs.read(git, &spec, cap)?;
+                        let read = blobs.read_keeping_non_text(git, &spec, b.read_cap())?;
                         blob_content(read, &spec, cap, &wire_path, &b)?
                             .ok_or(TransferError::Git(GitError::InvalidRevision(spec)))?
                     };
-                    (text, reason, None)
+                    (text, reason, None, fact, None)
                 }
                 SourceKind::Range { base, tip } => {
                     let frozen_base = frozen_commits
@@ -2163,7 +2280,7 @@ pub fn plan_export_with(
                     let git = gits
                         .get(&item.root)
                         .ok_or_else(|| TransferError::UnknownRoot(item.root.path().to_path_buf()))?;
-                    let (text, reason) = if deleted {
+                    let (text, reason, fact) = if deleted {
                         let spec = format!("{frozen_base}:{toplevel_rel}");
                         let b = blob_budget();
                         let cap = b.cap();
@@ -2179,17 +2296,17 @@ pub fn plan_export_with(
                         let spec = format!("{frozen_tip}:{toplevel_rel}");
                         let b = blob_budget();
                         let cap = b.cap();
-                        let read = blobs.read(git, &spec, cap)?;
+                        let read = blobs.read_keeping_non_text(git, &spec, b.read_cap())?;
                         blob_content(read, &spec, cap, &wire_path, &b)?
                             .ok_or(TransferError::Git(GitError::InvalidRevision(spec)))?
                     };
-                    (text, reason, None)
+                    (text, reason, None, fact, None)
                 }
                 SourceKind::Staged => {
                     let git = gits
                         .get(&item.root)
                         .ok_or_else(|| TransferError::UnknownRoot(item.root.path().to_path_buf()))?;
-                    let (text, reason) = if deleted {
+                    let (text, reason, fact) = if deleted {
                         // A staged deletion is gone from the index; HEAD has it.
                         let b = blob_budget();
                         let cap = b.cap();
@@ -2205,16 +2322,16 @@ pub fn plan_export_with(
                         let spec = staged_index_spec(toplevel_rel);
                         let b = blob_budget();
                         let cap = b.cap();
-                        let read = blobs.read(git, &spec, cap)?;
-                        let (text, reason) = blob_content(read, &spec, cap, &wire_path, &b)?
+                        let read = blobs.read_keeping_non_text(git, &spec, b.read_cap())?;
+                        let (text, reason, fact) = blob_content(read, &spec, cap, &wire_path, &b)?
                             .ok_or(TransferError::Git(GitError::InvalidRevision(spec)))?;
                         if reason.is_none() && text.is_none() {
-                            (Some(UNREADABLE_FILE_MARKER.to_string()), None)
+                            (Some(UNREADABLE_FILE_MARKER.to_string()), None, fact)
                         } else {
-                            (text, reason)
+                            (text, reason, fact)
                         }
                     };
-                    (text, reason, None)
+                    (text, reason, None, fact, None)
                 }
                 SourceKind::Working | SourceKind::Unstaged | SourceKind::File if deleted => {
                     // Pre-deletion content: `Unstaged` is the worktree against
@@ -2227,7 +2344,7 @@ pub fn plan_export_with(
                     };
                     let b = blob_budget();
                     let cap = b.cap();
-                    let (text, reason) = if let Some(git) = gits.get(&item.root) {
+                    let (text, reason, _) = if let Some(git) = gits.get(&item.root) {
                         let content = blobs.deleted_file_content(git, [spec], cap)?;
                         deleted_read(content, cap, &wire_path, &b)?
                     } else {
@@ -2235,7 +2352,7 @@ pub fn plan_export_with(
                     };
                     // The absence is part of the snapshot: recreating the path
                     // before the clipboard write invalidates the export.
-                    (text, reason, Some(None))
+                    (text, reason, Some(None), None, None)
                 }
                 SourceKind::Working | SourceKind::Unstaged | SourceKind::File => 'read_file: {
                     cancelled_err(opts, "read-file")?;
@@ -2243,7 +2360,7 @@ pub fn plan_export_with(
                     let sym_meta = match fs::symlink_metadata(&absolute) {
                         Ok(m) => m,
                         Err(_) if is_changed_item => {
-                            break 'read_file (None, None, None);
+                            break 'read_file (None, None, None, None, None);
                         }
                         Err(e) => return Err(e.into()),
                     };
@@ -2251,33 +2368,33 @@ pub fn plan_export_with(
                     // escape (symlinked parent directory or link target), so
                     // they are skipped here before any read.
                     if is_changed_item && escapes_all_roots(&[item.root.path()], &absolute) {
-                        break 'read_file (None, None, None);
+                        break 'read_file (None, None, None, None, None);
                     }
                     let target_meta = if sym_meta.file_type().is_symlink() {
                         let roots = [item.root.path()];
                         if escapes_all_roots(&roots, &absolute) {
                             if is_changed_item {
-                                break 'read_file (None, None, None);
+                                break 'read_file (None, None, None, None, None);
                             }
                             return Err(TransferError::UnsafePath(absolute.to_string_lossy().into_owned()));
                         }
                         let canonical = match dunce::canonicalize(&absolute) {
                             Ok(c) => c,
                             Err(_) if is_changed_item => {
-                                break 'read_file (None, None, None);
+                                break 'read_file (None, None, None, None, None);
                             }
                             Err(e) => return Err(e.into()),
                         };
                         if escapes_all_roots(&roots, &canonical) {
                             if is_changed_item {
-                                break 'read_file (None, None, None);
+                                break 'read_file (None, None, None, None, None);
                             }
                             return Err(TransferError::UnsafePath(canonical.to_string_lossy().into_owned()));
                         }
                         match fs::metadata(&canonical) {
                             Ok(m) => m,
                             Err(_) if is_changed_item => {
-                                break 'read_file (None, None, None);
+                                break 'read_file (None, None, None, None, None);
                             }
                             Err(e) => return Err(e.into()),
                         }
@@ -2287,7 +2404,7 @@ pub fn plan_export_with(
 
                     if !target_meta.file_type().is_file() {
                         if is_changed_item {
-                            break 'read_file (None, None, None);
+                            break 'read_file (None, None, None, None, None);
                         }
                         return Err(TransferError::SpecialFile(absolute.to_string_lossy().into_owned()));
                     }
@@ -2296,6 +2413,47 @@ pub fn plan_export_with(
                     let per_file_limit = (settings.max_file_size_kb * 1024.0) as u64;
                     let over_per_file = file_size as f64 > settings.max_file_size_kb * 1024.0;
                     let over_budget = remaining_budget.is_some_and(|b| file_size as usize > b);
+                    // Over the text limit but within the non-text one: read and
+                    // classify. Text keeps today's size placeholder; a non-text
+                    // file is carried under Include and only reported under
+                    // Exclude, whose payload stays today's.
+                    if over_per_file && file_size <= non_text_max {
+                        cancelled_err(opts, "read-file")?;
+                        let mut bytes = Vec::with_capacity(file_size as usize);
+                        let mut hasher = Sha256::new();
+                        let read_res =
+                            for_each_chunk(&absolute, Some(non_text_max.saturating_add(1)), opts, "read-file", |c| {
+                                bytes.extend_from_slice(c);
+                                hasher.update(c);
+                            });
+                        let placeholder = format!("size exceeds limit ({file_size} bytes)");
+                        match read_res {
+                            Err(e)
+                                if matches!(e, TransferError::Git(GitError::Cancelled { .. }))
+                                    || opts.cancel.as_ref().is_some_and(CancelToken::is_cancelled) =>
+                            {
+                                return Err(e);
+                            }
+                            // Unreadable or grown past the non-text limit: today's handling below.
+                            Err(_) => {}
+                            Ok(len) if len > non_text_max => {}
+                            Ok(len) => match decode_utf8_or_bytes(bytes) {
+                                FileBody::Text(_) => break 'read_file (None, Some(placeholder), None, None, None),
+                                FileBody::NonText(bytes) => {
+                                    let freshness = target_meta.modified().ok().map(|mtime| FileFreshness {
+                                        size: len,
+                                        mtime,
+                                        content_hash: hasher.finalize().into(),
+                                    });
+                                    // Today a changed item's non-text file is dropped and
+                                    // a picked file gets the placeholder unread.
+                                    let reason = (!is_changed_item).then_some(placeholder);
+                                    let fact = NonTextFact::new(bytes, non_text_max);
+                                    break 'read_file (None, reason, None, Some(fact), freshness);
+                                }
+                            },
+                        }
+                    }
                     if is_changed_item && (over_per_file || over_budget) {
                         let mut scan = crate::blob::ChunkTextScan::new();
                         let scan_res = for_each_chunk(&absolute, None, opts, "read-file", |chunk| scan.feed(chunk));
@@ -2307,13 +2465,14 @@ pub fn plan_export_with(
                             {
                                 return Err(e);
                             }
-                            Err(_) => break 'read_file (None, None, None),
+                            Err(_) => break 'read_file (None, None, None, None, None),
                         }
                         if scan.finish().is_some() {
-                            break 'read_file (None, None, None);
+                            let fact = NonTextFact::unread(file_size, non_text_max);
+                            break 'read_file (None, None, None, Some(fact), None);
                         }
                         if over_per_file {
-                            (None, Some(format!("size exceeds limit ({file_size} bytes)")), None)
+                            (None, Some(format!("size exceeds limit ({file_size} bytes)")), None, None, None)
                         } else {
                             let budget = remaining_budget.unwrap_or(usize::MAX);
                             return Err(TransferError::PayloadLimitExceeded {
@@ -2323,7 +2482,10 @@ pub fn plan_export_with(
                             });
                         }
                     } else if over_per_file {
-                        (None, Some(format!("size exceeds limit ({file_size} bytes)")), None)
+                        if file_size > non_text_max {
+                            non_text_summary.unread_over_limit_count += 1;
+                        }
+                        (None, Some(format!("size exceeds limit ({file_size} bytes)")), None, None, None)
                     } else if over_budget {
                         let budget = remaining_budget.unwrap_or(usize::MAX);
                         return Err(TransferError::PayloadLimitExceeded {
@@ -2354,7 +2516,7 @@ pub fn plan_export_with(
                                 return Err(e);
                             }
                             Err(_) if is_changed_item => {
-                                break 'read_file (None, None, None);
+                                break 'read_file (None, None, None, None, None);
                             }
                             Err(e) => return Err(e),
                         };
@@ -2366,19 +2528,64 @@ pub fn plan_export_with(
                                     reason: format!("working file '{wire_path}' grew past limit during read"),
                                 });
                             }
-                            (None, Some(format!("size exceeds limit ({read_len} bytes)")), None)
+                            (None, Some(format!("size exceeds limit ({read_len} bytes)")), None, None, None)
                         } else {
                             let mtime = match target_meta.modified() {
                                 Ok(m) => m,
                                 Err(_) if is_changed_item => {
-                                    break 'read_file (None, None, None);
+                                    break 'read_file (None, None, None, None, None);
                                 }
                                 Err(e) => return Err(e.into()),
                             };
                             let content_hash = hasher.finalize().into();
                             let freshness = FileFreshness { size: read_len, mtime, content_hash };
-                            (decode_utf8_or_skip(bytes), None, Some(Some(freshness)))
+                            match decode_utf8_or_bytes(bytes) {
+                                FileBody::Text(text) => (Some(text), None, Some(Some(freshness)), None, None),
+                                FileBody::NonText(bytes) => {
+                                    let fact = NonTextFact::new(bytes, non_text_max);
+                                    (None, None, Some(Some(freshness)), Some(fact), None)
+                                }
+                            }
                         }
+                    }
+                }
+            };
+
+            // `content`/`skipped_reason` are today's (Exclude) result. A
+            // non-text file is reported either way; Include swaps in its
+            // bytes, or a size placeholder when it is over its limit.
+            let mut excluded_non_text = false;
+            let (content, skipped_reason, non_text) = match fact {
+                None => (content, skipped_reason, None),
+                Some(fact) => {
+                    let over_reason = format!("size exceeds limit ({} bytes)", fact.size);
+                    if fact.within {
+                        non_text_summary.found(&wire_path, fact.size);
+                    } else {
+                        non_text_summary.over_limit_count += 1;
+                    }
+                    match selection.non_text {
+                        NonTextMode::Exclude => {
+                            excluded_non_text = true;
+                            (content, skipped_reason, None)
+                        }
+                        NonTextMode::Include if !fact.within => (None, Some(over_reason), None),
+                        NonTextMode::Include => match fact.bytes {
+                            Some(bytes) => {
+                                if let Some(f) = non_text_freshness {
+                                    working_files.insert((item.root.clone(), rel.clone()), Some(f));
+                                }
+                                (None, None, Some(bytes))
+                            }
+                            None => {
+                                let budget = remaining_budget.unwrap_or(usize::MAX);
+                                return Err(TransferError::PayloadLimitExceeded {
+                                    limit: max_payload_bytes.unwrap_or(budget),
+                                    actual: current_total_bytes.saturating_add(fact.size as usize),
+                                    reason: format!("file '{wire_path}' exceeds remaining payload budget"),
+                                });
+                            }
+                        },
                     }
                 }
             };
@@ -2388,8 +2595,12 @@ pub fn plan_export_with(
             }
 
             // Drop unreadable/binary files (matching copy.rs and gitsrc.rs)
-            if skipped_reason.is_none() && content.is_none() {
+            if skipped_reason.is_none() && content.is_none() && non_text.is_none() {
                 skipped_unreadable_count += 1;
+                // An excluded non-text file is counted here too, but it is not unreadable.
+                if !excluded_non_text && skipped_unreadable_paths.len() < SKIPPED_PATHS_SHOWN {
+                    skipped_unreadable_paths.push(wire_path.clone());
+                }
                 continue;
             }
 
@@ -2399,13 +2610,21 @@ pub fn plan_export_with(
 
             if skipped_reason.is_some() {
                 skipped_file_size_count += 1;
+            } else if non_text.is_some() {
+                non_text_file_count += 1;
+                copied_file_count += 1;
             } else if content.as_deref() == Some(UNREADABLE_FILE_MARKER) {
                 skipped_unreadable_count += 1;
+                // A staged non-text file excluded by the mode carries the marker too, but it is not unreadable.
+                if !excluded_non_text && skipped_unreadable_paths.len() < SKIPPED_PATHS_SHOWN {
+                    skipped_unreadable_paths.push(wire_path.clone());
+                }
             } else {
                 copied_file_count += 1;
             }
 
-            let payload_file = PayloadFile { path: wire_path, content, change_type: item.change_type, skipped_reason };
+            let payload_file =
+                PayloadFile { path: wire_path, content, change_type: item.change_type, skipped_reason, non_text };
 
             cancelled_err(opts, "serialize-export")?;
             let mut file_counter = format::CountingWriter::default();
@@ -2438,6 +2657,13 @@ pub fn plan_export_with(
             files.push(payload_file);
         }
 
+        non_text_summary.limit_left_out = limit_cut_idx.map_or(0, |i| {
+            selection.items[i..]
+                .iter()
+                .filter(|it| item_passes_filters(selection, settings, primary.as_ref(), anchor.as_ref(), it))
+                .count()
+        });
+
         let final_source_root = if is_graph && files.is_empty() { None } else { default_source_root };
 
         // Revalidation runs Git: the cat-file slot must be free first.
@@ -2465,6 +2691,7 @@ pub fn plan_export_with(
 
         let stats = payload_stats(&payload);
         cancelled_err(opts, "serialize-export")?;
+        non_text_summary.estimated_include_payload_bytes = payload.len();
 
         Ok(ExportPlan {
             files,
@@ -2475,6 +2702,9 @@ pub fn plan_export_with(
             skipped_file_size_count,
             skipped_unreadable_count,
             file_limit_reached,
+            non_text_file_count,
+            non_text: non_text_summary,
+            skipped_unreadable_paths,
         })
     })();
     finish_reader(&mut blobs, outcome)
@@ -2743,7 +2973,12 @@ pub fn plan_import_parsed_with(
         planned_entries.push((
             target_root.clone(),
             unlabelled,
-            ParsedEntry { path: sanitized, content: entry.content, change_types: entry.change_types },
+            ParsedEntry {
+                path: sanitized,
+                content: entry.content,
+                change_types: entry.change_types,
+                escaped_placeholder: entry.escaped_placeholder,
+            },
             entry.path,
             entry_index,
         ));
@@ -2751,7 +2986,9 @@ pub fn plan_import_parsed_with(
 
     let mut combined_creates = Vec::new();
     let mut create_entry_indices = Vec::new();
+    let mut create_raw_paths: Vec<String> = Vec::new();
     let mut combined_deletes = Vec::new();
+    let mut delete_raw_paths: Vec<String> = Vec::new();
     let mut all_skipped = skipped_operations;
 
     // Same `plan_restore` as before, one entry at a time so a cancel is
@@ -2765,6 +3002,8 @@ pub fn plan_import_parsed_with(
         }
         let sub_plan = restore::plan_restore(&roots, std::slice::from_ref(&entry));
         create_entry_indices.extend(std::iter::repeat_n(entry_index, sub_plan.create_operations.len()));
+        create_raw_paths.extend(std::iter::repeat_n(raw_path.clone(), sub_plan.create_operations.len()));
+        delete_raw_paths.extend(std::iter::repeat_n(raw_path.clone(), sub_plan.delete_operations.len()));
         combined_creates.extend(sub_plan.create_operations);
         combined_deletes.extend(sub_plan.delete_operations);
         all_skipped.extend(sub_plan.skipped_operations.into_iter().map(|mut op| {
@@ -2773,9 +3012,10 @@ pub fn plan_import_parsed_with(
         }));
     }
 
-    // Reject if two entries map to the same target file (including symlinks and case aliases)
-    let mut target_identities: HashMap<String, String> = HashMap::new();
-    for op in &combined_creates {
+    // Two entries that map to the same target file (also through a symlink or a case alias) cannot both be
+    // applied, and neither is preferred: every one of them is skipped, the rest of the paste goes on.
+    let mut target_identities: HashMap<String, Vec<(bool, usize)>> = HashMap::new();
+    for (i, op) in combined_creates.iter().enumerate() {
         cancelled_err(opts, "plan-import")?;
         let is_ci = op_is_case_insensitive(
             Some(&op.root_path),
@@ -2788,14 +3028,9 @@ pub fn plan_import_parsed_with(
         if is_ci {
             identity = identity.to_lowercase();
         }
-        if let Some(prev) = target_identities.insert(identity.clone(), format!("create {}", op.relative_path)) {
-            return Err(TransferError::TargetCollision {
-                path: op.absolute_path.clone(),
-                msg: format!("previous was '{prev}', current is 'create {}'", op.relative_path),
-            });
-        }
+        target_identities.entry(identity).or_default().push((true, i));
     }
-    for op in &combined_deletes {
+    for (i, op) in combined_deletes.iter().enumerate() {
         cancelled_err(opts, "plan-import")?;
         let is_ci = op_is_case_insensitive(
             None,
@@ -2808,12 +3043,51 @@ pub fn plan_import_parsed_with(
         if is_ci {
             identity = identity.to_lowercase();
         }
-        if let Some(prev) = target_identities.insert(identity.clone(), format!("delete {}", op.relative_path)) {
-            return Err(TransferError::TargetCollision {
-                path: op.absolute_path.clone(),
-                msg: format!("previous was '{prev}', current is 'delete {}'", op.relative_path),
-            });
+        target_identities.entry(identity).or_default().push((false, i));
+    }
+    let mut colliding_creates: HashSet<usize> = HashSet::new();
+    let mut colliding_deletes: HashSet<usize> = HashSet::new();
+    for group in target_identities.values().filter(|g| g.len() > 1) {
+        for &(is_create, i) in group {
+            if is_create {
+                colliding_creates.insert(i)
+            } else {
+                colliding_deletes.insert(i)
+            };
         }
+    }
+    if !colliding_creates.is_empty() || !colliding_deletes.is_empty() {
+        let mut creates = Vec::with_capacity(combined_creates.len());
+        let mut indices = Vec::with_capacity(combined_creates.len());
+        for (i, op) in combined_creates.into_iter().enumerate() {
+            if colliding_creates.contains(&i) {
+                all_skipped.push(SkippedOperation {
+                    raw_path: create_raw_paths[i].clone(),
+                    relative_path: Some(op.relative_path),
+                    reason: SkipReason::TargetCollision,
+                    detail: None,
+                });
+            } else {
+                creates.push(op);
+                indices.push(create_entry_indices[i]);
+            }
+        }
+        combined_creates = creates;
+        create_entry_indices = indices;
+        let mut deletes = Vec::with_capacity(combined_deletes.len());
+        for (i, op) in combined_deletes.into_iter().enumerate() {
+            if colliding_deletes.contains(&i) {
+                all_skipped.push(SkippedOperation {
+                    raw_path: delete_raw_paths[i].clone(),
+                    relative_path: Some(op.relative_path),
+                    reason: SkipReason::TargetCollision,
+                    detail: None,
+                });
+            } else {
+                deletes.push(op);
+            }
+        }
+        combined_deletes = deletes;
     }
 
     let restore_plan = RestorePlan {
@@ -2881,8 +3155,21 @@ pub fn plan_commit_export_with(
     opts: &RunOptions,
     max_serialized_bytes: usize,
 ) -> Result<CommitExport, TransferError> {
+    plan_commit_export_with_non_text(git, range, last, opts, max_serialized_bytes, CommitNonTextOptions::default())
+}
+
+/// [`plan_commit_export_with`] with the copy dialog's non-text choice; see
+/// [`commits::copy_commits_with_non_text`].
+pub fn plan_commit_export_with_non_text(
+    git: &Git,
+    range: Option<(&str, &str)>,
+    last: Option<usize>,
+    opts: &RunOptions,
+    max_serialized_bytes: usize,
+    non_text: CommitNonTextOptions,
+) -> Result<CommitExport, TransferError> {
     let shas = select_commit_shas(git, range, last)?;
-    commits::copy_commits_with(git, &shas, opts, max_serialized_bytes).map_err(TransferError::Commit)
+    commits::copy_commits_with_non_text(git, &shas, opts, max_serialized_bytes, non_text).map_err(TransferError::Commit)
 }
 
 /// Exports exactly the commits in `selected`, which must be the contiguous
@@ -2910,8 +3197,29 @@ pub fn plan_commit_export_exact_with(
     opts: &RunOptions,
     max_serialized_bytes: usize,
 ) -> Result<CommitExport, TransferError> {
+    plan_commit_export_exact_with_non_text(
+        git,
+        tip,
+        selected,
+        opts,
+        max_serialized_bytes,
+        CommitNonTextOptions::default(),
+    )
+}
+
+/// [`plan_commit_export_exact_with`] with the copy dialog's non-text choice;
+/// see [`commits::copy_commits_with_non_text`].
+pub fn plan_commit_export_exact_with_non_text(
+    git: &Git,
+    tip: &str,
+    selected: &[String],
+    opts: &RunOptions,
+    max_serialized_bytes: usize,
+    non_text: CommitNonTextOptions,
+) -> Result<CommitExport, TransferError> {
     let chain = select_exact_chain(git, tip, selected, opts, Some(max_serialized_bytes))?;
-    commits::copy_commits_with(git, &chain, opts, max_serialized_bytes).map_err(TransferError::Commit)
+    commits::copy_commits_with_non_text(git, &chain, opts, max_serialized_bytes, non_text)
+        .map_err(TransferError::Commit)
 }
 
 /// First-parent chain of `selected` ending at `tip`, oldest first.
@@ -3066,6 +3374,11 @@ impl CommitReplayPreview {
             || self.replay.commits[..=commit_index].iter().any(|c| c.refused_by().is_some())
         {
             preview.unavailable = Some(ReplayPreviewUnavailable::Skipped);
+            return Ok(preview);
+        }
+        // A non-text row is never shown as text, nor is its Base64.
+        if side == ReplayFileSide::Target && file.non_text_size.is_some() {
+            preview.unavailable = Some(ReplayPreviewUnavailable::Binary);
             return Ok(preview);
         }
         let limit = limit.min(crate::browser::PREVIEW_LIMIT);
@@ -3276,7 +3589,7 @@ impl CommitReplayPreview {
             Ok(s) => s,
             Err(refused) => {
                 cancelled_err(opts, "replay-apply")?;
-                return Ok(refused);
+                return Ok(*refused);
             }
         };
         self.revalidate_with(opts)?; // under the heavy lock, right before the first write
@@ -3639,6 +3952,7 @@ mod preview_target_hash_cancel {
             change: if content.is_some() { FileChange::Modified } else { FileChange::Deleted },
             content: content.map(str::to_string),
             not_copied: None,
+            non_text: None,
         }
     }
 
@@ -3694,6 +4008,7 @@ mod preview_target_hash_cancel {
         rename.change = FileChange::Renamed;
         let mut skipped = replay_file("kept.txt", None);
         skipped.not_copied = Some(crate::commits::NotCopiedReason::Binary);
+        skipped.change = FileChange::Modified;
         let payload = CommitsPayload {
             commits: vec![
                 replay_record(vec![replay_file("new.txt", Some("first\n"))]),
@@ -3970,6 +4285,7 @@ mod preview_target_hash_cancel {
                         change: FileChange::Modified,
                         content: Some("text\n".into()),
                         not_copied: None,
+                        non_text: None,
                     },
                     CommitFile {
                         path: "other.txt".into(),
@@ -3977,6 +4293,7 @@ mod preview_target_hash_cancel {
                         change: FileChange::Modified,
                         content: Some("changed\n".into()),
                         not_copied: None,
+                        non_text: None,
                     },
                 ],
             }],
@@ -4041,6 +4358,7 @@ replacement-two
                     change: FileChange::Modified,
                     content: Some("changed\n".into()),
                     not_copied: None,
+                    non_text: None,
                 }],
             }],
         };
@@ -4079,6 +4397,7 @@ replacement-two
                     change: FileChange::Modified,
                     content: Some("changed\n".into()),
                     not_copied: None,
+                    non_text: None,
                 }],
             }],
         };
@@ -4227,6 +4546,7 @@ mod freshness_error_tests {
             absolute_roots: Vec::new(),
             anchor_root: None,
             project_roots: Vec::new(),
+            non_text: NonTextMode::Exclude,
         };
         let export_err = SourceFreshnessSnapshot::capture(&export_selection)
             .expect_err("export capture must fail on non-regular file");

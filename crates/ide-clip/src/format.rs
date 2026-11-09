@@ -43,6 +43,10 @@ pub struct ParsedEntry {
     pub path: String,
     pub content: String,
     pub change_types: BTreeSet<ChangeType>,
+    /// The body's first line was written as `//clipcode-esc: ` plus a non-text placeholder line: a real
+    /// text file that starts like a non-text entry. `content` is the un-escaped text; it is not a non-text
+    /// entry and not a size placeholder.
+    pub escaped_placeholder: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -50,7 +54,12 @@ pub struct PayloadFile {
     pub path: String,
     pub content: Option<String>,
     pub change_type: Option<ChangeType>,
+    /// A size placeholder (`size exceeds limit (<n> bytes)`). Never set
+    /// together with `non_text`.
     pub skipped_reason: Option<String>,
+    /// A non-text file's raw bytes, written as the non-text placeholder line
+    /// and wrapped Base64 (`crate::nontext`).
+    pub non_text: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -143,7 +152,22 @@ impl<'a, W: std::fmt::Write> PayloadLineWriter<'a, W> {
             self.w.write_char('\n')?;
         }
         self.has_written_line = true;
-        write_escaped_content(self.w, text, custom)
+        write_escaped_content(self.w, text, custom, None)
+    }
+
+    /// [`Self::write_escaped`] for a text body: a placeholder-shaped first line gets the placeholder escape on top
+    /// of the normal content escaping (two prefixes), so a reader never decodes it.
+    pub fn write_escaped_text(&mut self, text: &str, custom: Option<&HeaderPattern>) -> std::fmt::Result {
+        if self.has_written_line {
+            self.w.write_char('\n')?;
+        }
+        self.has_written_line = true;
+        // The reader drops leading blank lines, so the line it will treat as first is the first non-blank one.
+        let force_line = text
+            .split('\n')
+            .position(|l| !ascii_trim(l).is_empty())
+            .filter(|&i| text.split('\n').nth(i).is_some_and(is_placeholder_shaped));
+        write_escaped_content(self.w, text, custom, force_line)
     }
 }
 
@@ -153,20 +177,21 @@ pub(crate) fn write_escaped_content<W: std::fmt::Write>(
     w: &mut W,
     text: &str,
     custom: Option<&HeaderPattern>,
+    force_line: Option<usize>,
 ) -> std::fmt::Result {
-    let mut lines = text.split('\n');
-    if let Some(first) = lines.next() {
-        if needs_escape(first, custom) {
+    for (i, line) in text.split('\n').enumerate() {
+        if i > 0 {
+            w.write_char('\n')?;
+        }
+        if force_line == Some(i) {
+            // The placeholder escape, then the normal escaping, which always escapes a line that starts with
+            // the marker.
+            w.write_str(ESCAPE_MARKER)?;
+            w.write_str(ESCAPE_MARKER)?;
+        } else if needs_escape(line, custom) {
             w.write_str(ESCAPE_MARKER)?;
         }
-        w.write_str(first)?;
-        for line in lines {
-            w.write_char('\n')?;
-            if needs_escape(line, custom) {
-                w.write_str(ESCAPE_MARKER)?;
-            }
-            w.write_str(line)?;
-        }
+        w.write_str(line)?;
     }
     Ok(())
 }
@@ -219,14 +244,23 @@ pub(crate) fn write_payload_file<W: std::fmt::Write>(
     custom: Option<&HeaderPattern>,
 ) -> std::fmt::Result {
     writer.write_line(&format_header(header_format, &file.path, file.change_type))?;
-    match file.skipped_reason.as_deref() {
-        Some(reason) if !reason.is_empty() => {
+    match (file.skipped_reason.as_deref(), &file.non_text) {
+        (Some(reason), _) if !reason.is_empty() => {
             let body = format!("// File skipped: {reason}");
             writer.write_escaped(&body, custom)?;
         }
+        (_, Some(bytes)) => {
+            let sha = crate::nontext::sha256_hex(bytes);
+            writer.write_escaped(&crate::nontext::placeholder_line(bytes.len() as u64, &sha), custom)?;
+            // Line by line through the same escaping as any body.
+            let encoded = crate::nontext::encode(bytes);
+            for line in crate::nontext::base64_lines(&encoded) {
+                writer.write_escaped(line, custom)?;
+            }
+        }
         _ => {
             let body = file.content.as_deref().unwrap_or_default();
-            writer.write_escaped(body, custom)?;
+            writer.write_escaped_text(body, custom)?;
         }
     }
     if add_extra_line_between_files {
@@ -299,6 +333,55 @@ fn needs_escape(line: &str, custom: Option<&HeaderPattern>) -> bool {
     find_header_path(&format!("{ESCAPE_MARKER}{as_parsed}"), custom).is_none()
 }
 
+/// A `headerFormat` for which escaping cannot keep the lines of a non-text entry (the placeholder and the Base64
+/// lines) from being read as file headers: some such line matches the header pattern both as written and after
+/// the escape marker is put in front of it (e.g. `$FILE_PATH`, `//$FILE_PATH`, `$FILE_PATH==`). Same test as the
+/// degenerate case of [`needs_escape`].
+///
+/// With one `$FILE_PATH`, a line stays a header after escaping exactly when the text before `$FILE_PATH` is a
+/// prefix of the marker (empty, `/`, `//`, `//c`, ...), so it is enough to try the placeholder line and the
+/// shortest line of the form `<before>A…A<after>`: if any Base64 line matches the pattern, that one is
+/// Base64-shaped too. The Base64 check ignores the length-multiple-of-4 rule, so it errs toward disabling
+/// Include. With several `$FILE_PATH`s the repeated path would have to carry marker characters (`:`, space) that
+/// Base64 lacks, and the `A…A` lines are samples only.
+pub fn header_format_unescapable(header_format: &str) -> bool {
+    let Some(custom) = HeaderPattern::new(header_format) else { return false };
+    let custom = Some(&custom);
+    let unescapable = |line: &str| find_header_path(line, custom).is_some() && !needs_escape(line, custom);
+    let sha = "0".repeat(64);
+    if [1u64, 123_456_789].iter().any(|&size| unescapable(&crate::nontext::placeholder_line(size, &sha))) {
+        return true;
+    }
+    let pattern = HeaderPattern::new(header_format).expect("checked above");
+    let (first, rest) = pattern.segments.split_first().expect("two segments at least");
+    let (last, inner) = rest.split_last().expect("two segments at least");
+    let is_base64_line = |line: &str| {
+        let body = line.trim_end_matches('=');
+        line.len() - body.len() <= 2
+            && line.len() <= crate::nontext::BASE64_LINE_LEN
+            && body.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/')
+    };
+    [1usize, 2, 3, 4, 38, 76].iter().any(|&n| {
+        let path = "A".repeat(n);
+        let mut line = format!("{first}{path}");
+        for seg in inner {
+            line.push_str(seg);
+            line.push_str(&path);
+        }
+        line.push_str(last);
+        is_base64_line(&line) && unescapable(&line)
+    })
+}
+
+/// Whether `line`, after removing any number of leading escape prefixes, is the non-text placeholder line.
+fn is_placeholder_shaped(line: &str) -> bool {
+    let mut rest = line;
+    while let Some(next) = rest.strip_prefix(ESCAPE_MARKER) {
+        rest = next;
+    }
+    crate::nontext::parse_placeholder_line(rest).is_some()
+}
+
 // Inverse of escape_content: strip exactly one leading marker per line.
 fn unescape_content(text: &str) -> String {
     text.split('\n').map(|line| line.strip_prefix(ESCAPE_MARKER).unwrap_or(line)).collect::<Vec<_>>().join("\n")
@@ -325,7 +408,24 @@ pub fn parse_clipboard(content: &str, header_format: &str) -> Vec<ParsedEntry> {
     let mut body: Vec<&str> = Vec::new();
     let mut flush = |current: &mut Option<(String, BTreeSet<ChangeType>)>, body: &mut Vec<&str>| {
         if let Some((path, change_types)) = current.take() {
-            entries.push(ParsedEntry { path, content: unescape_content(&join_content(body)), change_types });
+            let mut content = unescape_content(&join_content(body));
+            // After one level of un-escaping, a first non-blank line that still starts with the marker and is
+            // placeholder-shaped is a text file's placeholder escape: strip exactly that one prefix. Non-blank,
+            // as the writer counts it: an escaped whitespace-only line survives `join_content`.
+            let mut offset = 0;
+            let mut first = "";
+            for line in content.split('\n') {
+                if !ascii_trim(line).is_empty() {
+                    first = line;
+                    break;
+                }
+                offset += line.len() + 1;
+            }
+            let escaped_placeholder = first.starts_with(ESCAPE_MARKER) && is_placeholder_shaped(first);
+            if escaped_placeholder {
+                content.drain(offset..offset + ESCAPE_MARKER.len());
+            }
+            entries.push(ParsedEntry { path, content, change_types, escaped_placeholder });
         }
         body.clear();
     };
@@ -490,11 +590,21 @@ mod tests {
     fn parses_custom_and_generic_headers() {
         assert_eq!(
             parse_clipboard("### src/a.ts\none", "### $FILE_PATH"),
-            vec![ParsedEntry { path: "src/a.ts".into(), content: "one".into(), change_types: BTreeSet::new() }]
+            vec![ParsedEntry {
+                path: "src/a.ts".into(),
+                content: "one".into(),
+                change_types: BTreeSet::new(),
+                escaped_placeholder: false
+            }]
         );
         assert_eq!(
             parse_clipboard("# file: src/b.ts\ntwo", "missing placeholder"),
-            vec![ParsedEntry { path: "src/b.ts".into(), content: "two".into(), change_types: BTreeSet::new() }]
+            vec![ParsedEntry {
+                path: "src/b.ts".into(),
+                content: "two".into(),
+                change_types: BTreeSet::new(),
+                escaped_placeholder: false
+            }]
         );
     }
 
@@ -660,9 +770,117 @@ mod tests {
                 content: Some(DELETED_FILE_MARKER.into()),
                 change_type: Some(ChangeType::Deleted),
                 skipped_reason: None,
+                non_text: None,
             }],
         ));
         assert_eq!(payload, format!("// file: [DELETED] src/old.ts\n{DELETED_FILE_MARKER}\n"));
+    }
+
+    fn non_text(path: &str, bytes: &[u8]) -> PayloadFile {
+        PayloadFile { path: path.into(), non_text: Some(bytes.to_vec()), ..Default::default() }
+    }
+
+    #[test]
+    fn non_text_entry_is_placeholder_then_wrapped_base64() {
+        let bytes: Vec<u8> = (0..=255u8).cycle().take(200).collect();
+        let payload = build_payload(&opts(DEFAULT, "", "", true, vec![non_text("img/a.png", &bytes)]));
+        let sha = crate::nontext::sha256_hex(&bytes);
+        let expected = format!(
+            "\n// file: img/a.png\n// File skipped: non-text file, 200 bytes, sha256 {sha}; base64 follows\n{}\n\n",
+            crate::nontext::encode_wrapped(&bytes)
+        );
+        assert_eq!(payload, expected);
+        let entries = parse_clipboard(&payload, DEFAULT);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(crate::nontext::parse_body(&entries[0].content), Some(Ok(bytes)));
+    }
+
+    const FAKE_PLACEHOLDER: &str = "// File skipped: non-text file, 3 bytes, sha256 039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81; base64 follows";
+
+    /// Writer rule: placeholder escape, then normal escaping, so a text first line carries two prefixes and a
+    /// real non-text placeholder carries zero (built-in header) or one (a header format that matches it).
+    #[test]
+    fn placeholder_shaped_text_gets_two_layers_and_the_reader_never_guesses() {
+        let esc_fake = format!("{ESCAPE_MARKER}{FAKE_PLACEHOLDER}");
+        for header in [DEFAULT, "// $FILE_PATH", "A$FILE_PATH"] {
+            let hdr = |p: &str| format_header(header, p, None);
+            let texts = [
+                format!("{FAKE_PLACEHOLDER}\nYWJj"),
+                format!("{FAKE_PLACEHOLDER}\nnot base64!"),
+                format!("{esc_fake}\nYWJj"),
+                format!("{ESCAPE_MARKER}{esc_fake}"),
+            ];
+            let mut files = vec![non_text("a.bin", &[0, 255, 1])];
+            files.extend(texts.iter().enumerate().map(|(i, t)| file(&format!("t{i}.txt"), t)));
+            let payload = build_payload(&opts(header, "", "", true, files));
+            let prefixes = |marker_count: usize| format!("{}{FAKE_PLACEHOLDER}", ESCAPE_MARKER.repeat(marker_count));
+            assert!(payload.contains(&format!("{}\n{}\n", hdr("t0.txt"), prefixes(2))), "{payload}");
+            assert!(payload.contains(&format!("{}\n{}\n", hdr("t2.txt"), prefixes(3))), "{payload}");
+            let entries = parse_clipboard(&payload, header);
+            assert_eq!(entries.len(), 5, "{header}: {payload}");
+            assert!(!entries[0].escaped_placeholder, "{header}");
+            assert_eq!(crate::nontext::parse_body(&entries[0].content), Some(Ok(vec![0, 255, 1])), "{header}");
+            for (entry, text) in entries[1..].iter().zip(&texts) {
+                assert!(entry.escaped_placeholder, "{header}: {}", entry.path);
+                assert_eq!(&entry.content, text, "{header}: {}", entry.path);
+            }
+        }
+    }
+
+    #[test]
+    fn header_formats_that_cannot_escape_base64_lines_are_detected() {
+        for unescapable in ["$FILE_PATH", "$FILE_PATH=", "//$FILE_PATH", "$FILE_PATH==", "/$FILE_PATH", "$FILE_PATHQ"] {
+            assert!(header_format_unescapable(unescapable), "{unescapable}");
+        }
+        for fine in [DEFAULT, "// $FILE_PATH", "A$FILE_PATH", "### $FILE_PATH", "$FILE_PATH.md", "no placeholder", ""] {
+            assert!(!header_format_unescapable(fine), "{fine}");
+        }
+    }
+
+    /// Writer and reader must agree on which body line is "first": the reader drops leading blank lines.
+    #[test]
+    fn leading_blank_lines_do_not_hide_a_placeholder_shaped_first_line() {
+        let esc_fake = format!("{ESCAPE_MARKER}{FAKE_PLACEHOLDER}");
+        for header in [DEFAULT, "// $FILE_PATH", "A$FILE_PATH", "#$FILE_PATH"] {
+            let texts = [
+                format!("\n{ESCAPE_MARKER}{FAKE_PLACEHOLDER}\nAQID"),
+                format!("\n{FAKE_PLACEHOLDER}\nAQID"),
+                format!("\n  \n{esc_fake}\nAQID"),
+            ];
+            let files: Vec<_> = texts.iter().enumerate().map(|(i, t)| file(&format!("t{i}.txt"), t)).collect();
+            let payload = build_payload(&opts(header, "", "", true, files));
+            let entries = parse_clipboard(&payload, header);
+            assert_eq!(entries.len(), 3, "{header}: {payload}");
+            for (entry, text) in entries.iter().zip(&texts) {
+                assert!(entry.escaped_placeholder, "{header}: {}", entry.path);
+                assert_eq!(entry.content, text.trim_start_matches(['\n', ' ']), "{header}: {}", entry.path);
+            }
+        }
+    }
+
+    /// A whitespace-only line that a header format matches is escaped, so the reader keeps it instead of dropping
+    /// it as blank; the placeholder escape on the next line must still be found and removed, and an unescaped
+    /// placeholder line after it must not be decoded.
+    #[test]
+    fn an_escaped_whitespace_line_before_a_placeholder_shaped_line_keeps_the_text() {
+        let esc_fake = format!("{ESCAPE_MARKER}{FAKE_PLACEHOLDER}");
+        for header in [" $FILE_PATH", "\t$FILE_PATH", "  $FILE_PATH"] {
+            let lead = if header.starts_with('\t') { "\t\t" } else { "   " };
+            let texts = [
+                format!("{lead}\n{FAKE_PLACEHOLDER}\nAQID"),
+                format!("{lead}\n{esc_fake}\nAQID"),
+                format!("\n{lead}\n\n{FAKE_PLACEHOLDER}\nAQID"),
+            ];
+            let files: Vec<_> = texts.iter().enumerate().map(|(i, t)| file(&format!("t{i}.txt"), t)).collect();
+            let payload = build_payload(&opts(header, "", "", true, files));
+            let entries = parse_clipboard(&payload, header);
+            assert_eq!(entries.len(), 3, "{header:?}: {payload}");
+            for (entry, text) in entries.iter().zip(&texts) {
+                assert!(entry.escaped_placeholder, "{header:?}: {}\n{payload}", entry.path);
+                assert_eq!(&entry.content, text.trim_start_matches('\n'), "{header:?}: {}", entry.path);
+                assert!(crate::nontext::parse_body(&entry.content).is_none(), "{header:?}: {}", entry.path);
+            }
+        }
     }
 
     #[test]

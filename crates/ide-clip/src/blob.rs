@@ -88,12 +88,19 @@ impl CatFile {
     /// 大小判定先於型別判定；超限內容一律回傳 `TooLarge`。
     ///
     /// 讀取錯誤（含 body 被截斷）經 `Session::error` 依子行程結束狀態回報 Failed / Io / Timeout。
-    pub(crate) fn read_classified(&mut self, object: &str, cap: u64, require_blob: bool) -> Result<BlobRead, GitError> {
+    pub(crate) fn read_classified(
+        &mut self,
+        object: &str,
+        cap: u64,
+        require_blob: bool,
+        keep_non_text: bool,
+    ) -> Result<BlobRead, GitError> {
         if object.contains(['\n', '\r']) {
             return Ok(BlobRead::Missing);
         }
         self.request(object)?;
-        read_classified_response(&mut self.session, cap, require_blob).map_err(|e| self.session.error(e))
+        read_classified_response_with(&mut self.session, cap, require_blob, keep_non_text)
+            .map_err(|e| self.session.error(e))
     }
 
     /// Ends the batch and reports any cleanup failure. Dropping a
@@ -250,10 +257,15 @@ pub(crate) enum NotText {
 
 /// 唯一的可複製規則：任何位置有 NUL 就是 Binary；否則要是嚴格 UTF-8（保留 BOM），不然就是 NotUtf8。
 pub(crate) fn classify(bytes: Vec<u8>) -> Result<String, NotText> {
+    classify_keep(bytes).map_err(|(kind, _)| kind)
+}
+
+/// [`classify`] that hands a non-text file's bytes back instead of dropping them.
+pub(crate) fn classify_keep(bytes: Vec<u8>) -> Result<String, (NotText, Vec<u8>)> {
     if bytes.contains(&0) {
-        return Err(NotText::Binary);
+        return Err((NotText::Binary, bytes));
     }
-    String::from_utf8(bytes).map_err(|_| NotText::NotUtf8)
+    String::from_utf8(bytes).map_err(|e| (NotText::NotUtf8, e.into_bytes()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -265,10 +277,15 @@ pub(crate) enum BlobRead {
     },
     Text(String),
     NotText(NotText),
+    /// A non-text body within `cap`, kept because the caller asked for it.
+    NonText {
+        kind: NotText,
+        bytes: Vec<u8>,
+    },
     /// size > cap（不論 kind）；body 以 8 KiB 分塊掃描後丟棄，not_text 是 classify 對完整 body 會給的結論。
     ///
     /// 超出容量的內容一律經由 [`scan_discarded_body`] 進行分塊掃描：此掃描僅耗費 CPU，記憶體用量嚴格維持有界（bounded），
-    /// 保留此行為是為了讓刪除檔分類政策（`deleted_not_text`、`first_deleted_text`）能區分二進位與超限純文字。
+    /// 保留此行為是為了讓刪除檔分類政策（`first_deleted_text`）能區分二進位與超限純文字。
     TooLarge {
         size: u64,
         not_text: Option<NotText>,
@@ -278,7 +295,19 @@ pub(crate) enum BlobRead {
 /// 純函式，可用 Cursor 測試。
 ///
 /// `cap` 為原始位元組上限（raw-byte cap），而非 JSON 序列化後的上限。
+#[cfg(test)]
 pub(crate) fn read_classified_response<R: BufRead>(r: &mut R, cap: u64, require_blob: bool) -> io::Result<BlobRead> {
+    read_classified_response_with(r, cap, require_blob, false)
+}
+
+/// [`read_classified_response`]; `keep_non_text` returns a non-text body
+/// within `cap` as [`BlobRead::NonText`] instead of [`BlobRead::NotText`].
+pub(crate) fn read_classified_response_with<R: BufRead>(
+    r: &mut R,
+    cap: u64,
+    require_blob: bool,
+    keep_non_text: bool,
+) -> io::Result<BlobRead> {
     let header = match read_batch_header(r)? {
         None => return Ok(BlobRead::Missing),
         Some(h) => h,
@@ -293,9 +322,10 @@ pub(crate) fn read_classified_response<R: BufRead>(r: &mut R, cap: u64, require_
         return Ok(BlobRead::NotABlob { kind });
     }
     let body = read_batch_body(r, size)?;
-    match classify(body) {
+    match classify_keep(body) {
         Ok(s) => Ok(BlobRead::Text(s)),
-        Err(e) => Ok(BlobRead::NotText(e)),
+        Err((kind, bytes)) if keep_non_text => Ok(BlobRead::NonText { kind, bytes }),
+        Err((kind, _)) => Ok(BlobRead::NotText(kind)),
     }
 }
 
@@ -323,14 +353,26 @@ impl BlobReader {
     }
 
     pub(crate) fn read(&mut self, git: &Git, spec: &str, cap: u64) -> Result<BlobRead, GitError> {
-        self.read_internal(git, spec, cap, self.require_blob)
+        self.read_internal(git, spec, cap, self.require_blob, false)
+    }
+
+    /// [`Self::read`] that keeps a non-text body within `cap` ([`BlobRead::NonText`]).
+    pub(crate) fn read_keeping_non_text(&mut self, git: &Git, spec: &str, cap: u64) -> Result<BlobRead, GitError> {
+        self.read_internal(git, spec, cap, self.require_blob, true)
     }
 
     pub(crate) fn read_lenient(&mut self, git: &Git, spec: &str, cap: u64) -> Result<BlobRead, GitError> {
-        self.read_internal(git, spec, cap, false)
+        self.read_internal(git, spec, cap, false, false)
     }
 
-    fn read_internal(&mut self, git: &Git, spec: &str, cap: u64, require_blob: bool) -> Result<BlobRead, GitError> {
+    fn read_internal(
+        &mut self,
+        git: &Git,
+        spec: &str,
+        cap: u64,
+        require_blob: bool,
+        keep_non_text: bool,
+    ) -> Result<BlobRead, GitError> {
         if self.opts.cancel.as_ref().is_some_and(CancelToken::is_cancelled) {
             return Err(GitError::Cancelled { args: "cat-file --batch".into() });
         }
@@ -342,7 +384,7 @@ impl BlobReader {
             self.open = Some((git.root().to_path_buf(), cat));
         }
         match self.open.as_mut() {
-            Some((_, cat)) => cat.read_classified(spec, cap, require_blob),
+            Some((_, cat)) => cat.read_classified(spec, cap, require_blob, keep_non_text),
             None => Err(GitError::Malformed("cat-file unavailable".into())),
         }
     }
@@ -358,11 +400,6 @@ impl BlobReader {
         S: AsRef<str>,
     {
         first_deleted_text(specs, |s| self.read(git, s, cap))
-    }
-
-    pub(crate) fn deleted_not_text(&mut self, git: &Git, spec: &str) -> Result<Option<NotText>, GitError> {
-        let read = self.read(git, spec, 0)?;
-        Ok(not_text_of(read))
     }
 
     pub(crate) fn close(&mut self) -> Result<(), GitError> {
@@ -395,7 +432,7 @@ where
         }
         match read(s)? {
             BlobRead::Text(t) => return Ok(DeletedContent::Text(t)),
-            BlobRead::Missing | BlobRead::NotText(_) => {}
+            BlobRead::Missing | BlobRead::NotText(_) | BlobRead::NonText { .. } => {}
             BlobRead::NotABlob { kind } => return Err(not_a_file(s, &kind)),
             BlobRead::TooLarge { not_text: Some(_), .. } => {}
             BlobRead::TooLarge { size, not_text: None } => {
@@ -404,16 +441,6 @@ where
         }
     }
     Ok(DeletedContent::Marker)
-}
-
-// kind 在此刻意被忽略：commits 的 admit_entry 以 is_special_mode 守門（commits.rs），
-// gitlink 與 tree 不會走到這裡，所以呼叫端只會拿到 blob。
-// NotText 與超限且非文字的 TooLarge{not_text: Some} 都對應到同一個原因。
-pub(crate) fn not_text_of(read: BlobRead) -> Option<NotText> {
-    match read {
-        BlobRead::NotText(r) | BlobRead::TooLarge { not_text: Some(r), .. } => Some(r),
-        _ => None,
-    }
 }
 
 pub(crate) fn not_a_file(spec: &str, kind: &str) -> GitError {
@@ -622,6 +649,28 @@ mod tests {
     }
 
     #[test]
+    fn read_classified_keeps_non_text_bodies_only_when_asked() {
+        let png = [0x89, b'P', b'N', b'G', 0x00, 0x01];
+        let big5 = [0xa4, 0xe9, 0xa5, 0xbb];
+        let mut r = Cursor::new(batch(&[("1", &png), ("2", &big5), ("3", b"text"), ("4", &png)]));
+        assert_eq!(
+            read_classified_response_with(&mut r, 1024, false, true).unwrap(),
+            BlobRead::NonText { kind: NotText::Binary, bytes: png.to_vec() }
+        );
+        assert_eq!(
+            read_classified_response_with(&mut r, 1024, false, true).unwrap(),
+            BlobRead::NonText { kind: NotText::NotUtf8, bytes: big5.to_vec() }
+        );
+        assert_eq!(read_classified_response_with(&mut r, 1024, false, true).unwrap(), BlobRead::Text("text".into()));
+        // Over the cap the body is still scanned and dropped.
+        assert_eq!(
+            read_classified_response_with(&mut r, 2, false, true).unwrap(),
+            BlobRead::TooLarge { size: 6, not_text: Some(NotText::Binary) }
+        );
+        assert_eq!(classify_keep(big5.to_vec()), Err((NotText::NotUtf8, big5.to_vec())));
+    }
+
+    #[test]
     fn cat_file_short_skipped_body_is_err() {
         let mut r_overcap = Cursor::new(b"abc blob 20\nshort".to_vec());
         assert!(read_classified_response(&mut r_overcap, 5, false).is_err());
@@ -694,24 +743,6 @@ mod tests {
         .unwrap();
         assert_eq!(visited, vec!["huge_txt"]);
         assert_eq!(res, DeletedContent::TooLarge { spec: "huge_txt".into(), size: 50_000 });
-    }
-
-    #[test]
-    fn not_text_of_maps_every_variant() {
-        assert_eq!(not_text_of(BlobRead::NotText(NotText::Binary)), Some(NotText::Binary));
-        assert_eq!(not_text_of(BlobRead::NotText(NotText::NotUtf8)), Some(NotText::NotUtf8));
-        assert_eq!(
-            not_text_of(BlobRead::TooLarge { size: 10, not_text: Some(NotText::Binary) }),
-            Some(NotText::Binary)
-        );
-        assert_eq!(
-            not_text_of(BlobRead::TooLarge { size: 10, not_text: Some(NotText::NotUtf8) }),
-            Some(NotText::NotUtf8)
-        );
-        assert_eq!(not_text_of(BlobRead::Text("text".into())), None);
-        assert_eq!(not_text_of(BlobRead::Missing), None);
-        assert_eq!(not_text_of(BlobRead::NotABlob { kind: "tree".into() }), None);
-        assert_eq!(not_text_of(BlobRead::TooLarge { size: 10, not_text: None }), None);
     }
 
     #[test]

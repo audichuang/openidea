@@ -12,10 +12,12 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::blob::{BlobRead, BlobReader, NotText};
-use crate::fsutil::{must_not_overwrite, write_text_file};
+use crate::fsutil::{must_not_overwrite, write_bytes_file, write_text_file};
 use crate::gitrun::{CancelToken, Overflow, RunOptions};
 use crate::gitsrc::{Git, GitError, RawZ};
+use crate::nontext::{self, NonTextError, NonTextHeader, NonTextSummary};
 use crate::paths::{escapes_all_roots, lands_in_git_dir, resolve_write_target};
+use crate::settings::NonTextMode;
 
 /// Replay replaces a symlink at the target instead of writing through it,
 /// so only the folder it lands in decides whether it is inside Git.
@@ -72,6 +74,74 @@ pub enum CommitError {
 pub struct CommitExport {
     pub payload: CommitsPayload,
     pub text: String,
+    /// What the copy dialog shows; under Exclude, what Include would add.
+    pub non_text: NonTextSummary,
+}
+
+/// How a commit export treats non-text files. Commits mode has no text size
+/// limit, so the non-text limit travels with the mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommitNonTextOptions {
+    pub mode: NonTextMode,
+    /// `maxNonTextFileSizeKB` in bytes ([`crate::settings::Settings::max_non_text_file_bytes`]).
+    pub max_file_bytes: u64,
+}
+
+impl Default for CommitNonTextOptions {
+    /// Exclude, with the default 2 MB limit for the summary.
+    fn default() -> Self {
+        Self {
+            mode: NonTextMode::Exclude,
+            max_file_bytes: crate::settings::Settings::default().max_non_text_file_bytes(),
+        }
+    }
+}
+
+impl CommitNonTextOptions {
+    pub fn from_settings(settings: &crate::settings::Settings, mode: NonTextMode) -> Self {
+        Self { mode, max_file_bytes: settings.max_non_text_file_bytes() }
+    }
+}
+
+/// A non-text file's bytes in commits mode, next to `"content": null` and its
+/// `notCopied` reason. An older reader ignores the field and skips the file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitNonText {
+    pub size: u64,
+    /// Lowercase hex SHA-256 of the raw bytes.
+    pub sha256: String,
+    /// Standard Base64, unwrapped.
+    pub base64: String,
+}
+
+impl CommitNonText {
+    pub fn new(bytes: &[u8]) -> Self {
+        Self { size: bytes.len() as u64, sha256: nontext::sha256_hex(bytes), base64: nontext::encode(bytes) }
+    }
+
+    /// The bytes, after the same length and SHA-256 check as files mode.
+    pub fn decode(&self) -> Result<Vec<u8>, NonTextError> {
+        let header = NonTextHeader { size: self.size, sha256: self.sha256.clone() };
+        nontext::decode_verified(&self.base64, &header)
+    }
+
+    /// What the field adds to a file's JSON (`,"nonText":{...}`) for `size`
+    /// raw bytes, without encoding them.
+    fn wire_len(size: u64) -> usize {
+        let empty = Self { size, sha256: "0".repeat(64), base64: String::new() };
+        let json = serde_json::to_string(&empty).expect("non-text field serializes");
+        ",\"nonText\":".len() + json.len() + nontext::encoded_len(size) as usize
+    }
+}
+
+/// Non-text bookkeeping of one export.
+#[derive(Default)]
+struct NonTextState {
+    options: CommitNonTextOptions,
+    summary: NonTextSummary,
+    /// Exclude: what the `nonText` fields would add.
+    include_extra: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,6 +185,10 @@ pub struct CommitFile {
     /// Full content after the change; `None` for deletions and not-copied.
     pub content: Option<String>,
     pub not_copied: Option<NotCopiedReason>,
+    /// A non-text file's bytes (`BINARY` / `NON_UTF8`), when the copy
+    /// included them. Absent otherwise, so the wire stays today's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub non_text: Option<CommitNonText>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,7 +226,8 @@ impl CommitsPayload {
                 bytes = bytes
                     .saturating_add(file.path.capacity())
                     .saturating_add(file.old_path.as_ref().map_or(0, String::capacity))
-                    .saturating_add(file.content.as_ref().map_or(0, String::capacity));
+                    .saturating_add(file.content.as_ref().map_or(0, String::capacity))
+                    .saturating_add(file.non_text.as_ref().map_or(0, |n| n.sha256.capacity() + n.base64.capacity()));
             }
         }
         bytes
@@ -232,7 +307,8 @@ fn lossy(bytes: &[u8]) -> String {
 /// A UI that must cancel or bound the clipboard uses [`copy_commits_with`].
 /// Both share one reader. This wrapper does not apply the strict cap.
 pub fn copy_commits(git: &Git, shas: &[String]) -> Result<CommitsPayload, CommitError> {
-    let (payload, _) = export_commits_counted(git, shas, &RunOptions::default(), None)?;
+    let mut non_text = NonTextState::default();
+    let (payload, _) = export_commits_counted(git, shas, &RunOptions::default(), None, &mut non_text)?;
     Ok(payload)
 }
 
@@ -277,10 +353,27 @@ pub fn copy_commits_with(
     opts: &RunOptions,
     max_serialized_bytes: usize,
 ) -> Result<CommitExport, CommitError> {
-    let (payload, total_wire_len) = export_commits_counted(git, shas, opts, Some(max_serialized_bytes))?;
+    copy_commits_with_non_text(git, shas, opts, max_serialized_bytes, CommitNonTextOptions::default())
+}
+
+/// [`copy_commits_with`] that carries non-text files under
+/// [`NonTextMode::Include`] (`nonText`, within `non_text.max_file_bytes`).
+/// Exclude writes today's payload and reports what Include would add in
+/// [`CommitExport::non_text`].
+pub fn copy_commits_with_non_text(
+    git: &Git,
+    shas: &[String],
+    opts: &RunOptions,
+    max_serialized_bytes: usize,
+    non_text: CommitNonTextOptions,
+) -> Result<CommitExport, CommitError> {
+    let mut state = NonTextState { options: non_text, ..Default::default() };
+    let (payload, total_wire_len) = export_commits_counted(git, shas, opts, Some(max_serialized_bytes), &mut state)?;
     let text = to_clipboard_text_bounded(&payload, total_wire_len, max_serialized_bytes, opts.cancel.as_ref())?;
     debug_assert_eq!(text.len(), total_wire_len);
-    Ok(CommitExport { payload, text })
+    let mut summary = state.summary;
+    summary.estimated_include_payload_bytes = text.len().saturating_add(state.include_extra);
+    Ok(CommitExport { payload, text, non_text: summary })
 }
 
 const EMPTY_PAYLOAD_WIRE_LEN: usize = COMMIT_MARKER.len() + 1 + 14;
@@ -308,6 +401,7 @@ fn export_commits_counted(
     shas: &[String],
     opts: &RunOptions,
     limit: Option<usize>,
+    non_text: &mut NonTextState,
 ) -> Result<(CommitsPayload, usize), CommitError> {
     refuse_if_cancelled(opts, "commits")?;
     let empty_wire_len = EMPTY_PAYLOAD_WIRE_LEN;
@@ -320,7 +414,7 @@ fn export_commits_counted(
     let mut current_wire_len = empty_wire_len;
     for sha in shas {
         refuse_if_cancelled(opts, "commits")?;
-        export_one(git, sha, opts, limit, &mut commits, &mut current_wire_len)?;
+        export_one(git, sha, opts, limit, &mut commits, &mut current_wire_len, non_text)?;
     }
     refuse_if_cancelled(opts, "commits")?;
     Ok((CommitsPayload { commits }, current_wire_len))
@@ -333,6 +427,7 @@ fn export_one(
     limit: Option<usize>,
     commits: &mut Vec<CommitRecord>,
     current_wire_len: &mut usize,
+    non_text: &mut NonTextState,
 ) -> Result<(), CommitError> {
     refuse_if_cancelled(opts, "export commit")?;
     let out = read_commit_meta_stdout(git, sha, opts, limit, *current_wire_len)?;
@@ -378,7 +473,8 @@ fn export_one(
         refuse_if_cancelled(opts, "diff-tree scan")?;
         match entry {
             Ok(entry) => {
-                if let Err(err) = admit_entry(git, opts, limit, commits, current_wire_len, &mut blobs, entry) {
+                if let Err(err) = admit_entry(git, opts, limit, commits, current_wire_len, &mut blobs, entry, non_text)
+                {
                     failed = Some(err);
                     break;
                 }
@@ -484,6 +580,7 @@ struct CommitRecordMetaView<'a> {
     files: &'a [CommitFile],
 }
 
+#[allow(clippy::too_many_arguments)]
 fn admit_entry(
     git: &Git,
     opts: &RunOptions,
@@ -492,6 +589,7 @@ fn admit_entry(
     current_wire_len: &mut usize,
     blobs: &mut BlobReader,
     entry: crate::gitsrc::RawEntry,
+    non_text: &mut NonTextState,
 ) -> Result<(), CommitError> {
     let change = match entry.status {
         b'A' | b'C' => FileChange::Added,
@@ -512,6 +610,7 @@ fn admit_entry(
         change,
         content: None,
         not_copied: None,
+        non_text: None,
     };
     if !path_ok {
         file.not_copied = Some(NotCopiedReason::NonUtf8Path);
@@ -522,15 +621,11 @@ fn admit_entry(
         return push_file(commits, current_wire_len, file, limit, opts);
     }
     if change == FileChange::Deleted {
-        // A deletion carries no content, so the pre-deletion blob is only
-        // classified: retain nothing, scan it. Text of any size (or a blob
-        // that cannot be read) stays a plain deletion and never counts
-        // against the payload limit; NUL or invalid UTF-8 becomes
-        // not-copied so paste leaves the target file alone (spec 4.2).
-        file.not_copied = blobs.deleted_not_text(git, &entry.old_oid)?.map(NotCopiedReason::from);
+        // A deletion carries no content and is replayed whatever the pre-deletion
+        // blob was (text or not), so the blob is never read or classified.
         return push_file(commits, current_wire_len, file, limit, opts);
     }
-    admit_blob(commits, current_wire_len, file, git, blobs, &entry.new_oid, opts, limit)
+    admit_blob(commits, current_wire_len, file, git, blobs, &entry.new_oid, opts, limit, non_text)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -543,6 +638,7 @@ fn admit_blob(
     oid: &str,
     opts: &RunOptions,
     limit: Option<usize>,
+    non_text: &mut NonTextState,
 ) -> Result<(), CommitError> {
     let (max_retain, len_empty) = if let Some(max) = limit {
         file.content = Some(String::new());
@@ -561,14 +657,44 @@ fn admit_blob(
     };
     file.content = None;
     file.not_copied = None;
-    match blobs.read(git, oid, max_retain)? {
+    let max_non_text = non_text.options.max_file_bytes;
+    let include = non_text.options.mode == NonTextMode::Include;
+    // Include reads a non-text body up to its own limit; a body that then does
+    // not fit the document fails it in `push_file`, as text does.
+    let read_cap = if include { max_retain.max(max_non_text) } else { max_retain };
+    match blobs.read_keeping_non_text(git, oid, read_cap)? {
         BlobRead::Missing => {
             file.not_copied = Some(NotCopiedReason::Unreadable);
         }
         BlobRead::Text(t) => {
             file.content = Some(t);
         }
-        BlobRead::NotText(r) | BlobRead::TooLarge { not_text: Some(r), .. } => {
+        BlobRead::NonText { kind, bytes } => {
+            file.not_copied = Some(kind.into());
+            let size = bytes.len() as u64;
+            if size > max_non_text {
+                non_text.summary.over_limit_count += 1;
+            } else {
+                non_text.summary.found(&file.path, size);
+                if include {
+                    file.non_text = Some(CommitNonText::new(&bytes));
+                } else {
+                    non_text.include_extra += CommitNonText::wire_len(size);
+                }
+            }
+        }
+        BlobRead::TooLarge { size, not_text: Some(r) } => {
+            file.not_copied = Some(r.into());
+            // Over the bytes left for the document (Exclude), or over the
+            // non-text limit (Include reads up to it).
+            if size > max_non_text {
+                non_text.summary.over_limit_count += 1;
+            } else {
+                non_text.summary.found(&file.path, size);
+                non_text.include_extra += CommitNonText::wire_len(size);
+            }
+        }
+        BlobRead::NotText(r) => {
             file.not_copied = Some(r.into());
         }
         BlobRead::NotABlob { .. } => {
@@ -929,6 +1055,21 @@ pub enum ReplaySkipReason {
     UnsafePath,
     /// The file on disk is not UTF-8 or cannot be verified.
     NonUtf8Target,
+    /// The file's `nonText` Base64 does not decode, or its size or SHA-256
+    /// differs from the recorded one.
+    CorruptNonText,
+}
+
+impl ReplaySkipReason {
+    /// The reason as user text (the preview shows the same wording).
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::NotCopied => "Not copied",
+            Self::UnsafePath => "Unsafe path",
+            Self::NonUtf8Target => "Existing file is not UTF-8; not overwritten",
+            Self::CorruptNonText => "Corrupt non-text file",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1026,6 +1167,10 @@ pub struct FilePlan {
     pub before: ReplayContentSource,
     #[serde(default)]
     pub old_before: ReplayContentSource,
+    /// Raw size of a verified non-text file this row writes; the preview
+    /// shows "non-text file" and never its Base64.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub non_text_size: Option<u64>,
 }
 
 impl FilePlan {
@@ -1095,6 +1240,7 @@ impl CommitReplayPlan {
                             a.layout_conflict,
                             &a.absolute_path,
                             &a.old_absolute_path,
+                            a.non_text_size,
                         ) == (
                             &b.path,
                             &b.old_path,
@@ -1107,6 +1253,7 @@ impl CommitReplayPlan {
                             b.layout_conflict,
                             &b.absolute_path,
                             &b.old_absolute_path,
+                            b.non_text_size,
                         )
                     })
             })
@@ -1191,9 +1338,34 @@ fn plan_file(root: &Path, f: &CommitFile, layout: &PlannedLayout) -> FilePlan {
         old_absolute_path: None,
         before: ReplayContentSource::default(),
         old_before: ReplayContentSource::default(),
+        non_text_size: None,
     };
     let deleted = f.change == FileChange::Deleted;
-    if !deleted && f.content.is_none() && plan.not_copied.is_none() {
+    // A deletion needs no content. Payloads from before this rule marked a deleted non-text
+    // file as not copied; the replay still deletes it.
+    if deleted && matches!(f.not_copied, Some(NotCopiedReason::Binary | NotCopiedReason::NonUtf8)) {
+        plan.not_copied = None;
+    }
+    // The bytes are verified before anything is planned as writable.
+    if let Some(nt) = f.non_text.as_ref().filter(|_| !deleted) {
+        if nt.decode().is_err() {
+            // The corrupt entry is the reason; the copy side's Binary note must not outrank it.
+            plan.not_copied = None;
+            plan.skip_reason = Some(ReplaySkipReason::CorruptNonText);
+            return plan;
+        }
+        plan.not_copied = None;
+        plan.non_text_size = Some(nt.size);
+    }
+    // A rename of a non-text file copied without its bytes (Exclude, or a copy from before this rule) moves
+    // the file the destination already has at the old path: the replay reads it before the old path goes.
+    let moved_size = moved_non_text_size(root, f, layout);
+    if let Some(size) = moved_size {
+        plan.not_copied = None;
+        plan.non_text_size = Some(size);
+    }
+    let non_text = plan.non_text_size.is_some();
+    if !deleted && !non_text && f.content.is_none() && plan.not_copied.is_none() {
         plan.not_copied = Some(NotCopiedReason::Unreadable);
     }
     if plan.not_copied.is_some() {
@@ -1213,7 +1385,8 @@ fn plan_file(root: &Path, f: &CommitFile, layout: &PlannedLayout) -> FilePlan {
     // checked on disk.
     // A hard link needs no check of its own: the write replaces this entry,
     // never the shared file (see `fsutil::write_text_file`).
-    if !deleted && !layout.replaced(&abs) && !is_symlink(&abs) && must_not_overwrite(&abs) {
+    // Raw bytes have no encoding to preserve: the non-UTF-8 guard is for text.
+    if !deleted && !non_text && !layout.replaced(&abs) && !is_symlink(&abs) && must_not_overwrite(&abs) {
         plan.skip_reason = Some(ReplaySkipReason::NonUtf8Target);
         plan.existed = abs.exists();
         plan.absolute_path = Some(abs);
@@ -1237,6 +1410,31 @@ fn plan_file(root: &Path, f: &CommitFile, layout: &PlannedLayout) -> FilePlan {
     plan.old_before =
         plan.old_absolute_path.as_deref().map(|p| layout.content_source(p)).unwrap_or(ReplayContentSource::Absent);
     plan
+}
+
+/// The size of the file a bytes-less rename of a non-text file would move, when the destination has it as a
+/// regular file at the old path.
+fn moved_non_text_size(root: &Path, f: &CommitFile, layout: &PlannedLayout) -> Option<u64> {
+    let bytes_less = f.change == FileChange::Renamed
+        && f.content.is_none()
+        && f.non_text.is_none()
+        && matches!(f.not_copied, Some(NotCopiedReason::Binary | NotCopiedReason::NonUtf8));
+    if !bytes_less {
+        return None;
+    }
+    let old = target(root, f.old_path.as_deref()?, layout)?;
+    if !layout.exists(&old) {
+        return None;
+    }
+    // A file an earlier commit of the batch wrote or moved only exists in the layout: its size comes from
+    // there, never from the disk (which has nothing, or an unrelated file, at that path).
+    if layout.get(&old).is_some() || layout.shadowed(&old) {
+        return layout.non_text_size(&old);
+    }
+    if is_symlink(&old) {
+        return None;
+    }
+    fs::metadata(&old).ok().filter(|m| m.is_file()).map(|m| m.len())
 }
 
 /// Whether a directory between `root` and `abs` is a symlink on disk.
@@ -1268,9 +1466,10 @@ enum Node {
 ///
 /// Only the layout is simulated. Symlink checks in `target` and
 /// `must_not_overwrite` stay on the real disk, except for a path the layout
-/// [`replaced`](Self::replaced): a payload creates neither symlinks nor
-/// non-UTF-8 files, but an earlier commit can delete one, and what is left
-/// there is then a regular file or nothing.
+/// [`replaced`](Self::replaced): a payload creates no symlinks, but an earlier
+/// commit can delete one, and what is left there is then a regular file
+/// or nothing. A non-text row writes non-UTF-8 bytes, so a later commit
+/// that rewrites the path as text must see it as replaced too.
 ///
 /// A path an earlier commit deleted or wrote as a file is `cut`: whatever the
 /// disk shows below it (the old symlink's target included) is gone, so its
@@ -1288,6 +1487,8 @@ struct PlannedLayout {
     /// Bytes of a virtual file come from an earlier payload entry. Initial
     /// disk contents remain lazy reads; never duplicate payload text here.
     contents: std::collections::HashMap<PathBuf, ReplayContentSource>,
+    /// Raw size of a virtual file an earlier commit wrote as non-text.
+    non_text_sizes: std::collections::HashMap<PathBuf, u64>,
     /// The non-absent overrides, by parent key: child key to the path as
     /// first spelled.
     added: std::collections::HashMap<PathBuf, std::collections::HashMap<PathBuf, PathBuf>>,
@@ -1295,6 +1496,10 @@ struct PlannedLayout {
     cut: std::collections::HashSet<PathBuf>,
     /// The index's spellings, read only when `fold_case`.
     tracked: TrackedSpellings,
+    /// Keys of paths an earlier commit of this replay run wrote to the disk.
+    /// A later commit's layout is rebuilt from the disk, so these stand in
+    /// for the overrides `plan_commit_replay` carried over.
+    written: std::collections::HashSet<PathBuf>,
 }
 
 impl PlannedLayout {
@@ -1329,7 +1534,7 @@ impl PlannedLayout {
     /// Whether the disk no longer decides what `path` is: an earlier commit
     /// changed it, or removed what the disk shows above it.
     fn replaced(&self, path: &Path) -> bool {
-        self.get(path).is_some() || self.shadowed(path)
+        self.get(path).is_some() || self.shadowed(path) || self.written.contains(&self.key(path))
     }
 
     /// Whether the disk's entries inside `dir` are still there.
@@ -1380,6 +1585,14 @@ impl PlannedLayout {
         self.node(path) == Node::Dir
     }
 
+    /// The size of a virtual file an earlier commit wrote as non-text.
+    fn non_text_size(&self, path: &Path) -> Option<u64> {
+        match self.get(path) {
+            Some(Node::File) => self.non_text_sizes.get(&self.key(path)).copied(),
+            _ => None,
+        }
+    }
+
     /// Like `Path::exists`: a symlink counts by its target on disk.
     fn exists(&self, path: &Path) -> bool {
         match self.get(path) {
@@ -1391,6 +1604,7 @@ impl PlannedLayout {
     fn set(&mut self, path: &Path, node: Node) {
         let key = self.key(path);
         self.contents.remove(&key);
+        self.non_text_sizes.remove(&key);
         if node != Node::Dir {
             self.cut.insert(key.clone());
         }
@@ -1485,7 +1699,16 @@ impl PlannedLayout {
             };
             self.tracked.insert(&f.path);
             self.set(abs, Node::File);
-            self.contents.insert(self.key(abs), ReplayContentSource::Payload { commit_index, file_index });
+            // A non-text write is never shown as text to a later row.
+            let source = if f.non_text_size.is_some() {
+                ReplayContentSource::Unavailable(ReplayPreviewUnavailable::Binary)
+            } else {
+                ReplayContentSource::Payload { commit_index, file_index }
+            };
+            self.contents.insert(self.key(abs), source);
+            if let Some(size) = f.non_text_size {
+                self.non_text_sizes.insert(self.key(abs), size);
+            }
             for a in abs.ancestors().skip(1) {
                 if a == root || !a.starts_with(root) {
                     break;
@@ -1816,11 +2039,26 @@ pub struct ReplayFailure {
     pub conflict_path: Option<String>,
 }
 
+/// A commit the replay did not create because every one of its file changes was refused or skipped: an empty
+/// commit would record nothing of what the source commit did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayNotCreated {
+    /// Index into the payload's commits.
+    pub index: usize,
+    pub message: String,
+    /// Why its first file change was refused or skipped.
+    pub reason: ReplaySkipReason,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReplayResult {
     /// New commit OIDs, in replay order. Never rolled back.
     pub created: Vec<String>,
+    /// Commits that were not created (see [`ReplayNotCreated`]); the replay went on with the next one.
+    #[serde(default)]
+    pub not_created: Vec<ReplayNotCreated>,
     /// The commit replay stopped at, if any.
     pub failure: Option<ReplayFailure>,
 }
@@ -1846,6 +2084,7 @@ impl ReplaySession {
     pub(crate) fn refused(payload: &CommitsPayload, error: String) -> ReplayResult {
         ReplayResult {
             created: Vec::new(),
+            not_created: Vec::new(),
             failure: payload.commits.first().map(|c| ReplayFailure {
                 index: 0,
                 message: c.message.clone(),
@@ -1863,11 +2102,11 @@ impl ReplaySession {
         scope: &Path,
         payload: &CommitsPayload,
         _guards: Vec<crate::workspace::HeavyGuard>,
-    ) -> Result<Self, ReplayResult> {
+    ) -> Result<Self, Box<ReplayResult>> {
         let no_hooks = match NoHooks::create() {
             Ok(h) => h,
             Err(e) => {
-                return Err(Self::refused(payload, format!("cannot create an empty hooks directory: {e}")));
+                return Err(Box::new(Self::refused(payload, format!("cannot create an empty hooks directory: {e}"))));
             }
         };
         Ok(Self { no_hooks, scope: scope.to_path_buf(), _guards })
@@ -1876,9 +2115,13 @@ impl ReplaySession {
     /// Replays every commit; never polls cancellation.
     pub(crate) fn run(&self, git: &Git, payload: &CommitsPayload) -> ReplayResult {
         let mut result = ReplayResult::default();
+        let mut written = std::collections::HashSet::new();
         for (index, commit) in payload.commits.iter().enumerate() {
-            match replay_commit(git, &self.scope, commit, &self.no_hooks.config) {
-                Ok(sha) => result.created.push(sha),
+            match replay_commit(git, &self.scope, commit, &self.no_hooks.config, &mut written) {
+                Ok(ReplayOutcome::Created(sha)) => result.created.push(sha),
+                Ok(ReplayOutcome::NotCreated(reason)) => {
+                    result.not_created.push(ReplayNotCreated { index, message: commit.message.clone(), reason });
+                }
                 Err(err) => {
                     result.failure = Some(ReplayFailure {
                         index,
@@ -1903,7 +2146,7 @@ pub(crate) fn replay(git: &Git, payload: &CommitsPayload) -> ReplayResult {
     };
     match ReplaySession::begin_in(git.root(), payload, vec![guard]) {
         Ok(session) => session.run(git, payload),
-        Err(refused) => refused,
+        Err(refused) => *refused,
     }
 }
 
@@ -1954,11 +2197,26 @@ impl From<String> for ReplayCommitError {
     }
 }
 
-fn replay_commit(git: &Git, scope: &Path, commit: &CommitRecord, no_hooks: &str) -> Result<String, ReplayCommitError> {
+enum ReplayOutcome {
+    Created(String),
+    NotCreated(ReplaySkipReason),
+}
+
+fn replay_commit(
+    git: &Git,
+    scope: &Path,
+    commit: &CommitRecord,
+    no_hooks: &str,
+    written: &mut std::collections::HashSet<PathBuf>,
+) -> Result<ReplayOutcome, ReplayCommitError> {
     let root = git.root();
     // Replay plans against the disk and index as the earlier commits left
     // them.
-    let layout = PlannedLayout::new(git, &RunOptions::default()).map_err(|e| e.to_string())?;
+    let mut layout = PlannedLayout::new(git, &RunOptions::default()).map_err(|e| e.to_string())?;
+    // A path an earlier commit of this run wrote is no longer what the
+    // destination had, so the preview's verdict for it (a rewrite of a
+    // non-text file as UTF-8 text is a Write) holds here too.
+    layout.written = written.iter().map(|p| layout.key(p)).collect();
     let plan = plan_commit(root, commit, &layout);
     // The preview skips these; replay refuses the commit before touching
     // anything rather than stop halfway with a half-staged worktree.
@@ -1969,6 +2227,14 @@ fn replay_commit(git: &Git, scope: &Path, commit: &CommitRecord, no_hooks: &str)
             conflict_path: Some(plan.files[i].path.clone()),
         });
     }
+    // Every file change refused or skipped (the non-UTF-8 overwrite guard, an unsafe path, a corrupt or
+    // uncopied file): nothing of the commit applies, so no empty commit is made. A commit that had no file
+    // changes to begin with stays what it was.
+    if let Some(reason) = plan.files.first().and_then(|f| f.skip_reason) {
+        if plan.files.iter().all(|f| f.skip_reason.is_some()) {
+            return Ok(ReplayOutcome::NotCreated(reason));
+        }
+    }
     // Deleted paths: staged only if HEAD tracks them. A path that is only in
     // the index (a staged new file) has nothing to commit, and `commit
     // --only` would reject it once `add` dropped it from the index.
@@ -1977,14 +2243,34 @@ fn replay_commit(git: &Git, scope: &Path, commit: &CommitRecord, no_hooks: &str)
     // Recheck every write target before anything destructive happens, so a
     // target that changed since planning stops the replay instead of
     // leaving a commit that only records the rename's deletion.
+    // A non-text row's bytes, verified again (`plan_file` checked them too).
+    let mut bytes: Vec<Option<Vec<u8>>> = Vec::with_capacity(plan.files.len());
     for (f, src) in plan.files.iter().zip(&commit.files) {
-        let (ReplayAction::Write, Some(abs), Some(_)) = (f.action, &f.absolute_path, &src.content) else {
+        // A skipped row moves and writes nothing: its bytes are never read, so a refused rename cannot abort
+        // the replay. `bytes` stays index-aligned with the files.
+        if f.action == ReplayAction::Skip {
+            bytes.push(None);
+            continue;
+        }
+        let non_text = match (&f.non_text_size, &src.non_text) {
+            (Some(_), Some(nt)) => Some(nt.decode().map_err(|e| format!("{}: {e}", f.path))?),
+            // A bytes-less rename: read the file before the deletions below remove it.
+            (Some(_), None) => {
+                let old = f.old_absolute_path.as_deref().ok_or_else(|| format!("{}: nothing to move", f.path))?;
+                Some(fs::read(old).map_err(|e| format!("{}: {e}", f.old_path.as_deref().unwrap_or(&f.path)))?)
+            }
+            _ => None,
+        };
+        let writes = src.content.is_some() || non_text.is_some();
+        let is_text = non_text.is_none();
+        bytes.push(non_text);
+        let (ReplayAction::Write, Some(abs), true) = (f.action, &f.absolute_path, writes) else {
             continue;
         };
         if unsafe_replay_target(scope, abs) {
             return Err(format!("{}: unsafe path", f.path).into());
         }
-        if !is_symlink(abs) && must_not_overwrite(abs) {
+        if is_text && !layout.replaced(abs) && !is_symlink(abs) && must_not_overwrite(abs) {
             return Err(format!("{}: target is not UTF-8 or cannot be verified", f.path).into());
         }
     }
@@ -2004,17 +2290,26 @@ fn replay_commit(git: &Git, scope: &Path, commit: &CommitRecord, no_hooks: &str)
     let err = |e: GitError| e.to_string();
 
     let mut paths: Vec<&str> = Vec::new();
-    for (f, src) in plan.files.iter().zip(&commit.files) {
-        let (ReplayAction::Write, Some(abs), Some(content)) = (f.action, &f.absolute_path, &src.content) else {
+    for ((f, src), non_text) in plan.files.iter().zip(&commit.files).zip(&bytes) {
+        let (ReplayAction::Write, Some(abs)) = (f.action, &f.absolute_path) else {
             continue;
         };
+        if src.content.is_none() && non_text.is_none() {
+            continue;
+        }
         if unsafe_replay_target(root, abs) {
             return Err(format!("{}: unsafe path", f.path).into());
         }
         // The write replaces the entry: a symlink or a hard link here is
         // itself replaced, never written through.
-        write_text_file(abs, content).map_err(|e| format!("{}: {e}", f.path))?;
+        match (non_text, &src.content) {
+            (Some(bytes), _) => write_bytes_file(abs, bytes),
+            (None, Some(content)) => write_text_file(abs, content),
+            (None, None) => unreachable!(),
+        }
+        .map_err(|e| format!("{}: {e}", f.path))?;
         paths.push(&f.path);
+        written.insert(abs.clone());
     }
 
     // Tracked deletions are staged with `rm --cached`, never `add -A`: a
@@ -2075,7 +2370,7 @@ fn replay_commit(git: &Git, scope: &Path, commit: &CommitRecord, no_hooks: &str)
     args.extend(&paths);
     run_commit(git, &args, commit).map_err(err)?;
     let head = git.run(&["-c", no_hooks, "rev-parse", "HEAD"]).map_err(err)?;
-    Ok(String::from_utf8_lossy(&head).trim().to_string())
+    Ok(ReplayOutcome::Created(String::from_utf8_lossy(&head).trim().to_string()))
 }
 
 /// Removes `abs`; already absent is fine. Parent directories left empty go
@@ -2409,6 +2704,7 @@ mod tests {
             change: FileChange::Added,
             content: Some("x\n".into()),
             not_copied: None,
+            non_text: None,
         };
         let record = |msg: &str, files| CommitRecord {
             message: msg.into(),
@@ -2460,6 +2756,7 @@ mod tests {
             change,
             content: Some("data\n".into()),
             not_copied: None,
+            non_text: None,
         };
         let record = |msg: &str, files| CommitRecord {
             message: msg.into(),
@@ -2512,6 +2809,7 @@ mod tests {
             change: FileChange::Added,
             content: Some("x\n".into()),
             not_copied: None,
+            non_text: None,
         };
         let payload = CommitsPayload {
             commits: vec![
@@ -2565,6 +2863,7 @@ mod tests {
             change: FileChange::Added,
             content: Some("x\n".into()),
             not_copied: None,
+            non_text: None,
         };
         let payload = CommitsPayload {
             commits: vec![CommitRecord {
@@ -2595,6 +2894,7 @@ mod tests {
             change,
             content: (change != FileChange::Deleted).then(|| "x\n".into()),
             not_copied: None,
+            non_text: None,
         }
     }
 
@@ -3253,12 +3553,12 @@ mod tests {
         dst.git(&["add", "foreign.txt"]);
         // Untracked at the target; the source deletes it.
         dst.write("gone.txt", b"untracked\n");
-        let record = |msg: &str, file: CommitFile| CommitRecord {
+        let record = |msg: &str, files: Vec<CommitFile>| CommitRecord {
             message: msg.into(),
             author_name: "Bob".into(),
             author_email: "bob@example.com".into(),
             author_date: "2020-01-01T00:00:00+00:00".into(),
-            files: vec![file],
+            files,
         };
         let file = |path: &str, change, not_copied| CommitFile {
             path: path.into(),
@@ -3266,11 +3566,13 @@ mod tests {
             change,
             content: None,
             not_copied,
+            non_text: None,
         };
         let payload = CommitsPayload {
             commits: vec![
-                record("only binary\n", file("img.bin", FileChange::Added, Some(NotCopiedReason::Binary))),
-                record("delete untracked\n", file("gone.txt", FileChange::Deleted, None)),
+                // No file changes at all: stays the empty commit it was.
+                record("nothing changed\n", Vec::new()),
+                record("delete untracked\n", vec![file("gone.txt", FileChange::Deleted, None)]),
             ],
         };
         let result = replay(&dst.open(), &payload);
@@ -3282,6 +3584,57 @@ mod tests {
         }
         assert!(!dst.path().join("gone.txt").exists());
         assert_eq!(dst.git(&["diff", "--cached", "--name-only"]), "foreign.txt");
+    }
+
+    /// Required case 24: a commit whose only change the non-UTF-8 overwrite guard refuses is not created as an
+    /// empty commit; the replay names it with the reason and goes on with the next commit.
+    #[test]
+    fn a_commit_whose_every_change_is_refused_is_not_created() {
+        let dst = Repo::new("main");
+        dst.write("legacy.txt", &[0xa4, 0xe9, 0xa5, 0xbb, b'\n']);
+        dst.commit("root", "2019-01-01T00:00:00+00:00");
+        let record = |msg: &str, files: Vec<CommitFile>| CommitRecord {
+            message: msg.into(),
+            author_name: "Bob".into(),
+            author_email: "bob@example.com".into(),
+            author_date: "2020-01-01T00:00:00+00:00".into(),
+            files,
+        };
+        let text_file = |path: &str, change, content: &str| CommitFile {
+            path: path.into(),
+            old_path: None,
+            change,
+            content: Some(content.into()),
+            not_copied: None,
+            non_text: None,
+        };
+        let payload = CommitsPayload {
+            commits: vec![
+                record("rewrite legacy as UTF-8\n", vec![text_file("legacy.txt", FileChange::Modified, "中文\n")]),
+                record("add b\n", vec![text_file("b.txt", FileChange::Added, "b\n")]),
+            ],
+        };
+        let before = dst.git(&["rev-list", "--count", "HEAD"]);
+        let git = dst.open();
+        let plan = plan_commit_replay(&git, &payload);
+        assert_eq!(plan.commits[0].files[0].skip_reason, Some(ReplaySkipReason::NonUtf8Target));
+
+        let result = replay(&git, &payload);
+        assert_eq!(result.failure, None);
+        assert_eq!(result.created.len(), 1, "{result:?}");
+        assert_eq!(
+            result.not_created,
+            [ReplayNotCreated {
+                index: 0,
+                message: "rewrite legacy as UTF-8\n".into(),
+                reason: ReplaySkipReason::NonUtf8Target
+            }]
+        );
+        let after = dst.git(&["rev-list", "--count", "HEAD"]);
+        assert_eq!(after.parse::<usize>().unwrap(), before.parse::<usize>().unwrap() + 1);
+        assert_eq!(fs::read(dst.path().join("legacy.txt")).unwrap(), [0xa4, 0xe9, 0xa5, 0xbb, b'\n']);
+        assert_eq!(dst.git(&["log", "-1", "--format=%s"]), "add b");
+        assert!(dst.path().join("b.txt").exists());
     }
 
     #[cfg(unix)]
@@ -3301,6 +3654,7 @@ mod tests {
             change,
             content: content.map(Into::into),
             not_copied: None,
+            non_text: None,
         };
         let payload = CommitsPayload {
             commits: vec![CommitRecord {
@@ -3345,6 +3699,7 @@ mod tests {
             change,
             content: content.map(Into::into),
             not_copied: None,
+            non_text: None,
         };
         let payload = CommitsPayload {
             commits: vec![CommitRecord {
@@ -3367,7 +3722,7 @@ mod tests {
     }
 
     #[test]
-    fn binary_delete_is_not_copied_and_replay_keeps_the_target_file() {
+    fn non_text_delete_is_replayed_as_a_deletion() {
         let src = Repo::new("main");
         src.write("bin.dat", &[0x89, b'P', 0, 1, 2]);
         src.write("big5.txt", &[0xa4, 0xe9, 0xa5, 0xbb]);
@@ -3385,16 +3740,10 @@ mod tests {
         let payload = copy_commits(&src.open(), &[sha]).unwrap();
         let files = &payload.commits[0].files;
         let find = |p: &str| files.iter().find(|f| f.path == p).unwrap();
-        for (path, reason) in [
-            ("bin.dat", Some(NotCopiedReason::Binary)),
-            ("big5.txt", Some(NotCopiedReason::NonUtf8)),
-            ("empty.txt", None),
-            ("gone.txt", None),
-            ("big.txt", None),
-        ] {
+        for path in ["bin.dat", "big5.txt", "empty.txt", "gone.txt", "big.txt"] {
             let f = find(path);
             assert_eq!(f.change, FileChange::Deleted, "{path}");
-            assert_eq!(f.not_copied, reason, "{path}");
+            assert_eq!(f.not_copied, None, "{path}");
             assert_eq!(f.content, None, "{path}");
         }
 
@@ -3411,24 +3760,46 @@ mod tests {
 
         let plan = plan_commit_replay(&tg, &parsed);
         let pf = |p: &str| plan.commits[0].files.iter().find(|f| f.path == p).unwrap();
-        for p in ["bin.dat", "big5.txt"] {
-            assert_eq!(pf(p).action, ReplayAction::Skip, "{p}");
-            assert_eq!(pf(p).skip_reason, Some(ReplaySkipReason::NotCopied), "{p}");
-        }
-        for p in ["empty.txt", "gone.txt", "big.txt"] {
+        for p in ["bin.dat", "big5.txt", "empty.txt", "gone.txt", "big.txt"] {
             assert_eq!(pf(p).action, ReplayAction::Delete, "{p}");
         }
 
         let result = replay(&tg, &parsed);
         assert_eq!(result.failure, None);
         assert_eq!(result.created.len(), 1);
-        assert!(dst.path().join("bin.dat").exists());
-        assert!(dst.path().join("big5.txt").exists());
-        for p in ["empty.txt", "gone.txt", "big.txt"] {
+        for p in ["bin.dat", "big5.txt", "empty.txt", "gone.txt", "big.txt"] {
             assert!(!dst.path().join(p).exists(), "{p}");
         }
-        assert_eq!(dst.git(&["ls-tree", "-r", "--name-only", "HEAD"]), "big5.txt\nbin.dat\nkeep.txt");
+        assert_eq!(dst.git(&["ls-tree", "-r", "--name-only", "HEAD"]), "keep.txt");
         assert_eq!(dst.git(&["show", "HEAD:keep.txt"]), "keep v2");
+    }
+
+    #[test]
+    fn replay_rewrites_non_text_file_as_text_in_a_later_commit() {
+        let src = Repo::new("main");
+        src.write("keep.txt", b"keep\n");
+        src.commit("base", "2020-01-01T00:00:00+00:00");
+        src.write("f.txt", &[0xa4, 0xe9, 0xa5, 0xbb]);
+        let a = src.commit("add big5", "2020-01-02T00:00:00+00:00");
+        src.write("f.txt", b"hello\n");
+        let b = src.commit("to utf8", "2020-01-03T00:00:00+00:00");
+
+        let opts = CommitNonTextOptions { mode: NonTextMode::Include, ..CommitNonTextOptions::default() };
+        let export =
+            copy_commits_with_non_text(&src.open(), &[a, b], &RunOptions::default(), 10_000_000, opts).unwrap();
+        let payload = parse_commit_payload(&export.text).unwrap();
+        let dst = Repo::new("feature");
+        dst.write("keep.txt", b"keep\n");
+        dst.commit("target root", "2019-01-01T00:00:00+00:00");
+        let tg = dst.open();
+
+        let plan = plan_commit_replay(&tg, &payload);
+        assert!(plan.commits.iter().all(|c| c.files.iter().all(|f| f.action == ReplayAction::Write)));
+        let result = replay(&tg, &payload);
+        assert_eq!(result.failure, None);
+        assert_eq!(result.created.len(), 2);
+        assert_eq!(fs::read(dst.path().join("f.txt")).unwrap(), b"hello\n");
+        assert_eq!(dst.git(&["show", "HEAD:f.txt"]), "hello");
     }
 
     #[test]
@@ -3439,6 +3810,7 @@ mod tests {
             change: FileChange::Renamed,
             content: content.map(str::to_string),
             not_copied: reason,
+            non_text: None,
         };
         let payload = CommitsPayload {
             commits: vec![
@@ -3497,6 +3869,7 @@ mod tests {
                     change: FileChange::Added,
                     content: Some("hello \"world\"\n\\escaped\n".into()),
                     not_copied: None,
+                    non_text: None,
                 }],
             }],
         };
@@ -3523,6 +3896,7 @@ mod tests {
             change: FileChange::Added,
             content: Some("a".repeat(1000)),
             not_copied: None,
+            non_text: None,
         };
         let (tx, rx) = std::sync::mpsc::channel();
         let token_clone = token.clone();
@@ -3568,6 +3942,7 @@ mod tests {
                     change: FileChange::Added,
                     content: Some("hello world".to_string()),
                     not_copied: None,
+                    non_text: None,
                 }],
             }],
         };
@@ -3687,7 +4062,14 @@ mod tests {
     }
 
     fn change(path: &str, change: FileChange, content: Option<&str>) -> CommitFile {
-        CommitFile { path: path.into(), old_path: None, change, content: content.map(Into::into), not_copied: None }
+        CommitFile {
+            path: path.into(),
+            old_path: None,
+            change,
+            content: content.map(Into::into),
+            not_copied: None,
+            non_text: None,
+        }
     }
 
     #[cfg(unix)]
@@ -3867,6 +4249,7 @@ mod tests {
                     change: FileChange::Added,
                     content: Some("owned\n".into()),
                     not_copied: None,
+                    non_text: None,
                 }],
             }],
         };
@@ -3911,6 +4294,7 @@ mod tests {
                         change: FileChange::Added,
                         content: Some("out\n".into()),
                         not_copied: None,
+                        non_text: None,
                     },
                     CommitFile {
                         path: "sub/inside.txt".into(),
@@ -3918,6 +4302,7 @@ mod tests {
                         change: FileChange::Added,
                         content: Some("in\n".into()),
                         not_copied: None,
+                        non_text: None,
                     },
                 ],
             }],
@@ -3958,6 +4343,7 @@ mod tests {
                     change: FileChange::Deleted,
                     content: None,
                     not_copied: None,
+                    non_text: None,
                 }],
             }],
         };
@@ -4008,6 +4394,7 @@ mod tests {
             change: FileChange::Added,
             content: Some("x\n".into()),
             not_copied: None,
+            non_text: None,
         };
         let payload = CommitsPayload {
             commits: vec![CommitRecord {
@@ -4050,6 +4437,7 @@ mod tests {
                 change: FileChange::Added,
                 content: None,
                 not_copied: Some(NotCopiedReason::Binary),
+                non_text: None,
             },
             // 一般 Write
             CommitFile {
@@ -4058,6 +4446,7 @@ mod tests {
                 change: FileChange::Added,
                 content: Some("write\n".into()),
                 not_copied: None,
+                non_text: None,
             },
             // rename
             CommitFile {
@@ -4066,6 +4455,7 @@ mod tests {
                 change: FileChange::Renamed,
                 content: Some("renamed\n".into()),
                 not_copied: None,
+                non_text: None,
             },
             // 非 UTF-8 目標 (NonUtf8Target)
             CommitFile {
@@ -4074,6 +4464,7 @@ mod tests {
                 change: FileChange::Modified,
                 content: Some("utf8 payload\n".into()),
                 not_copied: None,
+                non_text: None,
             },
         ];
 
@@ -4084,6 +4475,7 @@ mod tests {
             change: FileChange::Added,
             content: Some("sub\n".into()),
             not_copied: None,
+            non_text: None,
         });
 
         let payload = CommitsPayload {
@@ -4145,6 +4537,7 @@ mod tests {
             old_absolute_path: None,
             before: ReplayContentSource::default(),
             old_before: ReplayContentSource::default(),
+            non_text_size: None,
         }
     }
 
@@ -4177,5 +4570,78 @@ mod tests {
             ],
         };
         assert_eq!(plan.existing_writes(), std::collections::BTreeSet::from(["a.txt"]));
+    }
+
+    fn bytes_less_rename(old: &str, new: &str) -> CommitFile {
+        CommitFile {
+            path: new.into(),
+            old_path: Some(old.into()),
+            change: FileChange::Renamed,
+            content: None,
+            not_copied: Some(NotCopiedReason::Binary),
+            non_text: None,
+        }
+    }
+
+    fn record(message: &str, files: Vec<CommitFile>) -> CommitRecord {
+        CommitRecord {
+            message: message.into(),
+            author_name: "Author".into(),
+            author_email: "author@example.invalid".into(),
+            author_date: "2020-01-01T00:00:00+00:00".into(),
+            files,
+        }
+    }
+
+    /// A -> B then B -> C without bytes: B exists only in the simulated layout, so the preview must still see
+    /// that step 2 replaces the destination's own C and ask for overwrite consent.
+    #[test]
+    fn consecutive_bytes_less_renames_ask_before_overwriting() {
+        let repo = Repo::new("main");
+        repo.write("A.bin", &[0, 1, 2, 255]);
+        repo.write("C.bin", &[9, 9, 0, 9]);
+        repo.commit("init", "2020-01-01T00:00:00+00:00");
+        let payload = CommitsPayload {
+            commits: vec![
+                record("one\n", vec![bytes_less_rename("A.bin", "B.bin")]),
+                record("two\n", vec![bytes_less_rename("B.bin", "C.bin")]),
+            ],
+        };
+        let plan = plan_commit_replay(&repo.open(), &payload);
+        let second = &plan.commits[1].files[0];
+        assert_eq!(second.action, ReplayAction::Write, "{second:?}");
+        assert_eq!(second.non_text_size, Some(4));
+        assert_eq!(plan.existing_writes(), std::collections::BTreeSet::from(["C.bin"]));
+    }
+
+    /// A skipped bytes-less rename moves nothing and must not abort the commit's other changes or later commits.
+    #[cfg(unix)]
+    #[test]
+    fn skipped_bytes_less_rename_does_not_abort_the_replay() {
+        let repo = Repo::new("main");
+        repo.write("A.bin", &[0, 1, 2, 255]);
+        repo.write("other/keep.txt", b"keep\n");
+        std::os::unix::fs::symlink("other", repo.path().join("linked")).unwrap();
+        repo.commit("init", "2020-01-01T00:00:00+00:00");
+        let text = |path: &str| CommitFile {
+            path: path.into(),
+            old_path: None,
+            change: FileChange::Added,
+            content: Some("x\n".into()),
+            not_copied: None,
+            non_text: None,
+        };
+        let payload = CommitsPayload {
+            commits: vec![
+                record("one\n", vec![bytes_less_rename("A.bin", "linked/B.bin"), text("ok.txt")]),
+                record("two\n", vec![text("later.txt")]),
+            ],
+        };
+        let result = replay(&repo.open(), &payload);
+        assert_eq!(result.failure, None);
+        assert_eq!(result.created.len(), 2);
+        assert!(repo.path().join("ok.txt").exists());
+        assert!(repo.path().join("later.txt").exists());
+        assert!(repo.path().join("A.bin").exists());
     }
 }
