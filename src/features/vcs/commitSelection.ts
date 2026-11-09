@@ -2,11 +2,12 @@
  * What Commit would commit, as one value per repository (`CommitSelection`): what
  * `commitChanges` commits, what plugins read through `commit.pending-commit` and what
  * contributed before-commit checks run on. Its `revision` changes with the message,
- * Amend and the inclusion, so a plugin's message never replaces newer typing.
+ * Amend and the inclusion (with the staging area: what is staged), so a plugin's message
+ * never replaces newer typing.
  */
-import type { CommitOptions, CommitSelection, PartialCommitFile } from "@/bindings";
+import type { CommitOptions, CommitSelection, FileStatus, PartialCommitFile } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
-import { workflowSettings } from "@/platform/workflowSettings";
+import { onWorkflowSettingsChange, workflowSettings } from "@/platform/workflowSettings";
 import { maybeEditorService, provideCommitService, useCommitCheckProviders } from "@/workbench/contributions";
 import { commitRepos, planCommit, type CommitPlan } from "./changes";
 import type { CommitProblem } from "./commitChecks";
@@ -15,6 +16,7 @@ import { useCommit } from "./commitStore";
 import { hunkKeys } from "./hunks";
 import { baseName, rootOf } from "./model";
 import { saveAll } from "./ops";
+import { isStagingArea, stagedFiles, stagingOn, stagingPlan } from "./staging";
 import { currentRepo, refreshNow, useVcs } from "./store";
 
 let revision = 1;
@@ -22,27 +24,49 @@ let revision = 1;
 /** The draft's revision: bumped whenever the message, Amend or the inclusion changes. */
 export const draftRevision = () => revision;
 
+/** The staged side of the index; a refresh replaces the status even when it is unchanged. */
+const stagedKey = (status: readonly FileStatus[]) =>
+  stagedFiles(status)
+    .map((f) => `${f.path}\0${f.staged}`)
+    .join("\n");
+
 export function installDraftRevision(): () => void {
   const offCommit = useCommit.subscribe((s, p) => {
-    if (s.message !== p.message || s.amend !== p.amend || s.checks !== p.checks || s.excludedHunks !== p.excludedHunks)
+    if (
+      s.message !== p.message ||
+      s.amend !== p.amend ||
+      s.checks !== p.checks ||
+      s.excludedHunks !== p.excludedHunks ||
+      s.stagingExcludedRoots !== p.stagingExcludedRoots
+    )
       revision++;
   });
   const offLists = useChangelists.subscribe(() => void revision++);
   const offRepo = useVcs.subscribe((s, p) => {
     if (s.root !== p.root) revision++;
+    else if (s.status !== p.status && isStagingArea() && stagedKey(s.status) !== stagedKey(p.status)) revision++;
   });
+  const offStaging = onWorkflowSettingsChange(stagingOn, () => void revision++);
   return () => {
     offCommit();
     offLists();
     offRepo();
+    offStaging();
   };
 }
 
 /** The included changes, as the status (refreshed by the caller) and the checkboxes say. */
-export function currentPlan(): CommitPlan {
+function currentPlan(): CommitPlan {
   const { status, root } = useVcs.getState();
   const checks = withListDefaults(status, root ?? "", useChangelists.getState().state, useCommit.getState().checks);
   return planCommit(status, checks);
+}
+
+/** What Commit commits: with the staging area the index as it is; otherwise the checkboxes decide. */
+export function commitPlan(staging = isStagingArea()): CommitPlan {
+  if (!staging) return currentPlan();
+  const { status, roots } = useVcs.getState();
+  return stagingPlan(status, roots, useCommit.getState().stagingExcludedRoots);
 }
 
 /**
@@ -108,7 +132,7 @@ async function pendingSelection(): Promise<CommitSelection | null> {
   await refreshNow();
   if (!useVcs.getState().root) return null;
   const rev = revision;
-  const selection = await selectionOf(currentPlan());
+  const selection = await selectionOf(commitPlan());
   // Typing while the blocks were read: report the revision the snapshot started from.
   return { ...selection, revision: rev };
 }
