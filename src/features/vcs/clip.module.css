@@ -139,59 +139,32 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.nodeName[data-elided],
-.pathName[data-elided] {
-  display: flex;
-}
 .nodeNote {
   flex: none;
   white-space: nowrap;
   color: var(--fg-subtle);
 }
-/* A long name: the head ellipsizes, the tail (the name's end) always shows. */
-.nameHead {
-  flex: 0 1 auto;
-  min-width: 4ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.nameTail {
-  flex: none;
-  white-space: nowrap;
-}
-/* While the head is cut it is clipped, not ellipsized, and the tail carries the ellipsis: no blank in between. */
-.nameHead[data-clipped] {
-  text-overflow: clip;
-}
-.nameTail[data-clipped]::before {
-  content: "…";
-}
-/* A path: the folders elide first, down to the first segment and an ellipsis; then the name's head; the tail stays. */
-.pathText {
+/*
+ * Text shortened in JS (see PathText.tsx): the box asks for the full text's width through its hidden
+ * `::after`, the flex rules decide how much it gets, and what is drawn is cut on whole characters. The
+ * folders-before-name priority lives in `fitPath`.
+ */
+.fit {
   flex: 0 1 auto;
   min-width: 0;
-  display: flex;
+  display: block;
+  overflow: hidden;
   white-space: nowrap;
+}
+.fit::after {
+  content: attr(data-full);
+  display: block;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
 }
 .nonTextPath {
   flex: 1 1 auto;
-}
-.pathDirFirst {
-  flex: none;
-}
-/* The shrink factor dwarfs the name's, so the name keeps every character until this part is at its minimum. */
-.pathDirRest {
-  flex: 0 1000000 auto;
-  min-width: 1em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.pathName {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .nodeRow > .badge {
   margin-left: auto;
