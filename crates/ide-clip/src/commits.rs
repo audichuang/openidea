@@ -3637,6 +3637,7 @@ mod tests {
         assert!(dst.path().join("b.txt").exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn commits_replay_replaces_symlink_dir_and_keeps_staged_new_file() {
         let dst = Repo::new("main");
