@@ -27,7 +27,10 @@ vi.mock("@/platform/actions", async (original) => ({
   ...(await original<typeof import("@/platform/actions")>()),
   executeAction: mocks.executeAction,
 }));
-vi.mock("@/workbench/contributions", () => ({ notifications: () => ({ notify: mocks.notify, expire: vi.fn() }) }));
+vi.mock("@/workbench/contributions", () => ({
+  notifications: () => ({ notify: mocks.notify, expire: vi.fn() }),
+  OWNS_FILE_DROP: {},
+}));
 vi.mock("@/platform/ipc", async (original) => {
   const real = await original<typeof import("@/platform/ipc")>();
   return {
