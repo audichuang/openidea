@@ -40,7 +40,6 @@ test("plugin markers render names and package SVG variants and keep the indexed 
     ];
     window.__ipc.handlers.fs_read_text = (args) => files.get(String(args.path)) ?? "";
     window.__ipc.handlers.fs_probe = () => ({ size: 64, binary: false, tooLarge: false });
-    window.__ipc.handlers.window_is_fullscreen = () => false;
     const base = pluginsBackend();
     setPluginsBackend({
       ...base,
