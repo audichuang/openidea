@@ -13,7 +13,7 @@ vi.mock("@/platform/ipc", async (original) => {
   return { ...real, commands: { ...real.commands, vcsBranches: mocks.branches, vcsTags: mocks.tags } };
 });
 
-import { BranchWidget, useBranchesPopup } from "../BranchWidget";
+import { BranchesPopupHost, BranchWidget, useBranchesPopup } from "../BranchWidget";
 import { useVcs } from "../store";
 
 const branch = (name: string) => ({ name, remote: false, current: name === "main" }) as Branch;
@@ -45,7 +45,12 @@ afterEach(() => {
 });
 
 async function openPopup() {
-  render(<BranchWidget />);
+  render(
+    <>
+      <BranchWidget />
+      <BranchesPopupHost />
+    </>,
+  );
   useBranchesPopup.setState({ open: true });
   const input = await screen.findByRole("textbox");
   await waitFor(() => expect(screen.getAllByRole("option").length).toBeGreaterThan(0));
