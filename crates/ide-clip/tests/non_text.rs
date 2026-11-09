@@ -125,12 +125,12 @@ fn picked_files(repo: &Repo) -> ExportSelection {
     repo.write("a.ts", b"export const a = 1;\n");
     repo.write("img/logo.png", &png(300));
     repo.write("legacy/big5.txt", BIG5);
-    repo.write("nul.bin", &[0]);
+    repo.write("nul0.bin", &[0]);
     repo.write("mid.json", "x".repeat(1500).as_bytes());
     repo.write("img/mid.png", &png(1500));
     repo.write("img/huge.png", &png(3000));
     let items: Vec<_> =
-        ["a.ts", "img/logo.png", "legacy/big5.txt", "nul.bin", "mid.json", "img/mid.png", "img/huge.png"]
+        ["a.ts", "img/logo.png", "legacy/big5.txt", "nul0.bin", "mid.json", "img/mid.png", "img/huge.png"]
             .into_iter()
             .map(|p| (p, SourceKind::File, None))
             .collect();
@@ -170,7 +170,7 @@ fn exclude_writes_todays_payload_and_reports_what_include_adds() {
     let summary = &exclude.non_text;
     assert_eq!(
         summary.files,
-        [found("img/logo.png", 300), found("legacy/big5.txt", 5), found("nul.bin", 1), found("img/mid.png", 1500)]
+        [found("img/logo.png", 300), found("legacy/big5.txt", 5), found("nul0.bin", 1), found("img/mid.png", 1500)]
     );
     assert_eq!(summary.count(), 4);
     assert_eq!(summary.total_bytes, 300 + 5 + 1 + 1500);
@@ -263,7 +263,7 @@ fn include_carries_non_text_within_its_limit_and_round_trips() {
             text("a.ts", "export const a = 1;\n"),
             non_text("img/logo.png"),
             non_text("legacy/big5.txt"),
-            non_text("nul.bin"),
+            non_text("nul0.bin"),
             // 1500 B of text is over the 1 KB text limit; 1500 B of PNG fits the 2 KB one.
             size_skip("mid.json", 1500),
             non_text("img/mid.png"),
@@ -288,7 +288,7 @@ fn include_carries_non_text_within_its_limit_and_round_trips() {
     let r = import.apply(&RestoreSelection::default()).unwrap();
     assert_eq!(r.created_count, 5);
     // (A text body loses its trailing newline on paste, as it always has.)
-    for rel in ["img/logo.png", "legacy/big5.txt", "nul.bin", "img/mid.png"] {
+    for rel in ["img/logo.png", "legacy/big5.txt", "nul0.bin", "img/mid.png"] {
         assert_eq!(fs::read(dest.join(rel)).unwrap(), bytes(rel), "{rel}");
     }
     assert!(!dest.join("mid.json").exists() && !dest.join("img/huge.png").exists());
