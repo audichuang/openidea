@@ -63,6 +63,7 @@ import {
   checkOf,
   filesOf,
   groupOf,
+  stagingSide,
   ignoreTargets,
   commitsStagedPart,
   planCommit,
