@@ -307,7 +307,7 @@ fn git_copy(
     mode: ClipNonTextMode,
 ) -> IdeResult<ClipCopyResult> {
     // Named as the payload would spell them: relative to the project when the repository is inside it.
-    let project_canon = std::fs::canonicalize(project).unwrap_or_else(|_| project.to_path_buf());
+    let project_canon = dunce::canonicalize(project).unwrap_or_else(|_| project.to_path_buf());
     let shown = |root: &Path, rel: String| match root.strip_prefix(&project_canon) {
         Ok(sub) if !sub.as_os_str().is_empty() => format!("{}/{rel}", sub.to_string_lossy().replace('\\', "/")),
         _ => rel,
