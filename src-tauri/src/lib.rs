@@ -302,6 +302,9 @@ pub fn run() {
             if window.label() == "main" && window.try_state::<WindowsState>().is_some_and(|w| !w.quitting()) {
                 windows::save_main_fullscreen(window.app_handle());
             }
+            if let Some(w) = window.try_state::<WindowsState>() {
+                w.close_requested(window.label());
+            }
         }
         tauri::WindowEvent::Focused(true) => {
             application_focus::changed(window.app_handle(), true);
