@@ -27,8 +27,10 @@ project with a `static/` folder of images lost the images.
 - A symlink to a file is followed and carries the target's bytes when its target lies inside a copy root; a target
   outside every root is skipped and named as Unreadable (decided by the user, X7: the clipboard often goes to an
   LLM, so a link such as `CLAUDE.md -> ~/.agents/...` must not carry a file from outside the project). A
-  Git-tracked symlink (mode 120000) to a file follows the same rule as any symlink to a file; paste writes a
-  regular file (links are not carried, like file modes).
+  Git-tracked symlink (mode 120000) to a file that is copied from the working tree follows the same rule as any
+  symlink to a file; paste writes a regular file (links are not carried, like file modes). A copy that reads Git
+  (staged changes, a commit, a range) may carry such a link as today: OpenIDEA writes the link text (the target
+  path) as the file's content (pre-existing, listed under Known).
 - Classification uses the bytes only, never an IDE file type: a file whose bytes are strict UTF-8 without a NUL
   is text, whatever the IDE calls it.
 - In a files and folders copy, a file or folder whose name is not portable is skipped and named under "Name not
@@ -51,10 +53,11 @@ project with a `static/` folder of images lost the images.
   a non-UTF-8 name may be named as Unreadable instead; it is never copied either way. A name the platform's file
   view does not list need not be named.
 
-  Git-change copies apply the same rule to each changed path: a path that is not portable is skipped and named
-  under "Name not portable"; it is never written into a header, and the other changes are still copied (decided
-  by the user, X1: a working-tree file named `x\n// file: [DELETED] …` must not forge a deletion, and one odd name
-  must not fail every Git copy). This holds for every Git source an implementation has (working, staged, a
+  Git-change copies apply the same rule to each changed path, as the header spells it (a nested repository's folder
+  included; a repository outside the project is spelled absolute, see below): a path that is not portable is skipped
+  and named under "Name not portable"; it is never written into a header, and the other changes are still copied
+  (decided by the user, X1: a working-tree file named `x\n// file: [DELETED] …` must not forge a deletion, and one odd
+  name must not fail every Git copy). This holds for every Git source an implementation has (working, staged, a
   commit, a range or history, a pull request, a graph). Commits mode carries paths in JSON and is not affected.
 
   A file outside every copy root: if its header is an absolute path, a control character anywhere in that path
@@ -128,18 +131,18 @@ while the Exclude copy runs; the dialog and the Include notice must agree.
 (Found by deep testing: the dialog said 40 files while 30 were copied; in round 3 it said 31 non-text files and
 11 left out while Include carried 29 and left out 13, with size placeholders in the selection.)
 
-Buttons: **Include** (default focus), **Exclude** (today's behaviour: non-text files are left out) and
-**Cancel** (nothing is copied). A dialog line whose count is 0 is omitted. Include is disabled, with the reason
-shown, when the estimate is over the whole-payload limit; focus then starts on Exclude. In that case the dialog
-never shows an estimate below the raw total: it says the payload would be more than 50 MiB (or shows a real
-estimate of the full Include size), next to the raw total. Include is also disabled, with the reason shown, when
-the `headerFormat` cannot be escaped: some line Include writes (the placeholder line or a Base64 line) matches the header pattern both as written and with
-`//clipcode-esc: ` in front, so it would be read as a file header. With one `$FILE_PATH` this happens when the text
-before `$FILE_PATH` is a prefix of `//clipcode-esc: ` (empty, `/`, `//`, ...) and such a line can end with the text
-after it: `$FILE_PATH` alone, `//$FILE_PATH` (matches the placeholder), `$FILE_PATH==` (matches a Base64 line
-`AA==`). Decided by the user, deep round 4; the class widened from "no fixed text before `$FILE_PATH`" by Codex
-review. Where a dialog cannot disable a button (VS Code modal), Include is left out and the message gives the
-reason; Exclude is then the default. Esc is Cancel. The choice is not remembered.
+Buttons: **Include** (default focus), **Exclude** (today's behaviour: non-text files are left out) and **Cancel**
+(nothing is copied). A dialog line whose count is 0 is omitted. Include is disabled, with the reason shown, when the
+estimate is over the whole-payload limit; focus then starts on Exclude. In that case the dialog never shows an
+estimate below the raw total: it says the payload would be more than 50 MiB (or shows a real estimate of the full
+Include size), next to the raw total. Include is also disabled, with the reason shown, when the `headerFormat` cannot
+be escaped: some line Include writes (the placeholder line or a Base64 line) matches the header pattern both as
+written and with `//clipcode-esc: ` in front, so it would be read as a file header. With one `$FILE_PATH` this happens
+when the text before `$FILE_PATH` is a prefix of `//clipcode-esc: ` (empty, `/`, `//`, ...) and such a line can end
+with the text after it: `$FILE_PATH` alone, `//$FILE_PATH` (matches the placeholder), `$FILE_PATH==` (matches a Base64
+line `AA==`). Decided by the user, deep round 4; the class widened from "no fixed text before `$FILE_PATH`" by Codex
+review. Where a dialog cannot disable a button (VS Code modal), Include is left out and the message gives the reason;
+Exclude is then the default. Esc is Cancel. The choice is not remembered.
 
 Counts in UI text are phrased so they read correctly for 1 and for many (e.g. "Non-text files copied as Base64:
 1."), unless the platform has plural support. Long paths are shortened in the middle so the file name stays
@@ -303,6 +306,9 @@ Only OpenIDEA implements commits mode (`// snip-sync commits v1`). The marker st
   failing with a raw "Nothing to copy", is fixed: see X3 under [What is carried](#what-is-carried).)
 - Known, not handled: a custom `headerFormat` that matches the end marker with non-empty post text: the footer
   joins the last entry (pre-existing for text).
+- Known, not handled: a Git-tracked symlink copied from Git (staged, a commit, a range) carries its link text, so
+  paste writes a small text file instead of the target's bytes (pre-existing; the working-tree copy follows the
+  link).
 - Known, not handled: FIFOs, sockets and devices are skipped; OpenIDEA names them as Unreadable, others may drop
   them silently.
 - Known, not handled: with `core.autocrlf=true` in the destination repository, git's own line-ending conversion
@@ -414,8 +420,10 @@ Each review or test round folds its findings back into this spec.
   whitespace sets (X18), `[0-9]` in the regex (X19), the limit boundary (X20), zero-count dialog lines (X21), one
   size format and "50 MiB" (X28), Git blob reads (X30), post-text and special-file Known items (X31, X37), parent
   not writable found at write time (X33), Git-tracked symlinks (X34), folder-first shortening (X35), unlisted
-  names (X36); allowed platform differences X11, X14, X22–X27. Required cases 29–37 added. OpenIDEA code for X1,
-  X3, X4, X6, X12 and X28 in PR #208.
+  names (X36); allowed platform differences X11, X14, X22–X27. Required cases 29–37 added. Codex review of PR
+  #208: a nested repository's folder is part of the header, so Git copies hold it to the same rule (a folder
+  name with a newline forged a `[DELETED]` entry); the Git-tracked symlink rule is limited to working-tree
+  copies. OpenIDEA code for X1, X3, X4, X6, X12 and X28 in PR #208.
 
 - Round 1 review (3 Opus lenses + Codex): commits batch rewrite (Big5 → UTF-8) kept; Exclude keeps "Nothing to
   copy"; CRLF counting on the paste limit. Round 2 (Codex): lone CR must count. Round 3 (Codex): approved.
