@@ -1533,7 +1533,9 @@ mod tests {
         assert_eq!(text(ErrorKind::StorageFull), "The disk is full");
         assert_eq!(text(ErrorKind::ReadOnlyFilesystem), "The file system is read-only");
         // An unknown error never leaks the OS wording.
-        assert_eq!(io_error_text(&Error::from_raw_os_error(13)), "Folder is not writable");
+        // EACCES on Unix, ERROR_ACCESS_DENIED on Windows.
+        let denied = if cfg!(windows) { 5 } else { 13 };
+        assert_eq!(io_error_text(&Error::from_raw_os_error(denied)), "Folder is not writable");
         assert_eq!(io_error_text(&Error::other("boom (os error 99)")), "Could not apply the change");
     }
 
