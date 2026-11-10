@@ -114,6 +114,7 @@ Pitfalls found on 2026-11-04:
 - **`webview_wait_for` stops at ~5 s** whatever `timeout` says ("Script execution timeout"). Call it again for longer waits.
 - Synthetic clicks have `event.detail === 0`; CodeMirror treats them as line-select clicks. Set the caret through `document.querySelector('.cm-content').cmTile.view`.
 - `strategy=text` can hit a hidden node; prefer the snapshot `ref`. For coordinates use the scale `webview_screenshot` prints, not upstream's fixed ×0.9.
+- After the app restarts, a session that answers "Already connected" can still fail every call with `window.__MCP__.resolveAll is not a function`: `driver_session stop appIdentifier=<port>`, then `start` again.
 - Background windows throttle timers: `manage_window action=focus` before timing-sensitive steps (debounced LSP/VCS refreshes, `setTimeout` in scripts). Unfocused visible windows screenshot fine; focus if a capture is black.
 
 Recipes (dev build only, since Vite serves `/src/...`):
@@ -144,6 +145,9 @@ Shell state does not carry over between Bash calls: start every call that uses `
 - Per-worktree identity `ai.l0ng.openidea.dev.w<hash>` with its own data dir `~/Library/Application Support/<identifier>/`; the installed OpenIDEA and its settings are untouched.
 - Vite hot-reloads frontend edits. Rust edits rebuild and restart the app, closing the windows you set up.
 - The Mac mini is short on disk: build locally only to touch the UI; Rust tests/clippy go through `rust-remote`.
+- One real-input session per Mac: before launching, `pgrep -fl target/debug/openidea` for another worktree's dev app driven by someone else, and before each osascript/cliclick check that the frontmost window belongs to your pid. Two agents clicking at once sent clicks into each other's windows (2026-11-09).
+- The window shows "OpenIDEA 无法启动 / Could not load startup script" while Vite answers `504 Outdated Optimize Dep`: stop this worktree's app, `rm -rf node_modules/.vite`, launch again.
+- `commands.appRestart()` (the updater's restart) ends the whole `pnpm dev:app` session and does not relaunch it. To test reopening, quit from the app menu (confirm Exit), then run `pnpm dev:app` again.
 
 ## Doctor
 

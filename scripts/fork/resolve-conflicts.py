@@ -78,15 +78,27 @@ def resolve_locale(path, parts):
             closing = nxt is not None and out[nxt].strip().startswith("}")
             out[j] = line.rstrip().rstrip(",") + ("" if closing else ",")
     text = "\n".join(out)
+    # Upstream's own file may already repeat a key (v0.1.40's zh.json does); only a duplicate the
+    # merge adds is refused.
+    upstream = "\n".join(line for part in parts for line in ([part] if isinstance(part, str) else part[0]))
+    before, after = key_counts(upstream), key_counts(text)
+    added = sorted(k for k, n in after.items() if n > 1 and n > before.get(k, 0))
+    if added:
+        raise SystemExit(f"{path}: duplicate keys after the merge: {', '.join(map(repr, added))}")
+    return text
 
-    def no_duplicates(pairs):
-        keys = [k for k, _ in pairs]
-        if len(keys) != len(set(keys)):
-            raise SystemExit(f"{path}: duplicate keys after the merge")
+
+def key_counts(text):
+    """How often each key appears, per JSON object, summed over the file."""
+    counts = {}
+
+    def count(pairs):
+        for key, _ in pairs:
+            counts[key] = counts.get(key, 0) + 1
         return dict(pairs)
 
-    json.loads(text, object_pairs_hook=no_duplicates)
-    return text
+    json.loads(text, object_pairs_hook=count)
+    return counts
 
 
 def resolve_append(path, parts):
