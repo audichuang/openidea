@@ -9,7 +9,7 @@
 
 ## How to get to it (user POV)
 
-With a project open, open another and pick **New Tab** in the "Open project" dialog (`openProjectWithPolicy` from `src/features/app/windows.ts`; the dialog's buttons are webview DOM). Or open two project windows ("New Window"), then **Window → Merge All Project Windows** (native menu bar; drive it with osascript `click menu item "Merge All Project Windows" of menu "Window" of menu bar 1`). Switch tabs by clicking or ⌥⌘PageDown/PageUp; drag to reorder; tab close button; **Move Tab to New Window**. Fullscreen with the green traffic light or ⌃⌘F. Groups restore on restart when "Reopen projects on startup" (`general.reopenLastProject`) is on (`docs/workspaces-and-window-groups.md`).
+With a project open, open another and pick **New Tab** in the "Open project" dialog (`openProjectWithPolicy` from `src/features/app/windows.ts`; the dialog's buttons are webview DOM). Or open two project windows ("New Window"), then **Window → Merge All Project Windows** (native menu bar; drive it with osascript `click menu item "Merge All Project Windows" of menu "Window" of menu bar 1`). Switch tabs by clicking or ⌥⌘PageDown/PageUp; drag to reorder; tab close button; **Move Tab to New Window**. Fullscreen with the green traffic light, ⌃⌘F, or osascript `click menu item "Enter Full Screen" of menu "View" of menu bar 1` (Tauri MCP `setFullscreen` is not permitted). Groups restore on restart when "Reopen projects on startup" (`general.reopenLastProject`) is on (`docs/workspaces-and-window-groups.md`).
 
 ## Driving it with native tools (+ Tauri MCP for the tab row DOM)
 
