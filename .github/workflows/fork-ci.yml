@@ -93,6 +93,8 @@ jobs:
       - run: node --test .github/actions/target-cache/artifacts.test.mjs .github/actions/target-cache/artifacts.cargo.test.mjs
       - run: python3 -m py_compile scripts/fork/resolve-conflicts.py
         if: hashFiles('scripts/fork/resolve-conflicts.py') != ''
+      - run: python3 scripts/fork/test_resolve_conflicts.py
+        if: hashFiles('scripts/fork/test_resolve_conflicts.py') != ''
 
   clippy:
     name: Clippy (${{ matrix.os }})
