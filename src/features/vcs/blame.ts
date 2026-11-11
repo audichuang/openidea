@@ -121,9 +121,12 @@ class BlameMarker extends GutterMarker {
     date.className = "cm-vcs-blame-date";
     date.textContent = formatDate(l.timeMs);
     el.append(date, author);
-    if (this.color !== undefined) el.style.setProperty("--blame-bg", annotateColor(this.color));
-    // Without a background, age fades the text instead.
-    else {
+    if (this.color !== undefined) {
+      const bg = annotateColor(this.color);
+      el.style.setProperty("--blame-bg", bg);
+      el.style.backgroundColor = bg;
+    } else {
+      // Without a background, age fades the text instead.
       const pct = Math.round(25 + this.rank * 75);
       el.style.color = `color-mix(in srgb, var(--fg-secondary) ${pct}%, var(--fg-gutter))`;
     }
