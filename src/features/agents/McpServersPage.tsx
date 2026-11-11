@@ -5,6 +5,7 @@
  */
 import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import type { McpKeyValue, McpScope, McpServer, McpServerInput, McpTransport } from "@/bindings";
+import { writeClipboardText } from "@/platform/clipboard";
 import { call, commands } from "@/platform/ipc";
 import { formatMessage, useTx } from "@/platform/i18n";
 import { openExternalUrl } from "@/platform/openUrl";
@@ -229,7 +230,7 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
     },
     {
       label: tx("Copy Server Name"),
-      run: () => void navigator.clipboard?.writeText(server.name),
+      run: () => void writeClipboardText(server.name).catch(() => {}),
     },
     { kind: "separator" },
     {
