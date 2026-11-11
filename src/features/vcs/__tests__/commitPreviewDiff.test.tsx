@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EditorInput } from "@/workbench/contributions";
 
 const editor = vi.hoisted(() => ({
@@ -41,10 +41,12 @@ vi.mock("../diffInput", async (original) => ({
   openDiff,
 }));
 
+import { useProject } from "@/platform/project";
 import { CommitToolWindow } from "../CommitView";
 import { setCommitDiffPreview, useCommit } from "../commitStore";
 import { diffInput, workingDiffData } from "../diffInput";
 import { useVcs } from "../store";
+import { stagingDiffData } from "../staging";
 
 /** The splitter between the changes and the preview: the only vertical one in the layout. */
 const previewHandle = () =>
@@ -299,5 +301,40 @@ describe("the active diff follows the selected file (#2492)", () => {
     render(<CommitToolWindow />);
     selectFirstFile();
     expect(openDiff).not.toHaveBeenCalled();
+  });
+});
+
+describe("the active diff follows the selection with the staging area", () => {
+  const staged = (path: string) => ({
+    path,
+    relPath: path.slice(3),
+    staged: "modified" as const,
+    unstaged: null,
+    renamedFrom: null,
+  });
+
+  beforeEach(() => {
+    openDiff.mockClear();
+    useProject.setState({ settings: { vcs: { git: { stagingArea: true }, commit: { nonModal: true } } } } as never);
+    useCommit.setState({ commitDiffPreview: false, selection: [], groupByDir: false });
+    useVcs.setState({
+      available: true,
+      root: "/p",
+      repo: "/p",
+      roots: ["/p"],
+      status: [staged("/p/a.ts"), staged("/p/b.ts")],
+    });
+  });
+  afterEach(() => useProject.setState({ settings: {} } as never));
+
+  it("follows a Staged diff and shows the next file's HEAD ↔ index side", () => {
+    editor.input = diffInput(stagingDiffData(staged("/p/b.ts"), "staged")!);
+    render(<CommitToolWindow />);
+    selectFirstFile();
+    expect(openDiff).toHaveBeenCalledTimes(1);
+    const [data] = openDiff.mock.calls[0]!;
+    expect(data.path).toBe("/p/a.ts");
+    expect(data.left).toEqual({ type: "rev", rev: "HEAD" });
+    expect(data.right).toEqual({ type: "rev", rev: ":0" });
   });
 });
