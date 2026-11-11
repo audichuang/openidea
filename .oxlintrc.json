@@ -126,7 +126,7 @@
       {
         "object": "navigator",
         "property": "clipboard",
-        "message": "Use readPlainText/writePlainText/readClipboardImage from src/platform/clipboard.ts: the webview clipboard shows WebKit's Paste bubble on macOS outside a paste event."
+        "message": "Use readPlainText/writeClipboardText/readClipboardImage from src/platform/clipboard.ts: the webview clipboard shows WebKit's Paste bubble on macOS outside a paste event."
       }
     ]
   },
