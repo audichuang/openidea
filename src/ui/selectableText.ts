@@ -5,7 +5,6 @@
  * selection, or anywhere in such content, offers Copy (`copyMenuFor`).
  */
 import { writeClipboardText } from "@/platform/clipboard";
-import { isTauri } from "@/platform/ipc";
 import type { KeyboardEvent } from "react";
 import { hasPrimaryModifier, formatBinding } from "@/platform/keymap";
 import type { MenuItem } from "./Menu";
@@ -43,18 +42,12 @@ export function copyMenuFor(target: EventTarget | null): MenuItem[] | null {
   ];
 }
 
-/** Writes `text` to the clipboard; falls back to copying the live selection. */
-export async function copyText(text: string): Promise<void> {
-  try {
-    if (isTauri() || typeof navigator.clipboard?.writeText === "function") {
-      await writeClipboardText(text);
-      return;
-    }
-  } catch {
-    // Clipboard API refused (permissions): the selection is still there.
-  }
-  document.execCommand("copy");
-}
+/**
+ * Writes `text` to the clipboard, rejecting when it could not. It never falls back to copying the
+ * live selection: callers such as ClipCode copy text that is not the selection, and would then
+ * report a copy that put something else on the clipboard.
+ */
+export const copyText = (text: string): Promise<void> => writeClipboardText(text);
 
 /** Copy a DOM output selection locally, leaving editable children and other views alone. */
 export function copySelectionOnKeyDown(
