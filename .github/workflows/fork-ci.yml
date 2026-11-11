@@ -78,7 +78,7 @@ jobs:
       - uses: actions/checkout@v5
       - run: |
           # Port upstream's ci.yml edits into this file, then update the pin.
-          pin=094f0ab1f3516ab6ac5fb4135597cefbddaf1f1cab7d5c44ae98bdbec1b72e0f
+          pin=6dfcd5a4e470ceec7ac7d6ce862cca9bdf3947d5767bab39c6547a51a8e0daea
           sha=$(sha256sum .github/workflows/ci.yml | cut -d' ' -f1)
           [ "$sha" = "$pin" ] || { echo "::error::upstream ci.yml changed ($sha); port it into fork-ci.yml and update the pin"; exit 1; }
 
