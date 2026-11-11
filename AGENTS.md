@@ -20,7 +20,7 @@ This overrides the upstream guidance below (Issues & PRs, Parallel worktrees) an
 Where the machine's own agent rules say where to run Cargo or how to handle its build output, follow them
 instead of any Cargo advice below or in a skill. On the Mac mini, Cargo checks, clippy and tests go to the
 ubuntu host through `rust-remote`; nextest runs as `rust-remote nextest run --workspace --profile ubuntu-remote`
-(copy the plugin wasm up first, `FORK.md` Merge gate), and `pnpm gen:bindings` becomes
+(`rust-remote` also sends the files its `.gitignore` filter skips, such as the plugin wasm; `FORK.md` Merge gate), and `pnpm gen:bindings` becomes
 `rust-remote --pull src/bindings.ts test -p openidea --test export_bindings`. `cargo fmt --all` rewrites files
 and `rust-remote` brings back only `Cargo.lock` and `--pull` paths, so run it locally (`PATH="$HOME/.cargo/bin:$PATH" cargo fmt --all`); only `fmt --all --check` goes remote.
 The macOS app itself builds locally (`pnpm dev:app`), only when a UI test needs it.
