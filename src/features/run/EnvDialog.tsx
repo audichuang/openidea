@@ -1,7 +1,6 @@
-import { writeClipboardText } from "@/platform/clipboard";
 import { useEffect, useState } from "react";
 import clsx from "clsx";
-import { readPlainText } from "@/platform/clipboard";
+import { readPlainText, writeClipboardText } from "@/platform/clipboard";
 import { commands, isTauri, type RunConfig } from "@/platform/ipc";
 import { useTx, useTxTemplate } from "@/platform/i18n";
 import { Checkbox, Dialog, IconButton, Input, T } from "@/ui";
