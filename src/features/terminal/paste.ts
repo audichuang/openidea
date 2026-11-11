@@ -120,15 +120,9 @@ export function installTerminalPaste(host: HTMLElement, paste: (text: string) =>
 export async function pasteTerminalClipboard(paste: (text: string) => void, getTarget?: Target) {
   const target = getTarget?.();
   try {
-    // Native paste preserves clipboard blobs where Clipboard.read() is unavailable.
-    if (target && document.queryCommandSupported?.("paste") && document.execCommand("paste")) return;
-    const images =
-      target && navigator.clipboard?.read
-        ? navigator.clipboard.read().then(
-            (items) => ({ items }),
-            (error: unknown) => ({ error }),
-          )
-        : null;
+    // Text (and file paths) come from the backend first: the webview's own clipboard reads below
+    // make macOS WebKit ask the user to confirm with a "Paste" callout, so they run only when the
+    // clipboard holds no text, that is when it may hold an image.
     const text = target?.remote
       ? await readPlainText().catch(() => "")
       : await readClipboardText(undefined, target ? (paths) => pathsText(paths, target) : undefined);
@@ -138,11 +132,18 @@ export async function pasteTerminalClipboard(paste: (text: string) => void, getT
       return;
     }
     if (!target) return;
+    // Native paste preserves clipboard blobs where Clipboard.read() is unavailable.
+    if (document.queryCommandSupported?.("paste") && document.execCommand("paste")) return;
+    const images = navigator.clipboard?.read
+      ? await navigator.clipboard.read().then(
+          (items) => ({ items }),
+          (error: unknown) => ({ error }),
+        )
+      : null;
     if (images) {
-      const result = await images;
-      if ("error" in result) throw result.error;
+      if ("error" in images) throw images.error;
       if (!target.current()) return;
-      for (const item of result.items) {
+      for (const item of images.items) {
         const mime = item.types.find(isMedia);
         if (mime) {
           const image = await item.getType(mime);

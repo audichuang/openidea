@@ -1,11 +1,10 @@
 /** Edit › Paste from History and Code › Unwrap/Remove: the parts that need popups or the backend. */
-import { writeClipboardText } from "@/platform/clipboard";
 import { EditorSelection } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { structure } from "@/editor/structure";
 import { offsetToPos, posToOffset } from "@/editor/lsp/positions";
 import { caretAnchor, openPopup } from "@/editor/lsp/popupStore";
-import { readPlainText } from "@/platform/clipboard";
+import { readPlainText, writeClipboardText } from "@/platform/clipboard";
 import { executeAction } from "@/platform/actions";
 import { clipboardHistory, isLinewiseClipboardText, recordClipboard } from "./clipboardHistory";
 import { openPasteHistory } from "./view/PasteHistoryDialog";
