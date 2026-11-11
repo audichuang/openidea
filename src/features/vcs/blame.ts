@@ -137,12 +137,7 @@ class BlameMarker extends GutterMarker {
   }
 }
 
-const spacer = new BlameMarker({
-  commit: "ffffffff",
-  author: "Mmmmmmmm",
-  timeMs: Date.UTC(2020, 11, 28),
-  summary: "",
-});
+const spacer = new BlameMarker({ commit: "ffffffff", author: "Mmmmmmmm", timeMs: Date.UTC(2020, 11, 28), summary: "" }, 1);
 
 /** The columns the gutter shows (IDEA's annotate Options); kept across sessions. */
 const COLUMNS = ["date", "author", "revision"] as const;
