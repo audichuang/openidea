@@ -34,8 +34,8 @@ describe("diff arrow model", () => {
       label: "Stage this change (git add hunk)",
       icon: "plus",
     });
-    expect(arrowLook({ dir: "a-to-b", action: "apply" }).icon).toBe("chevron-right");
-    expect(arrowLook({ dir: "b-to-a", action: "apply" }).icon).toBe("chevron-left");
+    expect(arrowLook({ dir: "a-to-b", action: "apply" }).icon).toBe("diff-arrow-right");
+    expect(arrowLook({ dir: "b-to-a", action: "apply" }).icon).toBe("diff-arrow-left");
   });
 });
 
