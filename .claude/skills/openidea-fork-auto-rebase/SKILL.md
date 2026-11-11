@@ -64,7 +64,7 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
 
 ## 2. 本機閘門
 
-先在 PR 留言「本機閘門開始」（心跳）。`pnpm install --frozen-lockfile && mkdir -p dist`，然後各自跑、全部跑完再看結果：`pnpm typecheck`、`pnpm lint`、`pnpm format:check`、`pnpm knip`、`pnpm test`；`rust-remote fmt --all --check`、`rust-remote clippy --workspace --all-targets -- -D warnings`、`rust-remote nextest run --workspace --profile ubuntu-remote --no-fail-fast`（profile 排除 ubuntu 上缺 Go／JDK 的 ide-sdk 測試；之前先照 FORK.md Merge gate 把 `git ls-files '*/dist/*'` 補同步到遠端，`rust-remote` 不帶這些已追蹤的 wasm，ide-plugin 測試會因此全紅）。
+先在 PR 留言「本機閘門開始」（心跳）。`pnpm install --frozen-lockfile && mkdir -p dist`，然後各自跑、全部跑完再看結果：`pnpm typecheck`、`pnpm lint`、`pnpm format:check`、`pnpm knip`、`pnpm test`；`rust-remote fmt --all --check`、`rust-remote clippy --workspace --all-targets -- -D warnings`、`rust-remote nextest run --workspace --profile ubuntu-remote --no-fail-fast`（profile 排除 ubuntu 上缺 Go／JDK 的 ide-sdk 測試；`rust-remote` 會照 `git ls-files` 補送 `.gitignore` 過濾漏掉的檔，例如外掛 wasm 和 `crates/ide-ssh/src/target/remote_url.rs`。若仍出現 `dist/plugin.wasm is missing` 或 `E0583` 找不到模組，照 FORK.md Merge gate 手動補送）。
 
 失敗要拿上游對照：`git worktree add --detach ../ar-$RUN-base vNEW`，在那裡跑同一條指令（Rust 一樣走 `rust-remote`，它在遠端用目錄名分開）。兩邊都紅的是上游或環境的，兩份輸出尾段都貼進 PR 說明；只有 fork 紅的是 fork 造成的，要修（修正 commit 讓模式變 MANUAL）。同一個問題修兩輪還不過 → 第 7 步交人。
 
