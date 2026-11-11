@@ -787,10 +787,8 @@ pub async fn app_release_notes(
     version: String,
     source: UpdateSource,
 ) -> IdeResult<Option<BTreeMap<String, String>>> {
-    let endpoints = match update_endpoint_env() {
-        Some(url) => vec![url],
-        None => source_endpoints(config_endpoints(&app), source),
-    };
+    let _ = source; // fork_updater owns the endpoint list
+    let endpoints = crate::fork_updater::UpdateEndpoints::configured(app.config()).urls;
     let client = ide_http::client::shared()?;
     for endpoint in endpoints {
         // A hanging endpoint must not leave the page on "Fetching release notes…".
