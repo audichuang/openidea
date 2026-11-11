@@ -19,6 +19,7 @@ import type {
   McpTransport,
 } from "@/bindings";
 import { executeAction } from "@/platform/actions";
+import { writeClipboardText } from "@/platform/clipboard";
 import { formatMessage, useTx } from "@/platform/i18n";
 import { openExternalUrl } from "@/platform/openUrl";
 import { useProject } from "@/platform/project";
