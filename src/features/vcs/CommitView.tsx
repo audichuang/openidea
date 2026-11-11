@@ -91,7 +91,6 @@ import {
   DIFF_KIND,
   changeNodeDiff,
   changeNodeDiffData,
-  changeTreeDiffData,
   diffInput,
   openDiff,
   openVcsDiff,
@@ -245,12 +244,27 @@ function openNode(n: ChangeNode, roots: readonly ChangeNode[], staging: boolean,
     void editorService().openFile(n.path, { focus: true });
     return;
   }
-  const nodes = forceDiff ? groupFileNodes(roots, n) : treeFileNodes(roots, n);
-  const items = nodes.map((f) => fileDiffData(f.path!, f.files[0], f.group, staging));
-  void openVcsDiff(withChain(items, Math.max(0, nodes.indexOf(n))), { preview: true });
+  void openVcsDiff(nodeChainDiffData(roots, n, staging, !forceDiff), { preview: true });
 }
 
-/** Every file of the tree in tree order, as changeTreeDiffData chains them (only `n` when it is not in the tree). */
+/** A file node's diff: with the staging area, the side of the index its group stands for. */
+function nodeDiffData(n: ChangeNode, staging: boolean): DiffData {
+  return fileDiffData(n.path!, n.files[0], n.group, staging);
+}
+
+/**
+ * A file node's diff with the files of its group (in tree order) as the F7 chain; `wholeTree`:
+ * every file of the tree, on into the unversioned files, as IDEA's Commit diff preview.
+ */
+function nodeChainDiffData(roots: readonly ChangeNode[], n: ChangeNode, staging: boolean, wholeTree = false): DiffData {
+  const nodes = wholeTree ? treeFileNodes(roots, n) : groupFileNodes(roots, n);
+  return withChain(
+    nodes.map((f) => nodeDiffData(f, staging)),
+    Math.max(0, nodes.indexOf(n)),
+  );
+}
+
+/** Every file of the tree in tree order, as upstream's changeTreeDiffData chains them (only `n` when it is not in the tree). */
 function treeFileNodes(roots: readonly ChangeNode[], n: ChangeNode): ChangeNode[] {
   const all = changeFileNodes(roots);
   return all.includes(n) ? all : [n];
@@ -783,7 +797,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
       if (input.key === followedDiff.current) return;
       const node = [...byKey.values()].find((node) => {
         if (node.type !== "file" || node.path !== input.path) return false;
-        return diffInput(changeNodeDiff(node)).key === input.key;
+        return diffInput(nodeDiffData(node, staging)).key === input.key;
       });
       if (node) {
         followedDiff.current = input.key;
@@ -794,7 +808,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
     };
     followDiff(editor?.activeInput?.() ?? null);
     return editor?.onActiveInputChange?.(followDiff);
-  }, [byKey, revealNode]);
+  }, [byKey, revealNode, staging]);
 
   // While the active tab shows one of this tree's diffs, a single selected file replaces it,
   // keeping focus in the tree (a click or arrow key walks the changes).
@@ -803,8 +817,8 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
     if (mode === "dialog" || node?.type !== "file" || !node.path) return;
     const active = maybeEditorService()?.activeInput?.();
     if (active?.kind !== DIFF_KIND || active.key !== followedDiff.current) return;
-    if (diffInput(changeNodeDiff(node)).key === active.key) return;
-    void openDiff(changeTreeDiffData(roots, node), { preview: true, focus: false });
+    if (diffInput(nodeDiffData(node, staging)).key === active.key) return;
+    void openDiff(nodeChainDiffData(roots, node, staging, true), { preview: true, focus: false });
   };
 
   // Reveal only after the ancestors have expanded, without moving keyboard focus.
