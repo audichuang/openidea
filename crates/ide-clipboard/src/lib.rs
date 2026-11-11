@@ -12,7 +12,7 @@
 //! macOS keeps one `public.file-url` item per file on the general
 //! `NSPasteboard`; `NSURL` reads and writes them, so Finder's copies paste here
 //! and ours paste in Finder.
-//! On macOS, [`files`], [`has_files`], [`text`] and [`set_files`] must run on the main
+//! On macOS, [`files`], [`has_files`], [`text`], [`set_text`] and [`set_files`] must run on the main
 //! thread: AppKit and WebKit also access the general pasteboard there, and its
 //! mutable type cache cannot be protected by a mutex in this crate.
 //!

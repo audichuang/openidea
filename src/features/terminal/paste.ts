@@ -1,8 +1,7 @@
-import { pasteClipboardFiles, readClipboardPlainText, readClipboardPng, readClipboardText } from "@/platform/clipboard";
+import { pasteClipboardFiles, readClipboardPlainText, readClipboardText } from "@/platform/clipboard";
 import { toBase64 } from "@/platform/base64";
-import { call, commands, isTauri, type TerminalId } from "@/platform/ipc";
+import { call, commands, type TerminalId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
-import { usePlatform } from "@/platform/platformInfo";
 import { notifications } from "@/workbench/contributions";
 import type { Terminal } from "@xterm/xterm";
 import { dialectOf, quoteForShell } from "./quote";
@@ -130,46 +129,9 @@ export function installTerminalPaste(host: HTMLElement, paste: (text: string) =>
 export async function pasteTerminalClipboard(paste: (text: string) => void, getTarget?: Target) {
   const target = getTarget?.();
   try {
-    // WebKitGTK pastes nothing from a menu through either WebView path; the native
-    // clipboard has the text. An image-only clipboard still takes the paths below.
-    if (target && usePlatform.getState().os === "linux") {
-      const text = await readClipboardPlainText().catch(() => "");
-      if (text) {
-        if (target.current()) paste(text);
-        return;
-      }
-    }
-    // WebKit on macOS asks the user to confirm execCommand("paste") and Clipboard.read() from a
-    // menu with a "Paste" callout; the backend reads files, text and images without asking.
-    if (target && isTauri() && usePlatform.getState().os === "macos") {
-      const paths: string[] = await call(commands.clipboardFileList()).catch(() => []);
-      const text =
-        paths.length && !target.remote ? pathsText(paths, target) : await readClipboardPlainText().catch(() => "");
-      if (!target.current()) return;
-      if (text) {
-        paste(text);
-        return;
-      }
-      const png = await readClipboardPng();
-      if (!target.current()) return;
-      if (png)
-        await pasteMedia(
-          new Blob([Uint8Array.from(atob(png), (c) => c.charCodeAt(0))], { type: "image/png" }),
-          target,
-          paste,
-        );
-      else if (paths.length) paste(paths.join("\n"));
-      return;
-    }
-    // Native paste preserves clipboard blobs where Clipboard.read() is unavailable.
-    if (target && document.queryCommandSupported?.("paste") && document.execCommand("paste")) return;
-    const images =
-      target && navigator.clipboard?.read
-        ? navigator.clipboard.read().then(
-            (items) => ({ items }),
-            (error: unknown) => ({ error }),
-          )
-        : null;
+    // Text (and file paths) come from the backend first: the webview's own clipboard reads below
+    // make macOS WebKit ask the user to confirm with a "Paste" callout, so they run only when the
+    // clipboard holds no text, that is when it may hold an image.
     const text = target?.remote
       ? await readClipboardPlainText().catch(() => "")
       : await readClipboardText(undefined, target ? (paths) => pathsText(paths, target) : undefined);
@@ -179,11 +141,18 @@ export async function pasteTerminalClipboard(paste: (text: string) => void, getT
       return;
     }
     if (!target) return;
+    // Native paste preserves clipboard blobs where Clipboard.read() is unavailable.
+    if (document.queryCommandSupported?.("paste") && document.execCommand("paste")) return;
+    const images = navigator.clipboard?.read
+      ? await navigator.clipboard.read().then(
+          (items) => ({ items }),
+          (error: unknown) => ({ error }),
+        )
+      : null;
     if (images) {
-      const result = await images;
-      if ("error" in result) throw result.error;
+      if ("error" in images) throw images.error;
       if (!target.current()) return;
-      for (const item of result.items) {
+      for (const item of images.items) {
         const mime = item.types.find(isMedia);
         if (mime) {
           // oxlint-disable-next-line no-await-in-loop -- the first clipboard item with a supported image type wins
