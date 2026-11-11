@@ -132,7 +132,7 @@ class BlameMarker extends GutterMarker {
   }
 }
 
-const spacer = new BlameMarker({ commit: "f", author: "Mmmmmmmm", timeMs: Date.UTC(2020, 11, 28), summary: "" });
+const spacer = new BlameMarker({ commit: "f", author: "Mmmmmmmm", timeMs: Date.UTC(2020, 11, 28), summary: "" }, 1);
 
 const setBlame = StateEffect.define<BlameLine[]>();
 
