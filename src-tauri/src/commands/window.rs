@@ -633,10 +633,8 @@ pub async fn app_install_update(
 #[tauri::command]
 #[specta::specta]
 pub async fn app_release_notes(app: AppHandle, version: String, source: UpdateSource) -> IdeResult<Option<String>> {
-    let endpoints = match update_endpoint_env() {
-        Some(url) => vec![url],
-        None => source_endpoints(config_endpoints(&app), source, is_nightly(&app.package_info().version.to_string())),
-    };
+    let _ = source; // fork_updater owns the endpoint list
+    let endpoints = crate::fork_updater::UpdateEndpoints::configured(app.config()).urls;
     let client = ide_http::client::shared()?;
     for endpoint in endpoints {
         // A hanging endpoint must not leave the page on "Fetching release notes…".
