@@ -88,7 +88,6 @@ import { rebaseAfterFixup } from "./rebase";
 import { stashTabOf, stashTabs, type ContentTab } from "./gitTabs";
 import {
   DIFF_KIND,
-  changeNodeDiff,
   diffInput,
   openDiff,
   openVcsDiff,
@@ -241,9 +240,21 @@ function openNode(n: ChangeNode, roots: readonly ChangeNode[], staging: boolean,
     void editorService().openFile(n.path, { focus: true });
     return;
   }
+  void openVcsDiff(nodeChainDiffData(roots, n, staging), { preview: true });
+}
+
+/** A file node's diff: with the staging area, the side of the index its group stands for. */
+function nodeDiffData(n: ChangeNode, staging: boolean): DiffData {
+  return fileDiffData(n.path!, n.files[0], n.group, staging);
+}
+
+/** A file node's diff with the files of its group (in tree order) as the F7 chain. */
+function nodeChainDiffData(roots: readonly ChangeNode[], n: ChangeNode, staging: boolean): DiffData {
   const nodes = groupFileNodes(roots, n);
-  const items = nodes.map((f) => fileDiffData(f.path!, f.files[0], f.group, staging));
-  void openVcsDiff(withChain(items, Math.max(0, nodes.indexOf(n))), { preview: true });
+  return withChain(
+    nodes.map((f) => nodeDiffData(f, staging)),
+    Math.max(0, nodes.indexOf(n)),
+  );
 }
 
 /** The setting behind Show on Double-Click (`None` follows the commit interface). */
@@ -772,7 +783,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
       if (input.key === followedDiff.current) return;
       const node = [...byKey.values()].find((node) => {
         if (node.type !== "file" || node.path !== input.path) return false;
-        return diffInput(changeNodeDiff(node)).key === input.key;
+        return diffInput(nodeDiffData(node, staging)).key === input.key;
       });
       if (node) {
         followedDiff.current = input.key;
@@ -783,7 +794,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
     };
     followDiff(editor?.activeInput?.() ?? null);
     return editor?.onActiveInputChange?.(followDiff);
-  }, [byKey, revealNode]);
+  }, [byKey, revealNode, staging]);
 
   // While the active tab shows one of this tree's diffs, a single selected file replaces it,
   // keeping focus in the tree (a click or arrow key walks the changes).
@@ -792,8 +803,8 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
     if (mode === "dialog" || node?.type !== "file" || !node.path) return;
     const active = maybeEditorService()?.activeInput?.();
     if (active?.kind !== DIFF_KIND || active.key !== followedDiff.current) return;
-    if (diffInput(changeNodeDiff(node)).key === active.key) return;
-    void openDiff(changeNodeDiffData(roots, node), { preview: true, focus: false });
+    if (diffInput(nodeDiffData(node, staging)).key === active.key) return;
+    void openDiff(nodeChainDiffData(roots, node, staging), { preview: true, focus: false });
   };
 
   // Reveal only after the ancestors have expanded, without moving keyboard focus.
