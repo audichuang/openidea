@@ -83,11 +83,11 @@ describe("copyMenuFor", () => {
     expect(writeText).toHaveBeenCalledWith("Hello");
   });
 
-  it("falls back to execCommand when the clipboard API is missing", async () => {
+  it("rejects instead of copying the live selection when nothing can be written", async () => {
     Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
     const exec = vi.fn().mockReturnValue(true);
     document.execCommand = exec;
-    await copyText("x");
-    expect(exec).toHaveBeenCalledWith("copy");
+    await expect(copyText("x")).rejects.toThrow();
+    expect(exec).not.toHaveBeenCalled();
   });
 });
