@@ -1069,5 +1069,4 @@ exec jdtls "$ARG""#;
         assert_eq!(agent_version("/managed/lombok-1.18.48-openidea.2.jar").as_deref(), Some("1.18.48-openidea.2"));
         assert_eq!(agent_version("$LOMBOK"), None);
     }
-
 }
