@@ -121,8 +121,8 @@ develop 一移動（含已在 HEAD 不重推的情況）就列出這次 rebase �
 ```
 doppler run -p shioaji -c dev -- uv run --no-project python - <<'PY'
 import json, os, sys, urllib.request
-title = "OpenIDEA fork rebase vNEW：<已發 vNEW-fork.N｜等你看 PR #N｜失敗：哪一步>"
-body = """（多行內容）"""
+title = "OpenIDEA fork <已發 vNEW-fork.N｜vNEW 等你看 PR #N｜vNEW 卡在第 X 步>"
+body = """（最多 4 行）"""
 if not title.strip() or not body.strip():
     sys.exit("推播內容是空的，不送")
 payload = json.dumps({"title": title, "body": body, "group": "openidea"}, ensure_ascii=False).encode("utf-8")
@@ -133,13 +133,22 @@ sys.exit(0 if resp.get("code") == 200 else 1)
 PY
 ```
 
-body 約 1,000 字內：vOLD → vNEW、模式、衝突各一句、本機閘門與 CI 結果（重跑過的 job、上游也紅的 job）、PR 連結、develop 有沒有移動（沒有就寫原因）、發版結果（tag、release 連結）、對 develop 開著的 PR、第 0 步沒刪的 worktree。發版成功時最後一行固定寫：
+使用者在手機上看推播，嫌逐項列出太複雜。body 最多 4 行、每行一件事，不寫 sha、run id、衝突細節：
+
+1. 結果一句：跟上哪一版上游、模式；沒發版就寫為什麼（MANUAL、哪一步紅、lease 失敗）
+2. 只有使用者能做的事（有才寫，例如看 PR、處理第 0 步沒刪的 worktree）。對 develop 開著的 PR 已在 PR 上留言，不寫
+3. 一個連結：發版成功給 release，否則給 PR
+4. 發版成功時固定寫：`app 下次啟動會提示更新，按更新即可`
+
+例：
 
 ```
-Mac 與 Windows 的 app 下次啟動會提示更新（內建 updater），按下更新即可
+跟上上游 v0.1.41（MANUAL，已核可）
+https://github.com/audichuang/openidea/releases/tag/v0.1.41-fork.1
+app 下次啟動會提示更新，按更新即可
 ```
 
-最後在對話裡印出和 Bark 一樣的內容。
+細節（衝突、閘門與 CI、重跑過或上游也紅的 job、develop 有沒有移動、對 develop 開著的 PR、沒刪的 worktree）寫在 PR 留言與對話裡。前面各步說「列進通知」「寫進通知」的，也寫在這些細節裡，只有要使用者動手的才進 Bark。最後在對話裡印出 Bark 的內容，再列這些細節。
 
 ## 限制
 
