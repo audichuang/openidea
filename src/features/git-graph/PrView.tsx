@@ -8,7 +8,8 @@ import type { Branch, ChangedFile, Commit } from "@/bindings";
 import { formatDay } from "@/platform/dateFormat";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
-import { EmptyState, Icon, IconButton, SplitGroup, SplitHandle, SplitPanel, Spinner, T } from "@/ui";
+import { EmptyState, Icon, IconButton, SplitGroup, SplitHandle, SplitPanel, Spinner, T, Tree } from "@/ui";
+import { buildFileTree, dirKeys, type FileTreeNode } from "@/features/vcs/fileTree";
 import { useContributions } from "@/workbench/contributions";
 import { gitGraphBridge } from "@/workbench/gitGraphBridge";
 import { KIND_LETTER } from "./Details";
@@ -261,6 +262,19 @@ function PrBody(p: {
   );
 }
 
+type FileNode = FileTreeNode<ChangedFile>;
+
+/** The files of a tree in display order (the F7 chain and the default selection follow it). */
+function treeFiles(nodes: readonly FileNode[], out: ChangedFile[] = []): ChangedFile[] {
+  for (const n of nodes) {
+    if (n.file) out.push(n.file);
+    else treeFiles(n.children, out);
+  }
+  return out;
+}
+
+const NO_KEYS: ReadonlySet<string> = new Set();
+
 function PrFiles(p: {
   repo: string;
   base: string;
@@ -272,11 +286,17 @@ function PrFiles(p: {
   const { repo, base, head, mergeBase, files } = p;
   const bridge = gitGraphBridge();
   const diffViewer = useContributions((s) => s.editorKinds.get("diff"));
+  // Grouped by directory like the GitHub pull request's Changes tree; everything starts expanded.
+  const roots = useMemo(() => buildFileTree(files, (f) => f.path), [files]);
+  const ordered = useMemo(() => treeFiles(roots), [roots]);
+  const allDirs = useMemo(() => dirKeys(roots), [roots]);
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(NO_KEYS);
+  const expanded = useMemo(() => new Set(allDirs.filter((k) => !collapsed.has(k))), [allDirs, collapsed]);
   const index = Math.max(
     0,
-    files.findIndex((f) => f.path === p.file),
+    ordered.findIndex((f) => f.path === p.file),
   );
-  const selected = files[index] ?? null;
+  const selected = ordered[index] ?? null;
   const from = useMemo(() => ({ rev: mergeBase, label: tx`merge-base (${base})` }), [mergeBase, base]);
   const to = useMemo(() => ({ rev: head, label: head }), [head]);
   const input = useMemo(
@@ -284,37 +304,43 @@ function PrFiles(p: {
     [bridge, repo, from, to, selected],
   );
   if (!files.length) return <EmptyState title="No changes" className={styles.empty} />;
-  const open = (i: number) => void bridge?.openRevisionDiff(repo, from, to, files, i);
+  const open = (file: ChangedFile) => void bridge?.openRevisionDiff(repo, from, to, ordered, ordered.indexOf(file));
   return (
     <SplitGroup orientation="horizontal" id="git-graph-pr">
       <SplitPanel id="files" defaultSize="30%" minSize="15%">
-        <div className={styles.prFiles} role="list" aria-label={tx("Changed Files")}>
-          {files.map((f, i) => (
-            <div
-              key={f.path}
-              role="listitem"
-              tabIndex={0}
-              aria-selected={i === index}
-              className={clsx(styles.file, i === index && styles.selected)}
-              onClick={() => setPrChoice(repo, { file: f.path })}
-              onDoubleClick={() => open(i)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") open(i);
-              }}
-              title={f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}
-            >
-              <span className={clsx(styles.kind, styles[`kind_${f.kind}`])}>{KIND_LETTER[f.kind] ?? "?"}</span>
-              <span className={styles.fileName}>{f.path.split("/").pop()}</span>
-              <span className={styles.fileDir}>
-                {f.oldPath
-                  ? `${f.oldPath} → ${f.path}`
-                  : f.path.includes("/")
-                    ? f.path.slice(0, f.path.lastIndexOf("/"))
-                    : ""}
+        <Tree<FileNode>
+          roots={roots}
+          getKey={(n) => n.key}
+          getLabel={(n) => n.name}
+          getChildren={(n) => (n.file ? undefined : n.children)}
+          isExpandable={(n) => !n.file}
+          expanded={expanded}
+          onExpandedChange={(next) => setCollapsed(new Set(allDirs.filter((k) => !next.has(k))))}
+          selected={selected ? new Set([`f:${selected.path}`]) : NO_KEYS}
+          multiSelect={false}
+          onSelectionChange={(_sel, lead) => lead?.file && setPrChoice(repo, { file: lead.file.path })}
+          onActivate={(n) => n.file && open(n.file)}
+          renderNode={(n) =>
+            n.file ? (
+              <span className={styles.file} title={n.file.oldPath ? `${n.file.oldPath} → ${n.file.path}` : n.file.path}>
+                <span className={clsx(styles.kind, styles[`kind_${n.file.kind}`])}>
+                  {KIND_LETTER[n.file.kind] ?? "?"}
+                </span>
+                <span className={styles.fileName}>{n.name}</span>
+                {n.file.oldPath && <span className={styles.fileDir}>{tx`renamed from ${n.file.oldPath}`}</span>}
               </span>
-            </div>
-          ))}
-        </div>
+            ) : (
+              <span className={styles.file}>
+                <Icon name="folder" size={14} />
+                <span className={styles.fileName}>{n.name}</span>
+                <span className={styles.fileDir}>{n.count === 1 ? tx`${n.count} file` : tx`${n.count} files`}</span>
+              </span>
+            )
+          }
+          speedSearch
+          aria-label={tx("Changed Files")}
+          className={styles.prFiles}
+        />
       </SplitPanel>
       <SplitHandle />
       <SplitPanel id="diff" minSize="30%">
@@ -322,11 +348,12 @@ function PrFiles(p: {
           <div className={styles.treeBar}>
             <span className={styles.fileDir}>{selected?.path}</span>
             <span className={styles.spacer} />
-            <IconButton icon="external-link" title="Open Diff" onClick={() => open(index)} />
+            <IconButton icon="external-link" title="Open Diff" onClick={() => selected && open(selected)} />
           </div>
           {input && diffViewer ? (
             <Suspense fallback={<Spinner size={16} />}>
-              <diffViewer.component input={input} />
+              {/* Keyed: reusing one viewer across files rebuilt its panes several times per switch (#226). */}
+              <diffViewer.component key={input.key} input={input} />
             </Suspense>
           ) : null}
         </div>
