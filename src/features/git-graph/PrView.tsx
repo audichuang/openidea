@@ -299,9 +299,21 @@ function PrFiles(p: {
   const selected = ordered[index] ?? null;
   const from = useMemo(() => ({ rev: mergeBase, label: tx`merge-base (${base})` }), [mergeBase, base]);
   const to = useMemo(() => ({ rev: head, label: head }), [head]);
+  // F7 / Shift+F7 past the last / first difference moves along the tree here, not to a new tab.
+  const [reveal, setReveal] = useState<{ path: string; at: "first" | "last" } | null>(null);
   const input = useMemo(
-    () => (selected && bridge ? bridge.revisionDiffInput(repo, from, to, selected) : null),
-    [bridge, repo, from, to, selected],
+    () =>
+      selected && bridge
+        ? bridge.revisionDiffInput(repo, from, to, selected, {
+            files: ordered,
+            reveal: reveal?.path === selected.path ? reveal.at : undefined,
+            onNeighbour: (file, at) => {
+              setReveal({ path: file.path, at });
+              setPrChoice(repo, { file: file.path });
+            },
+          })
+        : null,
+    [bridge, repo, from, to, selected, ordered, reveal],
   );
   if (!files.length) return <EmptyState title="No changes" className={styles.empty} />;
   const open = (file: ChangedFile) => void bridge?.openRevisionDiff(repo, from, to, ordered, ordered.indexOf(file));
