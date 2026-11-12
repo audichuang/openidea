@@ -484,6 +484,11 @@ describe("Git Graph PR view", () => {
     fireEvent.mouseDown(within(files).getByText("new.ts"));
     expect(bridge.revisionDiffInput.mock.lastCall![4]!.reveal).toBeUndefined();
     act(() => nav.onNeighbour(nav.files[0]!, "last"));
+    // A directory row takes the selection; the diff keeps showing the last file.
+    fireEvent.mouseDown(within(files).getByText("src"));
+    expect(within(files).getByText("src").closest("[role=treeitem]")).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByTestId("embedded-diff").textContent).toBe(`${MB}:feature:src/app.ts`);
+    fireEvent.mouseDown(within(files).getByText("app.ts"));
     const firstViewer = screen.getByTestId("embedded-diff");
     fireEvent.mouseDown(within(files).getByText("new.ts"));
     expect(screen.getByTestId("embedded-diff").textContent).toBe(`${MB}:feature:src/new.ts`);

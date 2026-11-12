@@ -209,7 +209,7 @@
    several. Flex fills the same space: the scroller grows in the editor's column, and the gutter
    columns stretch to `.cm-gutters`, whose height CodeMirror sets in pixels. */
 .host > :global(.cm-editor > .cm-scroller) {
-  flex: 1 1 0;
+  flex: 1 1 0%;
   min-height: 0;
   height: auto;
 }
@@ -360,7 +360,7 @@
   flex-direction: column;
 }
 .paneScroll :global(.cm-mergeViewEditors) {
-  flex: 1 1 0;
+  flex: 1 1 0%;
   min-height: 0;
 }
 .paneScroll :global(.cm-mergeViewEditor) {
@@ -371,7 +371,7 @@
 /* Overrides MergeView's base theme, which leaves scrolling to the outer view. */
 .paneScroll :global(.cm-mergeViewEditor > .cm-editor),
 .paneScroll :global(.cm-mergeViewEditor > .cm-editor > .cm-scroller) {
-  flex: 1 1 0;
+  flex: 1 1 0%;
   min-height: 0;
 }
 .paneScroll :global(.cm-mergeViewEditor > .cm-editor > .cm-scroller) {
