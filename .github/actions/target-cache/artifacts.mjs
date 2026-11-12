@@ -16,6 +16,8 @@ if (mode === "record") {
 } else if (mode === "report" || mode === "prune") {
   const root = path.resolve(target);
   const profiles = new Map();
+  // Profiles in Cargo 1.100's build-dir layout: one <profile>/build/<package>/<hash>/ per unit.
+  const unitLayout = new Set();
   const unhashed = [];
   let artifacts = 0;
   function mark(filename) {
@@ -30,6 +32,24 @@ if (mode === "record") {
       if (hash) hashes.add(hash);
       profiles.set(profile, hashes);
       return { profile, hash };
+    }
+    for (let index = parts.length - 3; index >= 0; index--) {
+      if (parts[index] !== "build" || !/^[a-f0-9]{16}$/.test(parts[index + 2])) continue;
+      const profile = parts.slice(0, index).join(path.sep);
+      const hashes = profiles.get(profile) ?? new Set();
+      hashes.add(parts[index + 2]);
+      profiles.set(profile, hashes);
+      unitLayout.add(profile);
+      return { profile, hash: parts[index + 2] };
+    }
+    // An output copied up into the profile directory (a binary, a staticlib) carries no unit hash.
+    for (let index = parts.length - 1; index > 0; index--) {
+      const profile = parts.slice(0, index).join(path.sep);
+      if (!fs.existsSync(path.join(root, profile, ".cargo-lock"))) continue;
+      if (!fs.existsSync(path.join(root, profile, "build"))) continue;
+      profiles.set(profile, profiles.get(profile) ?? new Set());
+      unitLayout.add(profile);
+      return { profile };
     }
   }
   for (const line of fs.readFileSync(manifest, "utf8").trim().split("\n")) {
@@ -68,13 +88,23 @@ if (mode === "record") {
       throw new Error(`Unknown Cargo target kind: ${kind}`);
     }
     // Unhashed outputs cannot select a unit: keep matching package/target fingerprints and outputs.
-    const fingerprints = path.join(root, profile, ".fingerprint");
     let matched = false;
-    for (const entry of fs.readdirSync(fingerprints)) {
-      const match = entry.match(/^(.*)-([a-f0-9]{16})$/);
-      if (match?.[1] === pkg && fs.existsSync(path.join(fingerprints, entry, `${prefix}-${name}.json`))) {
-        profiles.get(profile).add(match[2]);
-        matched = true;
+    if (unitLayout.has(profile)) {
+      const units = path.join(root, profile, "build", pkg);
+      for (const hash of fs.existsSync(units) ? fs.readdirSync(units) : []) {
+        if (fs.existsSync(path.join(units, hash, "fingerprint", `${prefix}-${name}.json`))) {
+          profiles.get(profile).add(hash);
+          matched = true;
+        }
+      }
+    } else {
+      const fingerprints = path.join(root, profile, ".fingerprint");
+      for (const entry of fs.readdirSync(fingerprints)) {
+        const match = entry.match(/^(.*)-([a-f0-9]{16})$/);
+        if (match?.[1] === pkg && fs.existsSync(path.join(fingerprints, entry, `${prefix}-${name}.json`))) {
+          profiles.get(profile).add(match[2]);
+          matched = true;
+        }
       }
     }
     if (!matched) throw new Error(`No fingerprint for live Cargo target ${pkg}/${prefix}-${name}`);
@@ -93,7 +123,15 @@ if (mode === "record") {
     if (mode === "prune") fs.rmSync(filename, { recursive: true, force: true });
   }
   for (const [profile, hashes] of profiles) {
-    for (const directory of ["deps", ".fingerprint", "build"]) {
+    if (unitLayout.has(profile)) {
+      const build = path.join(root, profile, "build");
+      for (const pkg of fs.readdirSync(build)) {
+        for (const hash of fs.readdirSync(path.join(build, pkg))) {
+          if (/^[a-f0-9]{16}$/.test(hash) && !hashes.has(hash)) remove(path.join(build, pkg, hash));
+        }
+      }
+    }
+    for (const directory of unitLayout.has(profile) ? [] : ["deps", ".fingerprint", "build"]) {
       const folder = path.join(root, profile, directory);
       if (!fs.existsSync(folder)) continue;
       for (const name of fs.readdirSync(folder)) {
