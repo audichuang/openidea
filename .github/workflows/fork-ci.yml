@@ -249,8 +249,10 @@ jobs:
           path: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}/target/cargo-timings/cargo-timing.html
           retention-days: 14
           if-no-files-found: warn
+      # Only the run that saves the target cache below needs the manifest; elsewhere it costs a
+      # relink of openidea (about 2 min) for nothing.
       - name: Measure live target artifacts
-        if: ${{ !cancelled() }}
+        if: github.ref == 'refs/heads/develop' && !cancelled() && (!matrix.partition || matrix.partition == '1/3')
         id: artifacts
         shell: bash
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
@@ -399,14 +401,16 @@ jobs:
       - run: pnpm test --shard=${{ matrix.shard }}/3
 
   e2e:
-    name: E2E (${{ matrix.shard }}/2)
+    name: E2E (${{ matrix.shard }}/4)
     needs: scope
     if: needs.scope.outputs.web == 'true'
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        # Four shards: two took about 14 min each (184 tests on 2 workers); standard runners
+        # are free for this public repository.
+        shard: [1, 2, 3, 4]
     runs-on: ubuntu-24.04
     # Keep the tag in step with @playwright/test (same as ci.yml).
     container: mcr.microsoft.com/playwright:v1.64.1-noble
@@ -417,7 +421,7 @@ jobs:
       - uses: actions/setup-node@v5
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
-      - run: pnpm e2e --shard=${{ matrix.shard }}/2
+      - run: pnpm e2e --shard=${{ matrix.shard }}/4
         env:
           HOME: /root
       - uses: actions/upload-artifact@v6
