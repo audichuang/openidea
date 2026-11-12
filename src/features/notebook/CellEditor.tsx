@@ -20,6 +20,13 @@ import type { NotebookSession } from "./session";
 import styles from "./Notebook.module.css";
 
 const external = Annotation.define<boolean>();
+
+/** Created once: every `EditorView.theme` call mounts new CSS rules into the document. */
+const CELL_EDITOR_THEME = EditorView.theme({
+  "&.cm-editor": { height: "auto" },
+  ".cm-scroller": { maxHeight: "640px", overflow: "auto" },
+});
+
 export function CellEditor({
   session,
   id,
@@ -80,7 +87,7 @@ export function CellEditor({
       language.of([]),
       readonly.current.of(EditorState.readOnly.of(session.getState().frozen)),
       EditorView.lineWrapping,
-      EditorView.theme({ "&.cm-editor": { height: "auto" }, ".cm-scroller": { maxHeight: "640px", overflow: "auto" } }),
+      CELL_EDITOR_THEME,
       EditorView.contentAttributes.of({
         "aria-label": tx(type === "code" ? "Python cell source" : "Markdown cell source"),
       }),

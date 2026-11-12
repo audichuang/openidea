@@ -128,6 +128,19 @@
   flex: 1;
   min-height: 0;
 }
+/* CodeMirror's base theme sizes these with percentages (`.cm-scroller { height: 100% }`,
+   `.cm-gutter { min-height: 100% }`). Inside the diff's flex layout WebKit then relaid the whole
+   document out on every layout (~48 ms for a 4,600-line unified diff), and showing a diff forces
+   several. Flex fills the same space: the scroller grows in the editor's column, and the gutter
+   columns stretch to `.cm-gutters`, whose height CodeMirror sets in pixels. */
+.host > :global(.cm-editor > .cm-scroller) {
+  flex: 1 1 0%;
+  min-height: 0;
+  height: auto;
+}
+.host :global(.cm-gutter) {
+  min-height: 0;
+}
 .host :global(.cm-mergeView) {
   flex: 1;
   min-height: 0;
@@ -214,23 +227,29 @@
 .noHighlight :global(.cm-diffChangedGutter) {
   background: none !important;
 }
-/* Side-by-side without alignment (IDEA's default): each pane scrolls itself. */
+/* Side-by-side without alignment (IDEA's default): each pane scrolls itself. The panes fill the
+   view through flex, not a chain of `height: 100%`: WebKit relaid both editors out in full on every
+   layout under percentage heights (~10 ms each), and opening a diff forces several layouts. */
 .unaligned :global(.cm-mergeView) {
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
 }
 .unaligned :global(.cm-mergeViewEditors) {
-  height: 100%;
+  flex: 1 1 0%;
   min-height: 0;
 }
 .unaligned :global(.cm-mergeViewEditor) {
-  height: 100%;
+  display: flex;
+  flex-direction: column;
   min-height: 0;
   overflow: hidden;
 }
 /* Overrides MergeView's base theme, which leaves scrolling to the outer view. */
 .unaligned :global(.cm-mergeViewEditor > .cm-editor),
 .unaligned :global(.cm-mergeViewEditor > .cm-editor > .cm-scroller) {
-  height: 100% !important;
+  flex: 1 1 0%;
+  min-height: 0;
 }
 .unaligned :global(.cm-mergeViewEditor > .cm-editor > .cm-scroller) {
   overflow: auto !important;

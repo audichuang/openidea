@@ -62,6 +62,11 @@ export interface DiffData {
   readOnly?: boolean;
   /** Show the sides this way at first instead of the saved mode, which it leaves unchanged. */
   mode?: "split" | "unified";
+  /**
+   * An embedded diff's host shows the chain's next / previous file itself (F7 past the last
+   * difference) instead of opening an editor tab. In memory only: embedded inputs are not saved.
+   */
+  onNeighbour?: (data: DiffData) => void;
 }
 
 export const DIFF_KIND = "diff";

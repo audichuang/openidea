@@ -82,27 +82,30 @@ export function markersOf(
   );
 }
 
+/** Created once: every `EditorView.baseTheme` call mounts new CSS rules into the document. */
+const INDEXED_MARKERS_THEME = EditorView.baseTheme({
+  ".cm-plugin-mapping-button": {
+    border: "none",
+    padding: "0 2px",
+    background: "transparent",
+    color: "inherit",
+    cursor: "pointer",
+    height: "100%",
+    display: "flex",
+    alignItems: "center",
+  },
+  // Only the indexed-marker column sizes its icons to 16px. Line markers reuse the button class
+  // in their own 14px column (lineMarkerGutter.ts, LineMarkers.module.css), whose `overflow: hidden`
+  // would clip an icon this size at its edges.
+  ".cm-plugin-mapping-gutter .cm-plugin-mapping-button svg": { width: "16px", height: "16px" },
+  ".cm-plugin-mapping-button:focus-visible": { outline: "1px solid var(--accent)" },
+});
+
 export function indexedMarkers(path: string): Extension {
   return [
     markersField,
     gutter({ class: "cm-plugin-mapping-gutter", markers: (v) => v.state.field(markersField) }),
-    EditorView.baseTheme({
-      ".cm-plugin-mapping-button": {
-        border: "none",
-        padding: "0 2px",
-        background: "transparent",
-        color: "inherit",
-        cursor: "pointer",
-        height: "100%",
-        display: "flex",
-        alignItems: "center",
-      },
-      // Only the indexed-marker column sizes its icons to 16px. Line markers reuse the button class
-      // in their own 14px column (lineMarkerGutter.ts, LineMarkers.module.css), whose `overflow: hidden`
-      // would clip an icon this size at its edges.
-      ".cm-plugin-mapping-gutter .cm-plugin-mapping-button svg": { width: "16px", height: "16px" },
-      ".cm-plugin-mapping-button:focus-visible": { outline: "1px solid var(--accent)" },
-    }),
+    INDEXED_MARKERS_THEME,
     ViewPlugin.fromClass(
       class {
         last: FileMarkers | undefined;
