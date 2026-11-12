@@ -363,6 +363,14 @@ const hasNothingToPush = (r: RepoPush) => !!r.branch.upstream && !r.commits.leng
 const sourceLabel = (branch: PushSource) => branch.head ?? branch.headCommit?.slice(0, 8);
 const detachedTitle = (revision: string | null) => (revision ? tx`Detached HEAD at ${revision}` : undefined);
 
+/**
+ * Checked by default: nothing, so pushing one of many repositories needs no unchecking (fork
+ * decision, #224); with `only` (Push… from one repository's branch menu), that repository.
+ */
+export function defaultPushChecked(repos: readonly RepoPush[], only?: string): Set<string> {
+  return new Set(repos.filter((r) => r.root === only).map((r) => r.root));
+}
+
 /** One node of the multi-repository Push tree: a repo group with its outgoing commits. */
 interface PushNode {
   key: string;
@@ -509,22 +517,16 @@ function MultiPushDialog({
       );
       const list = pushCandidates(loaded);
       setRepos(list);
-      // Push all checks what has outgoing commits, plus a new branch of the current repository;
-      // Push… from one repository checks it unless it is up to date.
-      const current = currentRepo();
+      // Fork decision (#224): nothing checked up front, Commit and Push included; Push… from one
+      // repository's branch menu (`only`) checks it unless it is up to date, and a branch picked in
+      // several repositories checks those.
       setChecked(
-        new Set(
-          list
-            .filter((r) => {
-              if (repositories) return true;
-              if (selected) return selected.includes(r.root) || (selected.includes(null) && r.root === current);
-              if (only !== undefined) return !hasNothingToPush(r);
-              const destination = r.choices?.destination?.selection;
-              const other = destination && `${destination.remote}/${destination.target}` !== r.branch.upstream;
-              return r.branch.upstream ? r.commits.length > 0 || other : r.root === current;
-            })
-            .map((r) => r.root),
-        ),
+        repositories
+          ? new Set(list.map((r) => r.root))
+          : defaultPushChecked(
+              list.filter((r) => !hasNothingToPush(r)),
+              only,
+            ),
       );
     });
     return () => {
@@ -773,6 +775,19 @@ function MultiPushDialog({
         onClose={closeDiff}
         commits={
           <div className={styles.pushTreeWrap}>
+            {repos && repos.length > 1 && (
+              <div className={styles.pushTreeActions}>
+                <Button
+                  size="small"
+                  onClick={() => setChecked(new Set(repos.filter((r) => !hasNothingToPush(r)).map((r) => r.root)))}
+                >
+                  Select All
+                </Button>
+                <Button size="small" onClick={() => setChecked(new Set())}>
+                  Select None
+                </Button>
+              </div>
+            )}
             {loadErrors.map(({ root, message }) => (
               <div key={root} className={styles.error} role="alert">
                 <strong>{repoName(root)}</strong> {message}
