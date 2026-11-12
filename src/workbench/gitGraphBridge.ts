@@ -75,6 +75,14 @@ export interface GraphBranchFilterProps {
   onClose(): void;
 }
 
+/** Moving along the files of an embedded revision diff (`GitGraphBridge.revisionDiffInput`). */
+export interface GraphDiffNavigation {
+  files: readonly ChangedFile[];
+  /** Select the first or last difference once shown (after moving along the files). */
+  reveal?: "first" | "last";
+  onNeighbour(file: ChangedFile, reveal: "first" | "last"): void;
+}
+
 export interface GitGraphBridge {
   state(): GitGraphRepoState;
   subscribe(listener: () => void): () => void;
@@ -99,8 +107,18 @@ export interface GitGraphBridge {
   filesMenu(commit: GraphCommit, files: ChangedFile[]): Promise<MenuItem[]>;
   /** Opens the diff of `files[index]` with the others chained (F7 moves along). */
   openDiff(commit: GraphCommit, files: ChangedFile[], index: number, preview?: boolean): Promise<void>;
-  /** The diff viewer's input for `file` changed between `from` and `to`, embedded and read-only. */
-  revisionDiffInput(repo: string, from: GraphRevisionSide, to: GraphRevisionSide, file: ChangedFile): EditorInput;
+  /**
+   * The diff viewer's input for `file` changed between `from` and `to`, embedded and read-only.
+   * With `nav`, `files` are its chain: F7 past the last difference calls `onNeighbour` with the
+   * next changed file (and which difference to select) instead of opening an editor tab.
+   */
+  revisionDiffInput(
+    repo: string,
+    from: GraphRevisionSide,
+    to: GraphRevisionSide,
+    file: ChangedFile,
+    nav?: GraphDiffNavigation,
+  ): EditorInput;
   /** Opens the diff of `files[index]` between `from` and `to` in an editor tab, the others chained. */
   openRevisionDiff(
     repo: string,
