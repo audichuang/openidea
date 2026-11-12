@@ -217,6 +217,19 @@ fn is_partial_clone(repo: &gix::Repository) -> bool {
         || repo.remote_names().iter().any(|name| enabled(&format!("remote.{name}.promisor")))
 }
 
+/// [`is_partial_clone`] as git reads the repository's config. In Restricted Mode `r.gix()`
+/// leaves the repository's config out, so gitoxide cannot tell; these keys only describe
+/// the clone, and reading them runs nothing.
+fn is_partial_clone_per_git(r: &Repo) -> bool {
+    let pattern = r"^(extensions\.partialclone|remote\..*\.promisor)$";
+    let Ok(out) = crate::cli::run(r.root(), &["config", "--get-regexp", pattern], None) else { return false };
+    String::from_utf8_lossy(&out.stdout).lines().any(|line| match line.split_once(' ') {
+        Some(("extensions.partialclone", _)) => true,
+        Some((_, value)) => matches!(value.trim().to_ascii_lowercase().as_str(), "true" | "yes" | "on" | "1"),
+        None => false,
+    })
+}
+
 /// `git status --porcelain=v2`: what git lists, unreadable directories skipped.
 /// In Restricted Mode git compares content without the repository's clean/process
 /// filters and doesn't ask submodules for their own status (which runs their config).
@@ -228,7 +241,7 @@ fn cli_status(r: &Repo, ignored: &IgnoredNames) -> IdeResult<Entries> {
     // Rename detection reads blobs a partial clone may not have; git would fetch them
     // from the promisor remote (or fail with exit 128 when it is unreachable), and a
     // background refresh must never use the network.
-    if r.gix().is_ok_and(|repo| is_partial_clone(&repo)) {
+    if is_partial_clone_per_git(r) {
         args.push("--no-renames");
     }
     if !crate::execution_allowed() {
