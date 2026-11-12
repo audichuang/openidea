@@ -193,8 +193,23 @@ export function createGitGraphBridge(): GitGraphBridge {
       if (!diffs[index]) return;
       await openDiff(withChain(diffs, index), preview ? { preview: true, focus: false } : {});
     },
-    revisionDiffInput(repo, from, to, file) {
-      return diffInput({ ...revisionFileDiff(repo, from, to, file), embedded: true, readOnly: true });
+    revisionDiffInput(repo, from, to, file, nav) {
+      const embedded = (f: ChangedFile): DiffData => ({
+        ...revisionFileDiff(repo, from, to, f),
+        embedded: true,
+        readOnly: true,
+      });
+      const index = nav ? nav.files.indexOf(file) : -1;
+      if (!nav || index < 0 || nav.files.length < 2) return diffInput(embedded(file));
+      const items = nav.files.map(embedded);
+      return diffInput({
+        ...withChain(items, index),
+        reveal: nav.reveal,
+        onNeighbour: (next) => {
+          const f = nav.files[items.findIndex((d) => d.path === next.path)];
+          if (f) nav.onNeighbour(f, next.reveal ?? "first");
+        },
+      });
     },
     async openRevisionDiff(repo, from, to, files, index) {
       const diffs = files.map((f) => revisionFileDiff(repo, from, to, f));
