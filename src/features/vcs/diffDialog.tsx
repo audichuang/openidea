@@ -15,6 +15,7 @@ import { diffInput, diffTitle, type DiffData } from "./diffInput";
 import { openDialog } from "./dialogs";
 import { GitMergeDiff } from "./GitMergeDiff";
 import { currentStagedDiffPath, stagedDocumentAtPath } from "./stagedDocument";
+import styles from "./common.module.css";
 
 const SIZE_KEY = "openidea.vcs.diffDialogSize";
 
@@ -114,6 +115,7 @@ export function DiffDialogFrame({
       initialSize={initialSize}
       onResized={saveDiffDialogSize}
       buttons={[{ label: "Close", role: "cancel" }]}
+      className={styles.diffDialog}
     >
       <div
         ref={body}
