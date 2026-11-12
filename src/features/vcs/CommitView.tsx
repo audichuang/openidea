@@ -437,7 +437,11 @@ export function nodeMenu(
     {
       kind: "action",
       action: "vcs.showDiffInNewWindow",
-      arg: first?.path ? (opts?.roots ? changeNodeDiffData(opts.roots, first) : changeNodeDiff(first)) : undefined,
+      arg: first?.path
+        ? opts?.roots
+          ? nodeChainDiffData(opts.roots, first, isStagingArea())
+          : nodeDiffData(first, isStagingArea())
+        : undefined,
       disabled: !first?.path,
     },
     {
