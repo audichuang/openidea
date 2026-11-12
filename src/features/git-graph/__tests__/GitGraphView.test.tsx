@@ -9,6 +9,8 @@ vi.mock("@tanstack/react-virtual", () => ({
     getTotalSize: () => count * 24,
     getVirtualItems: () => Array.from({ length: count }, (_, index) => ({ index, start: index * 24, key: index })),
     scrollToIndex: () => {},
+    measure: () => {},
+    measureElement: () => {},
   }),
 }));
 
@@ -445,12 +447,13 @@ describe("Git Graph PR view", () => {
     expect(screen.getByRole("button", { name: "Head Branch" }).textContent).toBe("feature");
     expect(vcsMergeBase).toHaveBeenCalledWith(REPO, "main", "feature");
     expect(vcsDiffRevisions).toHaveBeenCalledWith(REPO, MB, "feature");
-    const files = screen.getByRole("list", { name: "Changed Files" });
+    // Grouped by directory (#226): the folder, then its files with the rename's source.
+    const files = screen.getByRole("tree", { name: "Changed Files" });
     expect(
       within(files)
-        .getAllByRole("listitem")
+        .getAllByRole("treeitem")
         .map((f) => f.textContent),
-    ).toEqual(["Mapp.tssrc", "Rnew.tssrc/old.ts → src/new.ts"]);
+    ).toEqual(["src2 files", "Mapp.ts", "Rnew.tsrenamed from src/old.ts"]);
     // The first file's diff is embedded: merge base on the left, head on the right.
     expect(screen.getByTestId("embedded-diff").textContent).toBe(`${MB}:feature:src/app.ts`);
     expect(bridge.revisionDiffInput).toHaveBeenLastCalledWith(
@@ -459,8 +462,11 @@ describe("Git Graph PR view", () => {
       { rev: "feature", label: "feature" },
       expect.objectContaining({ path: "src/app.ts" }),
     );
-    fireEvent.click(within(files).getByText("new.ts"));
+    const firstViewer = screen.getByTestId("embedded-diff");
+    fireEvent.mouseDown(within(files).getByText("new.ts"));
     expect(screen.getByTestId("embedded-diff").textContent).toBe(`${MB}:feature:src/new.ts`);
+    // Another file mounts a fresh viewer instead of rebuilding the previous one (#226).
+    expect(screen.getByTestId("embedded-diff")).not.toBe(firstViewer);
     fireEvent.doubleClick(within(files).getByText("new.ts"));
     expect(bridge.openRevisionDiff).toHaveBeenCalledWith(
       REPO,
