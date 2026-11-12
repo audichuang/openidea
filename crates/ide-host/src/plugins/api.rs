@@ -3925,7 +3925,7 @@ mod tests {
             fn document(&self, _: &Path) -> Option<(u64, String)> {
                 None
             }
-            fn apply_edits(&self, _: &Path, _: u64, _: &[TextEdit]) -> Result<u64, HostError> {
+            fn apply_edits(&self, _: &Path, _: u64, _: &[TextEdit], _: bool) -> Result<u64, HostError> {
                 unreachable!()
             }
             fn trusted(&self, root: &Path) -> bool {
