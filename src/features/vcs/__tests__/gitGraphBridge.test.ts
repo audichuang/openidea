@@ -313,6 +313,26 @@ describe("git graph bridge", () => {
     });
   });
 
+  it("chains an embedded revision diff, handing the next file back to the host", () => {
+    const files = [
+      { path: "a.ts", kind: "modified" as const, oldPath: null },
+      { path: "b.ts", kind: "modified" as const, oldPath: null },
+    ];
+    const onNeighbour = vi.fn();
+    const data = bridge().revisionDiffInput(REPO, MB, HEAD_SIDE, files[0]!, { files, reveal: "last", onNeighbour })
+      .data as {
+      chain?: { path: string }[];
+      reveal?: string;
+      onNeighbour?: (next: unknown) => void;
+    };
+    expect(data.chain?.map((d) => d.path)).toEqual([`${REPO}/a.ts`, `${REPO}/b.ts`]);
+    expect(data.reveal).toBe("last");
+    // F7 past the last difference: the host gets the changed file, not a new editor tab.
+    data.onNeighbour?.({ ...data.chain![1], reveal: "first" });
+    expect(onNeighbour).toHaveBeenCalledWith(files[1], "first");
+    expect(openInput).not.toHaveBeenCalled();
+  });
+
   it("opens a revision diff in an editor tab with the other files chained", async () => {
     const files = [
       { path: "a.ts", kind: "modified" as const, oldPath: null },
