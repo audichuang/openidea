@@ -840,6 +840,13 @@
 .worktreeFields > .worktreeTarget {
   font-size: var(--fs-small);
 }
+
+/* The diff fills the dialog and scrolls in its panes (the body below is `flex: 1`), as in
+   the Comparison dialog; a block body left it as tall as the whole file. */
+.diffDialog > [data-dialog-body] {
+  display: flex;
+  flex-direction: column;
+}
 .comparisonDialog > [data-dialog-body] {
   display: flex;
   flex-direction: column;
