@@ -195,6 +195,55 @@ const inlineBlameField = StateField.define<DecorationSet>({
   provide: (field) => EditorView.decorations.from(field),
 });
 
+/** Created once: every `EditorView.baseTheme` call mounts new CSS rules into the document. */
+const INLINE_BLAME_THEME = EditorView.baseTheme({
+  ".cm-vcs-inline-blame": {
+    paddingLeft: "3ch",
+    display: "inline-block",
+    whiteSpace: "nowrap",
+    verticalAlign: "bottom",
+    userSelect: "none",
+  },
+  ".cm-vcs-inline-blame-author": {
+    color: "var(--git-blame-author, var(--fg-inlay))",
+    backgroundColor: "var(--git-blame-author-bg, transparent)",
+    fontWeight: "var(--git-blame-author-bold, inherit)",
+    fontStyle: "var(--git-blame-author-italic, inherit)",
+    textDecoration: "var(--git-blame-author-effect, none)",
+  },
+  ".cm-vcs-inline-blame-date": {
+    color: "var(--git-blame-date, var(--fg-inlay))",
+    backgroundColor: "var(--git-blame-date-bg, transparent)",
+    fontWeight: "var(--git-blame-date-bold, inherit)",
+    fontStyle: "var(--git-blame-date-italic, inherit)",
+    textDecoration: "var(--git-blame-date-effect, none)",
+  },
+  ".cm-vcs-inline-blame-subject": {
+    color: "var(--git-blame-subject, var(--fg-inlay))",
+    backgroundColor: "var(--git-blame-subject-bg, transparent)",
+    fontWeight: "var(--git-blame-subject-bold, inherit)",
+    fontStyle: "var(--git-blame-subject-italic, inherit)",
+    textDecoration: "var(--git-blame-subject-effect, none)",
+  },
+  ".cm-vcs-inline-blame-issue": {
+    color: "var(--git-blame-issue, var(--fg-inlay))",
+    backgroundColor: "var(--git-blame-issue-bg, transparent)",
+    fontWeight: "var(--git-blame-issue-bold, inherit)",
+    fontStyle: "var(--git-blame-issue-italic, inherit)",
+    textDecoration: "var(--git-blame-issue-effect, none)",
+  },
+  // An empty line has no code to separate from: the label sits at the line start, so the
+  // caret stays at column 0 instead of jumping past the gap.
+  ".cm-vcs-inline-blame-blank": { paddingLeft: "0" },
+  '.cm-vcs-inline-blame[role="button"]': { cursor: "pointer" },
+  ".cm-vcs-inline-blame-tooltip": {
+    padding: "8px 12px",
+    maxWidth: "min(70ch, 80vw)",
+    whiteSpace: "pre-wrap",
+    overflowWrap: "anywhere",
+  },
+});
+
 export function inlineBlame(ctx: EditorDocContext): Extension {
   if (ctx.virtual || ctx.readOnly) return [];
   const plugin = ViewPlugin.fromClass(
@@ -367,52 +416,6 @@ export function inlineBlame(ctx: EditorDocContext): Extension {
         hideOn: (tr) => tr.effects.some((effect) => effect.is(setInlineBlame)),
       },
     ),
-    EditorView.baseTheme({
-      ".cm-vcs-inline-blame": {
-        paddingLeft: "3ch",
-        display: "inline-block",
-        whiteSpace: "nowrap",
-        verticalAlign: "bottom",
-        userSelect: "none",
-      },
-      ".cm-vcs-inline-blame-author": {
-        color: "var(--git-blame-author, var(--fg-inlay))",
-        backgroundColor: "var(--git-blame-author-bg, transparent)",
-        fontWeight: "var(--git-blame-author-bold, inherit)",
-        fontStyle: "var(--git-blame-author-italic, inherit)",
-        textDecoration: "var(--git-blame-author-effect, none)",
-      },
-      ".cm-vcs-inline-blame-date": {
-        color: "var(--git-blame-date, var(--fg-inlay))",
-        backgroundColor: "var(--git-blame-date-bg, transparent)",
-        fontWeight: "var(--git-blame-date-bold, inherit)",
-        fontStyle: "var(--git-blame-date-italic, inherit)",
-        textDecoration: "var(--git-blame-date-effect, none)",
-      },
-      ".cm-vcs-inline-blame-subject": {
-        color: "var(--git-blame-subject, var(--fg-inlay))",
-        backgroundColor: "var(--git-blame-subject-bg, transparent)",
-        fontWeight: "var(--git-blame-subject-bold, inherit)",
-        fontStyle: "var(--git-blame-subject-italic, inherit)",
-        textDecoration: "var(--git-blame-subject-effect, none)",
-      },
-      ".cm-vcs-inline-blame-issue": {
-        color: "var(--git-blame-issue, var(--fg-inlay))",
-        backgroundColor: "var(--git-blame-issue-bg, transparent)",
-        fontWeight: "var(--git-blame-issue-bold, inherit)",
-        fontStyle: "var(--git-blame-issue-italic, inherit)",
-        textDecoration: "var(--git-blame-issue-effect, none)",
-      },
-      // An empty line has no code to separate from: the label sits at the line start, so the
-      // caret stays at column 0 instead of jumping past the gap.
-      ".cm-vcs-inline-blame-blank": { paddingLeft: "0" },
-      '.cm-vcs-inline-blame[role="button"]': { cursor: "pointer" },
-      ".cm-vcs-inline-blame-tooltip": {
-        padding: "8px 12px",
-        maxWidth: "min(70ch, 80vw)",
-        whiteSpace: "pre-wrap",
-        overflowWrap: "anywhere",
-      },
-    }),
+    INLINE_BLAME_THEME,
   ];
 }
