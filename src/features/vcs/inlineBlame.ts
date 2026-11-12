@@ -103,6 +103,28 @@ const inlineBlameField = StateField.define<DecorationSet>({
   provide: (field) => EditorView.decorations.from(field),
 });
 
+/** Created once: every `EditorView.baseTheme` call mounts new CSS rules into the document. */
+const INLINE_BLAME_THEME = EditorView.baseTheme({
+  ".cm-vcs-inline-blame": {
+    color: "var(--fg-inlay)",
+    marginLeft: "3ch",
+    display: "inline-block",
+    maxWidth: "min(60ch, 50vw)",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    verticalAlign: "bottom",
+    userSelect: "none",
+  },
+  '.cm-vcs-inline-blame[role="button"]': { cursor: "pointer" },
+  ".cm-vcs-inline-blame-tooltip": {
+    padding: "8px 12px",
+    maxWidth: "min(70ch, 80vw)",
+    whiteSpace: "pre-wrap",
+    overflowWrap: "anywhere",
+  },
+});
+
 export function inlineBlame(ctx: EditorDocContext): Extension {
   if (ctx.virtual || ctx.readOnly) return [];
   const plugin = ViewPlugin.fromClass(
@@ -257,25 +279,6 @@ export function inlineBlame(ctx: EditorDocContext): Extension {
         hideOn: (tr) => tr.effects.some((effect) => effect.is(setInlineBlame)),
       },
     ),
-    EditorView.baseTheme({
-      ".cm-vcs-inline-blame": {
-        color: "var(--fg-inlay)",
-        marginLeft: "3ch",
-        display: "inline-block",
-        maxWidth: "min(60ch, 50vw)",
-        overflow: "hidden",
-        textOverflow: "ellipsis",
-        whiteSpace: "nowrap",
-        verticalAlign: "bottom",
-        userSelect: "none",
-      },
-      '.cm-vcs-inline-blame[role="button"]': { cursor: "pointer" },
-      ".cm-vcs-inline-blame-tooltip": {
-        padding: "8px 12px",
-        maxWidth: "min(70ch, 80vw)",
-        whiteSpace: "pre-wrap",
-        overflowWrap: "anywhere",
-      },
-    }),
+    INLINE_BLAME_THEME,
   ];
 }

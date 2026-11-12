@@ -9,6 +9,8 @@ vi.mock("@tanstack/react-virtual", () => ({
     getTotalSize: () => count * 24,
     getVirtualItems: () => Array.from({ length: count }, (_, index) => ({ index, start: index * 24, key: index })),
     scrollToIndex: () => {},
+    measure: () => {},
+    measureElement: () => {},
   }),
 }));
 
@@ -55,6 +57,7 @@ import {
   type GitGraphBridge,
   type GitGraphRepoState,
   type GraphBranchFilterProps,
+  type GraphDiffNavigation,
   type GraphRevisionSide,
 } from "@/workbench/gitGraphBridge";
 import { GitGraphEditor } from "../GitGraphView";
@@ -131,7 +134,13 @@ const bridge = {
   openDiff: vi.fn(async () => {}),
   openRevisionFile: vi.fn(async () => {}),
   revisionDiffInput: vi.fn(
-    (_repo: string, from: GraphRevisionSide, to: GraphRevisionSide, file: ChangedFile): EditorInput => ({
+    (
+      _repo: string,
+      from: GraphRevisionSide,
+      to: GraphRevisionSide,
+      file: ChangedFile,
+      _nav?: GraphDiffNavigation,
+    ): EditorInput => ({
       kind: "diff",
       key: `${from.rev}:${to.rev}:${file.path}`,
       data: { from, to, file },
@@ -445,12 +454,13 @@ describe("Git Graph PR view", () => {
     expect(screen.getByRole("button", { name: "Head Branch" }).textContent).toBe("feature");
     expect(vcsMergeBase).toHaveBeenCalledWith(REPO, "main", "feature");
     expect(vcsDiffRevisions).toHaveBeenCalledWith(REPO, MB, "feature");
-    const files = screen.getByRole("list", { name: "Changed Files" });
+    // Grouped by directory (#226): the folder, then its files with the rename's source.
+    const files = screen.getByRole("tree", { name: "Changed Files" });
     expect(
       within(files)
-        .getAllByRole("listitem")
+        .getAllByRole("treeitem")
         .map((f) => f.textContent),
-    ).toEqual(["Mapp.tssrc", "Rnew.tssrc/old.ts → src/new.ts"]);
+    ).toEqual(["src2 files", "app.ts", "new.tsrenamed from old.ts"]);
     // The first file's diff is embedded: merge base on the left, head on the right.
     expect(screen.getByTestId("embedded-diff").textContent).toBe(`${MB}:feature:src/app.ts`);
     expect(bridge.revisionDiffInput).toHaveBeenLastCalledWith(
@@ -458,9 +468,32 @@ describe("Git Graph PR view", () => {
       { rev: MB, label: "merge-base (main)" },
       { rev: "feature", label: "feature" },
       expect.objectContaining({ path: "src/app.ts" }),
+      // The tree's files are the chain, so F7 past the last difference moves along the tree.
+      expect.objectContaining({
+        files: [expect.objectContaining({ path: "src/app.ts" }), expect.objectContaining({ path: "src/new.ts" })],
+      }),
     );
-    fireEvent.click(within(files).getByText("new.ts"));
+    // F7 past the last difference: the host moves the tree's selection to the next file.
+    const nav = bridge.revisionDiffInput.mock.lastCall![4]!;
+    act(() => nav.onNeighbour(nav.files[1]!, "first"));
     expect(screen.getByTestId("embedded-diff").textContent).toBe(`${MB}:feature:src/new.ts`);
+    expect(within(files).getByText("new.ts").closest("[role=treeitem]")).toHaveAttribute("aria-selected", "true");
+    expect(bridge.revisionDiffInput.mock.lastCall![4]!.reveal).toBe("first");
+    // Picking files in the tree drops the pending reveal: back on new.ts, nothing is selected or focused.
+    fireEvent.mouseDown(within(files).getByText("app.ts"));
+    fireEvent.mouseDown(within(files).getByText("new.ts"));
+    expect(bridge.revisionDiffInput.mock.lastCall![4]!.reveal).toBeUndefined();
+    act(() => nav.onNeighbour(nav.files[0]!, "last"));
+    // A directory row takes the selection; the diff keeps showing the last file.
+    fireEvent.mouseDown(within(files).getByText("src"));
+    expect(within(files).getByText("src").closest("[role=treeitem]")).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByTestId("embedded-diff").textContent).toBe(`${MB}:feature:src/app.ts`);
+    fireEvent.mouseDown(within(files).getByText("app.ts"));
+    const firstViewer = screen.getByTestId("embedded-diff");
+    fireEvent.mouseDown(within(files).getByText("new.ts"));
+    expect(screen.getByTestId("embedded-diff").textContent).toBe(`${MB}:feature:src/new.ts`);
+    // Another file mounts a fresh viewer instead of rebuilding the previous one (#226).
+    expect(screen.getByTestId("embedded-diff")).not.toBe(firstViewer);
     fireEvent.doubleClick(within(files).getByText("new.ts"));
     expect(bridge.openRevisionDiff).toHaveBeenCalledWith(
       REPO,
