@@ -237,6 +237,14 @@ export function pushCandidates(repos: readonly RepoPush[]): RepoPush[] {
 
 const hasNothingToPush = (r: RepoPush) => !!r.branch.upstream && !r.commits.length;
 
+/**
+ * Checked by default: nothing, so pushing one of many repositories needs no unchecking (fork
+ * decision, #224); with `only` (Push… from one repository's branch menu), that repository.
+ */
+export function defaultPushChecked(repos: readonly RepoPush[], only?: string): Set<string> {
+  return new Set(repos.filter((r) => r.root === only).map((r) => r.root));
+}
+
 /** One node of the multi-repository Push tree: a repo group with its outgoing commits. */
 interface PushNode {
   key: string;
@@ -297,22 +305,8 @@ function MultiPushDialog({ only, onClose }: MultiPushDialogProps) {
       }
       const list = pushCandidates(loaded);
       setRepos(list);
-      // Push all checks what has outgoing commits, plus a new branch of the current repository;
-      // Push… from one repository checks it unless it is up to date.
-      const current = currentRepo();
-      setChecked(
-        new Set(
-          list
-            .filter((r) =>
-              only === undefined
-                ? r.branch.upstream
-                  ? r.commits.length > 0
-                  : r.root === current
-                : !hasNothingToPush(r),
-            )
-            .map((r) => r.root),
-        ),
-      );
+      // Fork decision (#224): nothing checked, or with `only` that repository unless it is up to date.
+      setChecked(defaultPushChecked(list.filter((r) => !hasNothingToPush(r)), only));
     });
     return () => {
       alive = false;
@@ -447,6 +441,19 @@ function MultiPushDialog({ only, onClose }: MultiPushDialogProps) {
         <SplitGroup orientation="horizontal" storageKey={PUSH_SPLIT_KEY} className={styles.pushSides}>
           <SplitPanel id="commits" minSize="240px" defaultSize="50%" className={styles.pushSplitPanel}>
             <div className={styles.pushTreeWrap}>
+              {repos && repos.length > 1 && (
+                <div className={styles.pushTreeActions}>
+                  <Button
+                    size="small"
+                    onClick={() => setChecked(new Set(repos.filter((r) => !hasNothingToPush(r)).map((r) => r.root)))}
+                  >
+                    Select All
+                  </Button>
+                  <Button size="small" onClick={() => setChecked(new Set())}>
+                    Select None
+                  </Button>
+                </div>
+              )}
               {error ? (
                 <div className={styles.error}>{error}</div>
               ) : !repos ? (
