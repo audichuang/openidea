@@ -190,21 +190,28 @@ describe("git graph bridge", () => {
     expect(ids).not.toContain("vcs.log.goToChild");
   });
 
-  it("disables history rewrites on commits already on the upstream", async () => {
+  it("keeps history rewrites enabled on commits already on the upstream", async () => {
     const local = commit("l".repeat(40), ["p".repeat(40)]);
     const pushed = commit("p".repeat(40), []);
     upstream.name = "origin/main";
     upstream.outgoing = [local.id];
     const state = (items: MenuItem[], id: string) => disabledOf(items, id);
     const onPushed = await bridge().commitMenu(pushed, [pushed]);
-    for (const id of ["vcs.log.dropCommit", "vcs.log.fixup", "vcs.log.editMessage", "vcs.log.interactiveRebase"])
-      expect(state(onPushed, id)).toBe(true);
+    for (const id of [
+      "vcs.log.dropCommit",
+      "vcs.log.fixup",
+      "vcs.log.squashInto",
+      "vcs.log.editMessage",
+      "vcs.log.interactiveRebase",
+    ])
+      expect(state(onPushed, id)).toBe(false);
     expect(state(onPushed, "vcs.log.pushUpToHere")).toBe(true);
     const onLocal = await bridge().commitMenu(local, [local]);
     expect(state(onLocal, "vcs.log.dropCommit")).toBe(false);
     expect(state(onLocal, "vcs.log.pushUpToHere")).toBe(false);
     const both = await bridge().commitMenu(local, [local, pushed]);
-    expect(state(both, "vcs.log.squashCommits")).toBe(true);
+    expect(state(both, "vcs.log.squashCommits")).toBe(false);
+    expect(state(both, "vcs.log.dropCommit")).toBe(false);
   });
 
   it("allows rewrites and push-up-to-here without an upstream", async () => {
