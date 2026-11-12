@@ -834,6 +834,35 @@ mod restrict_tests {
 }
 
 #[cfg(test)]
+mod filter_override_tests {
+    use super::filter_overrides_from;
+
+    #[test]
+    fn every_filter_driver_is_switched_off() {
+        let config = "core.bare\nfalse\0filter.lfs.clean\ngit-lfs clean\0filter.Odd Name.process\nx\0\
+                      filter.lfs.required\ntrue\0filter.lfs.smudge\ny\0diff.lfs.textconv\nz\0";
+        assert_eq!(
+            filter_overrides_from(config.as_bytes()).unwrap(),
+            ["-c", "filter.lfs.clean=", "-c", "filter.Odd Name.process=", "-c", "filter.lfs.required=false"]
+        );
+    }
+
+    #[test]
+    fn a_driver_name_with_an_equals_sign_is_refused() {
+        // `-c filter.a=b.clean=` would set `filter.a` and leave driver `a=b` active.
+        assert!(filter_overrides_from(b"filter.a=b.clean\nevil\0").is_err());
+    }
+
+    #[test]
+    fn a_non_utf8_driver_name_is_refused() {
+        // A lossy decode would override `filter.\u{fffd}.clean` and leave driver `\xff` active.
+        assert!(filter_overrides_from(b"filter.\xff.clean\nevil\0").is_err());
+        assert!(filter_overrides_from(b"filter.\xff.process\nevil\0").is_err());
+        assert!(filter_overrides_from(b"filter.\xff.smudge\nevil\0").unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
 mod batching_tests {
     use super::{WINDOWS_LIMIT, base_command_line_len, batch_paths, command_line_limit};
 
