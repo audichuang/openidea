@@ -43,16 +43,6 @@ export function withoutLogNavigation(items: MenuItem[]): MenuItem[] {
   return items.filter((i) => i.kind !== "action" || !LOG_NAVIGATION.has(i.action));
 }
 
-/** Entries that rewrite history: disabled on commits already on the upstream. */
-const REWRITES = new Set([
-  "vcs.log.editMessage",
-  "vcs.log.fixup",
-  "vcs.log.squashInto",
-  "vcs.log.squashCommits",
-  "vcs.log.dropCommit",
-  "vcs.log.interactiveRebase",
-]);
-
 /**
  * Commits of HEAD not on its upstream (`@{u}..HEAD`); null without an upstream. The Git Log's
  * own pushed check only knows the commits that log has loaded, so the graph asks itself.
@@ -78,25 +68,21 @@ async function outgoingCommits(repo: string): Promise<Set<string> | null> {
   }
 }
 
-/** The commit menu's push-dependent states, from the graph's own outgoing set (same rules as the Git Log). */
+/**
+ * Push up to Here from the graph's own outgoing set (same rule as the Git Log). History
+ * rewrites stay enabled on pushed commits: running one asks for confirmation first.
+ */
 export function applyPushGuard(
   items: MenuItem[],
   commit: GraphCommit,
-  selection: GraphCommit[],
   outgoing: Set<string> | null,
   head: string | null,
 ): MenuItem[] {
-  const pushed = (c: GraphCommit) => outgoing !== null && !outgoing.has(c.id);
-  const targets = selection.some((c) => c.id === commit.id) ? selection : [commit];
-  const anyPushed = targets.some(pushed);
   // Without an upstream there is no outgoing set: allow pushing up to any commit of HEAD.
   const canPushHere = !!head && (outgoing ? outgoing.has(commit.id) : true);
-  return items.map((item) => {
-    if (item.kind !== "action") return item;
-    if (REWRITES.has(item.action)) return { ...item, disabled: anyPushed };
-    if (item.action === "vcs.log.pushUpToHere") return { ...item, disabled: !canPushHere };
-    return item;
-  });
+  return items.map((item) =>
+    item.kind === "action" && item.action === "vcs.log.pushUpToHere" ? { ...item, disabled: !canPushHere } : item,
+  );
 }
 
 /**
@@ -172,7 +158,7 @@ export function createGitGraphBridge(): GitGraphBridge {
     async commitMenu(commit, selection) {
       const [{ commitMenu }, outgoing] = await Promise.all([import("./GitLog"), outgoingCommits(commit.repo)]);
       const head = useVcs.getState().heads[commit.repo]?.head ?? null;
-      return applyPushGuard(withoutLogNavigation(commitMenu(commit, selection)), commit, selection, outgoing, head);
+      return applyPushGuard(withoutLogNavigation(commitMenu(commit, selection)), commit, outgoing, head);
     },
     async branchMenu(branch, repo) {
       const { branchMenu, inRepo } = await import("./branchMenu");
