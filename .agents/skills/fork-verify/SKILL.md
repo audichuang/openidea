@@ -9,7 +9,7 @@ Upstream's `verify` skill (`.agents/skills/verify`) is the base: launch and sess
 
 ## Verify a change, in order
 
-1. **Pick a path for every case before launching.** List what the change touches and look each item up in the split table below. Webview-only cases use Tauri MCP; anything that starts in AppKit (native-menu shortcuts, native menus, real mouse, window chrome) uses real OS input. A case with no path is unverified, not passed.
+1. **Pick a path for every case before launching.** List what the change touches and look each item up in the split table below. Webview-only cases use Tauri MCP; anything that starts in AppKit (native-menu shortcuts, native menus, real mouse, window chrome) uses real OS input. A case with no path is unverified, not passed. A change to a shared component (its CSS, or a component several views embed) is one case per host: list the hosts with `rg` and open each, hosts whose height is not fixed (dialogs) included. A diff layout fix measured only in the Git Graph PR view collapsed the diff dialog to 0 px (2026-11-12).
 2. **Launch and connect** (Launch, Doctor): `pnpm dev:app` with `~/.cargo/bin` on `PATH`, wait for `pnpm dev:status`, then `driver_session start` on the reported port. Take window labels from `pnpm dev:status`, not `manage_window list`, and pass `appIdentifier` and `windowId` on every call. Reuse a running app only if it was built after your last Rust change.
 3. **Set up through Tauri MCP.** The app reopens the last projects on launch; open your own fixture with the `openProjectInWindow` recipe, trust it, and note any setting you change so you can restore it.
 4. **Act like a user.** For AppKit cases, `manage_window focus` the window, then send osascript or cliclick to this worktree's pid. Clipboard cases start with a fresh `pbcopy` sentinel from outside the app.
@@ -112,6 +112,8 @@ Pitfalls found on 2026-11-04:
 - **`manage_window action=list` can miss windows** (it listed 3 of 6, including a new project window). `pnpm dev:status` / `ipc_get_backend_state` has the full list.
 - **`webview_dom_snapshot` can fail with "aria-api library not loaded"** in a window whose bridge script was not (re)injected. Fall back to `webview_find_element` or `webview_execute_js` in that window.
 - **`webview_wait_for` stops at ~5 s** whatever `timeout` says ("Script execution timeout"). Call it again for longer waits.
+- **`bridge-js.mjs` returns `null` for a script whose promise runs past ~5 s.** Start the work without awaiting it, keep the result on `window`, and read it in a second call.
+- **In a diff, ⌘↓ (`diff.jumpToSource` in the IntelliJ keymap) and a double-click open the file in an editor tab**, which ends the diff test. Scroll with Page Down (`key code 121`), or set `scrollTop` for a layout-only check. A wheel `CGEvent` posted from a swift script is not delivered (no Accessibility permission).
 - Synthetic clicks have `event.detail === 0`; CodeMirror treats them as line-select clicks. Set the caret through `document.querySelector('.cm-content').cmTile.view`.
 - `strategy=text` can hit a hidden node; prefer the snapshot `ref`. For coordinates use the scale `webview_screenshot` prints, not upstream's fixed ×0.9.
 - After the app restarts, a session that answers "Already connected" can still fail every call with `window.__MCP__.resolveAll is not a function`: `driver_session stop appIdentifier=<port>`, then `start` again.
@@ -162,6 +164,16 @@ Shell state does not carry over between Bash calls: start every call that uses `
 - Private-API behavior (`_setTabBarAccessoryViewController:` in `macos.rs`, the wrapped `window:willUseFullScreenPresentationOptions:` in `titlebar.rs`) can only be judged live: AppKit re-applies state on its run loop. Recheck after a resize, a tab switch, entering and leaving fullscreen.
 - When something looks broken, `git stash` and check the baseline before blaming your change.
 
+## Measuring jank
+
+Measure in the dev app, with the window frontmost (background windows throttle `requestAnimationFrame`), on a fixture as big as the user's case (a clone of this repo, PR `develop` → the fork base, gave 442 files):
+
+- **Frames**: a `requestAnimationFrame` loop that records gaps over 40 ms, then real clicks with cliclick; report the gaps and their sum. Before/after on the same clicks is the evidence.
+- **Where the time goes**: time React with a temporary `<Profiler>`, the code under suspicion with `performance.now()`, and `requestAnimationFrame` callbacks by wrapping it; most of a gap that none of them owns is forced layout.
+- **Layout cost**: toggle a 1 px `padding` on an element near the area, read `offsetHeight`, take the median of 6–8 runs. Find the expensive subtree by hiding candidates with `display: none` and timing again; save each element's previous inline `display` first, or the restore leaves it hidden and every later number is wrong.
+- **Try a fix before editing**: append a `<style>` with the candidate rule, time it, remove it.
+- Remove the instrumentation before committing.
+
 ## Evidence
 
 Put proof in `$S/evidence/<task>/` (cleanup never deletes it), named as upstream says (`before.png`, `after.png`, `after-N.png`). The baseline for `before.png` is `fork/develop` or the change stashed, not fork `main` (the last release):
@@ -177,6 +189,7 @@ Put proof in `$S/evidence/<task>/` (cleanup never deletes it), named as upstream
 2. Stop the `pnpm dev:app` you started (its background task or pid; never `pkill openidea`, the installed app has the same name).
 3. `rm -rf "$S"/repo* "$S"/tabs`; keep `$S/evidence`.
 4. Free this worktree's build output. If `PATH="$HOME/.cargo/bin:$PATH" cargo -V` mentions `huacnlee` (the Mac mini), only `rm -rf ./target` if you need the space: that cargo keeps the real build output for every worktree of the repo under `~/.cargo/targets/` and trims it itself, and its `cargo clean` deletes that shared directory without a lock, breaking builds running in other worktrees. With a stock cargo, `cargo clean` in `src-tauri` (`target/` grows past 6 GB).
+5. When the worktree goes away, also delete its dev data dir `~/Library/Application Support/<identifier>/` (the identifier `pnpm dev:status` reports): they pile up one per worktree (44 on this Mac on 2026-11-12, up to 644 MB).
 
 ## Feature map
 
