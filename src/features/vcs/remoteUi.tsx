@@ -235,18 +235,11 @@ export function pushCandidates(repos: readonly RepoPush[]): RepoPush[] {
 }
 
 /**
- * Checked by default: repositories with outgoing commits (a new branch only in the selected
- * one); with `onlySelected` (Push… from one repository's branch menu), only the selected one.
+ * Checked by default: nothing, so pushing one of many repositories needs no unchecking (fork
+ * decision, #224); with `only` (Push… from one repository's branch menu), that repository.
  */
-export function defaultPushChecked(
-  repos: readonly RepoPush[],
-  selected: string | null,
-  onlySelected = false,
-): Set<string> {
-  if (onlySelected) return new Set(repos.filter((r) => r.root === selected).map((r) => r.root));
-  return new Set(
-    repos.filter((r) => (r.branch.upstream ? r.commits.length > 0 : r.root === selected)).map((r) => r.root),
-  );
+export function defaultPushChecked(repos: readonly RepoPush[], only?: string): Set<string> {
+  return new Set(repos.filter((r) => r.root === only).map((r) => r.root));
 }
 
 /** One node of the multi-repository Push tree: a repo group with its outgoing commits. */
@@ -306,7 +299,7 @@ function MultiPushDialog({ only, onClose }: MultiPushDialogProps) {
       }
       const list = pushCandidates(loaded);
       setRepos(list);
-      setChecked(only === undefined ? defaultPushChecked(list, currentRepo()) : defaultPushChecked(list, only, true));
+      setChecked(defaultPushChecked(list, only));
     });
     return () => {
       alive = false;
@@ -424,6 +417,16 @@ function MultiPushDialog({ only, onClose }: MultiPushDialogProps) {
       ]}
     >
       <div className={styles.pushTreeWrap}>
+        {repos && repos.length > 1 && (
+          <div className={styles.pushTreeActions}>
+            <Button size="small" onClick={() => setChecked(new Set(repos.map((r) => r.root)))}>
+              Select All
+            </Button>
+            <Button size="small" onClick={() => setChecked(new Set())}>
+              Select None
+            </Button>
+          </div>
+        )}
         {error ? (
           <div className={styles.error}>{error}</div>
         ) : !repos ? (
