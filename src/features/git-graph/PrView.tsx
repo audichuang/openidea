@@ -8,11 +8,22 @@ import type { Branch, ChangedFile, Commit } from "@/bindings";
 import { formatDay } from "@/platform/dateFormat";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
-import { EmptyState, Icon, IconButton, SplitGroup, SplitHandle, SplitPanel, Spinner, T, Tree } from "@/ui";
+import {
+  EmptyState,
+  Icon,
+  IconButton,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
+  Spinner,
+  T,
+  Tree,
+  fileIconName,
+} from "@/ui";
 import { buildFileTree, dirKeys, type FileTreeNode } from "@/features/vcs/fileTree";
+import { baseName, fileCount, KIND_COLOR } from "@/features/vcs/model";
 import { useContributions } from "@/workbench/contributions";
 import { gitGraphBridge } from "@/workbench/gitGraphBridge";
-import { KIND_LETTER } from "./Details";
 import { PickerPopup, type PickerItem } from "./PickerPopup";
 import { prChoice, setPrChoice, useGraphView } from "./viewState";
 import styles from "./GitGraph.module.css";
@@ -330,22 +341,33 @@ function PrFiles(p: {
           onExpandedChange={(next) => setCollapsed(new Set(allDirs.filter((k) => !next.has(k))))}
           selected={selected ? new Set([`f:${selected.path}`]) : NO_KEYS}
           multiSelect={false}
-          onSelectionChange={(_sel, lead) => lead?.file && setPrChoice(repo, { file: lead.file.path })}
+          onSelectionChange={(_sel, lead) => {
+            if (!lead?.file) return;
+            // A pick in the tree shows the file from its top; only F7 / Shift+F7 select a difference.
+            setReveal(null);
+            setPrChoice(repo, { file: lead.file.path });
+          }}
           onActivate={(n) => n.file && open(n.file)}
+          // Rows as in the GitHub pull request's Changes tree (`github/details/ChangesTree.tsx`).
           renderNode={(n) =>
             n.file ? (
-              <span className={styles.file} title={n.file.oldPath ? `${n.file.oldPath} → ${n.file.path}` : n.file.path}>
-                <span className={clsx(styles.kind, styles[`kind_${n.file.kind}`])}>
-                  {KIND_LETTER[n.file.kind] ?? "?"}
+              <span
+                className={styles.fileRow}
+                title={n.file.oldPath ? `${n.file.oldPath} → ${n.file.path}` : n.file.path}
+              >
+                <Icon name={fileIconName(n.name)} size={16} className={styles.fileIcon} />
+                <span className={styles.fileName} style={{ color: KIND_COLOR[n.file.kind] }}>
+                  {n.name}
                 </span>
-                <span className={styles.fileName}>{n.name}</span>
-                {n.file.oldPath && <span className={styles.fileDir}>{tx`renamed from ${n.file.oldPath}`}</span>}
+                {n.file.oldPath && (
+                  <span className={styles.fileDir}>{tx`renamed from ${baseName(n.file.oldPath)}`}</span>
+                )}
               </span>
             ) : (
-              <span className={styles.file}>
-                <Icon name="folder" size={14} />
+              <span className={styles.fileRow}>
+                <Icon name="folder" size={16} className={styles.fileIcon} />
                 <span className={styles.fileName}>{n.name}</span>
-                <span className={styles.fileDir}>{n.count === 1 ? tx`${n.count} file` : tx`${n.count} files`}</span>
+                <span className={styles.fileDir}>{fileCount(n.count)}</span>
               </span>
             )
           }
