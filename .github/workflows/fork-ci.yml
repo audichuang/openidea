@@ -90,6 +90,8 @@ jobs:
       - uses: actions/checkout@v5
       - run: bash .claude/skills/openidea-fork-auto-rebase/scripts/precheck.test.sh
         if: hashFiles('.claude/skills/openidea-fork-auto-rebase/scripts/precheck.test.sh') != ''
+      # The Rust jobs build with current stable; test the cache script against the same Cargo layout.
+      - uses: dtolnay/rust-toolchain@stable
       - run: node --test .github/actions/target-cache/artifacts.test.mjs .github/actions/target-cache/artifacts.cargo.test.mjs
       - run: python3 -m py_compile scripts/fork/resolve-conflicts.py
         if: hashFiles('scripts/fork/resolve-conflicts.py') != ''
