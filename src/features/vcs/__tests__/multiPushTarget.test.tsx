@@ -62,6 +62,14 @@ it("pushes each repository to its own remote and target branch, reporting the on
 
   const targetOfA = await screen.findByRole("textbox", { name: "Target branch of a" });
   expect(targetOfA).toHaveValue("feat-x");
+  // Nothing starts checked (#224); Select None / Select All set every row at once.
+  for (const name of ["a", "b", "c"]) expect(screen.getByRole("checkbox", { name })).not.toBeChecked();
+  expect(screen.getByRole("button", { name: "Push" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Select All" }));
+  for (const name of ["a", "b", "c"]) expect(screen.getByRole("checkbox", { name })).toBeChecked();
+  fireEvent.click(screen.getByRole("button", { name: "Select None" }));
+  expect(screen.getByRole("checkbox", { name: "b" })).not.toBeChecked();
+  fireEvent.click(screen.getByRole("button", { name: "Select All" }));
   expect(screen.getByRole("checkbox", { name: "Push tags:" })).toBeInTheDocument();
   fireEvent.change(targetOfA, { target: { value: "release-2.1" } });
   // A retargeted push carries no tags, as in the single-repository dialog.
