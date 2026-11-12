@@ -122,6 +122,11 @@
   flex-direction: column;
   padding: 14px;
 }
+.pushTreeActions {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
 .pushListWrap {
   flex: 1;
   min-height: 180px;
