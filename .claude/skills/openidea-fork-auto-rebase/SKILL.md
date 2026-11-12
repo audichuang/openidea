@@ -111,6 +111,7 @@ develop 一移動（含已在 HEAD 不重推的情況）就列出這次 rebase �
    推完再用第 4 步同一份路徑清單查一次 `gh workflow list`，main 移動後才出現註冊的就 disable。從第 0 步 develop-moved 進來的沒跑過第 4 步，在這裡照第 4 步的指令列清單，`<develop sha>` 是留言裡的 sha，OLD_DEVELOP 取 PR 說明。
 4. `gh run list -R audichuang/openidea --workflow fork-release.yml --branch vNEW-fork.N --json databaseId,headSha` 找 run，`gh-wait run <id>` 等完。tag 的 commit 與版本和 develop 候選版相符時 tag run 不建置：plan 等候選版跑完（可能三、四十分鐘）再發布它的 assets；候選版失敗或版本不符時才自己並行建置 macOS 與 Windows（FORK.md Release）。兩種都是兩個平台都成功才發布、附 latest.json、更新 cask。失敗看 tag run 的 `--log-failed`，重用失敗時也看候選版 run；只靠改程式才能修的失敗不在這裡修，通知裡寫原因。
 5. 發版成功 → PR 留言結果後關閉，刪 `rebase/vNEW` 與 `ci-base/vNEW`。
+6. 再跑 `"$SKILL_DIR/scripts/mark-releases-done.sh" vNEW`：把使用者 GitHub 收件匣裡 vNEW（含）以前的 l0ng-ai/openidea release 通知標成 Done，使用者看收件匣沒有上游 release 就知道 fork 已跟上。失敗（結束碼非 0）不擋收尾，寫進第 7 步通知。
 
 ## 7. Bark 通知（有做事就推）
 
