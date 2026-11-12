@@ -57,10 +57,11 @@ Standing decision: on macOS, project window groups keep the fork's AppKit native
 
 Standing decision: the multi-repository Push dialog (⌘⇧K, Commit and Push) starts with no repository checked and offers Select All / Select None (`defaultPushChecked`, `src/features/vcs/remoteUi.tsx`; the user's call, #224). Upstream checks every repository with outgoing commits; keep the fork's default when upstream changes it. Push… from one repository's branch menu still checks only that one.
 
-After a rebase, check the two places where upstream's tests can't see the fork's behaviour:
+After a rebase, check the three places where upstream's tests can't see the fork's behaviour:
 
 - **Real fullscreen Space.** Upstream only exercises its titlebar under simple fullscreen. When a rebase touches `src-tauri/src/titlebar.rs` or window chrome, put a group into its own fullscreen Space and click the page toolbar for real: v0.1.38's unified `NSToolbar` covered it there until `titlebar.rs` added `AutoHideToolbar` to the fullscreen presentation options.
 - **Git staging mode commits the whole index.** Every commit entry point upstream adds that commits picked files (v0.1.38 brought Commit File… and Commit Changelist…) is hidden or refuses while staging mode is on (`isStagingArea()`, `src/features/vcs/staging.ts`), and a diff preview it adds shows the staged or unstaged side of the node picked (`stagingDiffData`). Anything that reads what Commit would commit (the plugin `commit.pending-commit` API, before-commit checks, a preview) goes through `commitPlan()` (`src/features/vcs/commitSelection.ts`), which is the index in staging mode; v0.1.39 missed upstream's plugin commit API (#201).
+- **Diff layout and editor themes.** When a rebase touches `src/features/vcs/DiffEditor.module.css`, keep the panes, scroller and gutters filling through flex with a `0%` basis, never a `height: 100%` chain (the comment there says why), and keep every `EditorView.theme` / `baseTheme` at module level (`src/editor/core/cm/themeOnce.test.ts` fails on one built inside a function). Either regression put back about 90 ms of frozen frames on every diff switch (#226).
 
 ## Unattended rebase
 

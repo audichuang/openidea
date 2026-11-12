@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { EditorState, type Extension } from "@codemirror/state";
 import { drawSelection, EditorView } from "@codemirror/view";
@@ -31,4 +33,22 @@ it.each([
   mount(extensions());
   mount(extensions());
   expect(cssRules()).toBe(after);
+});
+
+// The same rule for every theme in the app: one built at module level is mounted once.
+it("builds every EditorView theme at module level", () => {
+  const sources = (readdirSync("src", { recursive: true }) as string[])
+    .filter((f) => /\.tsx?$/.test(f) && !/\.test\.tsx?$|__tests__/.test(f))
+    .map((f) => join("src", f));
+  const inside = sources.flatMap((file) =>
+    readFileSync(file, "utf8")
+      .split("\n")
+      .flatMap((line, i) =>
+        /EditorView\.(theme|baseTheme)\(/.test(line) &&
+        !/^(export )?const \w+ = EditorView\.(theme|baseTheme)\(/.test(line)
+          ? [`${file}:${i + 1}`]
+          : [],
+      ),
+  );
+  expect(inside).toEqual([]);
 });
