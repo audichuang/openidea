@@ -460,7 +460,7 @@ describe("Git Graph PR view", () => {
       within(files)
         .getAllByRole("treeitem")
         .map((f) => f.textContent),
-    ).toEqual(["src2 files", "Mapp.ts", "Rnew.tsrenamed from src/old.ts"]);
+    ).toEqual(["src2 files", "app.ts", "new.tsrenamed from old.ts"]);
     // The first file's diff is embedded: merge base on the left, head on the right.
     expect(screen.getByTestId("embedded-diff").textContent).toBe(`${MB}:feature:src/app.ts`);
     expect(bridge.revisionDiffInput).toHaveBeenLastCalledWith(
@@ -478,6 +478,11 @@ describe("Git Graph PR view", () => {
     act(() => nav.onNeighbour(nav.files[1]!, "first"));
     expect(screen.getByTestId("embedded-diff").textContent).toBe(`${MB}:feature:src/new.ts`);
     expect(within(files).getByText("new.ts").closest("[role=treeitem]")).toHaveAttribute("aria-selected", "true");
+    expect(bridge.revisionDiffInput.mock.lastCall![4]!.reveal).toBe("first");
+    // Picking files in the tree drops the pending reveal: back on new.ts, nothing is selected or focused.
+    fireEvent.mouseDown(within(files).getByText("app.ts"));
+    fireEvent.mouseDown(within(files).getByText("new.ts"));
+    expect(bridge.revisionDiffInput.mock.lastCall![4]!.reveal).toBeUndefined();
     act(() => nav.onNeighbour(nav.files[0]!, "last"));
     const firstViewer = screen.getByTestId("embedded-diff");
     fireEvent.mouseDown(within(files).getByText("new.ts"));
