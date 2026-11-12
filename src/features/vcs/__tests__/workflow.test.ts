@@ -121,6 +121,28 @@ describe("several repositories", () => {
       { root: "/p/c", branch: branch(null, null), commits: [] },
     ];
     expect(pushCandidates(repos).map((r) => r.root)).toEqual(["/p", "/p/a", "/p/b"]);
+    // Nothing is checked up front: pushing one of many repositories needs no unchecking (#224).
+    expect([...defaultPushChecked(pushCandidates(repos))]).toEqual([]);
+  });
+
+  it("checks only the repository Push was invoked from", () => {
+    const branch = (head: string, upstream: string | null) => ({
+      head,
+      headCommit: "c1",
+      upstream,
+      ahead: 0,
+      behind: 0,
+      operation: null,
+    });
+    const commit = { id: "c1", shortId: "c1" } as RepoPush["commits"][number];
+    const candidates: RepoPush[] = [
+      { root: "/p", branch: branch("main", "origin/main"), commits: [commit] },
+      { root: "/p/a", branch: branch("main", "origin/main"), commits: [commit] },
+      { root: "/p/b", branch: branch("feature", null), commits: [commit] },
+    ];
+    expect([...defaultPushChecked(candidates, "/p/a")]).toEqual(["/p/a"]);
+    expect([...defaultPushChecked(candidates, "/p/b")]).toEqual(["/p/b"]);
+    expect([...defaultPushChecked(candidates, "/p/c")]).toEqual([]);
   });
 });
 
