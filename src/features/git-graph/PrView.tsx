@@ -312,6 +312,8 @@ function PrFiles(p: {
   const to = useMemo(() => ({ rev: head, label: head }), [head]);
   // F7 / Shift+F7 past the last / first difference moves along the tree here, not to a new tab.
   const [reveal, setReveal] = useState<{ path: string; at: "first" | "last" } | null>(null);
+  // A directory row picked in the tree: it shows as selected while the diff keeps the last file.
+  const [dirPick, setDirPick] = useState<string | null>(null);
   const input = useMemo(
     () =>
       selected && bridge
@@ -319,6 +321,7 @@ function PrFiles(p: {
             files: ordered,
             reveal: reveal?.path === selected.path ? reveal.at : undefined,
             onNeighbour: (file, at) => {
+              setDirPick(null);
               setReveal({ path: file.path, at });
               setPrChoice(repo, { file: file.path });
             },
@@ -339,11 +342,16 @@ function PrFiles(p: {
           isExpandable={(n) => !n.file}
           expanded={expanded}
           onExpandedChange={(next) => setCollapsed(new Set(allDirs.filter((k) => !next.has(k))))}
-          selected={selected ? new Set([`f:${selected.path}`]) : NO_KEYS}
+          selected={dirPick ? new Set([dirPick]) : selected ? new Set([`f:${selected.path}`]) : NO_KEYS}
           multiSelect={false}
           onSelectionChange={(_sel, lead) => {
-            if (!lead?.file) return;
+            if (!lead) return;
+            if (!lead.file) {
+              setDirPick(lead.key);
+              return;
+            }
             // A pick in the tree shows the file from its top; only F7 / Shift+F7 select a difference.
+            setDirPick(null);
             setReveal(null);
             setPrChoice(repo, { file: lead.file.path });
           }}
