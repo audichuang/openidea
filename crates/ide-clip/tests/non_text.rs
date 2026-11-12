@@ -30,10 +30,14 @@ impl Repo {
         fs::create_dir_all(&root).unwrap();
         let repo = Self { _dir: dir, root, cfg };
         repo.git(&["init", "-q", "-b", "main"]);
-        repo.git(&["config", "user.name", "T"]);
-        repo.git(&["config", "user.email", "t@example.com"]);
-        repo.git(&["config", "core.autocrlf", "false"]);
-        repo.git(&["config", "commit.gpgsign", "false"]);
+        // Repo-local, so the product's own git (no GIT_CONFIG_GLOBAL) sees it too. Written directly instead
+        // of four `git config` processes: the fuzz test builds 120 repos, and spawns are slow on Windows.
+        let mut local = fs::OpenOptions::new().append(true).open(repo.root.join(".git").join("config")).unwrap();
+        std::io::Write::write_all(
+            &mut local,
+            b"[user]\n\tname = T\n\temail = t@example.com\n[core]\n\tautocrlf = false\n[commit]\n\tgpgsign = false\n",
+        )
+        .unwrap();
         repo
     }
 
