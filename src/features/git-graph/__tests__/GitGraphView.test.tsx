@@ -57,6 +57,7 @@ import {
   type GitGraphBridge,
   type GitGraphRepoState,
   type GraphBranchFilterProps,
+  type GraphDiffNavigation,
   type GraphRevisionSide,
 } from "@/workbench/gitGraphBridge";
 import { GitGraphEditor } from "../GitGraphView";
@@ -133,7 +134,13 @@ const bridge = {
   openDiff: vi.fn(async () => {}),
   openRevisionFile: vi.fn(async () => {}),
   revisionDiffInput: vi.fn(
-    (_repo: string, from: GraphRevisionSide, to: GraphRevisionSide, file: ChangedFile): EditorInput => ({
+    (
+      _repo: string,
+      from: GraphRevisionSide,
+      to: GraphRevisionSide,
+      file: ChangedFile,
+      _nav?: GraphDiffNavigation,
+    ): EditorInput => ({
       kind: "diff",
       key: `${from.rev}:${to.rev}:${file.path}`,
       data: { from, to, file },
@@ -461,7 +468,17 @@ describe("Git Graph PR view", () => {
       { rev: MB, label: "merge-base (main)" },
       { rev: "feature", label: "feature" },
       expect.objectContaining({ path: "src/app.ts" }),
+      // The tree's files are the chain, so F7 past the last difference moves along the tree.
+      expect.objectContaining({
+        files: [expect.objectContaining({ path: "src/app.ts" }), expect.objectContaining({ path: "src/new.ts" })],
+      }),
     );
+    // F7 past the last difference: the host moves the tree's selection to the next file.
+    const nav = bridge.revisionDiffInput.mock.lastCall![4]!;
+    act(() => nav.onNeighbour(nav.files[1]!, "first"));
+    expect(screen.getByTestId("embedded-diff").textContent).toBe(`${MB}:feature:src/new.ts`);
+    expect(within(files).getByText("new.ts").closest("[role=treeitem]")).toHaveAttribute("aria-selected", "true");
+    act(() => nav.onNeighbour(nav.files[0]!, "last"));
     const firstViewer = screen.getByTestId("embedded-diff");
     fireEvent.mouseDown(within(files).getByText("new.ts"));
     expect(screen.getByTestId("embedded-diff").textContent).toBe(`${MB}:feature:src/new.ts`);
