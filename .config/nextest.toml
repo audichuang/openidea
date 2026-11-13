@@ -15,3 +15,16 @@ not (
   | (package(ide-sdk) & test(=tests::tool_installs_resolve_project_relative_sdks_and_leave_path_fallback_unconfigured))
 )
 """
+
+# Fork CI runs macOS with `--test-threads 6` on a 3-core runner. These tests have time budgets
+# that oversubscription pushed past their limit (upstream's 3 threads run process_stdout… in
+# about 3 s; here it took 6-15 s and timed out, #253), so on macOS each runs with every thread.
+[[profile.default.overrides]]
+platform = 'cfg(target_os = "macos")'
+filter = """
+(package(ide-host) & binary(plugins) & (test(=process_stdout_accepts_large_payloads_and_reports_overflow_explicitly) | test(=thousands_of_icons_install_and_reload_within_budget)))
+| (package(ide-host) & binary(plugin_workbench) & test(=run_target_validation_gates_launches_and_preserves_selection))
+| (package(ide-vcs) & test(=compare::tests::restricted_git_does_not_execute_signature_verifier_when_asked_to_verify))
+| (package(ide-db) & test(=watch::tests::ignores_other_files))
+"""
+threads-required = "num-cpus"
