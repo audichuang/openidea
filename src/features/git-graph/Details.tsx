@@ -251,7 +251,7 @@ export function CommitDetails({
           {one.commitTimeMs && one.commitTimeMs !== one.timeMs ? (
             <>
               <dt>
-                <T>Committed</T>
+                <T>Commit Date</T>
               </dt>
               <dd>{fullDate(one.commitTimeMs)}</dd>
             </>
