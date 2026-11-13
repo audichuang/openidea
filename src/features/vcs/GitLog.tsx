@@ -107,8 +107,6 @@ export function LogView() {
   const shown = useGitLog((s) => s.shownLog);
   const active = !scope || scope === shown;
   const version = useVcs((s) => s.version);
-  const commits = useGitLog((s) => s.commits);
-  const selection = useGitLog((s) => s.selection);
   const root = useVcs((s) => s.root);
   const repo = useLogRepositories();
   const readOnly = useReadOnlyLog();
@@ -225,12 +223,18 @@ export function LogView() {
         <>
           <SplitHandle />
           <SplitPanel id="details" defaultSize="28%" minSize="15%">
-            <CommitDetails key={selection.join(" ") || "none"} commits={commits} />
+            <LogCommitDetails />
           </SplitPanel>
         </>
       )}
     </SplitGroup>
   );
+}
+
+function LogCommitDetails() {
+  const commits = useGitLog((s) => s.commits);
+  const selection = useGitLog((s) => s.selection);
+  return <CommitDetails key={selection.join(" ") || "none"} commits={commits} />;
 }
 
 // ---------------------------------------------------------------------------
