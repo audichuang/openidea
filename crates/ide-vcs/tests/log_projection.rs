@@ -217,20 +217,27 @@ fn detail_filters_connect_visible_ancestors_without_changing_revision_parents() 
     let b = git(dir, &["rev-parse", "HEAD"]);
     let c = commit(dir, "a", "keep tip");
     let repo = Repo::discover(dir).unwrap().unwrap();
-    for q in [
-        LogQuery { text: Some("keep".into()), ..Default::default() },
-        LogQuery { path: Some("a".into()), ..Default::default() },
-        LogQuery { authors: vec!["Test".into()], authors_exact: true, ..Default::default() },
-    ] {
-        let page = repo.log(&LogQuery { limit: 1, ..q.clone() }).unwrap();
-        assert_eq!(page[0].id, c);
-        assert_eq!(page[0].parents, vec![b.clone()]);
-        assert_eq!(page[0].graph_parents, Some(vec![a.clone()]));
-        assert_eq!(page[0].graph_dashed, vec![true]);
-        assert_eq!(page[0].on_current_branch, Some(true));
-        let next = repo.log(&LogQuery { skip: 1, limit: 1, ..q }).unwrap();
-        assert_eq!(next[0].id, a);
-        assert_eq!(next[0].graph_parents, Some(vec![]));
+    for summary_only in [false, true] {
+        for q in [
+            LogQuery { text: Some("keep".into()), ..Default::default() },
+            LogQuery { text: Some("^keep".into()), text_regex: true, ..Default::default() },
+            LogQuery { path: Some("a".into()), ..Default::default() },
+            LogQuery { authors: vec!["Test".into()], authors_exact: true, ..Default::default() },
+        ] {
+            let page = repo.log(&LogQuery { limit: 1, summary_only, ..q.clone() }).unwrap();
+            assert_eq!(page[0].id, c);
+            assert_eq!(page[0].parents, vec![b.clone()]);
+            assert_eq!(page[0].graph_parents, Some(vec![a.clone()]));
+            assert_eq!(page[0].graph_dashed, vec![true]);
+            assert_eq!(page[0].on_current_branch, Some(true));
+            let next = repo.log(&LogQuery { skip: 1, limit: 1, summary_only, ..q }).unwrap();
+            assert_eq!(next[0].id, a);
+            assert_eq!(next[0].graph_parents, Some(vec![]));
+            if summary_only {
+                assert_eq!(page[0].log_total, Some(2));
+                assert_eq!(next[0].log_position, Some(1));
+            }
+        }
     }
 }
 
