@@ -1127,7 +1127,10 @@ function PathDetail({ dir }: { dir: string }) {
       measureContext ??= document.createElement("canvas").getContext("2d");
       const ctx = measureContext;
       if (width === undefined || !ctx) return;
-      ctx.font = getComputedStyle(el).font;
+      // The `font` shorthand reads "" while `font-variant-ligatures` is `none`, which the
+      // shorthand cannot express; build it from the longhands, as PathText does.
+      const style = getComputedStyle(el);
+      ctx.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
       setFit({ dir, text: fitPathDetail(dir, width, (t) => ctx.measureText(t).width) });
     });
     observer.observe(el);
