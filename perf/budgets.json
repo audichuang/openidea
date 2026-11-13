@@ -61,6 +61,9 @@
     "gitLogScrollbar.frameP95Ms": 17.5,
     "gitLogScrollbar.droppedFramesPct": 2,
     "gitLogScrollbar.tbtMs": 50,
+    "gitLogWide.frameMaxMs": 150,
+    "gitLogWide.droppedFramesPct": 12,
+    "gitLogWide.tbtMs": 250,
 
     "resizePanels.droppedFramesPct": 2,
     "resizePanels.bottomDroppedFramesPct": 2,
