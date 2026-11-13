@@ -77,6 +77,8 @@ const {
 
 const { formatBinding } = await import("@/platform/keymap");
 const { usePlatform } = await import("@/platform/platformInfo");
+// The browse button imports the dialog wrapper lazily; load it now so fake timers alone settle the click.
+await import("@/platform/dialog");
 
 const settle = () => act(() => vi.advanceTimersByTimeAsync(150));
 const selectedRows = () =>
