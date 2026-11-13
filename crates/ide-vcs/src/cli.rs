@@ -667,6 +667,7 @@ pub(crate) fn capture_command(
             (&mut pipe).take(max.saturating_add(1) as u64).read_to_end(&mut bytes)?;
             if bytes.len() > max {
                 overflow.store(true, std::sync::atomic::Ordering::Release);
+                let _ = wake.send(());
                 std::io::copy(&mut pipe, &mut std::io::sink())?;
             }
             Ok(bytes)
@@ -1013,6 +1014,25 @@ fn spawn_reader(
         flush(&mut pending);
         let _ = tx.send(Event::Closed);
     })
+}
+
+#[cfg(test)]
+mod capture_tests {
+    use super::*;
+    use ide_core::error::ErrorKind;
+
+    #[test]
+    fn bounded_capture_rejects_overflow_and_retains_complete_output_at_limit() {
+        let root = tempfile::tempdir().unwrap();
+        let cancel = CancellationToken::new();
+        let args = ["--version"];
+        let complete = run_cancellable(root.path(), &args, &cancel).unwrap();
+        let size = complete.stdout.len();
+        let exact = run_bounded(root.path(), &args, &cancel, size).unwrap();
+        assert_eq!(exact.stdout, complete.stdout);
+        let error = run_bounded(root.path(), &args, &cancel, size - 1).err().unwrap();
+        assert_eq!(error.kind, ErrorKind::InvalidInput);
+    }
 }
 
 #[cfg(test)]
