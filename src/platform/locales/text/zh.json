@@ -7991,7 +7991,7 @@
   "{length} commits selected": "已选择 {length} 个提交",
   "Right-click for cherry-pick, squash, compare and more.": "右键可进行拣选、压缩、比较等操作。",
   "Parents": "父提交",
-  "Committed": "提交时间",
+  "Commit Date": "提交时间",
   "Changed Files": "已更改的文件",
   "{name} no longer tracks a branch": "{name} 不再跟踪任何分支",
   "{name} now tracks {upstream}": "{name} 现在跟踪 {upstream}",
