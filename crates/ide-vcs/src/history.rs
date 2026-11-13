@@ -56,10 +56,18 @@ impl TextFilter {
         Ok(match self {
             Self::Regex(re) => re.is_match(&index.message(repo, id)?),
             Self::Folded(needle) => index.message(repo, id)?.to_lowercase().contains(needle.as_str()),
-            Self::Selected { ids, hash } => {
-                ids.contains(&id) || hash.as_ref().is_some_and(|h| id.to_string().starts_with(h.as_str()))
-            }
+            Self::Selected { .. } => self.git_match(id).unwrap_or_default(),
         })
+    }
+
+    /// An exact decision from Git's message filter, available without opening a commit object.
+    fn git_match(&self, id: ObjectId) -> Option<bool> {
+        match self {
+            Self::Selected { ids, hash } => {
+                Some(ids.contains(&id) || hash.as_ref().is_some_and(|h| id.to_string().starts_with(h.as_str())))
+            }
+            _ => None,
+        }
     }
 }
 
@@ -968,20 +976,30 @@ impl Visibility<'_> {
         if let Some(shown) = self.matches.get(&id) {
             return Ok(*shown);
         }
+        let text = self.text.as_ref();
+        let git_match = text.and_then(|text| text.git_match(id));
         let shown = if (!self.index.has_cached(&id) && !repo.has_object(id))
             || self.path_ids.as_ref().is_some_and(|ids| !ids.contains(&id))
             || self.range_ids.as_ref().is_some_and(|ids| !ids.contains(&id))
+            || git_match == Some(false)
         {
             false
-        } else if self.authors.is_empty()
-            && self.query.speed_search.is_none()
-            && self.text.is_none()
+        } else if self.query.speed_search.is_none()
+            // The shallow boundary has no graph parents, but an existing text
+            // filter uses the actual parents to decide whether it was a merge.
+            && ((text.is_none() && self.authors.is_empty()) || !self.query.no_merges || !self.shallow.contains(&id))
             && let Some((parents, time_s)) = self.index.nodes.get(&id)
         {
             let time = (*time_s as f64) * 1000.0;
             !(self.query.no_merges && parents.len() > 1)
                 && self.query.since_ms.is_none_or(|s| time >= s)
                 && self.query.until_ms.is_none_or(|u| time < u)
+                && (self.authors.is_empty()
+                    || self.index.author_matches(repo, id, |name, email| self.author_matches(name, email))?)
+                && match text {
+                    Some(text) if git_match.is_none() => text.matches(repo, self.index, id)?,
+                    _ => true,
+                }
         } else {
             let commit = self.index.get_with_table(repo, id, self.table)?;
             let time = commit.commit_time_ms;
@@ -1009,24 +1027,26 @@ impl Visibility<'_> {
                         })
                     })
                 })
-                && (self.authors.is_empty() || {
-                    let name = commit.author.to_lowercase();
-                    let email = commit.email.to_lowercase();
-                    self.authors.iter().any(|a| {
-                        if self.query.authors_exact {
-                            crate::log_index::matches_user(a, &name, &email)
-                        } else {
-                            name.contains(a.as_str()) || email.contains(a.as_str())
-                        }
-                    })
-                })
-                && match &self.text {
-                    Some(text) => text.matches(repo, self.index, id)?,
-                    None => true,
+                && (self.authors.is_empty() || self.author_matches(&commit.author, &commit.email))
+                && match text {
+                    Some(text) if git_match.is_none() => text.matches(repo, self.index, id)?,
+                    _ => true,
                 }
         };
         self.matches.insert(id, shown);
         Ok(shown)
+    }
+
+    fn author_matches(&self, name: &str, email: &str) -> bool {
+        let name = name.to_lowercase();
+        let email = email.to_lowercase();
+        self.authors.iter().any(|a| {
+            if self.query.authors_exact {
+                crate::log_index::matches_user(a, &name, &email)
+            } else {
+                name.contains(a.as_str()) || email.contains(a.as_str())
+            }
+        })
     }
 
     fn parents(&mut self, repo: &gix::Repository, parents: &[ObjectId]) -> IdeResult<Vec<ObjectId>> {
