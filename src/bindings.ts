@@ -688,6 +688,8 @@ export const commands = {
 	 *  editor text. Cancellable with `cancel_request(request)`.
 	 */
 	vcsBlockHistory: (request: RequestId, path: string, text: string | null, lines: [number, number]) => typedError<BlockHistory, IdeError>(__TAURI_INVOKE("vcs_block_history", { request, path, text, lines })),
+	vcsBlockHistorySummary: (request: RequestId, path: string, text: string | null, lines: [number, number]) => typedError<BlockHistorySummary, IdeError>(__TAURI_INVOKE("vcs_block_history_summary", { request, path, text, lines })),
+	vcsBlockHistoryRevisions: (request: RequestId, path: string, anchor: BlockHistoryAnchor, index: number, commits: string[]) => typedError<BlockRevision[], IdeError>(__TAURI_INVOKE("vcs_block_history_revisions", { request, path, anchor, index, commits })),
 	vcsLog: (repo: string | null, query: LogQuery) => typedError<Commit_Serialize[], IdeError>(__TAURI_INVOKE("vcs_log", { repo, query })),
 	vcsLogRefs: (repo: string | null) => typedError<{ [key in string]: string }, IdeError>(__TAURI_INVOKE("vcs_log_refs", { repo })),
 	vcsLogUsers: (repo: string | null) => typedError<string[], IdeError>(__TAURI_INVOKE("vcs_log_users", { repo })),
@@ -2649,6 +2651,19 @@ export type BlockHistory = {
 	revisions: BlockRevision[],
 };
 
+/**  The commit and line range used by every query in one selection history tab. */
+export type BlockHistoryAnchor = {
+	commit: string,
+	lines: [number, number],
+};
+
+/**  The revision list and its first few diffs. The rest load as the user navigates. */
+export type BlockHistorySummary = {
+	anchor: BlockHistoryAnchor | null,
+	revisions: BlockRevisionSummary[],
+	diffs: BlockRevision[],
+};
+
 /**  A commit that changed the block, with the block in its first parent and in it. */
 export type BlockRevision = {
 	id: string,
@@ -2665,6 +2680,15 @@ export type BlockRevision = {
 	/**  0-based first line of the block before and after the commit. */
 	beforeLine: number,
 	afterLine: number,
+};
+
+export type BlockRevisionSummary = {
+	id: string,
+	shortId: string,
+	author: string,
+	email: string,
+	timeMs: number | null,
+	summary: string,
 };
 
 export type Branch = {

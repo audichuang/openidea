@@ -87,6 +87,34 @@ pub struct BlockHistory {
     pub revisions: Vec<BlockRevision>,
 }
 
+/// The commit and line range used by every query in one selection history tab.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockHistoryAnchor {
+    pub commit: String,
+    pub lines: (u32, u32),
+}
+
+/// The revision list and its first few diffs. The rest load as the user navigates.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockHistorySummary {
+    pub anchor: Option<BlockHistoryAnchor>,
+    pub revisions: Vec<BlockRevisionSummary>,
+    pub diffs: Vec<BlockRevision>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockRevisionSummary {
+    pub id: String,
+    pub short_id: String,
+    pub author: String,
+    pub email: String,
+    pub time_ms: f64,
+    pub summary: String,
+}
+
 /// A commit that changed the block, with the block in its first parent and in it.
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -906,6 +934,31 @@ impl Repo {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         block_history::block_history(self, path, current_text, lines, encoding, cancel)
     }
+    pub fn block_history_summary(
+        &self,
+        path: &Path,
+        current_text: Option<&str>,
+        lines: (u32, u32),
+        encoding: impl Into<TextEncoding>,
+        cancel: &CancellationToken,
+    ) -> IdeResult<BlockHistorySummary> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        block_history::summary(self, path, current_text, lines, encoding.into(), cancel)
+    }
+
+    pub fn block_history_revisions(
+        &self,
+        path: &Path,
+        anchor: &BlockHistoryAnchor,
+        index: u32,
+        commits: &[String],
+        encoding: impl Into<TextEncoding>,
+        cancel: &CancellationToken,
+    ) -> IdeResult<Vec<BlockRevision>> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        block_history::revisions(self, path, anchor, index, commits, encoding.into(), cancel)
+    }
+
     /// Commits newest-first in topological order (children before parents).
     ///
     /// `branch` is any revision; when absent, HEAD plus all local and remote branches are

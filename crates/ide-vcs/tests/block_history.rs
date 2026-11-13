@@ -87,6 +87,49 @@ fn follows_the_block_through_edits_and_a_rename() {
 }
 
 #[test]
+fn lazy_revisions_match_the_full_history_even_after_head_moves() {
+    let fx = renamed_history();
+    let repo = fx.repo();
+    let path = fx.path("b.txt");
+    let cancel = CancellationToken::new();
+    let full = history(&repo, &path, None, (1, 2));
+    let summary = repo.block_history_summary(&path, None, (1, 2), encoding_rs::UTF_8, &cancel).unwrap();
+    let anchor = summary.anchor.unwrap();
+    assert_eq!(Some(anchor.lines), full.head_lines);
+    assert_eq!(
+        summary.revisions.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+        full.revisions.iter().map(|row| row.id.as_str()).collect::<Vec<_>>()
+    );
+    assert_eq!(summary.diffs[0].after, full.revisions[0].after);
+    fx.write("b.txt", "one\nTWO\nnew head\nfour\nFIVE\n");
+    fx.commit("Another edit");
+    for (index, expected) in full.revisions.iter().enumerate() {
+        let actual = repo
+            .block_history_revisions(
+                &path,
+                &anchor,
+                index as u32,
+                std::slice::from_ref(&expected.id),
+                encoding_rs::UTF_8,
+                &cancel,
+            )
+            .unwrap();
+        assert_eq!(serde_json::to_value(&actual[0]).unwrap(), serde_json::to_value(expected).unwrap());
+    }
+    let mismatch = repo
+        .block_history_revisions(
+            &path,
+            &anchor,
+            1,
+            std::slice::from_ref(&full.revisions[0].id),
+            encoding_rs::UTF_8,
+            &cancel,
+        )
+        .unwrap_err();
+    assert_eq!(mismatch.kind, ErrorKind::NotFound);
+}
+
+#[test]
 fn maps_an_edited_selection_to_head_lines() {
     let fx = renamed_history();
     let repo = fx.repo();

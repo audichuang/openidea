@@ -328,6 +328,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_file_mode,
         vcs::vcs_blame,
         vcs::vcs_block_history,
+        vcs::vcs_block_history_summary,
+        vcs::vcs_block_history_revisions,
         vcs::vcs_log,
         vcs::vcs_log_refs,
         vcs::vcs_log_users,
