@@ -493,13 +493,16 @@ fn run_capture(
         }
         _ => None,
     };
+    let (wake, events) = mpsc::channel();
     let capture = |mut pipe: Box<dyn Read + Send>| {
         let overflow = overflow.clone();
+        let wake = wake.clone();
         std::thread::spawn(move || {
             let mut bytes = Vec::new();
             (&mut pipe).take(max.saturating_add(1) as u64).read_to_end(&mut bytes)?;
             if bytes.len() > max {
                 overflow.store(true, std::sync::atomic::Ordering::Release);
+                let _ = wake.send(());
                 std::io::copy(&mut pipe, &mut std::io::sink())?;
             }
             Ok(bytes)
@@ -507,6 +510,7 @@ fn run_capture(
     };
     let stdout = capture(Box::new(child.stdout.take().expect("piped stdout")));
     let stderr = capture(Box::new(child.stderr.take().expect("piped stderr")));
+    drop(wake);
     let status = loop {
         if cancel.is_cancelled() || overflow.load(std::sync::atomic::Ordering::Acquire) {
             terminate_tree(&mut child, KILL_GRACE);
@@ -524,7 +528,12 @@ fn run_capture(
         if let Some(status) = child.try_wait()? {
             break status;
         }
-        std::thread::sleep(Duration::from_millis(20));
+        // The readers wake this loop when both pipes close or a capture
+        // exceeds its limit. Keep checking cancellation while they are open.
+        // EOF can precede process exit, so poll briefly in that final gap.
+        if events.recv_timeout(Duration::from_millis(20)) == Err(mpsc::RecvTimeoutError::Disconnected) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
     };
     if let Some(w) = writer {
         let _ = w.join();
@@ -779,6 +788,25 @@ fn spawn_reader(
         flush(&mut pending);
         let _ = tx.send(Event::Closed);
     })
+}
+
+#[cfg(test)]
+mod capture_tests {
+    use super::*;
+    use ide_core::error::ErrorKind;
+
+    #[test]
+    fn bounded_capture_rejects_overflow_and_retains_complete_output_at_limit() {
+        let root = tempfile::tempdir().unwrap();
+        let cancel = CancellationToken::new();
+        let args = ["--version"];
+        let complete = run_cancellable(root.path(), &args, &cancel).unwrap();
+        let size = complete.stdout.len();
+        let exact = run_bounded(root.path(), &args, &cancel, size).unwrap();
+        assert_eq!(exact.stdout, complete.stdout);
+        let error = run_bounded(root.path(), &args, &cancel, size - 1).err().unwrap();
+        assert_eq!(error.kind, ErrorKind::InvalidInput);
+    }
 }
 
 #[cfg(test)]
