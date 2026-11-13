@@ -160,14 +160,33 @@ jobs:
           # Why threads: macOS stays one job (scarce runners), and its tests are mostly waits on
           # git subprocesses and timeouts, so oversubscribing its 3 cores overlaps the waits.
           - { os: macos-latest, threads: "6" }
-          - os: ubuntu-22.04
+          # Why filter: v0.1.43's case-only rename in agent Accept fails on case-sensitive disks; upstream
+          # fixed it after the release (c727c5b84, l0ng-ai/openidea#2970). Drop once the base has it (#252).
+          - {
+              os: ubuntu-22.04,
+              filter: "not (package(ide-agent) & test(=worktree::tests::accept_applies_a_case_only_rename))",
+            }
           # Three runners keep the projected Windows critical path below the single macOS job.
           # slice balances measured test time better than per-binary count (533 -> 497 test-seconds).
           # Why filter: ide-host's relay:: tests time out on these runners (#200); the relay only
           # runs inside Linux dev containers (ide-remote container_tunnel.rs), never on Windows.
-          - { os: windows-latest, partition: "1/3", filter: "not (package(ide-host) & test(/^relay::/))" }
-          - { os: windows-latest, partition: "2/3", filter: "not (package(ide-host) & test(/^relay::/))" }
-          - { os: windows-latest, partition: "3/3", filter: "not (package(ide-host) & test(/^relay::/))" }
+          # The other three fail on Windows in upstream's own CI too (l0ng-ai/openidea run 43340611117);
+          # drop each once a rebase brings upstream's fix (#252).
+          - {
+              os: windows-latest,
+              partition: "1/3",
+              filter: "not (package(ide-host) & test(/^relay::/)) & not (package(ide-remote) & test(=download_into_copies_only_the_selected_items)) & not (package(ide-host) & test(=background_tasks_scale_and_renew_cpu_fuel_budget)) & not (package(ide-host) & test(=database_connect_asks_only_the_invoking_window_and_uses_normal_connection_flow))",
+            }
+          - {
+              os: windows-latest,
+              partition: "2/3",
+              filter: "not (package(ide-host) & test(/^relay::/)) & not (package(ide-remote) & test(=download_into_copies_only_the_selected_items)) & not (package(ide-host) & test(=background_tasks_scale_and_renew_cpu_fuel_budget)) & not (package(ide-host) & test(=database_connect_asks_only_the_invoking_window_and_uses_normal_connection_flow))",
+            }
+          - {
+              os: windows-latest,
+              partition: "3/3",
+              filter: "not (package(ide-host) & test(/^relay::/)) & not (package(ide-remote) & test(=download_into_copies_only_the_selected_items)) & not (package(ide-host) & test(=background_tasks_scale_and_renew_cpu_fuel_budget)) & not (package(ide-host) & test(=database_connect_asks_only_the_invoking_window_and_uses_normal_connection_flow))",
+            }
     runs-on: ${{ matrix.os }}
     # actions:write lets the develop run delete the target caches its save supersedes.
     permissions:
