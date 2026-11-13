@@ -429,7 +429,7 @@ impl ProcessManager {
         // The job follows the launch's tree kernel-side; Stop reaches what the launcher
         // started even after the launcher itself is gone.
         #[cfg(windows)]
-        let job = ide_core::process::Job::for_child(&child);
+        let job = untracked_tree_warning(ide_core::process::Job::for_child(&child), &config.name);
 
         let id = RunId::next();
         let stdin = (|| -> std::io::Result<_> {
@@ -610,7 +610,7 @@ impl ProcessManager {
             pty: Some(Mutex::new(Some(pair.master))),
             // By pid, not by handle: the PTY's child exposes its id only.
             #[cfg(windows)]
-            job: child.process_id().and_then(ide_core::process::Job::for_pid),
+            job: untracked_tree_warning(child.process_id().and_then(ide_core::process::Job::for_pid), &config.name),
             stop,
             output: on_output.clone(),
             exited: AtomicBool::new(false),
@@ -1049,6 +1049,16 @@ fn add_raw_args(cmd: &mut Command, args: &[String]) {
 #[cfg(not(windows))]
 fn add_raw_args(cmd: &mut Command, args: &[String]) {
     cmd.args(args);
+}
+
+/// Without a job, Stop and quitting fall back to `taskkill /T /F` from the tracked pid, which
+/// misses descendants a launcher left behind; the warning makes a leftover process traceable.
+#[cfg(windows)]
+fn untracked_tree_warning(job: Option<ide_core::process::Job>, name: &str) -> Option<ide_core::process::Job> {
+    if job.is_none() {
+        tracing::warn!(run = name, "could not put the run in a job object; its process tree is tracked by pid only");
+    }
+    job
 }
 
 #[cfg(windows)]
