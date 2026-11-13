@@ -21,6 +21,7 @@
       "nsis": {
         "installMode": "both",
         "template": "windows/installer.nsi",
+        "installerHooks": "windows/hooks.nsh",
         "installerIcon": "icons/icon.ico",
         "uninstallerIcon": "icons/icon.ico"
       }
