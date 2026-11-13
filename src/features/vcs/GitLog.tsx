@@ -231,8 +231,6 @@ export function LogView() {
   const shown = useGitLog((s) => s.shownLog);
   const active = !scope || scope === shown;
   const version = useVcs((s) => s.version);
-  const commits = useGitLog((s) => s.commits);
-  const selection = useGitLog((s) => s.selection);
   const root = useVcs((s) => s.root);
   const repo = useLogRepositories();
   const readOnly = useReadOnlyLog();
@@ -348,12 +346,18 @@ export function LogView() {
         <>
           <SplitHandle />
           <SplitPanel id="details" defaultSize="28%" minSize="15%">
-            <CommitDetails key={selection.join(" ") || "none"} commits={commits} />
+            <LogCommitDetails />
           </SplitPanel>
         </>
       )}
     </SplitGroup>
   );
+}
+
+function LogCommitDetails() {
+  const commits = useGitLog((s) => s.commits);
+  const selection = useGitLog((s) => s.selection);
+  return <CommitDetails key={selection.join(" ") || "none"} commits={commits} />;
 }
 
 // --- branches ---------------------------------------------------------------
@@ -1564,7 +1568,10 @@ function CommitList() {
     if (c) {
       if (e.shiftKey) extendCommitSelection(commitKey(c), commits);
       else selectCommit(commitKey(c));
-      virtualizer.scrollToIndex(next, { align: "auto" });
+      // Fixed rows already in view do not need a scroll command or reconciliation.
+      const offset = virtualizer.getOffsetForIndex(next);
+      if (offset && offset[1] !== "auto" && offset[0] !== virtualizer.scrollOffset)
+        virtualizer.scrollToIndex(next, { align: "auto" });
     }
   };
 
