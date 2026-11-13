@@ -445,11 +445,53 @@ pub async fn vcs_block_history(
     lines: (u32, u32),
 ) -> IdeResult<BlockHistory> {
     let project = host.project(window)?;
-    let cancel = host.begin_request(request);
+    let cancel = host.begin_project_read_request(window, request);
     let result = blocking(move || {
         let text = text.or_else(|| project.documents.text_of(&path));
         project.with_backend_of(&path, |r| {
             r.block_history(&path, text.as_deref(), lines, project.vcs_encoding(&path, None)?, &cancel)
+        })
+    })
+    .await;
+    host.end_request(request);
+    result
+}
+
+pub async fn vcs_block_history_summary(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    path: PathBuf,
+    text: Option<String>,
+    lines: (u32, u32),
+) -> IdeResult<BlockHistorySummary> {
+    let project = host.project(window)?;
+    let cancel = host.begin_project_read_request(window, request);
+    let result = blocking(move || {
+        let text = text.or_else(|| project.documents.text_of(&path));
+        project.with_repo_of(&path, |r| {
+            r.block_history_summary(&path, text.as_deref(), lines, project.vcs_encoding(&path, None)?, &cancel)
+        })
+    })
+    .await;
+    host.end_request(request);
+    result
+}
+
+pub async fn vcs_block_history_revisions(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    path: PathBuf,
+    anchor: BlockHistoryAnchor,
+    index: u32,
+    commits: Vec<String>,
+) -> IdeResult<Vec<BlockRevision>> {
+    let project = host.project(window)?;
+    let cancel = host.begin_project_read_request(window, request);
+    let result = blocking(move || {
+        project.with_repo_of(&path, |r| {
+            r.block_history_revisions(&path, &anchor, index, &commits, project.vcs_encoding(&path, None)?, &cancel)
         })
     })
     .await;
