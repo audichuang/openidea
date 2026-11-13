@@ -1,4 +1,9 @@
-import { pasteClipboardFiles, readClipboardImage, readClipboardPlainText, readClipboardText } from "@/platform/clipboard";
+import {
+  pasteClipboardFiles,
+  readClipboardImage,
+  readClipboardPlainText,
+  readClipboardText,
+} from "@/platform/clipboard";
 import { toBase64 } from "@/platform/base64";
 import { call, commands, type TerminalId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
