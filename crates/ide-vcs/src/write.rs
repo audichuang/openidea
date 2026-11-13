@@ -10,6 +10,8 @@ use crate::{
 };
 use gix::bstr::{BStr, ByteSlice};
 use ide_core::{CancellationToken, IdeError, IdeResult};
+use std::fs::File;
+use std::io;
 use std::path::{Path, PathBuf};
 
 const UNCOMMITTED_AUTHOR: &str = "Not Committed Yet";
@@ -432,9 +434,18 @@ fn select_into(
     options: &CommitOptions,
     encoding: &dyn Fn(&Path) -> IdeResult<TextEncoding>,
 ) -> IdeResult<Vec<String>> {
-    let index = r.git_dir.join("index");
-    if index.exists() {
-        std::fs::copy(&index, &tmp.0)?;
+    match File::open(r.git_dir.join("index")) {
+        Ok(mut index) => {
+            let metadata = index.metadata()?;
+            let mut copy = File::create(&tmp.0)?;
+            copy.set_permissions(metadata.permissions())?;
+            io::copy(&mut index, &mut copy)?;
+            // Git uses the index mtime to detect worktree entries whose cached
+            // size and timestamps might still match after a same-size edit.
+            copy.set_modified(metadata.modified()?)?;
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
     }
     let env = [("GIT_INDEX_FILE", tmp.0.as_os_str())];
     let rel_paths = |paths: &[ide_core::IpcPath]| -> IdeResult<Vec<String>> {
