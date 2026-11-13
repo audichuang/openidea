@@ -315,7 +315,6 @@ pub fn client_accepts(event: &IdeEvent) -> bool {
         IdeEvent::McpRequest { .. }
         | IdeEvent::McpRequestClosed { .. }
         | IdeEvent::WindowGroupsChanged
-        | IdeEvent::WindowFullscreenChanged
         | IdeEvent::UpdateStatusChanged { .. }
         | IdeEvent::UpdateAvailable { .. } => false,
         IdeEvent::DbSourcesChanged
@@ -452,7 +451,6 @@ mod tests {
                 status: ide_core::updates::UpdateStatus { last_checked: None, checking: true },
             },
             IdeEvent::WindowGroupsChanged,
-            IdeEvent::WindowFullscreenChanged,
         ] {
             assert!(!client_accepts(&event), "{event:?}");
         }
