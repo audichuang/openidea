@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { EditorState } from "@codemirror/state";
-import type { BlockHistory, BlockRevision } from "@/bindings";
+import type { BlockHistorySummary, BlockRevision } from "@/bindings";
 
 const vcsBlockHistory = vi.fn();
+const vcsBlockHistorySummary = vi.fn();
+const vcsBlockHistoryRevisions = vi.fn();
+const remoteSession = vi.fn<() => { commands: string[] } | null>(() => null);
 const cancelRequest = vi.fn();
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
@@ -13,11 +16,14 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     isTauri: () => true,
     commands: {
       ...real.commands,
+      vcsBlockHistorySummary: (...args: unknown[]) => vcsBlockHistorySummary(...args),
+      vcsBlockHistoryRevisions: (...args: unknown[]) => vcsBlockHistoryRevisions(...args),
       vcsBlockHistory: (...args: unknown[]) => vcsBlockHistory(...args),
       cancelRequest: (id: number) => cancelRequest(id),
     },
   };
 });
+vi.mock("@/platform/remote", () => ({ useRemote: { getState: () => ({ session: remoteSession() }) } }));
 vi.mock("../DiffEditor", () => ({
   DiffEditor: ({
     input,
@@ -48,13 +54,10 @@ const revision = (id: string, summary: string, before: string, after: string): B
 });
 
 const TEXT = "one\nTWO\nTHREE\nfour\n";
-const history: BlockHistory = {
-  headLines: [1, 2],
-  revisions: [
-    revision("a", "Shout three", "TWO\nthree\n", "TWO\nTHREE\n"),
-    revision("b", "Shout two", "two\nthree\n", "TWO\nthree\n"),
-  ],
-};
+const first = revision("a", "Shout three", "TWO\nthree\n", "TWO\nTHREE\n");
+const second = revision("b", "Shout two", "two\nthree\n", "TWO\nthree\n");
+const anchor = { commit: "a".repeat(40), lines: [1, 2] as [number, number] };
+const history: BlockHistorySummary = { anchor, revisions: [first, second], diffs: [first] };
 const ok = (data: unknown) => Promise.resolve({ status: "ok", data });
 
 function open(data: SelectionHistoryData) {
@@ -63,6 +66,9 @@ function open(data: SelectionHistoryData) {
 
 beforeEach(() => {
   vcsBlockHistory.mockReset();
+  vcsBlockHistorySummary.mockReset();
+  vcsBlockHistoryRevisions.mockReset();
+  remoteSession.mockReset().mockReturnValue(null);
   cancelRequest.mockReset().mockReturnValue(ok(null));
 });
 
@@ -90,16 +96,17 @@ describe("rows", () => {
     const edited = historyRows(history, "TWO\nTHREE!\n");
     expect(edited[0]).toEqual({ kind: "local", head: "TWO\nTHREE\n", current: "TWO\nTHREE!\n" });
     expect(edited).toHaveLength(3);
-    expect(historyRows({ headLines: null, revisions: [] }, "new\n")).toEqual([]);
+    expect(historyRows({ anchor: null, revisions: [], diffs: [] }, "new\n")).toEqual([]);
   });
 });
 
 describe("History for Selection tab", () => {
   it("asks for the selected lines of the editor's text and diffs each commit's block", async () => {
-    vcsBlockHistory.mockReturnValue(ok(history));
+    vcsBlockHistorySummary.mockReturnValue(ok(history));
+    vcsBlockHistoryRevisions.mockReturnValue(ok([second]));
     open({ path: "/p/src/a.txt", lines: [1, 2], text: "one\nTWO\nTHREE!\nfour\n" });
     await screen.findByText("Shout three");
-    const [request, path, text, lines] = vcsBlockHistory.mock.calls[0]!;
+    const [request, path, text, lines] = vcsBlockHistorySummary.mock.calls[0]!;
     expect([typeof request, path, text, lines]).toEqual(["number", "/p/src/a.txt", "one\nTWO\nTHREE!\nfour\n", [1, 2]]);
     expect(screen.getByText("a.txt:2-3")).toBeTruthy();
     // The unsaved edit comes first, against HEAD's block.
@@ -109,28 +116,61 @@ describe("History for Selection tab", () => {
       expect(screen.getByTestId("diff").textContent).toBe("bbbbbbb^: two\nthree\n| bbbbbbb: TWO\nthree\n"),
     );
     expect(screen.getByText(/^bbbbbbb · Ada · /)).toBeTruthy();
+    expect(vcsBlockHistoryRevisions).toHaveBeenCalledWith(expect.any(Number), "/p/src/a.txt", anchor, 1, [second.id]);
+    fireEvent.click(screen.getByText("Shout three"));
+    fireEvent.click(screen.getByText("Shout two"));
+    expect(vcsBlockHistoryRevisions).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores an older response after the user changes revision", async () => {
+    vcsBlockHistorySummary.mockReturnValue(ok(history));
+    let complete!: (result: { status: string; data: BlockRevision[] }) => void;
+    vcsBlockHistoryRevisions.mockReturnValue(
+      new Promise((resolve) => {
+        complete = resolve;
+      }),
+    );
+    open({ path: "/p/src/a.txt", lines: [1, 2], text: TEXT });
+    await screen.findByText("Shout two");
+    fireEvent.click(screen.getByText("Shout two"));
+    await waitFor(() => expect(vcsBlockHistoryRevisions).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByText("Shout three"));
+    expect(cancelRequest).toHaveBeenCalledWith(vcsBlockHistoryRevisions.mock.calls[0]![0]);
+    await act(async () => complete({ status: "ok", data: [second] }));
+    expect(screen.getByTestId("diff").textContent).toBe("aaaaaaa^: TWO\nthree\n| aaaaaaa: TWO\nTHREE\n");
+  });
+
+  it("still shows revisions from a released remote server", async () => {
+    remoteSession.mockImplementation(() => ({ commands: ["vcs_block_history"] }));
+    vcsBlockHistory.mockReturnValue(ok({ headLines: [1, 2], revisions: [first, second] }));
+    open({ path: "/p/src/a.txt", lines: [1, 2], text: TEXT });
+    fireEvent.click(await screen.findByText("Shout two"));
+    expect(screen.getByTestId("diff").textContent).toContain("bbbbbbb: TWO");
+    expect(vcsBlockHistoryRevisions).not.toHaveBeenCalled();
   });
 
   it("says why there is nothing to show", async () => {
-    vcsBlockHistory.mockReturnValue(ok({ headLines: null, revisions: [] }));
+    vcsBlockHistorySummary.mockReturnValue(ok({ anchor: null, revisions: [], diffs: [] }));
     const { unmount } = open({ path: "/p/a.txt", lines: [0, 0], text: "new\n" });
     await screen.findByText("These lines are not committed yet");
     unmount();
-    vcsBlockHistory.mockReturnValue(ok({ headLines: [0, 0], revisions: [] }));
+    vcsBlockHistorySummary.mockReturnValue(ok({ anchor, revisions: [], diffs: [] }));
     open({ path: "/p/a.txt", lines: [0, 0], text: "old\n" });
     await screen.findByText("No commits changed these lines");
   });
 
   it("shows Git's error and cancels a request still running when closed", async () => {
-    vcsBlockHistory.mockReturnValueOnce(
+    vcsBlockHistorySummary.mockReturnValueOnce(
       Promise.resolve({ status: "error", error: { kind: "internal", message: "fatal: bad range" } }),
     );
     const { unmount } = open({ path: "/p/a.txt", lines: [0, 0], text: "x\n" });
     await screen.findByText(/fatal: bad range/);
     unmount();
     expect(cancelRequest).not.toHaveBeenCalled();
-    vcsBlockHistory.mockReturnValue(new Promise(() => {}));
-    open({ path: "/p/a.txt", lines: [0, 0], text: "x\n" }).unmount();
-    expect(cancelRequest).toHaveBeenCalledWith(vcsBlockHistory.mock.calls.at(-1)![0]);
+    vcsBlockHistorySummary.mockReturnValue(new Promise(() => {}));
+    const pending = open({ path: "/p/a.txt", lines: [0, 0], text: "x\n" });
+    await waitFor(() => expect(vcsBlockHistorySummary).toHaveBeenCalledTimes(2));
+    pending.unmount();
+    expect(cancelRequest).toHaveBeenCalledWith(vcsBlockHistorySummary.mock.calls.at(-1)![0]);
   });
 });

@@ -178,6 +178,24 @@ async fn restricted_vcs_commands_run_no_program_of_the_repository() {
         call!("vcs_file_at", "", vcs::vcs_file_at(host, w, file.clone(), None)),
         call!("vcs_blame", "", vcs::vcs_blame(host, w, file.clone(), None, None)),
         call!("vcs_block_history", "", vcs::vcs_block_history(host, w, RequestId(1), file.clone(), None, (0, 1))),
+        call!(
+            "vcs_block_history_summary",
+            "",
+            vcs::vcs_block_history_summary(host, w, RequestId(3), file.clone(), None, (0, 1))
+        ),
+        call!(
+            "vcs_block_history_revisions",
+            "",
+            vcs::vcs_block_history_revisions(
+                host,
+                w,
+                RequestId(4),
+                file.clone(),
+                ide_vcs::BlockHistoryAnchor { commit: project.head.clone(), lines: (0, 1) },
+                0,
+                vec![project.first.clone()]
+            )
+        ),
         call!("vcs_log", "", vcs::vcs_log(host, w, root(), Default::default())),
         call!("vcs_log_refs", "", vcs::vcs_log_refs(host, w, root())),
         call!("vcs_log_users", "", vcs::vcs_log_users(host, w, root())),
