@@ -91,6 +91,34 @@ pub async fn vcs_block_history(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn vcs_block_history_summary(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    path: PathBuf,
+    text: Option<String>,
+    lines: (u32, u32),
+) -> IdeResult<BlockHistorySummary> {
+    ide_host::ops::vcs::vcs_block_history_summary(&state.host, window.label(), request, path, text, lines).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_block_history_revisions(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    path: PathBuf,
+    anchor: BlockHistoryAnchor,
+    index: u32,
+    commits: Vec<String>,
+) -> IdeResult<Vec<BlockRevision>> {
+    ide_host::ops::vcs::vcs_block_history_revisions(&state.host, window.label(), request, path, anchor, index, commits)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn vcs_blame(
     window: Window,
     state: State<'_, AppState>,
