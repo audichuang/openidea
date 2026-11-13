@@ -673,6 +673,55 @@ fn file_history_through_parallel_renames_names_the_path_of_each_revision() {
 }
 
 #[test]
+fn file_history_keeps_independent_creations_and_follows_each_rename() {
+    let (_tmp, dir) = history_repo();
+    commit(&dir, "base.txt", "Root");
+    git(&dir, &["switch", "-qc", "created"]);
+    commit(&dir, "shared.txt", "Created independently");
+    git(&dir, &["switch", "-q", "main"]);
+    let hash_name = "0123456789abcdef0123456789abcdef01234567";
+    commit(&dir, hash_name, "Created original");
+    git(&dir, &["mv", hash_name, "shared.txt"]);
+    git(&dir, &["commit", "-qm", "Renamed original"]);
+    git(&dir, &["switch", "-qc", "other", "main~2"]);
+    commit(&dir, "other.txt", "Created other");
+    git(&dir, &["mv", "other.txt", "shared.txt"]);
+    git(&dir, &["commit", "-qm", "Renamed other"]);
+
+    let repo = Repo::discover(&dir).unwrap().unwrap();
+    let history = |branches| {
+        let mut rows = repo
+            .log(&LogQuery {
+                path: Some("shared.txt".into()),
+                branches,
+                follow: true,
+                summary_only: true,
+                ..Default::default()
+            })
+            .unwrap()
+            .into_iter()
+            .map(|c| (c.summary, c.history_path.unwrap()))
+            .collect::<Vec<_>>();
+        rows.sort();
+        rows
+    };
+    assert_eq!(
+        history(vec![]),
+        pairs(&[
+            ("Created independently", "shared.txt"),
+            ("Created original", hash_name),
+            ("Created other", "other.txt"),
+            ("Renamed original", "shared.txt"),
+            ("Renamed other", "shared.txt"),
+        ])
+    );
+    assert_eq!(
+        history(vec!["main".into()]),
+        pairs(&[("Created original", hash_name), ("Renamed original", "shared.txt")])
+    );
+}
+
+#[test]
 fn file_history_through_a_cyclic_rename() {
     let (_tmp, dir) = history_repo();
     commit(&dir, "a.txt", "Created a");
