@@ -325,7 +325,9 @@ export const commands = {
 	/**
 	 *  The clipboard's plain text, read natively as [`clipboard_write_text`] writes it: a Paste
 	 *  from a menu has no paste event, and WebKitGTK gives `navigator.clipboard.readText()` no
-	 *  text there (#3041). None on Windows, where the WebView's clipboard is used.
+	 *  text there (#3041), and WebKit on macOS asks the user to confirm a paste the app started
+	 *  itself (menu, command, shortcut) with a "Paste" callout. Windows reads `CF_UNICODETEXT`
+	 *  too; None there when the clipboard stays busy, and the WebView reads it.
 	 */
 	clipboardText: () => typedError<string | null, IdeError>(__TAURI_INVOKE("clipboard_text")),
 	/**  Absolute paths on the clipboard, empty when it holds no file list. */
@@ -341,12 +343,6 @@ export const commands = {
 	mime: string,
 	data: number[],
 } | null, IdeError>(__TAURI_INVOKE("clipboard_image")),
-	/**
-	 *  The clipboard's text, read natively so WebKit does not ask the user to confirm
-	 *  a paste the app started itself (menu, command, shortcut); `None` where the
-	 *  webview should read it (`ide_clipboard::text`).
-	 */
-	clipboardText: () => typedError<string | null, IdeError>(__TAURI_INVOKE("clipboard_text")),
 	/**
 	 *  The clipboard's image as a PNG data URL, for a paste whose event carried no
 	 *  files: WebKitGTK leaves `clipboardData` empty for a raw image (a screenshot).
