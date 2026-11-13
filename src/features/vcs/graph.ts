@@ -102,6 +102,14 @@ export function computeGraph(
   const describe = (s: GraphSegment, lane: Lane) =>
     track ? { ...s, edge: `${lane.source ?? ""}\0${lane.id}`, source: lane.source, kind: lane.kind } : s;
 
+  // A lane stays at the same index until it reaches its target. Share its
+  // straight segment between rows, and copy it only when a later pass edits it.
+  const segments = lanes.map((lane, i) => (lane ? describe(seg(i, i, lane.color, lane.dashed), lane) : null));
+  const putLane = (index: number, lane: Lane) => {
+    lanes[index] = lane;
+    segments[index] = describe(seg(index, index, lane.color, lane.dashed), lane);
+  };
+
   let nextColor = state.nextColor;
   const rows: GraphRow[] = [];
 
@@ -126,18 +134,22 @@ export function computeGraph(
     const upTargets: string[] = [];
     lanes.forEach((l, i) => {
       if (!l) return;
-      up.push(describe(seg(i, l.id === c.id ? lane : i, l.color, l.dashed), l));
+      up.push(l.id === c.id && lane !== i ? describe(seg(i, lane, l.color, l.dashed), l) : segments[i]!);
       upTargets.push(l.id);
     });
-    for (const m of matching) lanes[m] = null;
+    for (const m of matching) {
+      lanes[m] = null;
+      segments[m] = null;
+    }
     if (lane >= lanes.length) lanes.length = lane + 1;
     lanes[lane] = null;
+    segments[lane] = null;
 
     const down: GraphSegment[] = [];
     const downTargets: string[] = [];
     lanes.forEach((l, i) => {
       if (l) {
-        down.push(describe(seg(i, i, l.color, l.dashed), l));
+        down.push(segments[i]!);
         downTargets.push(l.id);
       }
     });
@@ -163,7 +175,7 @@ export function computeGraph(
       // The first parent continues this lane even if another lane also leads to it
       // (both lines then converge at the parent's node, like `git log --graph`).
       if (k === 0) {
-        lanes[lane] = { ...laneOf(p, color, dashed), ...info };
+        putLane(lane, { ...laneOf(p, color, dashed), ...info });
         down.push(describe(seg(lane, lane, color, dashed), { ...info, color }));
         downTargets.push(p);
         return;
@@ -178,12 +190,13 @@ export function computeGraph(
       }
       const slot = firstFree(lanes);
       const col = stableColor(p, nextColor++);
-      lanes[slot] = { ...laneOf(p, col, dashed), ...info };
+      putLane(slot, { ...laneOf(p, col, dashed), ...info });
       down.push(describe(seg(lane, slot, col, dashed), { ...info, color: col }));
       downTargets.push(p);
     });
 
     while (lanes.length && lanes[lanes.length - 1] === null) lanes.pop();
+    segments.length = lanes.length;
     const widthAfter = down.reduce((width, segment) => Math.max(width, segment.to + 1), 0);
     rows.push({
       ...(track ? { id: c.id } : {}),
@@ -504,60 +517,68 @@ const LONG_EDGE = 30;
 /** Rows of a hidden long edge still drawn next to each of its ends. */
 const LONG_EDGE_STUB = 2;
 
-const onLane = (i: number) => (s: GraphSegment) => s.from === i && s.to === i;
-
-/** Lanes a row's vertical lines pass straight through (other than its node's). */
-function passingLanes(row: GraphRow): Set<number> {
-  const out = new Set<number>();
-  for (const s of row.up)
-    if (s.from === s.to && s.from !== row.lane && row.down.some((d) => d.from === s.from && d.to === s.from))
-      out.add(s.from);
-  return out;
-}
-
 /**
  * Show Long Edges off: the middle of a straight run of a lane through `minLength` or
  * more rows is not drawn; the visible stubs end in arrows (IDEA's long-edge arrows).
  */
 export function hideLongEdges(rows: readonly GraphRow[], minLength = LONG_EDGE): GraphRow[] {
-  const out = rows.slice();
-  const edit = (r: number, fn: (row: GraphRow) => GraphRow) => {
-    out[r] = fn(out[r]!);
-  };
-  const hide = (i: number, start: number, end: number) => {
-    const lane = onLane(i);
-    const from = start + LONG_EDGE_STUB;
-    const to = end - 1 - LONG_EDGE_STUB;
-    for (let k = from; k <= to; k++) {
-      edit(k, (row) => ({
-        ...row,
-        up: row.up.filter((s) => !lane(s)),
-        down: row.down.filter((s) => !lane(s)),
-        upTargets: row.upTargets?.filter((_, i) => !lane(row.up[i]!)),
-        downTargets: row.downTargets?.filter((_, i) => !lane(row.down[i]!)),
-      }));
-    }
-    edit(from - 1, (row) => ({
-      ...row,
-      down: row.down.map((s) => (lane(s) ? { ...s, arrow: "down", targetRow: end } : s)),
-    }));
-    edit(to + 1, (row) => ({
-      ...row,
-      up: row.up.map((s) => (lane(s) ? { ...s, arrow: "up", targetRow: start - 1 } : s)),
-    }));
-  };
-  // One pass over the rows, following every lane's current run at once.
+  type Run = { lane: number; from: number; to: number; start: number; end: number };
+  const starts = new Map<number, Run[]>();
+  const ends = new Map<number, Run[]>();
   const runs = new Map<number, number>();
-  for (let r = 0; r <= rows.length; r++) {
-    const through = r < rows.length ? passingLanes(rows[r]!) : new Set<number>();
+  const record = (events: Map<number, Run[]>, at: number, run: Run) => {
+    const existing = events.get(at);
+    if (existing) existing.push(run);
+    else events.set(at, [run]);
+  };
+  const finish = (lane: number, start: number, end: number) => {
+    if (end - start < minLength) return;
+    const from = start + LONG_EDGE_STUB;
+    const to = end - LONG_EDGE_STUB;
+    const run = { lane, from, to, start, end };
+    record(starts, from - 1, run);
+    record(ends, to, run);
+  };
+
+  for (const [index, row] of rows.entries()) {
+    const outgoing = new Set<number>();
+    for (const s of row.down) if (s.from === s.to && s.from !== row.lane) outgoing.add(s.from);
+    const through = new Set<number>();
+    for (const s of row.up) if (s.from === s.to && outgoing.has(s.from)) through.add(s.from);
     for (const [lane, start] of runs) {
       if (through.has(lane)) continue;
-      if (r - start >= minLength) hide(lane, start, r);
+      finish(lane, start, index);
       runs.delete(lane);
     }
-    for (const lane of through) if (!runs.has(lane)) runs.set(lane, r);
+    for (const lane of through) if (!runs.has(lane)) runs.set(lane, index);
   }
-  return out;
+  for (const [lane, start] of runs) finish(lane, start, rows.length);
+  if (!starts.size) return rows.slice();
+
+  // Sweep the intervals together so a row crossed by many long edges is only
+  // filtered once. Both half-edges keep their matching navigation targets.
+  const hidden = new Map<number, Run>();
+  return rows.map((row, index) => {
+    for (const run of starts.get(index) ?? []) hidden.set(run.lane, run);
+    if (!hidden.size) return row;
+    const filter = (segments: GraphSegment[], targets: string[] | undefined, up: boolean) => {
+      const visible: GraphSegment[] = [];
+      const visibleTargets = targets ? ([] as string[]) : undefined;
+      for (const [i, s] of segments.entries()) {
+        const run = s.from === s.to ? hidden.get(s.from) : undefined;
+        if (run && index >= run.from && index < run.to) continue;
+        const targetRow =
+          run && (up && index === run.to ? run.start - 1 : !up && index === run.from - 1 ? run.end : undefined);
+        visible.push(targetRow === undefined ? s : { ...s, arrow: up ? "up" : "down", targetRow });
+        visibleTargets?.push(targets![i]!);
+      }
+      return [visible, visibleTargets] as const;
+    };
+    const [up, upTargets] = filter(row.up, row.upTargets, true);
+    const [down, downTargets] = filter(row.down, row.downTargets, false);
+    for (const run of ends.get(index) ?? []) hidden.delete(run.lane);
+    return { ...row, up, down, upTargets, downTargets };
+  });
 }
 
 /**
