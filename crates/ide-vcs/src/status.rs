@@ -21,16 +21,15 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
     // gitoxide stops at the first IO error (a directory it may not read), where git warns
     // and lists the rest: git answers then.
     // The user's "detect changes with git" option, or a repository gitoxide cannot read fully.
-    let (map, conflicts) = if r.cli_status.load(std::sync::atomic::Ordering::Acquire)
-        || r.gix().is_ok_and(|repo| needs_git_cli(&repo))
-    {
-        cli_status(r, &ignored)?
-    } else {
-        gix_status(r, &ignored).or_else(|e| {
-            tracing::debug!("status via gitoxide failed, asking git: {}", e.message);
-            cli_status(r, &ignored)
-        })?
-    };
+    let (map, conflicts) =
+        if r.cli_status.load(std::sync::atomic::Ordering::Acquire) || r.gix().is_ok_and(|repo| needs_git_cli(&repo)) {
+            cli_status(r, &ignored)?
+        } else {
+            gix_status(r, &ignored).or_else(|e| {
+                tracing::debug!("status via gitoxide failed, asking git: {}", e.message);
+                cli_status(r, &ignored)
+            })?
+        };
     Ok(collect(r, &ignored, map, conflicts))
 }
 
