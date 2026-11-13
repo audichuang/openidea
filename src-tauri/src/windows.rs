@@ -1427,6 +1427,7 @@ fn launch_for(path: PathBuf, is_dir: bool) -> Launch {
 
 /// Second instance launched: focus this one and open its path argument.
 pub fn on_second_instance(app: &AppHandle, args: Vec<String>, cwd: String) {
+    tracing::info!(?args, "another launch handed its arguments to this instance");
     if app.state::<WindowsState>().cli.lock().push(args, cwd) {
         drain_cli(app);
     }

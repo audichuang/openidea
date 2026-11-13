@@ -629,14 +629,26 @@ pub async fn app_install_update(
             _ = token.cancelled() => return Err(IdeError::cancelled()),
         };
         let _ = on_progress.send(UpdateProgress::Installing);
-        tauri::async_runtime::spawn_blocking(move || update.install(bytes))
-            .await
-            .map_err(|e| IdeError::internal(e.to_string()))?
-            .map_err(|e| IdeError::internal(e.to_string()))
+        install(update, bytes).await
     }
     .await;
     state.host.end_request(request);
     result
+}
+
+#[cfg(not(windows))]
+async fn install(update: tauri_plugin_updater::Update, bytes: Vec<u8>) -> IdeResult<()> {
+    tauri::async_runtime::spawn_blocking(move || update.install(bytes))
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
+        .map_err(|e| IdeError::internal(e.to_string()))
+}
+
+/// Installing on Windows ends the process at once, so it waits for the restart's quit flow.
+#[cfg(windows)]
+async fn install(update: tauri_plugin_updater::Update, bytes: Vec<u8>) -> IdeResult<()> {
+    crate::fork_update_install::stage(update, bytes);
+    Ok(())
 }
 
 /// Release notes of `version` from the update manifest (`latest.json`), read
