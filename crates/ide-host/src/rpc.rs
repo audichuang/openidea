@@ -177,7 +177,6 @@ pub fn event_sink(peer: Arc<OnceLock<Peer>>, window: Option<String>) -> ide_core
 pub fn client_accepts(event: &IdeEvent, trusted: bool) -> bool {
     match event {
         IdeEvent::WindowGroupsChanged
-        | IdeEvent::WindowFullscreenChanged
         | IdeEvent::RemoteConnectionLost { .. }
         | IdeEvent::UpdateStatusChanged { .. }
         | IdeEvent::UpdateAvailable { .. } => false,
@@ -309,7 +308,6 @@ mod tests {
                 status: ide_core::updates::UpdateStatus { last_checked: None, checking: true },
             },
             IdeEvent::WindowGroupsChanged,
-            IdeEvent::WindowFullscreenChanged,
         ] {
             assert!(!client_accepts(&event, false), "{event:?}");
         }
@@ -322,7 +320,6 @@ mod tests {
                 status: ide_core::updates::UpdateStatus { last_checked: None, checking: true },
             },
             IdeEvent::WindowGroupsChanged,
-            IdeEvent::WindowFullscreenChanged,
         ] {
             assert!(!client_accepts(&event, true), "{event:?}");
         }
