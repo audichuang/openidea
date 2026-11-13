@@ -43,11 +43,11 @@ export function Scrollbar({
   useEffect(() => {
     const el = target.current;
     if (!el) return;
-    const sync = () => {
-      geometry.current = layout(el, track.current, thumb.current);
-    };
+    const sync = () => positionThumb(thumb.current, geometry.current, el.scrollTop);
     el.addEventListener("scroll", sync, { passive: true });
-    const observer = new ResizeObserver(sync);
+    const observer = new ResizeObserver(() => {
+      geometry.current = layout(el, track.current, thumb.current);
+    });
     observer.observe(el);
     window.addEventListener("blur", endDrag);
     return () => {
@@ -82,7 +82,7 @@ export function Scrollbar({
         const el = target.current;
         if (!el || drag.current?.pointerId !== e.pointerId) return;
         const g = geometry.current;
-        if (g) scrollNow(el, drag.current.top + ((e.clientY - drag.current.y) / g.range) * g.max);
+        if (g && g.range > 0) scrollNow(el, drag.current.top + ((e.clientY - drag.current.y) / g.range) * g.max);
       }}
       onLostPointerCapture={(e) => {
         if (drag.current?.pointerId === e.pointerId) endDrag();
@@ -99,19 +99,29 @@ type Geometry = { range: number; max: number };
 function layout(el: HTMLElement | null, t: HTMLElement | null, th: HTMLElement | null): Geometry | null {
   if (!el || !t || !th) return null;
   const height = el.clientHeight;
-  const max = el.scrollHeight - height;
+  const contentHeight = el.scrollHeight;
+  const max = contentHeight - height;
   // WebKit can report scrollHeight a pixel over clientHeight after the scroller is resized to a
   // fractional height (dragging a splitter), with nothing overflowing: that is no scroll range.
   const scrolls = max > 1;
-  t.style.top = `${el.offsetTop}px`;
+  const offset = el.offsetTop;
+  const top = el.scrollTop;
+  t.style.top = `${offset}px`;
   t.style.height = `${height}px`;
   t.style.display = scrolls ? "" : "none";
   if (!scrolls) return null;
-  const size = Math.max(MIN_THUMB, (height * height) / el.scrollHeight);
+  const size = Math.max(MIN_THUMB, (height * height) / contentHeight);
   const range = height - size;
   th.style.height = `${size}px`;
-  th.style.transform = `translateY(${(Math.min(max, el.scrollTop) / max) * range}px)`;
-  return range > 0 ? { range, max } : null;
+  const geometry = { range, max };
+  positionThumb(th, geometry, top);
+  return geometry;
+}
+
+function positionThumb(thumb: HTMLElement | null, geometry: Geometry | null, top: number) {
+  if (!thumb || !geometry) return;
+  const { range, max } = geometry;
+  thumb.style.transform = `translateY(${(Math.min(max, top) / max) * range}px)`;
 }
 
 /**

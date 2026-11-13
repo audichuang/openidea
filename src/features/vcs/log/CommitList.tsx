@@ -395,7 +395,10 @@ export function CommitList({ fileHistory = false }: { fileHistory?: boolean }) {
     if (c) {
       if (e.shiftKey) extendCommitSelection(commitKey(c), commits);
       else selectCommit(commitKey(c));
-      virtualizer.scrollToIndex(next, { align: "auto" });
+      // Fixed rows already in view do not need a scroll command or reconciliation.
+      const offset = virtualizer.getOffsetForIndex(next);
+      if (offset && offset[1] !== "auto" && offset[0] !== virtualizer.scrollOffset)
+        virtualizer.scrollToIndex(next, { align: "auto" });
     }
   };
 
