@@ -2,12 +2,15 @@
 //! (`git log -L`), each with the block as it was before and after.
 
 use crate::text_encoding::{TextEncoding, decode};
-use crate::{BlockHistory, BlockRevision, LineHunk, Repo, cli};
-use ide_core::{CancellationToken, IdeResult};
+use crate::{
+    BlockHistory, BlockHistoryAnchor, BlockHistorySummary, BlockRevision, BlockRevisionSummary, LineHunk, Repo, cli,
+};
+use ide_core::{CancellationToken, IdeError, IdeResult};
 use std::path::Path;
 
 /// Separates commits in the log output; fields of the header are separated by `\x1f`.
 const RECORD: u8 = 0x1e;
+const DIFF_BATCH: usize = 4;
 const FORMAT: &str = "--format=%x1e%H%x1f%h%x1f%an%x1f%ae%x1f%at%x1f%s";
 
 pub(crate) fn block_history(
@@ -19,25 +22,123 @@ pub(crate) fn block_history(
     cancel: &CancellationToken,
 ) -> IdeResult<BlockHistory> {
     let rel = r.rel_path(path)?;
-    let head = {
-        let repo = r.gix()?;
-        crate::repo::blob_at(&repo, &rel, "HEAD")?
-    };
-    let Some(head) = head else {
+    let Some(anchor) = anchor(r, &rel, current_text, lines, encoding, cancel)? else {
         return Ok(BlockHistory { head_lines: None, revisions: Vec::new() });
     };
-    let head = decode(&head, encoding);
+    let out = run(r, &rel, &anchor, &[], cancel)?;
+    Ok(BlockHistory { head_lines: Some(anchor.lines), revisions: parse_log(&out.stdout, encoding) })
+}
+
+fn anchor(
+    r: &Repo,
+    rel: &str,
+    current_text: Option<&str>,
+    lines: (u32, u32),
+    encoding: TextEncoding,
+    cancel: &CancellationToken,
+) -> IdeResult<Option<BlockHistoryAnchor>> {
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
+    let repo = r.gix()?;
+    let Some(id) = repo.head().map_err(crate::repo::gx)?.id() else { return Ok(None) };
+    let commit = id.to_string();
+    let Some(bytes) = crate::repo::blob_at(&repo, rel, &commit)? else { return Ok(None) };
+    let head = decode(&bytes, encoding);
     let current = match current_text {
-        Some(text) => text.to_owned(),
-        None => decode(&std::fs::read(r.abs_path(&rel))?, encoding).into_owned(),
+        Some(text) => std::borrow::Cow::Borrowed(text),
+        None => decode(&std::fs::read(r.abs_path(rel))?, encoding).into_owned().into(),
     };
-    let Some((start, end)) = head_range(&crate::diff::line_hunks(&head, &current), lines) else {
-        return Ok(BlockHistory { head_lines: None, revisions: Vec::new() });
+    let hunks = if head == current { Vec::new() } else { crate::diff::line_hunks(&head, &current) };
+    Ok(head_range(&hunks, lines).map(|lines| BlockHistoryAnchor { commit, lines }))
+}
+
+fn run(
+    r: &Repo,
+    rel: &str,
+    anchor: &BlockHistoryAnchor,
+    options: &[&str],
+    cancel: &CancellationToken,
+) -> IdeResult<cli::Output> {
+    let (start, end) = anchor.lines;
+    let range = format!("-L{},{}:{rel}", u64::from(start) + 1, u64::from(end) + 1);
+    let mut args = vec!["log", "--no-color", "--no-ext-diff", "--no-textconv", FORMAT];
+    args.extend_from_slice(options);
+    args.extend([range.as_str(), "--end-of-options", anchor.commit.as_str()]);
+    cli::run_cancellable(r.root(), &args, cancel)
+}
+
+pub(crate) fn summary(
+    r: &Repo,
+    path: &Path,
+    current_text: Option<&str>,
+    lines: (u32, u32),
+    encoding: TextEncoding,
+    cancel: &CancellationToken,
+) -> IdeResult<BlockHistorySummary> {
+    let rel = r.rel_path(path)?;
+    let Some(anchor) = anchor(r, &rel, current_text, lines, encoding, cancel)? else {
+        return Ok(BlockHistorySummary { anchor: None, revisions: Vec::new(), diffs: Vec::new() });
     };
-    let range = format!("-L{},{}:{rel}", start + 1, end + 1);
-    let args = ["log", "--no-color", "--no-ext-diff", "--no-textconv", FORMAT, &range, "HEAD"];
-    let out = cli::run_cancellable(r.root(), &args, cancel)?;
-    Ok(BlockHistory { head_lines: Some((start, end)), revisions: parse_log(&out.stdout, encoding) })
+    // Git can emit the list without patches while another process prepares
+    // the first few diffs. Neither query depends on the other's output.
+    let limit = format!("-n{DIFF_BATCH}");
+    let allowed = crate::execution_allowed();
+    let (out, patches) = std::thread::scope(|scope| {
+        let patches = scope.spawn(|| {
+            let _execution = crate::ExecutionScope::enter(allowed);
+            run(r, &rel, &anchor, &[&limit], cancel)
+        });
+        let out = run(r, &rel, &anchor, &["--no-patch"], cancel);
+        let patches = patches.join().map_err(|_| IdeError::internal("selection history diff query panicked"))?;
+        Ok::<_, IdeError>((out?, patches?))
+    })?;
+    let revisions: Vec<_> = records(&out.stdout).filter_map(|record| parse_summary(split_header(record).0)).collect();
+    let diffs = parse_log(&patches.stdout, encoding);
+    check_diffs(&diffs, revisions.iter().take(DIFF_BATCH).map(|row| row.id.as_str()))?;
+    Ok(BlockHistorySummary { anchor: Some(anchor), revisions, diffs })
+}
+
+pub(crate) fn revisions(
+    r: &Repo,
+    path: &Path,
+    anchor: &BlockHistoryAnchor,
+    index: u32,
+    commits: &[String],
+    encoding: TextEncoding,
+    cancel: &CancellationToken,
+) -> IdeResult<Vec<BlockRevision>> {
+    gix::ObjectId::from_hex(anchor.commit.as_bytes())
+        .map_err(|_| IdeError::invalid("invalid selection history anchor"))?;
+    if commits.is_empty() || commits.len() > DIFF_BATCH {
+        return Err(IdeError::invalid("invalid selection history batch size"));
+    }
+    let ids: Vec<_> = commits.iter().map(String::as_str).collect();
+    read_diffs(r, &r.rel_path(path)?, anchor, index, &ids, encoding, cancel)
+}
+
+fn read_diffs(
+    r: &Repo,
+    rel: &str,
+    anchor: &BlockHistoryAnchor,
+    index: u32,
+    ids: &[&str],
+    encoding: TextEncoding,
+    cancel: &CancellationToken,
+) -> IdeResult<Vec<BlockRevision>> {
+    let skip = format!("--skip={index}");
+    let limit = format!("-n{}", ids.len());
+    let out = run(r, rel, anchor, &[&limit, &skip], cancel)?;
+    let diffs = parse_log(&out.stdout, encoding);
+    check_diffs(&diffs, ids.iter().copied())?;
+    Ok(diffs)
+}
+
+fn check_diffs<'a>(diffs: &[BlockRevision], ids: impl Iterator<Item = &'a str>) -> IdeResult<()> {
+    if diffs.iter().map(|diff| diff.id.as_str()).ne(ids) {
+        return Err(IdeError::not_found("selection history revisions no longer match"));
+    }
+    Ok(())
 }
 
 /// The HEAD lines (0-based, inclusive) of `lines` in the current text, given the
@@ -68,24 +169,35 @@ pub(crate) fn head_range(hunks: &[LineHunk], (start, end): (u32, u32)) -> Option
 
 /// Commits of `git log -L` output, newest first.
 pub(crate) fn parse_log(stdout: &[u8], encoding: TextEncoding) -> Vec<BlockRevision> {
-    stdout
-        .split(|b| *b == RECORD)
-        .filter(|r| !r.is_empty())
-        .filter_map(|record| parse_record(record, encoding))
-        .collect()
+    records(stdout).filter_map(|record| parse_record(record, encoding)).collect()
+}
+
+fn records(stdout: &[u8]) -> impl Iterator<Item = &[u8]> {
+    stdout.split(|b| *b == RECORD).filter(|r| !r.is_empty())
+}
+
+fn split_header(record: &[u8]) -> (&[u8], &[u8]) {
+    let newline = record.iter().position(|b| *b == b'\n').unwrap_or(record.len());
+    (&record[..newline], record.get(newline + 1..).unwrap_or_default())
+}
+
+fn parse_summary(header: &[u8]) -> Option<BlockRevisionSummary> {
+    let header = String::from_utf8_lossy(header);
+    let mut fields = header.splitn(6, '\x1f');
+    Some(BlockRevisionSummary {
+        id: fields.next()?.to_owned(),
+        short_id: fields.next()?.to_owned(),
+        author: fields.next()?.to_owned(),
+        email: fields.next()?.to_owned(),
+        time_ms: fields.next()?.trim().parse::<f64>().ok()? * 1000.0,
+        summary: fields.next().unwrap_or_default().to_owned(),
+    })
 }
 
 fn parse_record(record: &[u8], encoding: TextEncoding) -> Option<BlockRevision> {
-    let newline = record.iter().position(|b| *b == b'\n').unwrap_or(record.len());
-    let header = String::from_utf8_lossy(&record[..newline]);
-    let mut fields = header.split('\x1f');
-    let id = fields.next()?.to_owned();
-    let short_id = fields.next()?.to_owned();
-    let author = fields.next()?.to_owned();
-    let email = fields.next()?.to_owned();
-    let time_ms = fields.next()?.trim().parse::<f64>().ok()? * 1000.0;
-    let summary = fields.next().unwrap_or_default().to_owned();
-    let patch = decode(record.get(newline + 1..).unwrap_or_default(), encoding);
+    let (header, patch) = split_header(record);
+    let BlockRevisionSummary { id, short_id, author, email, time_ms, summary } = parse_summary(header)?;
+    let patch = decode(patch, encoding);
     let mut revision = BlockRevision {
         id,
         short_id,
