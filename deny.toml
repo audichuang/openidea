@@ -6,6 +6,9 @@ ignore = [
     # SQLx MySQL uses RSA public-key encryption; russh/ssh-key use signatures.
     # No RSA private-key decryption is exposed to attacker-controlled ciphertext.
     { id = "RUSTSEC-2023-0071", reason = "RSA is used for MySQL password encryption and SSH signatures, not RSA decryption" },
+    # russh < 0.65's agent server signs with confirm-constrained keys without asking; ide-ssh only
+    # connects to an agent as a client (`keys::agent::client::AgentClient`) and serves none.
+    { id = "RUSTSEC-2026-0495", reason = "only russh's agent client is used, never its agent server" },
 ]
 
 [licenses]
