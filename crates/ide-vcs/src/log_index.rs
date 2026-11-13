@@ -79,9 +79,6 @@ impl LogIndex {
             return Ok(());
         }
         let cg = repo.commit_graph_if_enabled().ok().flatten();
-        let db = self.db.clone();
-        let txn = db.as_ref().and_then(|db| db.begin_read().ok());
-        let table = txn.as_ref().and_then(|t| t.open_table(COMMITS).ok());
         let mut stack: Vec<(ObjectId, Option<NodeEntry>)> =
             tips.iter().copied().filter(|id| !self.nodes.contains_key(id)).map(|id| (id, None)).collect();
         let mut visiting: HashSet<ObjectId> = HashSet::new();
@@ -109,17 +106,13 @@ impl LogIndex {
                 };
                 (parents, cg_commit.committer_timestamp() as i64)
             } else {
-                let record = self.get_with_table(repo, id, table.as_ref())?;
-                let parents = if shallow.contains(&id) {
-                    Vec::new()
-                } else {
-                    record
-                        .parents
-                        .iter()
-                        .map(|s| ObjectId::from_hex(s.as_bytes()).map_err(gx))
-                        .collect::<IdeResult<Vec<_>>>()?
-                };
-                (parents, (record.commit_time_ms / 1000.0) as i64)
+                // The graph needs only ancestry and committer time. Loading summaries
+                // here decodes and persists metadata for commits the page may never show.
+                let commit = repo.find_commit(id).map_err(gx)?;
+                let parents =
+                    if shallow.contains(&id) { Vec::new() } else { commit.parent_ids().map(|p| p.detach()).collect() };
+                let time = commit.committer().map_err(gx)?.time().map(|t| t.seconds).unwrap_or(0);
+                (parents, time)
             };
             stack.push((id, Some((parents.clone(), time))));
             for parent in parents.into_iter().rev() {
@@ -127,11 +120,6 @@ impl LogIndex {
                     stack.push((parent, None));
                 }
             }
-        }
-        drop(table);
-        drop(txn);
-        if self.dirty.len() >= MAX_DIRTY_BATCH {
-            self.flush();
         }
         Ok(())
     }
@@ -271,6 +259,20 @@ impl LogIndex {
             databases.insert(path, Arc::downgrade(&db));
             Some(db)
         });
+    }
+
+    pub fn author_matches(
+        &self,
+        repo: &gix::Repository,
+        id: ObjectId,
+        matches: impl FnOnce(&str, &str) -> bool,
+    ) -> IdeResult<bool> {
+        if let Some(commit) = self.memory.get(&id) {
+            return Ok(matches(&commit.author, &commit.email));
+        }
+        let commit = repo.find_commit(id).map_err(gx)?;
+        let author = commit.author().map_err(gx)?;
+        Ok(matches(&author.name.to_str_lossy(), &author.email.to_str_lossy()))
     }
 
     pub fn get(&mut self, repo: &gix::Repository, id: ObjectId) -> IdeResult<Arc<Commit>> {
@@ -455,6 +457,24 @@ mod tests {
         git(dir, &["add", "-A"]);
         git(dir, &["commit", "-qm", msg]);
         ObjectId::from_hex(git(dir, &["rev-parse", "HEAD"]).as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn indexing_graph_without_commit_graph_does_not_load_summaries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        git(dir, &["init", "-q"]);
+        let parent = commit(dir, "a.txt", "parent");
+        let child = commit(dir, "a.txt", "child");
+        let repo = gix::open(dir).unwrap();
+        assert!(repo.commit_graph_if_enabled().unwrap().is_none());
+        let mut index = LogIndex::default();
+        let cache = tempfile::tempdir().unwrap();
+        index.open(cache.path());
+        index.ensure_nodes(&repo, &[child], &HashSet::new(), &ide_core::CancellationToken::new()).unwrap();
+        assert_eq!(index.nodes[&child].0, [parent]);
+        assert!(index.nodes[&parent].0.is_empty());
+        assert!(index.memory.is_empty() && index.dirty.is_empty());
     }
 
     #[test]
