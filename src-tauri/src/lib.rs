@@ -9,6 +9,8 @@ mod commands;
 #[cfg(debug_assertions)]
 mod dev;
 mod events;
+#[cfg(windows)]
+mod fork_update_install;
 mod fork_updater;
 mod jump_list;
 #[cfg(any(target_os = "linux", test))]
@@ -89,6 +91,13 @@ pub fn run() {
     // Before the first window: one taskbar identity for every launch path.
     jump_list::set_app_id(&context.config().identifier);
     logging::init(&context.config().identifier);
+    // Shows whether an installer or another launch actually started a process (#246).
+    tracing::info!(
+        version = %context.package_info().version,
+        pid = std::process::id(),
+        args = ?std::env::args_os().skip(1).collect::<Vec<_>>(),
+        "OpenIDEA starting"
+    );
     #[cfg(target_os = "linux")]
     linux_webkit::configure();
 
@@ -340,6 +349,9 @@ pub fn run() {
             }
             // Cleanup must finish before update/restart replaces this process.
             if app.try_state::<WindowsState>().is_some_and(|w| w.restart_requested()) {
+                // A downloaded Windows update installs here, after the cleanup above.
+                #[cfg(windows)]
+                fork_update_install::install_staged();
                 #[cfg(target_os = "macos")]
                 relaunch::restart(&app.env());
                 #[cfg(not(target_os = "macos"))]
