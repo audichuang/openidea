@@ -196,20 +196,8 @@ fn file_history(
                 created.push(id);
             }
         }
-        for commit in created {
-            let line = crate::cli::run_cancellable(
-                r.root(),
-                &["rev-list", "--parents", "-n", "1", "--end-of-options", &commit.to_string()],
-                cancel,
-            )?
-            .stdout_str();
-            let parents: Vec<&str> =
-                line.split_whitespace().skip(1).take(if first_parent { 1 } else { usize::MAX }).collect();
-            for parent in parents {
-                if let Some(old) = renamed_from(r, parent, &commit.to_string(), &path, cancel)? {
-                    starts.push_back((vec![parent.to_string()], old));
-                }
-            }
+        for (parent, old) in rename_sources(r, &created, &path, first_parent, cancel)? {
+            starts.push_back((vec![parent], old));
         }
     }
     Ok((ids, paths))
@@ -241,27 +229,83 @@ fn parse_name_status_log(text: &str) -> Vec<(ObjectId, Option<char>)> {
     out
 }
 
-/// The path `path` had in `parent` when `commit` renamed it.
-fn renamed_from(
+/// Find the old path at each creation's parent. Batch both commands so showing
+/// history across many independent creations only starts two Git processes per walk.
+fn rename_sources(
     r: &Repo,
-    parent: &str,
-    commit: &str,
+    created: &[ObjectId],
     path: &str,
+    first_parent: bool,
     cancel: &CancellationToken,
-) -> IdeResult<Option<String>> {
-    let args = ["diff", "-M", "--name-status", "-z", "--diff-filter=R", "--no-ext-diff", parent, commit, "--"];
-    let text = crate::cli::run_cancellable(r.root(), &args, cancel)?.stdout_str();
-    let mut tokens = text.split('\0');
-    while let Some(status) = tokens.next() {
-        if !status.starts_with('R') {
-            continue;
+) -> IdeResult<Vec<(String, String)>> {
+    if created.is_empty() {
+        return Ok(Vec::new());
+    }
+    let stdin: String = created.iter().map(|id| format!("{id}\n")).collect();
+    let parents = crate::cli::run_cancellable_stdin(
+        r.root(),
+        &["rev-list", "--parents", "--no-walk=unsorted", "--stdin"],
+        stdin.as_bytes(),
+        cancel,
+    )?
+    .stdout_str();
+    let pairs: Vec<_> = parents
+        .lines()
+        .flat_map(|line| {
+            let mut ids = line.split_whitespace();
+            let commit = ids.next().expect("rev-list prints a commit on each line");
+            ids.take(if first_parent { 1 } else { usize::MAX }).map(move |parent| (commit, parent))
+        })
+        .collect();
+    if pairs.is_empty() {
+        return Ok(Vec::new());
+    }
+    // An explicit parent on each line makes diff-tree compare a merge against
+    // that parent alone. --always emits a header even for an empty comparison.
+    let stdin: String = pairs.iter().map(|(commit, parent)| format!("{commit} {parent}\n")).collect();
+    let output = crate::cli::run_cancellable_stdin(
+        r.root(),
+        &[
+            "diff-tree",
+            "--stdin",
+            "--always",
+            "--format=%x00%H",
+            "--no-show-signature",
+            "-r",
+            "-M",
+            "--name-status",
+            "-z",
+            "--diff-filter=R",
+            "--no-ext-diff",
+        ],
+        stdin.as_bytes(),
+        cancel,
+    )?
+    .stdout_str();
+    let invalid = || IdeError::internal("unexpected git diff-tree rename output");
+    let mut tokens = output.split_terminator('\0').peekable();
+    let mut sources = Vec::new();
+    for (commit, parent) in pairs {
+        // The NUL before each hash separates records, even when a path is
+        // itself a hex hash or several comparisons have the same commit.
+        if tokens.next() != Some("") || tokens.next() != Some(commit) {
+            return Err(invalid());
         }
-        let (Some(old), Some(new)) = (tokens.next(), tokens.next()) else { break };
-        if new == path {
-            return Ok(Some(old.to_string()));
+        while let Some(status) = tokens.next_if(|s| !s.is_empty()) {
+            if !status.trim_start_matches('\n').starts_with('R') {
+                return Err(invalid());
+            }
+            let old = tokens.next().ok_or_else(invalid)?;
+            let new = tokens.next().ok_or_else(invalid)?;
+            if new == path {
+                sources.push((parent.to_owned(), old.to_owned()));
+            }
         }
     }
-    Ok(None)
+    if tokens.next().is_some() {
+        return Err(invalid());
+    }
+    Ok(sources)
 }
 
 pub(crate) fn log(r: &Repo, q: &LogQuery, cancel: &CancellationToken) -> IdeResult<Vec<Commit>> {
