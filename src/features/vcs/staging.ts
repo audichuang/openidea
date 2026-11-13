@@ -15,7 +15,6 @@ import {
 import { GROUP_LABEL, renamedFromPath, repoNodes, type ChangeNode, type CommitPlan, type GroupId } from "./changes";
 import type { DiffData, DiffSide } from "./diffInput";
 import { effectiveKind, kindOf, rootOf, stripSlash } from "./model";
-import type { RepoHead } from "./store";
 
 /** The staging area only replaces the Commit tool window (the non-modal commit interface), as in IDEA. */
 export const stagingOn = (w: WorkflowSettings) => w.vcs.git.stagingArea && w.vcs.commit.nonModal;
@@ -108,7 +107,6 @@ export function buildStagingTree(
   groupByDir: boolean,
   repos: readonly string[] = [],
   untrackedInUnstaged = false,
-  heads: Readonly<Record<string, RepoHead>> = {},
 ): ChangeNode[] {
   const byGroup = new Map<GroupId, FileStatus[]>();
   for (const fs of status)
@@ -121,7 +119,7 @@ export function buildStagingTree(
   for (const g of ORDER) {
     const files = byGroup.get(g);
     if (!files?.length) continue;
-    const children = withSide(repoNodes(files, root, g, groupByDir, g, repos, heads), g);
+    const children = withSide(repoNodes(files, root, g, groupByDir, g, repos, {}), g);
     out.push({ key: `group:${g}`, type: "group", label: STAGING_LABEL[g], group: g, children, files });
   }
   return out;

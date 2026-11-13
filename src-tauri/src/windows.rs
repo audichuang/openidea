@@ -208,7 +208,7 @@ const MAIN_FULLSCREEN: &str = "main-window-fullscreen.json";
 pub fn save_main_fullscreen(app: &AppHandle) {
     let Some(window) = app.get_webview_window(MAIN) else { return };
     let fullscreen = crate::macos::in_fullscreen(&window);
-    let Ok(dir) = app.path().app_config_dir() else { return };
+    let Ok(dir) = ide_host::data_dirs::config_dir(&app.config().identifier) else { return };
     let bytes = serde_json::to_vec(&fullscreen).unwrap_or_default();
     if let Err(e) = std::fs::create_dir_all(&dir)
         .map_err(IdeError::from)
@@ -220,7 +220,7 @@ pub fn save_main_fullscreen(app: &AppHandle) {
 
 #[cfg(target_os = "macos")]
 fn main_was_fullscreen(app: &AppHandle) -> bool {
-    let Ok(dir) = app.path().app_config_dir() else { return false };
+    let Ok(dir) = ide_host::data_dirs::config_dir(&app.config().identifier) else { return false };
     std::fs::read(dir.join(MAIN_FULLSCREEN)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(false)
 }
 

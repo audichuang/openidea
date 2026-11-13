@@ -142,7 +142,8 @@ mod runtime {
     }
 
     fn path(app: &AppHandle) -> Option<PathBuf> {
-        app.path().app_config_dir().ok().map(|dir| dir.join(FILE))
+        // Where lib.rs points window-state (`OPENIDEA_CONFIG_DIR` or the OS configuration directory).
+        ide_host::data_dirs::config_dir(&app.config().identifier).ok().map(|dir| dir.join(FILE))
     }
 
     fn read(path: &std::path::Path) -> Option<Value> {
