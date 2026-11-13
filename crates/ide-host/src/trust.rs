@@ -484,6 +484,8 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "vcs_file_at"
             | "vcs_blame"
             | "vcs_block_history"
+            | "vcs_block_history_summary"
+            | "vcs_block_history_revisions"
             | "vcs_log"
             | "vcs_log_refs"
             | "vcs_log_users"
