@@ -152,9 +152,12 @@ fn file_history(
     rel: &str,
     first_parent: bool,
     cancel: &CancellationToken,
+    index: &mut crate::log_index::LogIndex,
 ) -> IdeResult<(HashSet<ObjectId>, HashMap<ObjectId, String>)> {
     let mut ids = HashSet::new();
     let mut paths = HashMap::new();
+    let repo = rename_precheck_repo(r);
+    let context = repo.as_ref().and_then(|repo| file_history_context(r, repo, index, cancel));
     let mut starts: std::collections::VecDeque<(Vec<String>, String)> =
         scopes.iter().map(|s| (s.split_whitespace().map(str::to_string).collect(), rel.to_string())).collect();
     let mut started = HashSet::new();
@@ -169,10 +172,24 @@ fn file_history(
         if first_parent {
             opts.push("--first-parent".into());
         }
-        let run = |excluded: &[String]| -> IdeResult<Vec<(ObjectId, Option<char>)>> {
+        let mut run = |excluded: &[String]| -> IdeResult<Vec<(ObjectId, Option<char>)>> {
+            let key = context
+                .as_ref()
+                .filter(|_| revs.iter().all(|rev| ObjectId::from_hex(rev.as_bytes()).is_ok()))
+                .map(|context| history_cache_key("walk", &(context, &revs, &path, first_parent, excluded)));
+            if let Some(text) = key.as_deref().and_then(|key| index.cached_file_history::<String>(key)) {
+                return Ok(parse_name_status_log(&text));
+            }
             let mut args = opts.clone();
             let stdin = revision_args(&mut args, &revs, excluded, Some(std::slice::from_ref(&path)));
-            Ok(parse_name_status_log(&run_log(r, args, stdin.as_deref(), cancel)?.stdout_str()))
+            let output = run_log(r, args, stdin.as_deref(), cancel)?;
+            let text = output.stdout_str();
+            // A path may have been a directory. In that case Git can use attributes
+            // to classify renames between its children, even with --no-follow.
+            if let Some(key) = key.filter(|_| output.stderr.is_empty() && only_literal_file(&text, &path)) {
+                index.cache_file_history(&key, &text);
+            }
+            Ok(parse_name_status_log(&text))
         };
         let records = run(&[])?;
         // Where the file appears its history ends: what is behind that is another file of
@@ -196,20 +213,10 @@ fn file_history(
                 created.push(id);
             }
         }
-        for commit in created {
-            let line = crate::cli::run_cancellable(
-                r.root(),
-                &["rev-list", "--parents", "-n", "1", "--end-of-options", &commit.to_string()],
-                cancel,
-            )?
-            .stdout_str();
-            let parents: Vec<&str> =
-                line.split_whitespace().skip(1).take(if first_parent { 1 } else { usize::MAX }).collect();
-            for parent in parents {
-                if let Some(old) = renamed_from(r, parent, &commit.to_string(), &path, cancel)? {
-                    starts.push_back((vec![parent.to_string()], old));
-                }
-            }
+        for (parent, old) in
+            rename_sources(r, repo.as_ref(), &created, &path, first_parent, cancel, index, context.as_deref())?
+        {
+            starts.push_back((vec![parent], old));
         }
     }
     Ok((ids, paths))
@@ -241,6 +248,110 @@ fn parse_name_status_log(text: &str) -> Vec<(ObjectId, Option<char>)> {
     out
 }
 
+// The cache contains observations of a path walk, not a final graph projection.
+fn history_cache_key<T: serde::Serialize>(kind: &str, input: &T) -> String {
+    let mut hash = blake3::Hasher::new();
+    hash.update(kind.as_bytes());
+    hash.update(&serde_json::to_vec(input).expect("file history keys serialize strings and flags"));
+    hash.finalize().to_hex().to_string()
+}
+
+fn file_history_context(
+    r: &Repo,
+    repo: &gix::Repository,
+    index: &crate::log_index::LogIndex,
+    cancel: &CancellationToken,
+) -> Option<String> {
+    index.db()?;
+    if [
+        "GIT_SHALLOW_FILE",
+        "GIT_GRAFT_FILE",
+        "GIT_LITERAL_PATHSPECS",
+        "GIT_GLOB_PATHSPECS",
+        "GIT_NOGLOB_PATHSPECS",
+        "GIT_ICASE_PATHSPECS",
+    ]
+    .iter()
+    .any(|name| std::env::var_os(name).is_some())
+        || !matches!(std::fs::metadata(repo.common_dir().join("info/grafts")), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+    {
+        return None;
+    }
+    let shallow = repo.shallow_commits().ok()?.map(|ids| ids.iter().map(ToString::to_string).collect::<Vec<_>>());
+    let command = crate::cli::command(r.root()).ok()?;
+    let binary = command.get_program();
+    let metadata = std::fs::metadata(binary).ok()?;
+    let modified = metadata.modified().ok()?;
+    // Use the CLI's effective settings, including includes and environment overrides.
+    // Only the digest of the settings is persisted.
+    let config = crate::cli::run_cancellable(r.root(), &["config", "--null", "--list"], cancel).ok()?;
+    let config = blake3::hash(&config.stdout).to_hex().to_string();
+    Some(history_cache_key("context", &(binary.to_string_lossy(), modified, metadata.len(), config, shallow)))
+}
+
+fn only_literal_file(text: &str, path: &str) -> bool {
+    let mut tokens = text.split_terminator('\0');
+    while let Some(token) = tokens.next() {
+        let token = token.trim_start_matches('\n');
+        if token.is_empty() || ObjectId::from_hex(token.as_bytes()).is_ok() {
+            continue;
+        }
+        if !matches!(token, "A" | "M" | "D" | "T") || tokens.next() != Some(path) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Use the tree-only precheck only when Git and gitoxide see the same objects.
+fn rename_precheck_repo(r: &Repo) -> Option<gix::Repository> {
+    if [
+        "GIT_REPLACE_REF_BASE",
+        "GIT_NAMESPACE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_COMMON_DIR",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    ]
+    .iter()
+    .any(|key| std::env::var_os(key).is_some())
+    {
+        return None;
+    }
+    let repo = r.gix().ok()?;
+    {
+        // Inspect the refs themselves: the gitoxide object handle can have a
+        // different replacement policy, or predate a new loose replace ref.
+        let refs = repo.references().ok()?;
+        if refs.all().ok()?.any(|r| r.map_or(true, |r| r.name().as_bstr().starts_with(b"refs/replace/")))
+            || repo.objects.store_ref().replacements().next().is_some()
+        {
+            return None;
+        }
+    }
+    Some(repo)
+}
+
+/// Git rename detection needs a removal. If a tree is unavailable (e.g. in a
+/// partial clone), let the existing Git comparison decide instead.
+fn may_have_rename_source(repo: &gix::Repository, parent: &str, commit: &str) -> Option<bool> {
+    use gix::object::tree::diff::ChangeDetached;
+
+    let tree = |hex: &str| repo.find_commit(ObjectId::from_hex(hex.as_bytes()).ok()?).ok()?.tree().ok();
+    let before = tree(parent)?;
+    let after = tree(commit)?;
+    let mut opts = gix::diff::Options::default();
+    opts.no_locations().track_rewrites(None);
+    let changes = repo.diff_tree_to_tree(&before, &after, Some(opts)).ok()?;
+    Some(changes.into_iter().any(|change| match change {
+        ChangeDetached::Deletion { entry_mode, .. } => !entry_mode.is_tree(),
+        ChangeDetached::Modification { previous_entry_mode, entry_mode, .. } => {
+            // The same path changing type may be split into a deletion and an addition.
+            previous_entry_mode.kind() != entry_mode.kind()
+        }
+        _ => false,
+    }))
+}
+
 /// The path `path` had in `parent` when `commit` renamed it.
 fn renamed_from(
     r: &Repo,
@@ -248,9 +359,10 @@ fn renamed_from(
     commit: &str,
     path: &str,
     cancel: &CancellationToken,
-) -> IdeResult<Option<String>> {
+) -> IdeResult<Option<(String, bool)>> {
     let args = ["diff", "-M", "--name-status", "-z", "--diff-filter=R", "--no-ext-diff", parent, commit, "--"];
-    let text = crate::cli::run_cancellable(r.root(), &args, cancel)?.stdout_str();
+    let output = crate::cli::run_cancellable(r.root(), &args, cancel)?;
+    let text = output.stdout_str();
     let mut tokens = text.split('\0');
     while let Some(status) = tokens.next() {
         if !status.starts_with('R') {
@@ -258,10 +370,94 @@ fn renamed_from(
         }
         let (Some(old), Some(new)) = (tokens.next(), tokens.next()) else { break };
         if new == path {
-            return Ok(Some(old.to_string()));
+            return Ok(Some((old.to_string(), status == "R100" && output.stderr.is_empty())));
         }
     }
     Ok(None)
+}
+
+/// A reported R100 can also be a similarity score. Only identical tree entries
+/// prove that Git matched the objects in the exact-rename phase.
+fn exact_rename(repo: &gix::Repository, parent: &str, commit: &str, old: &str, new: &str) -> Option<bool> {
+    let entry = |hex: &str, path: &str| {
+        let id = ObjectId::from_hex(hex.as_bytes()).ok()?;
+        let tree = repo.find_commit(id).ok()?.tree().ok()?;
+        let entry = tree.lookup_entry_by_path(path).ok()??;
+        entry.mode().is_blob_or_symlink().then(|| entry.oid().to_owned())
+    };
+    Some(entry(parent, old)? == entry(commit, new)?)
+}
+
+/// Read parents in one walk, then ask Git about pairs that can have a rename source.
+#[allow(clippy::too_many_arguments)]
+fn rename_sources(
+    r: &Repo,
+    repo: Option<&gix::Repository>,
+    created: &[ObjectId],
+    path: &str,
+    first_parent: bool,
+    cancel: &CancellationToken,
+    index: &mut crate::log_index::LogIndex,
+    context: Option<&str>,
+) -> IdeResult<Vec<(String, String)>> {
+    if created.is_empty() {
+        return Ok(Vec::new());
+    }
+    let stdin: String = created.iter().map(|id| format!("{id}\n")).collect();
+    let key = context.map(|context| history_cache_key("creation-parents", &(context, &stdin)));
+    let parents = if let Some(parents) = key.as_deref().and_then(|key| index.cached_file_history::<String>(key)) {
+        parents
+    } else {
+        let output = crate::cli::run_cancellable_stdin(
+            r.root(),
+            &["rev-list", "--parents", "--no-walk=unsorted", "--stdin"],
+            stdin.as_bytes(),
+            cancel,
+        )?;
+        let parents = output.stdout_str();
+        if let Some(key) = key.filter(|_| output.stderr.is_empty()) {
+            index.cache_file_history(&key, &parents);
+        }
+        parents
+    };
+    let mut sources = Vec::new();
+    for line in parents.lines() {
+        let mut ids = line.split_whitespace();
+        let Some(commit) = ids.next() else { continue };
+        for parent in ids.take(if first_parent { 1 } else { usize::MAX }) {
+            if cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
+            }
+            let exact_key = context.map(|context| history_cache_key("exact-rename", &(context, parent, commit, path)));
+            if let Some(old) = exact_key.as_deref().and_then(|key| index.cached_file_history::<String>(key)) {
+                sources.push((parent.to_owned(), old));
+                continue;
+            }
+            // A no-removal result depends only on the two trees, not on rename
+            // thresholds, attributes, or what branch currently reaches the commits.
+            let key = context.map(|_| history_cache_key("no-rename-source", &(parent, commit)));
+            if key.as_deref().and_then(|key| index.cached_file_history::<bool>(key)) == Some(true) {
+                continue;
+            }
+            if repo.and_then(|repo| may_have_rename_source(repo, parent, commit)) == Some(false) {
+                if let Some(key) = key {
+                    index.cache_file_history(&key, &true);
+                }
+                continue;
+            }
+            // Use git diff's configured semantics for candidates, including gitlinks
+            // hidden by diff.ignoreSubmodules (git diff-tree treats them differently).
+            if let Some((old, exact_score)) = renamed_from(r, parent, commit, path, cancel)? {
+                if let Some(key) = exact_key.filter(|_| {
+                    exact_score && repo.and_then(|repo| exact_rename(repo, parent, commit, &old, path)) == Some(true)
+                }) {
+                    index.cache_file_history(&key, &old);
+                }
+                sources.push((parent.to_owned(), old));
+            }
+        }
+    }
+    Ok(sources)
 }
 
 pub(crate) fn log(r: &Repo, q: &LogQuery, cancel: &CancellationToken) -> IdeResult<Vec<Commit>> {
@@ -593,7 +789,7 @@ fn log_indexed_rows(
     } else if q.follow && paths.len() == 1 && !r.root().join(&paths[0]).is_dir() {
         // Following renames is for a file: a directory gains files all the time, and each
         // creation would cut its history short.
-        let (ids, at) = file_history(r, &scopes, &paths[0], q.first_parent, cancel)?;
+        let (ids, at) = file_history(r, &scopes, &paths[0], q.first_parent, cancel, index)?;
         history_paths = at;
         Some(ids)
     } else {
