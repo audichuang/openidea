@@ -1096,6 +1096,7 @@ fn autosave_keeps_a_file_that_changed_on_disk() {
 
 /// A document opened through a symlinked directory (macOS `/tmp` → `/private/tmp`)
 /// follows watcher events, which report the canonical path.
+#[cfg(unix)]
 #[test]
 fn document_opened_through_a_symlinked_directory_reloads_on_canonical_events() {
     let f = fixture();
@@ -1109,4 +1110,96 @@ fn document_opened_through_a_symlinked_directory_reloads_on_canonical_events() {
     fs::write(real_dir.join("run.py"), "new\n").unwrap();
     f.docs.on_disk_changed(&[real_dir.join("run.py")]);
     assert_eq!(f.docs.snapshot(id).unwrap().text, "new\n");
+}
+
+fn warnings(events: &[IdeEvent]) -> usize {
+    events.iter().filter(|e| matches!(e, IdeEvent::Notify { level: NotifyLevel::Warning, .. })).count()
+}
+
+/// Undoing typing after the file changed on disk returns the buffer to stale text: the
+/// watcher event was already spent on the warning, so the document reloads the disk text.
+#[test]
+fn undo_back_to_stale_text_after_an_external_change_reloads_from_disk() {
+    let f = fixture();
+    let path = f.root.join("conflict.txt");
+    fs::write(&path, "old\n").unwrap();
+    let id = f.docs.open(&path).unwrap().id;
+    let v = f.docs.edit(id, 0, change(0, 0, "x")).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    fs::write(&path, "new\n").unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+    f.docs.edit(id, v, change(0, 1, "")).unwrap();
+    let snap = f.docs.snapshot(id).unwrap();
+    assert_eq!(snap.text, "new\n");
+    assert!(!snap.dirty);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "new\n");
+}
+
+/// An external write of the same length that restored the modification time is still
+/// a change: autosave compares the bytes, not only the (mtime, length) stamp.
+#[test]
+fn autosave_keeps_a_same_length_external_write_with_a_restored_mtime() {
+    let f = fixture();
+    let path = f.root.join("stamp.txt");
+    fs::write(&path, "aaaa\n").unwrap();
+    let modified = fs::metadata(&path).unwrap().modified().unwrap();
+    let id = f.docs.open(&path).unwrap().id;
+    f.docs.edit(id, 0, change(0, 0, "x")).unwrap();
+    fs::write(&path, "bbbb\n").unwrap();
+    fs::File::options().write(true).open(&path).unwrap().set_modified(modified).unwrap();
+    let _ = f.docs.autosave(id);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "bbbb\n");
+    assert!(f.docs.is_dirty(id).unwrap());
+}
+
+/// A file deleted outside the editor is not recreated by an autosave.
+#[test]
+fn autosave_does_not_recreate_a_deleted_file() {
+    let f = fixture();
+    let path = f.root.join("gone.txt");
+    fs::write(&path, "old\n").unwrap();
+    let id = f.docs.open(&path).unwrap().id;
+    f.docs.edit(id, 0, change(0, 0, "x")).unwrap();
+    fs::remove_file(&path).unwrap();
+    let _ = f.docs.autosave(id);
+    assert!(!path.exists());
+    assert!(f.docs.is_dirty(id).unwrap());
+    // Saving it explicitly recreates it.
+    f.docs.save(id).unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), "xold\n");
+}
+
+/// A touch, stash pop or cloud sync that rewrote identical bytes is no conflict:
+/// no warning, and autosave writes the buffer.
+#[test]
+fn identical_content_with_a_new_mtime_is_not_a_conflict() {
+    let f = fixture();
+    let path = f.root.join("touched.txt");
+    fs::write(&path, "same\n").unwrap();
+    let id = f.docs.open(&path).unwrap().id;
+    f.docs.edit(id, 0, change(0, 0, "x")).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    fs::write(&path, "same\n").unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+    let _ = f.docs.autosave(id);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "xsame\n");
+    assert!(!f.docs.is_dirty(id).unwrap());
+    assert_eq!(warnings(&f.events.lock()), 0);
+}
+
+/// "Nothing to save" and "refused" are different answers: the editor disposes the
+/// first and keeps the second.
+#[test]
+fn autosave_tells_a_clean_document_from_a_refused_one() {
+    let f = fixture();
+    let clean = f.root.join("clean.txt");
+    let stale = f.root.join("stale2.txt");
+    fs::write(&clean, "a\n").unwrap();
+    fs::write(&stale, "b\n").unwrap();
+    let clean = f.docs.open(&clean).unwrap().id;
+    let refused = f.docs.open(&stale).unwrap().id;
+    f.docs.edit(refused, 0, change(0, 0, "x")).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    fs::write(&stale, "external\n").unwrap();
+    assert_ne!(f.docs.autosave(clean).unwrap(), f.docs.autosave(refused).unwrap());
 }

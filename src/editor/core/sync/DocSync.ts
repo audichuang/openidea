@@ -38,6 +38,8 @@ export interface SyncHost {
   applyRemote(changes: ChangeSet, workspaceEdit?: boolean): void;
   /** A locally produced batch accepted by the versioned backend. */
   onLocalCommitted?(baseVersion: number, version: number, changes: ChangeSet): void;
+  /** `serverVersion` or `idle` may have changed (an ack, a remote patch, a resync). */
+  onSettled?(): void;
   /** Called after a hard resync discarded local changes the backend never saw. */
   onDiscarded?(reason: unknown): void;
   /** Non-recoverable transport errors (logged by default). */
@@ -157,6 +159,7 @@ export class DocSync {
     if (this.disposed || patch.version <= this.serverVersion) return;
     this.pendingRemote.push(patch);
     this.drainRemote();
+    this.host.onSettled?.();
   }
 
   dispose() {
@@ -204,6 +207,7 @@ export class DocSync {
     this.drainRemote();
     this.flush();
     this.resolveIdle();
+    this.host.onSettled?.();
   }
 
   private onReject(error: unknown) {
@@ -271,6 +275,7 @@ export class DocSync {
       this.drainRemote();
     }
     this.resend();
+    this.host.onSettled?.();
   }
 
   private drainRemote() {
@@ -352,6 +357,7 @@ export class DocSync {
     this.drainRemote();
     this.flush();
     this.resolveIdle();
+    this.host.onSettled?.();
   }
 
   private resolveIdle(force = false) {
