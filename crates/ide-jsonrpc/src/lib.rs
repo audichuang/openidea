@@ -254,6 +254,9 @@ struct Inner {
     pid: Option<u32>,
     /// Fired when the reader task has stopped (EOF, error or kill).
     reader_done: CancellationToken,
+    /// Fired by `supervise` when the bounded drain gave up on a reader that a descendant
+    /// keeps alive; the reader then ends as at EOF, queueing `Closed` itself.
+    abandon_reader: CancellationToken,
     /// Fired once the child process has exited and been reaped (after [`Peer::kill`],
     /// also what it started); at once when there is no child.
     exited: CancellationToken,
@@ -455,7 +458,11 @@ impl Peer {
                     }
                     inner.reader_done.cancelled().await;
                 };
-                let _ = tokio::time::timeout(OUTPUT_DRAIN, drained).await;
+                if tokio::time::timeout(OUTPUT_DRAIN, drained).await.is_err() {
+                    // Stop the reader so `Closed` is queued behind what it already dispatched.
+                    inner.abandon_reader.cancel();
+                    inner.reader_done.cancelled().await;
+                }
             }
             inner.mark_closed(status.and_then(|s| s.code()));
         });
@@ -525,6 +532,7 @@ impl Peer {
             kill: CancellationToken::new(),
             pid,
             reader_done: CancellationToken::new(),
+            abandon_reader: CancellationToken::new(),
             exited: CancellationToken::new(),
         });
         if pid.is_none() {
@@ -616,6 +624,7 @@ impl Peer {
                     let msg = tokio::select! {
                         msg = framing.read(&mut reader, &mut noise) => msg,
                         _ = inner.kill.cancelled() => break,
+                        _ = inner.abandon_reader.cancelled() => break,
                     };
                     match msg {
                         Ok(Some(body)) => {
@@ -632,9 +641,9 @@ impl Peer {
                         }
                     }
                 }
-                inner.reader_done.cancel();
                 inner.close_transport();
                 let _ = notif_tx.send(Incoming::Closed);
+                inner.reader_done.cancel();
                 if close_on_eof || inner.kill.is_cancelled() {
                     inner.mark_closed(None);
                     inner.kill.cancel();
