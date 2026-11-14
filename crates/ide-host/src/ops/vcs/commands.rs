@@ -469,6 +469,40 @@ pub async fn vcs_block_history_summary(
     result
 }
 
+/// [`vcs_block_history_summary`] in two steps: `on_first` gets the anchor and the first
+/// few revisions with diffs as soon as Git has them; the full revision list is returned.
+/// Cancelling `request` stops both Git processes.
+pub async fn vcs_block_history_streamed(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    path: PathBuf,
+    text: Option<String>,
+    lines: (u32, u32),
+    on_first: Channel<BlockHistorySummary>,
+) -> IdeResult<Vec<BlockRevisionSummary>> {
+    let project = host.project(window)?;
+    let cancel = host.begin_project_read_request(window, request);
+    let result = blocking(move || {
+        let text = text.or_else(|| project.documents.text_of(&path));
+        project.with_repo_of(&path, |r| {
+            r.block_history_streamed(
+                &path,
+                text.as_deref(),
+                lines,
+                project.vcs_encoding(&path, None)?,
+                &cancel,
+                |first| {
+                    let _ = on_first.send(first);
+                },
+            )
+        })
+    })
+    .await;
+    host.end_request(request);
+    result
+}
+
 pub async fn vcs_block_history_revisions(
     host: &Host,
     window: &str,
@@ -1484,6 +1518,18 @@ pub(crate) fn register(d: &mut Dispatcher) {
             c.arg("path")?,
             c.arg("text")?,
             c.arg("lines")?,
+        )
+        .await
+    });
+    d.add("vcs_block_history_streamed", |c| async move {
+        vcs_block_history_streamed(
+            &c.host,
+            &c.window,
+            c.arg("request")?,
+            c.arg("path")?,
+            c.arg("text")?,
+            c.arg("lines")?,
+            c.sender("onFirst")?,
         )
         .await
     });

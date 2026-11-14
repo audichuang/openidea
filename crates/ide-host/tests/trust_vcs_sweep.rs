@@ -184,6 +184,19 @@ async fn restricted_vcs_commands_run_no_program_of_the_repository() {
             vcs::vcs_block_history_summary(host, w, RequestId(3), file.clone(), None, (0, 1))
         ),
         call!(
+            "vcs_block_history_streamed",
+            "",
+            vcs::vcs_block_history_streamed(
+                host,
+                w,
+                RequestId(5),
+                file.clone(),
+                None,
+                (0, 1),
+                ops::Channel::new(|_| {})
+            )
+        ),
+        call!(
             "vcs_block_history_revisions",
             "",
             vcs::vcs_block_history_revisions(

@@ -682,6 +682,11 @@ export const commands = {
 	 */
 	vcsBlockHistory: (request: RequestId, path: string, text: string | null, lines: [number, number]) => typedError<BlockHistory, IdeError>(__TAURI_INVOKE("vcs_block_history", { request, path, text, lines })),
 	vcsBlockHistorySummary: (request: RequestId, path: string, text: string | null, lines: [number, number]) => typedError<BlockHistorySummary, IdeError>(__TAURI_INVOKE("vcs_block_history_summary", { request, path, text, lines })),
+	/**
+	 *  History for Selection with the first rows early: `on_first` gets the anchor and the
+	 *  first few revisions with diffs, then the full revision list is returned.
+	 */
+	vcsBlockHistoryStreamed: (request: RequestId, path: string, text: string | null, lines: [number, number], onFirst: Channel<BlockHistorySummary>) => typedError<BlockRevisionSummary[], IdeError>(__TAURI_INVOKE("vcs_block_history_streamed", { request, path, text, lines, onFirst })),
 	vcsBlockHistoryRevisions: (request: RequestId, path: string, anchor: BlockHistoryAnchor, index: number, commits: string[]) => typedError<BlockRevision[], IdeError>(__TAURI_INVOKE("vcs_block_history_revisions", { request, path, anchor, index, commits })),
 	vcsLog: (repo: string | null, query: LogQuery) => typedError<Commit_Serialize[], IdeError>(__TAURI_INVOKE("vcs_log", { repo, query })),
 	vcsLogRefs: (repo: string | null) => typedError<{ [key in string]: string }, IdeError>(__TAURI_INVOKE("vcs_log_refs", { repo })),
