@@ -630,6 +630,11 @@ fn blame_follows_head_and_line_endings() {
     let second = fx.commit_all("second");
     let lines = repo.blame(&fx.path("crlf.txt"), Some("a\nB\nc\n"), None, encoding_rs::UTF_8).unwrap();
     assert_eq!(lines.iter().map(|l| l.commit.as_str()).collect::<Vec<_>>(), [&first, &second, &first]);
+    // A UTF-8 BOM in the committed file is not an edit of the first line.
+    std::fs::write(fx.path("bom.txt"), b"\xEF\xBB\xBFone\ntwo\nthree\n").unwrap();
+    let bom = fx.commit_all("bom");
+    let lines = repo.blame(&fx.path("bom.txt"), Some("one\nTWO\nthree\n"), None, encoding_rs::UTF_8).unwrap();
+    assert_eq!(lines.iter().map(|l| l.commit == bom).collect::<Vec<_>>(), [true, false, true]);
     // A lone CR is one line for git: blamed by git itself, as before the cache.
     fx.write("cr.txt", "a\rb\nc\n");
     let cr = fx.commit_all("lone cr");
