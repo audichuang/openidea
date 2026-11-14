@@ -922,6 +922,21 @@ impl Repo {
         block_history::summary(self, path, current_text, lines, encoding.into(), cancel)
     }
 
+    /// [`Self::block_history_summary`] with the first rows early: `on_first` gets the
+    /// anchor and the first few revisions with diffs, and the full list is returned.
+    pub fn block_history_streamed(
+        &self,
+        path: &Path,
+        current_text: Option<&str>,
+        lines: (u32, u32),
+        encoding: impl Into<TextEncoding>,
+        cancel: &CancellationToken,
+        on_first: impl FnOnce(BlockHistorySummary) + Send,
+    ) -> IdeResult<Vec<BlockRevisionSummary>> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        block_history::summary_streamed(self, path, current_text, lines, encoding.into(), cancel, on_first)
+    }
+
     pub fn block_history_revisions(
         &self,
         path: &Path,

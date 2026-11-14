@@ -80,23 +80,66 @@ pub(crate) fn summary(
     let Some(anchor) = anchor(r, &rel, current_text, lines, encoding, cancel)? else {
         return Ok(BlockHistorySummary { anchor: None, revisions: Vec::new(), diffs: Vec::new() });
     };
+    let mut diffs = Vec::new();
+    let revisions = walk(r, &rel, &anchor, encoding, cancel, |first| diffs = first)?;
+    Ok(BlockHistorySummary { anchor: Some(anchor), revisions, diffs })
+}
+
+/// [`summary`] in two steps: `on_first` gets the anchor and the first few revisions
+/// with their diffs as soon as Git has them, and the full revision list is returned
+/// when the slower query that lists every revision ends.
+pub(crate) fn summary_streamed(
+    r: &Repo,
+    path: &Path,
+    current_text: Option<&str>,
+    lines: (u32, u32),
+    encoding: TextEncoding,
+    cancel: &CancellationToken,
+    on_first: impl FnOnce(BlockHistorySummary) + Send,
+) -> IdeResult<Vec<BlockRevisionSummary>> {
+    let rel = r.rel_path(path)?;
+    let Some(anchor) = anchor(r, &rel, current_text, lines, encoding, cancel)? else {
+        on_first(BlockHistorySummary { anchor: None, revisions: Vec::new(), diffs: Vec::new() });
+        return Ok(Vec::new());
+    };
+    walk(r, &rel, &anchor, encoding, cancel, |diffs| {
+        let revisions = diffs.iter().map(summary_of).collect();
+        on_first(BlockHistorySummary { anchor: Some(anchor.clone()), revisions, diffs });
+    })
+}
+
+/// Every revision of the block, newest first; `on_diffs` gets the first few with
+/// their diffs as soon as their query ends.
+fn walk(
+    r: &Repo,
+    rel: &str,
+    anchor: &BlockHistoryAnchor,
+    encoding: TextEncoding,
+    cancel: &CancellationToken,
+    on_diffs: impl FnOnce(Vec<BlockRevision>) + Send,
+) -> IdeResult<Vec<BlockRevisionSummary>> {
     // Git can emit the list without patches while another process prepares
     // the first few diffs. Neither query depends on the other's output.
     let limit = format!("-n{DIFF_BATCH}");
     let allowed = crate::execution_allowed();
-    let (out, patches) = std::thread::scope(|scope| {
+    let (out, first) = std::thread::scope(|scope| {
         let patches = scope.spawn(|| {
             let _execution = crate::ExecutionScope::enter(allowed);
-            run(r, &rel, &anchor, &[&limit], cancel)
+            let out = run(r, rel, anchor, &[&limit], cancel)?;
+            let diffs = parse_log(&out.stdout, encoding);
+            let ids: Vec<_> = diffs.iter().map(|diff| diff.id.clone()).collect();
+            on_diffs(diffs);
+            Ok::<_, IdeError>(ids)
         });
-        let out = run(r, &rel, &anchor, &["--no-patch"], cancel);
-        let patches = patches.join().map_err(|_| IdeError::internal("selection history diff query panicked"))?;
-        Ok::<_, IdeError>((out?, patches?))
+        let out = run(r, rel, anchor, &["--no-patch"], cancel);
+        let first = patches.join().map_err(|_| IdeError::internal("selection history diff query panicked"))?;
+        Ok::<_, IdeError>((out?, first?))
     })?;
     let revisions: Vec<_> = records(&out.stdout).filter_map(|record| parse_summary(split_header(record).0)).collect();
-    let diffs = parse_log(&patches.stdout, encoding);
-    check_diffs(&diffs, revisions.iter().take(DIFF_BATCH).map(|row| row.id.as_str()))?;
-    Ok(BlockHistorySummary { anchor: Some(anchor), revisions, diffs })
+    if revisions.iter().take(DIFF_BATCH).map(|row| row.id.as_str()).ne(first.iter().map(String::as_str)) {
+        return Err(IdeError::not_found("selection history revisions no longer match"));
+    }
+    Ok(revisions)
 }
 
 pub(crate) fn revisions(
@@ -192,6 +235,18 @@ fn parse_summary(header: &[u8]) -> Option<BlockRevisionSummary> {
         time_ms: fields.next()?.trim().parse::<f64>().ok()? * 1000.0,
         summary: fields.next().unwrap_or_default().to_owned(),
     })
+}
+
+fn summary_of(revision: &BlockRevision) -> BlockRevisionSummary {
+    let BlockRevision { id, short_id, author, email, time_ms, summary, .. } = revision;
+    BlockRevisionSummary {
+        id: id.clone(),
+        short_id: short_id.clone(),
+        author: author.clone(),
+        email: email.clone(),
+        time_ms: *time_ms,
+        summary: summary.clone(),
+    }
 }
 
 fn parse_record(record: &[u8], encoding: TextEncoding) -> Option<BlockRevision> {

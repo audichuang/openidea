@@ -92,6 +92,31 @@ pub async fn vcs_block_history_summary(
     ide_host::ops::vcs::vcs_block_history_summary(&state.host, window.label(), request, path, text, lines).await
 }
 
+/// History for Selection with the first rows early: `on_first` gets the anchor and the
+/// first few revisions with diffs, then the full revision list is returned.
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_block_history_streamed(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    path: PathBuf,
+    text: Option<String>,
+    lines: (u32, u32),
+    on_first: tauri::ipc::Channel<BlockHistorySummary>,
+) -> IdeResult<Vec<BlockRevisionSummary>> {
+    ide_host::ops::vcs::vcs_block_history_streamed(
+        &state.host,
+        window.label(),
+        request,
+        path,
+        text,
+        lines,
+        super::sender(on_first),
+    )
+    .await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn vcs_block_history_revisions(

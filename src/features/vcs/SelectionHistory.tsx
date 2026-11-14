@@ -5,6 +5,7 @@
  * uncommitted edits of the block come first as Local Changes.
  */
 import { useEffect, useMemo, useState } from "react";
+import { Channel } from "@tauri-apps/api/core";
 import type { BlockHistorySummary, BlockRevision, BlockRevisionSummary, RequestId } from "@/bindings";
 import { call, commands, isCancelled, nextRequestId } from "@/platform/ipc";
 import { useRemote } from "@/platform/remote";
@@ -87,42 +88,64 @@ function historyRequest<T>(
 
 export function SelectionHistoryEditor({ input }: { input: EditorInput }) {
   const data = input.data as SelectionHistoryData;
+  // The anchor and the first rows with diffs; `complete` when `history` already lists every revision.
   const [result, setResult] = useState<{
     data: SelectionHistoryData;
     history: BlockHistorySummary;
     legacy: Map<string, BlockRevision> | null;
+    complete: boolean;
   } | null>(null);
+  // Every revision, when it arrives after the first rows (it may also arrive before them).
+  const [list, setList] = useState<{ data: SelectionHistoryData; revisions: BlockRevisionSummary[] } | null>(null);
   const [failure, setFailure] = useState<{ data: SelectionHistoryData; error: string } | null>(null);
   const [active, setActive] = useState(0);
-  const history = result?.data === data ? result.history : null;
+  const first = result?.data === data ? result : null;
+  const revisions = list?.data === data ? list.revisions : null;
+  const history = useMemo(
+    () => (first && !first.complete && revisions ? { ...first.history, revisions } : (first?.history ?? null)),
+    [first, revisions],
+  );
+  const listing = !!first && !first.complete && !revisions;
   const error = failure?.data === data ? failure.error : null;
 
-  useEffect(
-    () =>
-      historyRequest(
-        async (request) => {
-          const session = useRemote.getState().session;
-          // Released servers only provide the original command with all diffs.
-          if (session && !session.commands.includes("vcs_block_history_summary")) {
-            const { headLines, revisions } = await call(
-              commands.vcsBlockHistory(request, data.path, data.text, data.lines),
-            );
-            const history = { anchor: null, revisions, diffs: revisions.slice(0, 1) };
-            return { history, legacy: headLines ? new Map(revisions.map((r) => [r.id, r])) : null };
-          }
-          return {
-            history: await call(commands.vcsBlockHistorySummary(request, data.path, data.text, data.lines)),
-            legacy: null,
-          };
-        },
-        ({ history, legacy }) => {
-          setActive(0);
-          setResult({ data, history, legacy });
-        },
-        (error) => setFailure({ data, error }),
-      ),
-    [data],
-  );
+  useEffect(() => {
+    let live = true;
+    const shown = (history: BlockHistorySummary, legacy: Map<string, BlockRevision> | null, complete: boolean) => {
+      if (!live) return;
+      setActive(0);
+      setResult({ data, history, legacy, complete });
+    };
+    const stop = historyRequest(
+      async (request) => {
+        const session = useRemote.getState().session;
+        // Released servers only provide the original command with all diffs.
+        if (session && !session.commands.includes("vcs_block_history_summary")) {
+          const { headLines, revisions } = await call(
+            commands.vcsBlockHistory(request, data.path, data.text, data.lines),
+          );
+          const history = { anchor: null, revisions, diffs: revisions.slice(0, 1) };
+          shown(history, headLines ? new Map(revisions.map((r) => [r.id, r])) : null, true);
+          return null;
+        }
+        // Servers before the first rows came early answer once Git has listed every revision.
+        if (session && !session.commands.includes("vcs_block_history_streamed")) {
+          shown(await call(commands.vcsBlockHistorySummary(request, data.path, data.text, data.lines)), null, true);
+          return null;
+        }
+        const channel = new Channel<BlockHistorySummary>();
+        channel.onmessage = (history) => shown(history, null, false);
+        return call(commands.vcsBlockHistoryStreamed(request, data.path, data.text, data.lines, channel));
+      },
+      (revisions) => {
+        if (revisions) setList({ data, revisions });
+      },
+      (error) => setFailure({ data, error }),
+    );
+    return () => {
+      live = false;
+      stop();
+    };
+  }, [data]);
 
   const rows = useMemo(
     () => (history ? historyRows(history, blockOf(data.text, data.lines)) : NO_ROWS),
@@ -140,7 +163,7 @@ export function SelectionHistoryEditor({ input }: { input: EditorInput }) {
     id == null
       ? undefined
       : (history?.diffs.find((diff) => diff.id === id) ??
-        result?.legacy?.get(id) ??
+        first?.legacy?.get(id) ??
         (diffs?.history === history ? diffs?.revisions.get(id) : undefined));
 
   useEffect(() => {
@@ -199,6 +222,7 @@ export function SelectionHistoryEditor({ input }: { input: EditorInput }) {
             <T>History for Selection</T>
           </span>
           <span className={styles.range}>{`${baseName(data.path)}:${from + 1}-${to + 1}`}</span>
+          {listing && !error && <Spinner size={12} />}
         </div>
         {error ? (
           <div className={layout.message}>{error}</div>
@@ -218,7 +242,7 @@ export function SelectionHistoryEditor({ input }: { input: EditorInput }) {
             className={layout.list}
             empty={
               <span className={layout.message}>
-                {history.anchor || result?.legacy
+                {history.anchor || first?.legacy
                   ? tx`No commits changed these lines`
                   : tx`These lines are not committed yet`}
               </span>

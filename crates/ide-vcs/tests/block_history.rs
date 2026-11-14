@@ -130,6 +130,42 @@ fn lazy_revisions_match_the_full_history_even_after_head_moves() {
 }
 
 #[test]
+fn streamed_history_matches_the_summary() {
+    let fx = renamed_history();
+    fx.write("b.txt", "one\ntwo again\nTHREE\nfour\nFIVE\n");
+    fx.commit("Lower two");
+    fx.write("b.txt", "one\ntwo again\nthree again\nfour\nFIVE\n");
+    fx.commit("Lower three");
+    let repo = fx.repo();
+    let path = fx.path("b.txt");
+    let cancel = CancellationToken::new();
+    // An unsaved line at the top, so the selection maps to HEAD's lines 1..=2.
+    let edited = "new\none\ntwo again\nthree again\nfour\nFIVE\n";
+    let summary = repo.block_history_summary(&path, Some(edited), (2, 3), encoding_rs::UTF_8, &cancel).unwrap();
+    let mut first = None;
+    let revisions = repo
+        .block_history_streamed(&path, Some(edited), (2, 3), encoding_rs::UTF_8, &cancel, |f| first = Some(f))
+        .unwrap();
+    let first = first.expect("the first rows were not sent");
+    assert_eq!(serde_json::to_value(&revisions).unwrap(), serde_json::to_value(&summary.revisions).unwrap());
+    assert_eq!(revisions.len(), 5);
+    assert_eq!(serde_json::to_value(&first.anchor).unwrap(), serde_json::to_value(&summary.anchor).unwrap());
+    assert_eq!(serde_json::to_value(&first.diffs).unwrap(), serde_json::to_value(&summary.diffs).unwrap());
+    assert_eq!(serde_json::to_value(&first.revisions).unwrap(), serde_json::to_value(&summary.revisions[..4]).unwrap());
+    // The first rows reach across the rename.
+    let paths: Vec<_> = first.diffs.iter().map(|d| d.path.as_str()).collect();
+    assert_eq!(paths, ["b.txt", "b.txt", "b.txt", "a.txt"]);
+
+    // Only uncommitted lines selected: the first (empty) answer still arrives.
+    let mut first = None;
+    let revisions = repo
+        .block_history_streamed(&path, Some(edited), (0, 0), encoding_rs::UTF_8, &cancel, |f| first = Some(f))
+        .unwrap();
+    let first = first.expect("the empty answer was not sent");
+    assert!(revisions.is_empty() && first.anchor.is_none() && first.revisions.is_empty());
+}
+
+#[test]
 fn maps_an_edited_selection_to_head_lines() {
     let fx = renamed_history();
     let repo = fx.repo();
@@ -166,5 +202,10 @@ fn cancelled_requests_stop() {
     let cancel = CancellationToken::new();
     cancel.cancel();
     let err = fx.repo().block_history(&fx.path("b.txt"), None, (1, 2), encoding_rs::UTF_8, &cancel).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Cancelled);
+    let err = fx
+        .repo()
+        .block_history_streamed(&fx.path("b.txt"), None, (1, 2), encoding_rs::UTF_8, &cancel, |_| {})
+        .unwrap_err();
     assert_eq!(err.kind, ErrorKind::Cancelled);
 }
