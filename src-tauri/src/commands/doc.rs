@@ -54,6 +54,13 @@ pub async fn doc_save(window: Window, state: State<'_, AppState>, doc: DocId) ->
     ide_host::ops::doc::save(&state.host, window.label(), doc).await
 }
 
+/// Implicit save; `false` when the file changed on disk since the editor read it and was kept.
+#[tauri::command]
+#[specta::specta]
+pub async fn doc_autosave(window: Window, state: State<'_, AppState>, doc: DocId) -> IdeResult<bool> {
+    ide_host::ops::doc::autosave(&state.host, window.label(), doc).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn doc_save_all(window: Window, state: State<'_, AppState>) -> IdeResult<()> {

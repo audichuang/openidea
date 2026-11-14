@@ -1587,7 +1587,8 @@ export class EditorController implements SlotHost {
         if (isTextTab(tab)) {
           const slot = await this.ensureSlot(tabId);
           if (!slot) return false;
-          await slot.model.save("explicit");
+          // A file changed on disk keeps the tab: the new window would show the disk version.
+          if (await slot.model.save("explicit")) return false;
         }
         try {
           await call(commands.windowOpenFileInNewWindow(inProject ? project.root : null, path));
@@ -1776,8 +1777,13 @@ export class EditorController implements SlotHost {
     if (errors.length) throw combinedError(errors);
   }
 
-  async saveAll(): Promise<void> {
-    const results = await Promise.allSettled([this.manager.saveAll("explicit"), this.saveCustomDocuments()]);
+  /**
+   * Saves every dirty document. `overwriteActive` (the user's Save): the active editor's document
+   * may replace a file that changed on disk; every other document keeps such a file.
+   */
+  async saveAll(options: { overwriteActive?: boolean } = {}): Promise<void> {
+    const active = options.overwriteActive ? this.manager.get(this.activePath() ?? "") : undefined;
+    const results = await Promise.allSettled([this.manager.saveAll("explicit", active), this.saveCustomDocuments()]);
     const errors = failures(results);
     if (errors.length) throw combinedError(errors);
   }

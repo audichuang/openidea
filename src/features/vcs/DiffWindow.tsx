@@ -8,7 +8,7 @@ import { flushSync } from "react-dom";
 import { registerAction } from "@/platform/actions";
 import { emitTo } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { activateEmbeddedDocuments } from "@/editor/core/embeddedDocuments";
+import { activateEmbeddedDocuments, isNotSaved } from "@/editor/core/embeddedDocuments";
 import { tx } from "@/platform/i18n";
 import { AUX_CLOSED, type AuxCloseResult } from "@/platform/auxWindow";
 import { setContext } from "@/platform/context";
@@ -101,6 +101,7 @@ export function activateDiffWindow(parent: string): () => void {
       try {
         await documents.save();
       } catch (error) {
+        if (isNotSaved(error)) return;
         showError(tx("Could not save diff"), error instanceof Error ? error.message : String(error));
       }
     },
