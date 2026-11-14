@@ -422,6 +422,42 @@ const gitLogScrollbar: Scenario = {
   },
 };
 
+/** Fast wheel scrolling while pages add hundreds of overlapping branch lanes. */
+const gitLogWide: Scenario = {
+  id: "gitLogWide",
+  title: "Page through Git Log with 240 long-lived branches",
+  async run(h) {
+    await h.page.evaluate(async () => {
+      const { __openideaPerf: probe } = window as never as {
+        __openideaPerf: {
+          fakeGitLog(n: number, latencyMs: number, longBranches: number): void;
+          runAction(id: string): Promise<boolean>;
+        };
+      };
+      probe.fakeGitLog(3600, 15, 240);
+      await probe.runAction("vcs.showLog");
+    });
+    const list = h.page.getByRole("listbox", { name: "Commits" });
+    await list.getByRole("option").first().waitFor();
+    const refresh = await h.refreshMs();
+    const started = await h.now();
+    await h.inPage((p) => p.startFrames());
+    const height = await list.evaluate(async (el) => {
+      for (let i = 0; i < 180; i++) {
+        el.scrollTop += i < 120 ? 520 : -520;
+        await new Promise(requestAnimationFrame);
+      }
+      return el.scrollHeight;
+    });
+    const frames = await h.inPage((p) => p.stopFrames());
+    if (height < 2400 * 26) throw new Error("Wide Git Log did not load eight pages");
+    return {
+      ...frameSummary(frames, refresh),
+      tbtMs: totalBlockingTime(await h.longTasksSince(started)),
+    };
+  },
+};
+
 /**
  * Dragging the splitters with an editor, the Project tree and the Git Log
  * open: every pointer move resizes the islands, so each frame relays them out.
@@ -803,6 +839,7 @@ export const SCENARIOS: Scenario[] = [
   terminalTui,
   gitLog,
   gitLogScrollbar,
+  gitLogWide,
   resizePanels,
   keyRepeat,
   scroll,
