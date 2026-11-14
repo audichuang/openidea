@@ -78,6 +78,7 @@ pub(crate) fn discover(path: &Path) -> IdeResult<Option<Repo>> {
         ignored: Default::default(),
         log_index: Default::default(),
         log_signatures: Default::default(),
+        blame_cache: Default::default(),
     }))
 }
 
