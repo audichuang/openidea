@@ -2452,14 +2452,14 @@ async fn an_idle_agent_waits_for_its_background_tasks_before_it_stops() {
     tokio::time::sleep(delay * 5 / 2).await;
     assert!(live(&mgr, &task.id));
     // It is done: the delay starts over from this report, then the agent stops.
+    let reported = std::time::Instant::now();
     agent.update("s1", json!({"sessionUpdate": BACKGROUND_TASKS_UPDATE, "tasks": []}));
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert!(live(&mgr, &task.id), "the delay runs from when the last task is done");
-    let until = std::time::Instant::now() + Duration::from_secs(10);
-    while live(&mgr, &task.id) && std::time::Instant::now() < until {
-        tokio::time::sleep(Duration::from_millis(20)).await;
+    while live(&mgr, &task.id) && reported.elapsed() < Duration::from_secs(10) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    assert!(!live(&mgr, &task.id));
+    let stopped_after = reported.elapsed();
+    assert!(!live(&mgr, &task.id), "the agent stops once the delay has run");
+    assert!(stopped_after >= delay, "the delay runs from when the last task is done, stopped after {stopped_after:?}");
     assert_eq!(mgr.task(&task.id).unwrap().state.lock().task.status, AgentStatus::Ready, "not an error");
     mgr.shutdown();
 }
