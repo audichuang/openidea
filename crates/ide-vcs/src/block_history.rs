@@ -292,6 +292,8 @@ fn post_image(hunk: &[u8]) -> Option<(u32, u32)> {
 /// The repository path of a `+++ b/…` line, C-quoted or not; None when it is not UTF-8
 /// (or not a `b/` path), as it then could not be passed back to Git.
 fn unquote_path(path: &[u8]) -> Option<String> {
+    // Git ends a name containing a space with a tab; a name with a tab of its own is quoted.
+    let path = path.strip_suffix(b"\t").unwrap_or(path);
     let bytes = match path.strip_prefix(b"\"").and_then(|p| p.strip_suffix(b"\"")) {
         None => path.to_vec(),
         Some(inner) => {
@@ -586,5 +588,16 @@ mod tests {
     fn unquotes_c_quoted_paths() {
         assert_eq!(unquote(r#""b/a \"q\"\tb.txt""#), "b/a \"q\"\tb.txt");
         assert_eq!(unquote("b/plain.txt"), "b/plain.txt");
+    }
+
+    #[test]
+    fn reads_spot_paths_as_git_writes_them() {
+        assert_eq!(unquote_path(b"b/src/a.txt").as_deref(), Some("src/a.txt"));
+        // A space makes git end the name with a tab.
+        assert_eq!(unquote_path(b"b/\xc3\xbc c.txt\t").as_deref(), Some("\u{fc} c.txt"));
+        assert_eq!(unquote_path(br#""b/a\tb \"q\".txt""#).as_deref(), Some("a\tb \"q\".txt"));
+        assert_eq!(unquote_path(br#""b/\303\274.txt""#).as_deref(), Some("\u{fc}.txt"));
+        assert_eq!(unquote_path(br#""b/\377.txt""#), None);
+        assert_eq!(unquote_path(b"/dev/null"), None);
     }
 }
