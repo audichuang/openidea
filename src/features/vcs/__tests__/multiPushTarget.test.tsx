@@ -170,6 +170,8 @@ async function openPushDialog() {
   render(<VcsDialogHost />);
   await act(() => showPushDialog());
   await screen.findByRole("textbox", { name: "Target branch of a" });
+  // The fork starts with no repository checked (#224).
+  fireEvent.click(screen.getByRole("button", { name: "Select All" }));
 }
 
 it("lists every repository on Push all, checks those with commits, expands none and shows no files", async () => {
