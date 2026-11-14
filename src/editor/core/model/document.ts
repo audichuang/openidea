@@ -780,7 +780,14 @@ export class DocModel {
 
 /** A save refused because the file changed on disk, for callers that act on the saved file next. */
 export function notSaved(path: string): Error {
-  return new Error(tx`${path} changed on disk and was not saved.`);
+  const error = new Error(tx`${path} changed on disk and was not saved.`);
+  error.name = "NotSavedError";
+  return error;
+}
+
+/** A {@link notSaved} refusal: the save itself already warned about it. */
+export function isNotSaved(error: unknown): boolean {
+  return error instanceof Error && error.name === "NotSavedError";
 }
 
 export interface ManagerHost {
@@ -962,17 +969,24 @@ export class DocumentManager {
   /**
    * Saves dirty documents; failures are notified, and an explicit Save All also rejects with them.
    * Only `overwrite` (the document the user saves with Save) may replace a file that changed on
-   * disk; the others are kept dirty, and a non-automatic save names them.
+   * disk; the others are kept dirty, and a non-automatic save names them. Resolves with the
+   * paths of those refused documents.
    */
-  async saveAll(reason: "explicit" | "auto", overwrite?: DocModel | null, skipUntitled = false) {
+  async saveAll(reason: "explicit" | "auto", overwrite?: DocModel | null, skipUntitled = false): Promise<string[]> {
     const errors: unknown[] = [];
+    const refused: string[] = [];
     await Promise.all(
       [...this.byPath.values()]
         .filter((m) => !(skipUntitled && isUntitledUri(m.path)))
         .map((m) =>
-          m.save(reason, { overwrite: m === overwrite }).catch((e) => {
-            errors.push(e);
-          }),
+          m.save(reason, { overwrite: m === overwrite }).then(
+            (r) => {
+              if (r) refused.push(m.path);
+            },
+            (e) => {
+              errors.push(e);
+            },
+          ),
         ),
     );
     if (errors.length) {
@@ -981,5 +995,6 @@ export class DocumentManager {
       if (reason === "explicit")
         throw errors.length === 1 ? e : new AggregateError(errors, e instanceof Error ? e.message : String(e));
     }
+    return refused;
   }
 }
