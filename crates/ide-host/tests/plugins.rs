@@ -4097,7 +4097,14 @@ fn completion_quick_fixes_problems_and_event_kinds_of_api_1() {
 }
 
 fn interactive_actions_fixture() -> (Fixture, ide_plugin::ProviderDocument) {
-    let f = fixture(Limits { timeout: Duration::from_millis(500), ..Limits::default() });
+    // A generous edit path: listing the actions is not under test, and a slow CI host misses the
+    // production 50 ms and gets none (#298).
+    let f = fixture(Limits {
+        timeout: Duration::from_millis(500),
+        edit_soft: Duration::from_secs(5),
+        edit_hard: Duration::from_secs(10),
+        ..Limits::default()
+    });
     let pkg = f._tmp.path().join("interactive-actions");
     copy_dir(&misbehave_pkg(), &pkg);
     let manifest = std::fs::read_to_string(pkg.join("plugin.toml"))
