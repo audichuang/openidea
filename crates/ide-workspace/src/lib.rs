@@ -11,6 +11,7 @@ pub mod file_ops;
 pub mod file_refs;
 mod git_index;
 pub mod history;
+pub mod history_recorder;
 pub mod memory;
 pub mod process;
 pub mod project_discovery;
