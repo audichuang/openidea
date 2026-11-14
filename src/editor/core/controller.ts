@@ -1839,7 +1839,7 @@ export class EditorController implements SlotHost {
         if (isTextTab(tab)) {
           const slot = await this.ensureSlot(tabId);
           if (!slot) return false;
-          await slot.model.save("explicit");
+          await slot.model.save("explicit", { overwrite: true });
         }
         try {
           await call(commands.windowOpenFileInNewWindow(inProject ? project.root : null, path));
@@ -2035,9 +2035,14 @@ export class EditorController implements SlotHost {
     if (errors.length) throw combinedError(errors);
   }
 
-  async saveAll(opts?: { skipUntitled?: boolean }): Promise<void> {
+  /**
+   * Saves every dirty document. `overwriteActive` (the user's Save): the active editor's document
+   * may replace a file that changed on disk; every other document keeps such a file.
+   */
+  async saveAll(options: { overwriteActive?: boolean; skipUntitled?: boolean } = {}): Promise<void> {
+    const active = options.overwriteActive ? this.manager.get(this.activePath() ?? "") : undefined;
     const results = await Promise.allSettled([
-      this.manager.saveAll("explicit", opts?.skipUntitled),
+      this.manager.saveAll("explicit", active, options.skipUntitled),
       this.saveCustomDocuments(),
     ]);
     const errors = failures(results);
