@@ -40,7 +40,8 @@ export function blockOf(text: string, [from, to]: readonly [number, number]): st
 /** The rows of the list: Local Changes when the block differs from HEAD, then the commits. */
 export function historyRows(history: BlockHistorySummary, current: string): HistoryRow[] {
   const rows: HistoryRow[] = history.revisions.map((revision, index) => ({ kind: "revision", revision, index }));
-  const head = history.diffs[0]?.after;
+  // HEAD's block from the server; older servers only give the newest row's diff, which a merge leaves empty.
+  const head = history.head ?? history.diffs[0]?.after;
   if (head !== undefined && head !== current) rows.unshift({ kind: "local", head, current });
   return rows;
 }
@@ -107,7 +108,7 @@ export function SelectionHistoryEditor({ input }: { input: EditorInput }) {
             const { headLines, revisions } = await call(
               commands.vcsBlockHistory(request, data.path, data.text, data.lines),
             );
-            const history = { anchor: null, revisions, diffs: revisions.slice(0, 1) };
+            const history = { anchor: null, head: null, revisions, diffs: revisions.slice(0, 1) };
             return { history, legacy: headLines ? new Map(revisions.map((r) => [r.id, r])) : null };
           }
           return {
