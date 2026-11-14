@@ -289,7 +289,7 @@ export function pruneFilteredEdges(commits: readonly GraphCommit[]): GraphCommit
   const pruned = (c: GraphCommit) => c.parents.length >= 2 && c.parents.some((_, i) => kindOf(c, i) === "filtered");
   if (!commits.some(pruned)) return [...commits];
   const reaches = filteredReachability(commits, positions);
-  return commits.map((c) => {
+  return commits.map((c, row) => {
     if (!pruned(c)) return c;
     // Walk the parents shallowest first: a filtered parent that a kept connection already
     // reaches adds nothing (and a dropped one was reached itself, so what it reaches is too).
@@ -300,7 +300,7 @@ export function pruneFilteredEdges(commits: readonly GraphCommit[]): GraphCommit
       .sort((a, b) => (positions.get(c.parents[a]!) ?? Infinity) - (positions.get(c.parents[b]!) ?? Infinity))) {
       const pos = positions.get(c.parents[i]!);
       if (pos == null) continue;
-      if (kindOf(c, i) === "filtered" && reaches(c, kept, pos)) drop.add(i);
+      if (kindOf(c, i) === "filtered" && reaches(row, kept, pos)) drop.add(i);
       else kept.push(pos);
     }
     if (!drop.size) return c;
@@ -315,8 +315,8 @@ export function pruneFilteredEdges(commits: readonly GraphCommit[]): GraphCommit
 }
 
 /**
- * `reaches(c, from, target)`: whether row `target` is `from` itself or an ancestor of one
- * of them, walking only rows no deeper than `c`'s deepest parent.
+ * `reaches(row, from, target)`: whether row `target` is in `from` or an ancestor of one of
+ * them, walking only rows no deeper than the deepest parent of row `row`.
  *
  * In log order (parents after their children) that depth bound never cuts a path to a
  * parent of `c`, so the answer depends only on the two rows and is shared between rows:
@@ -333,17 +333,25 @@ function filteredReachability(commits: readonly GraphCommit[], positions: Readon
     }),
   );
   if (parents.some((ps, i) => ps.some((p) => p <= i))) {
-    return (c: GraphCommit, from: readonly number[], target: number) => {
-      const limit = Math.max(...c.parents.map((p) => positions.get(p) ?? -1));
-      const seen = new Set<number>();
-      for (const stack = [...from]; stack.length;) {
+    // One walk per row as before, extended as `from` grows within the row.
+    let current = -1;
+    let covered = new Set<number>();
+    let walked = 0;
+    return (row: number, from: readonly number[], target: number) => {
+      if (row !== current) {
+        current = row;
+        covered = new Set();
+        walked = 0;
+      }
+      const limit = Math.max(...commits[row]!.parents.map((p) => positions.get(p) ?? -1));
+      for (const stack = from.slice(walked); stack.length;) {
         const at = stack.pop()!;
-        if (at === target) return true;
-        if (seen.has(at)) continue;
-        seen.add(at);
+        if (covered.has(at)) continue;
+        covered.add(at);
         for (const p of parents[at]!) if (p <= limit) stack.push(p);
       }
-      return false;
+      walked = from.length;
+      return covered.has(target);
     };
   }
 
@@ -425,7 +433,7 @@ function filteredReachability(commits: readonly GraphCommit[], positions: Readon
     }
     return false;
   };
-  return (_c: GraphCommit, from: readonly number[], target: number) => from.some((at) => reachesOne(at, target));
+  return (_row: number, from: readonly number[], target: number) => from.some((at) => reachesOne(at, target));
 }
 
 /** Ids reachable from the given heads (log order: children before parents). */
