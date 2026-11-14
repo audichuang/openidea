@@ -666,6 +666,8 @@ pub use index_writes::is_own_index_write;
 /// Fork-owned: the Git Graph view's extra queries and operations.
 pub mod fork_graph;
 mod fork_log_users;
+#[doc(hidden)]
+pub use fork_log_users::set_after_tips_hook as set_log_users_after_tips_hook;
 mod text_encoding;
 mod write;
 
