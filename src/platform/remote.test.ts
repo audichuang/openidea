@@ -1,5 +1,6 @@
 import { Channel } from "@tauri-apps/api/core";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { invoke } from "./tauriCore";
 import type { ProjectInfo, Settings } from "./ipc";
 import { useProject } from "./project";
 import { disableRemote, enableRemote, useRemote } from "./remote";
@@ -92,5 +93,127 @@ describe("remote session lifetime", () => {
     useProject.setState({ project });
     useProject.setState({ settings: { editor: { fontSize: 14 } } as unknown as Settings });
     expect(useRemote.getState().session).not.toBeNull();
+  });
+});
+
+describe("remote channel lifetime", () => {
+  type Callback = (message: unknown) => void;
+  let callbacks: Map<number, Callback>;
+  let calls: { cmd: string; args: string; relay: number; resolve: (result: string) => void }[];
+  const session = {
+    target: { kind: "wsl" as const, distro: "Ubuntu" },
+    root: "/home/me/app",
+    host: "Ubuntu",
+    os: "linux",
+    commands: ["search_start", "term_spawn"],
+  };
+
+  beforeEach(() => {
+    let next = 1;
+    callbacks = new Map();
+    calls = [];
+    Object.assign(window, {
+      __TAURI_INTERNALS__: {
+        transformCallback: (callback: Callback) => {
+          const id = next++;
+          callbacks.set(id, callback);
+          return id;
+        },
+        unregisterCallback: (id: number) => callbacks.delete(id),
+        invoke: (_cmd: string, args: { cmd: string; args: string; onChannel: Channel<unknown> }) =>
+          new Promise<string>((resolve) =>
+            calls.push({ cmd: args.cmd, args: args.args, relay: args.onChannel.id, resolve }),
+          ),
+      },
+    });
+    enableRemote(session);
+  });
+
+  afterEach(() => disableRemote());
+
+  const callAt = (i: number) => {
+    const call = calls[i];
+    if (!call) throw new Error(`no remote call ${i}`);
+    return call;
+  };
+  /** What the desktop backend sends through a call's relay channel, as Tauri delivers it. */
+  const relay = (call: { relay: number }, index: number, frame: object) =>
+    callbacks.get(call.relay)?.({ message: frame, index });
+  const value = (id: number, data: unknown) => ({ id, data: JSON.stringify(data), end: false });
+  const end = (id: number) => ({ id, data: "", end: true });
+  /** The backend dropped its last clone of the relay channel. */
+  const closeRelay = (call: { relay: number }, index: number) => callbacks.get(call.relay)?.({ end: true, index });
+  /** The id the call's only streaming argument travels with. */
+  const channelId = (call: { args: string }) => {
+    const [argument] = Object.values(JSON.parse(call.args) as Record<string, { $channel: number }>);
+    if (!argument) throw new Error("no streaming argument");
+    return argument.$channel;
+  };
+
+  it("releases every callback of finished calls", async () => {
+    const baseline = callbacks.size;
+    for (let i = 0; i < 20; i++) {
+      const received: unknown[] = [];
+      const pending = invoke("search_start", { onEvent: new Channel<unknown>((m) => received.push(m)) });
+      const call = callAt(i);
+      const id = channelId(call);
+      relay(call, 0, value(id, { match: i }));
+      relay(call, 1, end(id));
+      closeRelay(call, 2);
+      call.resolve("null");
+      await pending;
+      expect(received).toEqual([{ match: i }]);
+    }
+    expect(callbacks.size).toBe(baseline);
+  });
+
+  it("keeps delivering a stream after the call returns until the server ends it", async () => {
+    const baseline = callbacks.size;
+    const received: unknown[] = [];
+    const pending = invoke("term_spawn", { onOutput: new Channel<unknown>((m) => received.push(m)) });
+    const call = callAt(0);
+    call.resolve("1");
+    await pending;
+    const id = channelId(call);
+    relay(call, 0, value(id, "$ "));
+    relay(call, 1, value(id, "ls\n"));
+    expect(received).toEqual(["$ ", "ls\n"]);
+    expect(callbacks.size).toBe(baseline + 2);
+    relay(call, 2, end(id));
+    closeRelay(call, 3);
+    expect(callbacks.size).toBe(baseline);
+  });
+
+  it("delivers a large value that arrives after the end notice", async () => {
+    const baseline = callbacks.size;
+    const received: unknown[] = [];
+    const pending = invoke("search_start", { onEvent: new Channel<unknown>((m) => received.push(m)) });
+    const call = callAt(0);
+    call.resolve("null");
+    await pending;
+    const id = channelId(call);
+    const large = "x".repeat(16 * 1024);
+    // Tauri fetches values of 8 KB and more: the end notice, sent after, can arrive first.
+    relay(call, 1, end(id));
+    closeRelay(call, 2);
+    expect(callbacks.size).toBe(baseline + 2);
+    relay(call, 0, value(id, large));
+    expect(received).toEqual([large]);
+    expect(callbacks.size).toBe(baseline);
+  });
+
+  it("keeps channels of a server that never ends them, until the session ends", async () => {
+    const baseline = callbacks.size;
+    const received: unknown[] = [];
+    const pending = invoke("search_start", { onEvent: new Channel<unknown>((m) => received.push(m)) });
+    const call = callAt(0);
+    relay(call, 0, value(channelId(call), 1));
+    call.resolve("null");
+    await pending;
+    relay(call, 1, value(channelId(call), 2));
+    expect(received).toEqual([1, 2]);
+    expect(callbacks.size).toBe(baseline + 2);
+    disableRemote();
+    expect(callbacks.size).toBe(baseline);
   });
 });
