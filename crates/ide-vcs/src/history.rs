@@ -833,7 +833,6 @@ fn log_indexed_rows(
     };
     let authors: Vec<_> =
         q.author.iter().chain(&q.authors).map(|a| a.trim().to_lowercase()).filter(|a| !a.is_empty()).collect();
-    update_head_reachable(&repo, &mut lock(shared), cancel)?;
     let mut range_ids_set = range_ids.as_ref().map(|ids| ids.iter().copied().collect::<HashSet<_>>());
     type Walk<'a> = Box<dyn Iterator<Item = IdeResult<ObjectId>> + 'a>;
     let walk: Walk<'_> = if let Some(ids) = range_ids {
@@ -922,6 +921,9 @@ fn log_indexed_rows(
     let text = q.text.as_deref().map(|t| TextFilter::new(r, &scopes, q, t, cancel)).transpose()?.flatten();
     let mut guard = lock(shared);
     let index = &mut *guard;
+    // Under the guard that builds the rows: a query run meanwhile (after a branch switch)
+    // may have moved the shared set to another HEAD.
+    update_head_reachable(&repo, index, cancel)?;
     let db = index.db().cloned();
     let txn = db.as_ref().and_then(|db| db.begin_read().ok());
     let table = txn.as_ref().and_then(|t| t.open_table(crate::log_index::COMMITS).ok());
