@@ -39,7 +39,7 @@ fn cache_files(git_dir: &Path, common_dir: &Path) -> [PathBuf; 4] {
     ]
 }
 
-fn stamp(files: &[PathBuf]) -> Vec<Option<(SystemTime, u64)>> {
+pub(crate) fn stamp(files: &[PathBuf]) -> Vec<Option<(SystemTime, u64)>> {
     files
         .iter()
         .map(|f| {
