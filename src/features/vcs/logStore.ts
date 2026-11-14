@@ -1196,10 +1196,13 @@ export function displayedLogGraph() {
 
 export async function goToParent(c: Commit) {
   const generation = useGitLog.getState().generation;
+  // One layout per look: the visible parents change as pages load (collapsed runs fold away).
   const find = () => {
     const { graph, commits } = displayedLogGraph();
-    const parents = graph.find((x) => x.id === commitKey(c))?.parents ?? [];
-    return { parents, candidates: commits.filter((x) => parents.includes(commitKey(x))) };
+    const key = commitKey(c);
+    const parents = graph.find((x) => x.id === key)?.parents ?? [];
+    const wanted = new Set(parents);
+    return { parents, candidates: commits.filter((x) => wanted.has(commitKey(x))) };
   };
   if (!find().parents.length) return;
   await pageUntil(() => {
