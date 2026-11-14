@@ -94,6 +94,18 @@ describe("a hidden tab's kept view", () => {
     expect(lines(view)).toBeLessThan(200);
   });
 
+  it("fits the viewport when batched transactions overlap and only their composition maps it large", async () => {
+    const { slot } = await open("/p/a.txt", "old\n".repeat(5000));
+    const view = await showThenHide(slot);
+    const { from, to } = view.viewport;
+    expect(from).toBe(0);
+    expect(to).toBeLessThan(view.state.doc.length);
+    const first = view.state.update({ changes: { from: to, to: to + 3, insert: "new\n".repeat(20_000) } });
+    const second = first.state.update({ changes: { from: 1, to: to + 3, insert: "ab" } });
+    view.dispatch([first, second]);
+    expect(lines(view)).toBeLessThan(200);
+  });
+
   it("keeps small hidden edits where they were (no refit)", async () => {
     const { backend, model, slot } = await open("/p/a.txt", "old\n".repeat(200));
     const view = await showThenHide(slot);
