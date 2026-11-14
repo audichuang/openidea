@@ -1116,6 +1116,7 @@ pub struct Repo {
     conflict_mutation: std::sync::Mutex<()>,
     amend_recovery: std::sync::Mutex<Option<commit_rewrite::PendingAmend>>,
     incoming_observations: std::sync::Mutex<incoming::IncomingObservations>,
+    blame_cache: blame::BlameCache,
 }
 
 impl Repo {
@@ -1135,6 +1136,9 @@ impl Repo {
     /// repository is in Restricted Mode until [`Repo::set_execution_allowed`] says otherwise.
     pub fn discover(path: &Path) -> IdeResult<Option<Self>> {
         repo::discover(path)
+    }
+    pub(crate) fn blame_cache(&self) -> &blame::BlameCache {
+        &self.blame_cache
     }
     /// The worktree root.
     pub fn root(&self) -> &Path {

@@ -93,6 +93,7 @@ pub(crate) fn discover(path: &Path) -> IdeResult<Option<Repo>> {
         conflict_mutation: Default::default(),
         amend_recovery: Default::default(),
         incoming_observations: Default::default(),
+        blame_cache: Default::default(),
     }))
 }
 
