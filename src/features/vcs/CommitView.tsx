@@ -90,8 +90,6 @@ import { rebaseAfterFixup } from "./rebase";
 import { stashTabOf, stashTabs, type ContentTab } from "./gitTabs";
 import {
   DIFF_KIND,
-  changeNodeDiff,
-  changeNodeDiffData,
   diffInput,
   openDiff,
   openVcsDiff,
