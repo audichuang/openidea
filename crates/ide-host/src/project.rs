@@ -405,6 +405,9 @@ impl Host {
                     }
                     // Atomic saves by external tools surface as `created`.
                     documents.on_disk_changed(&[&changed[..], &ignored].concat());
+                    if batch.rescan {
+                        documents.sync_from_disk();
+                    }
                     if let Some(plugins) = crate::plugins::editor_plugin_host() {
                         plugins.invalidate_endpoints(&root, &[changed.clone(), batch.removed.clone()].concat());
                         plugins.post_files_changed(&window, &root, &files_events_active, batch);
@@ -878,6 +881,9 @@ fn light_watcher(
         Box::new(move |batch| {
             let changed: Vec<PathBuf> = batch.created.iter().chain(&batch.modified).cloned().collect();
             documents.on_disk_changed(&changed);
+            if batch.rescan {
+                documents.sync_from_disk();
+            }
             history.record(&changed, &batch.removed);
         }),
         ide_vfs::WatchMode::Flat,
@@ -1500,6 +1506,9 @@ fn content_root_watcher(
                 phpstan.files_removed(batch.removed.iter());
             }
             documents.on_disk_changed(&[&changed[..], &ignored].concat());
+            if batch.rescan {
+                documents.sync_from_disk();
+            }
             history.record(&changed, &batch.removed);
         }),
     )
