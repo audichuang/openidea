@@ -13,7 +13,7 @@ import { useProject } from "@/platform/project";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { maybeEditorService, toolWindowService } from "@/workbench/contributions";
 import { baseName, effectiveKind, relTo, stripSlash } from "./model";
-import { logConsole } from "./ops";
+import { logConsole, saveOpenedDocument } from "./ops";
 import { useVcs } from "./store";
 import type { CommitCheck, CommitCheckContext } from "./commitCheckRegistry";
 import { getCommitChecks, registerCommitCheck } from "./commitCheckRegistry";
@@ -163,7 +163,7 @@ async function modifyFile(path: string, mods: Modifications) {
         );
         if (edits.length) await call(commands.applyWorkspaceEdit({ files: [{ kind: "edit", path, edits }] }));
       });
-    await call(commands.docSave(info.id));
+    await step("Save", () => saveOpenedDocument(info.id, path));
   } finally {
     void commands.docClose(info.id);
   }
