@@ -665,6 +665,9 @@ mod status;
 pub use index_writes::is_own_index_write;
 /// Fork-owned: the Git Graph view's extra queries and operations.
 pub mod fork_graph;
+mod fork_log_users;
+#[doc(hidden)]
+pub use fork_log_users::set_after_tips_hook as set_log_users_after_tips_hook;
 mod text_encoding;
 mod write;
 
@@ -965,15 +968,7 @@ impl Repo {
     }
     pub fn log_users(&self) -> IdeResult<Vec<String>> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
-        let out = cli::run(self.root(), &["log", "--all", "--format=%an <%ae>"], None)?;
-        Ok(out
-            .stdout_str()
-            .lines()
-            .filter(|line| !line.is_empty())
-            .map(str::to_string)
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect())
+        fork_log_users::log_users(self, &self.git_dir)
     }
     pub fn log_details(&self, revision: &str) -> IdeResult<LogDetails> {
         self.log_details_cancellable(revision, &CancellationToken::new())
