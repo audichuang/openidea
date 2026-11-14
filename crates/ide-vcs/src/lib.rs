@@ -100,6 +100,8 @@ pub struct BlockHistoryAnchor {
 #[serde(rename_all = "camelCase")]
 pub struct BlockHistorySummary {
     pub anchor: Option<BlockHistoryAnchor>,
+    /// The anchor's lines as HEAD has them; None from servers that predate it.
+    pub head: Option<String>,
     pub revisions: Vec<BlockRevisionSummary>,
     pub diffs: Vec<BlockRevision>,
 }
