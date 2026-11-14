@@ -287,13 +287,25 @@ fn cli_status(r: &Repo, ignored: &IgnoredNames) -> IdeResult<Entries> {
 fn cli_status_paths(r: &Repo, ignored: &IgnoredNames, paths: &[String]) -> IdeResult<Entries> {
     let overrides = crate::cli::filter_overrides(r.root(), &ide_core::CancellationToken::new())?;
     let mut args: Vec<&str> = overrides.iter().map(String::as_str).collect();
-    args.extend(["--literal-pathspecs", "status", "--porcelain=v2", "-z", "--untracked-files=all"]);
+    // The same rules as the full read: no index lock, and no rename detection or lazy fetch
+    // in a partial clone (a watcher-driven refresh must never use the network).
+    args.extend([
+        "--no-optional-locks",
+        "--literal-pathspecs",
+        "status",
+        "--porcelain=v2",
+        "-z",
+        "--untracked-files=all",
+    ]);
+    if is_partial_clone_per_git(r) {
+        args.push("--no-renames");
+    }
     if !crate::execution_allowed() {
         args.push("--ignore-submodules=dirty");
     }
     args.push("--");
     args.extend(paths.iter().map(String::as_str));
-    let out = crate::cli::run(r.root(), &args, None)?;
+    let out = crate::cli::run_env(r.root(), &args, None, &[("GIT_NO_LAZY_FETCH", std::ffi::OsStr::new("1"))])?;
     Ok(parse_porcelain_v2(&String::from_utf8_lossy(&out.stdout), ignored))
 }
 
