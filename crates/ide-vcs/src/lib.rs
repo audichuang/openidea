@@ -656,6 +656,7 @@ mod cli;
 mod compare;
 mod diff;
 mod external_diff;
+mod fork_file_history;
 mod history;
 mod ignore;
 mod index_writes;
