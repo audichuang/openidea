@@ -1483,7 +1483,7 @@ export function registerEditorActions(): () => void {
       title: "Save All",
       category: "File",
       keywords: ["save"],
-      run: () => ctrl.saveAll(),
+      run: () => ctrl.saveAll({ overwriteActive: true }),
     },
   ]);
 }

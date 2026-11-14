@@ -171,16 +171,39 @@ struct DocState {
     /// Disk state we last loaded or wrote; changes matching it are our own.
     disk_mtime: f64,
     disk_len: u64,
-    /// The file changed on disk while this buffer had unsaved changes; autosave leaves it
-    /// alone until the user saves explicitly or the buffer is reloaded.
-    disk_conflict: bool,
+    /// Hash of the bytes the file held then; `None` when it could not be read.
+    disk_hash: Option<blake3::Hash>,
     /// Text as of that disk state: an edit that returns to it (undo) leaves the
     /// document clean. `None` once a pending encoding / line-ending / BOM change
     /// makes the buffer differ from the file whatever the text, and for large files.
     clean_text: Option<Document>,
+    /// External disk state already reported as conflicting with unsaved changes.
+    conflict: Option<DiskStamp>,
     closed: bool,
     /// URI of a virtual document (no file behind it).
     uri: Option<String>,
+}
+
+/// A file's state on disk: modification time, length and a hash of its bytes
+/// (`None`: missing or unreadable).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DiskStamp {
+    mtime: f64,
+    len: u64,
+    hash: Option<blake3::Hash>,
+}
+
+impl DiskStamp {
+    fn read(path: &Path) -> Self {
+        match std::fs::metadata(path) {
+            Ok(meta) => Self { mtime: ide_vfs::mtime_ms(&meta), len: meta.len(), hash: file_hash(path) },
+            Err(_) => Self { mtime: 0.0, len: 0, hash: None },
+        }
+    }
+}
+
+fn file_hash(path: &Path) -> Option<blake3::Hash> {
+    std::fs::read(path).ok().map(|bytes| blake3::hash(&bytes))
 }
 
 impl DocState {
@@ -188,24 +211,24 @@ impl DocState {
     fn synced(&mut self, mtime: f64) {
         self.disk_mtime = mtime;
         self.disk_len = disk_len(&self.path);
-        self.disk_conflict = false;
+        self.disk_hash = file_hash(&self.path);
+        self.conflict = None;
         self.clean_text = (!self.large).then(|| self.doc.clone());
     }
 
-    /// The file changed on disk under unsaved changes: autosave leaves it alone, and the text read
-    /// before no longer matches the file, so undoing back to it is not clean.
-    fn mark_disk_conflict(&mut self, mtime: f64, len: u64) {
-        self.disk_mtime = mtime;
-        self.disk_len = len;
-        self.disk_conflict = true;
-        self.clean_text = None;
-    }
-
-    /// Disk state (mtime, length) of a file that changed since we last read or wrote it.
-    fn changed_on_disk(&self) -> Option<(f64, u64)> {
-        let meta = std::fs::metadata(&self.path).ok()?;
-        let stamp = (ide_vfs::mtime_ms(&meta), meta.len());
-        (stamp != (self.disk_mtime, self.disk_len)).then_some(stamp)
+    /// Disk state of a file whose bytes changed since we last read or wrote it. The
+    /// bytes decide, not the stamp: a same-length write can restore the mtime, and a
+    /// touch or stash pop rewrites identical bytes. A missing or unreadable file
+    /// counts as changed. Identical bytes adopt the new stamp.
+    fn changed_on_disk(&mut self) -> Option<DiskStamp> {
+        let current = DiskStamp::read(&self.path);
+        if current.hash.is_none() || current.hash != self.disk_hash {
+            return Some(current);
+        }
+        self.disk_mtime = current.mtime;
+        self.disk_len = current.len;
+        self.conflict = None;
+        None
     }
 }
 
@@ -526,8 +549,9 @@ impl Documents {
             encoding_chosen: false,
             disk_mtime: loaded.mtime_ms,
             disk_len: disk_len(path),
-            disk_conflict: false,
+            disk_hash: file_hash(path),
             clean_text: None,
+            conflict: None,
             closed: false,
             uri: None,
         };
@@ -602,8 +626,9 @@ impl Documents {
             encoding_chosen: false,
             disk_mtime: 0.0,
             disk_len: 0,
-            disk_conflict: false,
+            disk_hash: None,
             clean_text: None,
+            conflict: None,
             closed: false,
             uri: Some(uri.to_owned()),
         };
@@ -662,10 +687,11 @@ impl Documents {
             encoding_chosen: false,
             disk_mtime: 0.0,
             disk_len: 0,
-            disk_conflict: false,
-            clean_text: None,
             closed: false,
             uri: Some(key.to_string_lossy().into_owned()),
+            disk_hash: None,
+            clean_text: None,
+            conflict: None,
         };
         let slot: Slot = Arc::new(Mutex::new(state));
         let st = slot.lock();
@@ -808,10 +834,20 @@ impl Documents {
                     tracing::warn!("edit of {} rejected: {e}", st.path.display());
                 }
             })?;
-            let dirty = !st.clean_text.as_ref().is_some_and(|clean| clean.same_text(&st.doc));
-            self.set_dirty(doc, st, dirty);
+            let clean = st.clean_text.as_ref().is_some_and(|clean| clean.same_text(&st.doc));
+            // Back to the text of a file that changed on disk meanwhile (its watcher event was
+            // spent warning about the unsaved changes): show what the file holds now.
+            let reload = clean && st.uri.is_none() && st.changed_on_disk().is_some();
+            self.set_dirty(doc, st, !clean || reload);
             self.notify_changed(doc, st, &applied, &edits);
-            Ok(st.doc.version())
+            let version = st.doc.version();
+            if reload {
+                match self.reload_locked(doc, st, false) {
+                    Ok(()) => self.set_dirty(doc, st, false),
+                    Err(e) => tracing::warn!("reload {}: {e}", st.path.display()),
+                }
+            }
+            Ok(version)
         })
     }
 
@@ -928,32 +964,7 @@ impl Documents {
     /// Writes the document with its original encoding, BOM and line ending.
     /// A clean document is not rewritten.
     pub fn save(&self, doc: DocId) -> IdeResult<()> {
-        self.with_doc(doc, |st| self.write(doc, st))
-    }
-
-    /// An automatic save (switching tabs, the window losing focus): `false` when the file changed
-    /// on disk after this buffer was edited, which only an explicit save may overwrite. Checks the
-    /// disk too, since no watcher event may have reported the change; warns once.
-    pub fn autosave(&self, doc: DocId) -> IdeResult<bool> {
         self.with_doc(doc, |st| {
-            if st.dirty
-                && !st.disk_conflict
-                && st.uri.is_none()
-                && let Some((mtime, len)) = st.changed_on_disk()
-            {
-                // As if the watcher had reported it: its later event for this change is a no-op.
-                st.mark_disk_conflict(mtime, len);
-                self.warn_changed_on_disk(doc, st);
-            }
-            if st.dirty && st.disk_conflict {
-                return Ok(false);
-            }
-            self.write(doc, st).map(|()| true)
-        })
-    }
-
-    fn write(&self, doc: DocId, st: &mut DocState) -> IdeResult<()> {
-        {
             if !st.dirty || st.uri.is_some() {
                 return Ok(());
             }
@@ -972,7 +983,7 @@ impl Documents {
                 }
             }
             Ok(())
-        }
+        })
     }
 
     /// Save As for an untitled buffer: writes it to `target` (creating missing
@@ -1061,6 +1072,29 @@ impl Documents {
 
     pub fn has_unsaved_changes(&self) -> bool {
         self.registry.lock().docs.values().any(|entry| entry.slot.lock().dirty)
+    }
+
+    /// [`save`](Self::save) for an implicit save (focus loss, tab switch): refuses
+    /// to overwrite a file that changed on disk since the buffer last matched it,
+    /// even when no watcher event reported the change, and warns once per disk
+    /// state instead. `Ok(false)`: not saved; the document stays dirty until an
+    /// explicit save overwrites the file or Reload from Disk discards the buffer.
+    pub fn autosave(&self, doc: DocId) -> IdeResult<bool> {
+        let refused = self.with_doc(doc, |st| {
+            if !st.dirty || st.uri.is_some() {
+                return Ok(false);
+            }
+            let Some(stamp) = st.changed_on_disk() else { return Ok(false) };
+            if st.conflict != Some(stamp) {
+                st.conflict = Some(stamp);
+                self.warn_changed_on_disk(doc, st);
+            }
+            Ok(true)
+        })?;
+        if refused {
+            return Ok(false);
+        }
+        self.save(doc).map(|()| true)
     }
 
     /// Reported once per disk state; the editor offers to load the file or keep the buffer.
@@ -1273,10 +1307,8 @@ impl Documents {
             }
             let loaded = Self::load_as(&st.path, &st.encoding, st.native_to_ascii)?;
             st.has_bom = loaded.has_bom;
-            st.disk_mtime = loaded.mtime_ms;
-            st.disk_len = disk_len(&st.path);
-            st.disk_conflict = false;
             self.replace_locked(doc, st, &loaded.text)?;
+            st.synced(loaded.mtime_ms);
             self.set_dirty(doc, st, false);
             Ok(())
         })
@@ -1414,7 +1446,7 @@ impl Documents {
         if loaded.binary || st.binary {
             st.disk_mtime = loaded.mtime_ms;
             st.disk_len = disk_len(&st.path);
-            st.disk_conflict = false;
+            st.disk_hash = file_hash(&st.path);
             return Ok(());
         }
         st.encoding = loaded.encoding;
@@ -1469,13 +1501,12 @@ impl Documents {
                 // echo our own saves: a clean document whose stamp matches is re-checked by
                 // bytes — an external write that preserved both length and mtime differs
                 // from what saving this buffer would write, our own save's echo does not.
-                // Native-to-ascii properties documents and dirty documents keep the stamp
-                // dedup: the former's disk bytes legitimately differ from the buffer text,
-                // the latter warn once per disk state.
+                // Native-to-ascii properties documents keep the stamp dedup: their disk bytes
+                // legitimately differ from the buffer text. Dirty documents compare the file's
+                // bytes with the ones they are based on, and warn once per disk state.
                 if unchanged
                     && (!force_clean || st.dirty)
                     && (dedup
-                        || st.dirty
                         || st.native_to_ascii
                         || ide_vfs::encode(&st.doc.text_for_save(), &st.encoding, st.has_bom)
                             .map(|bytes| bytes == std::fs::read(&st.path).unwrap_or_default())
@@ -1484,8 +1515,13 @@ impl Documents {
                     return Ok(());
                 }
                 if st.dirty {
-                    st.mark_disk_conflict(mtime, meta.len());
-                    self.warn_changed_on_disk(id, st);
+                    // The disk state the buffer is based on stays: autosave must not overwrite this.
+                    if let Some(stamp) = st.changed_on_disk()
+                        && st.conflict != Some(stamp)
+                    {
+                        st.conflict = Some(stamp);
+                        self.warn_changed_on_disk(id, st);
+                    }
                     return Ok(());
                 }
                 self.reload_locked(id, st, force_clean)
