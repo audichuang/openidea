@@ -83,9 +83,16 @@ export interface DocBackend {
 /** Remote sessions whose server predates `doc_autosave`. */
 const withoutAutosave = new WeakSet<object>();
 
-/** The remote server does not know the command (`rpc.rs` answers METHOD_NOT_FOUND). */
+/**
+ * The remote server does not know the command (`rpc.rs` answers METHOD_NOT_FOUND). A server of
+ * another version gets it as `unavailable`, wrapped by `older_server_error` in `remote_dev.rs`.
+ */
 function missingRemoteCommand(e: unknown): boolean {
-  return e instanceof IpcError && e.kind === "protocol" && e.message.includes("is not available remotely");
+  return (
+    e instanceof IpcError &&
+    (e.kind === "protocol" || e.kind === "unavailable") &&
+    e.message.includes("is not available remotely")
+  );
 }
 
 export const ipcBackend: DocBackend = {
