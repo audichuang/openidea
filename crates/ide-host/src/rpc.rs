@@ -10,6 +10,10 @@
 //!   for that window, or every window when `window` is null);
 //! * server → client notification `channel` `{ id, data }`: one value of a
 //!   streaming argument;
+//! * server → client notification `channel_end` `{ id }`: the streaming argument
+//!   gets no more values (its command finished and dropped every sender; a stream
+//!   such as a terminal's ends when the terminal does). Clients predating it
+//!   ignore it;
 //! * server → client notification `plugin` `{ window, event }` and request
 //!   `plugin_secret` `{ plugin, name }` → `string | null`: code plugins of the
 //!   remote project (`plugins::remote_host`).
@@ -59,15 +63,49 @@ pub struct ChannelMessage {
     pub data: Value,
 }
 
+/// No more values of streaming argument `id` will come.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelEndMessage {
+    pub id: u64,
+}
+
 /// One `invoke`: its arguments and a way to stream values back.
 pub struct Call {
     pub host: Arc<Host>,
     pub window: String,
     pub args: Value,
     peer: Arc<OnceLock<Peer>>,
+    /// One per streaming argument, shared by its senders.
+    ends: HashMap<u64, Arc<ChannelEnd>>,
+}
+
+/// Sends `channel_end` for streaming argument `id` once dropped: when the call and
+/// every sender of the argument are gone.
+struct ChannelEnd {
+    id: u64,
+    peer: Arc<OnceLock<Peer>>,
+}
+
+impl Drop for ChannelEnd {
+    fn drop(&mut self) {
+        if let Some(peer) = self.peer.get() {
+            let _ = peer.notify("channel_end", ChannelEndMessage { id: self.id });
+        }
+    }
 }
 
 impl Call {
+    fn new(host: Arc<Host>, window: String, args: Value, peer: Arc<OnceLock<Peer>>) -> Self {
+        let ends = args
+            .as_object()
+            .into_iter()
+            .flat_map(|map| map.values())
+            .filter_map(|v| v.get("$channel").and_then(Value::as_u64))
+            .map(|id| (id, Arc::new(ChannelEnd { id, peer: peer.clone() })))
+            .collect();
+        Self { host, window, args, peer, ends }
+    }
+
     /// Argument `name` (missing = `null`, so `Option`s may be omitted).
     pub fn arg<T: DeserializeOwned>(&self, name: &str) -> IdeResult<T> {
         let v = self.args.get(name).cloned().unwrap_or(Value::Null);
@@ -89,7 +127,10 @@ impl Call {
             .and_then(Value::as_u64)
             .ok_or_else(|| IdeError::invalid(format!("argument {name}: expected a channel")))?;
         let peer = self.peer.clone();
+        let end = self.ends.get(&id).cloned();
         Ok(Arc::new(move |data: T| {
+            // Holds the end notice back until the last sender goes.
+            let _ = &end;
             let Some(peer) = peer.get() else { return };
             match serde_json::to_value(&data) {
                 Ok(data) => {
@@ -387,11 +428,12 @@ impl Handler for ServerHandler {
             "invoke" => {
                 let call: Invoke =
                     serde_json::from_value(params).map_err(|e| (codes::INVALID_PARAMS, e.to_string()))?;
+                // Built first, so a refused call ends its streaming arguments too.
+                let c = Call::new(self.host.clone(), call.window, call.args, self.peer.clone());
                 let Some(handler) = self.dispatcher.handlers.get(call.cmd.as_str()).cloned() else {
                     return Err((codes::METHOD_NOT_FOUND, format!("command {} is not available remotely", call.cmd)));
                 };
-                self.host.authorize_command(&call.window, &call.cmd).map_err(error_reply)?;
-                let c = Call { host: self.host.clone(), window: call.window, args: call.args, peer: self.peer.clone() };
+                self.host.authorize_command(&c.window, &call.cmd).map_err(error_reply)?;
                 // Requests run on blocking-capable threads: wait for the command here.
                 self.host.runtime.block_on(handler(c)).map_err(error_reply)
             }

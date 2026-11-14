@@ -6,7 +6,7 @@
 use crate::events::TauriSink;
 use crate::state::AppState;
 use ide_core::{EventSink, IdeError, IdeResult};
-use ide_host::rpc::{ChannelMessage, EventMessage, Invoke, ServerInfo};
+use ide_host::rpc::{ChannelEndMessage, ChannelMessage, EventMessage, Invoke, ServerInfo};
 use ide_jsonrpc::{Handler, Peer};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -100,6 +100,32 @@ impl Forward {
 
 type Channels = Arc<Mutex<HashMap<u64, (Channel<ChannelFrame>, u64)>>>;
 
+/// Forwards a value of the server's streaming argument `m.id` to the frontend channel relaying it.
+fn relay_value(channels: &Channels, m: ChannelMessage) {
+    let channel = channels.lock().get(&m.id).cloned();
+    if let Some((c, id)) = channel {
+        let _ = c.send(ChannelFrame { id, data: m.data.to_string(), end: false });
+    }
+}
+
+/// Tells the frontend that streaming argument `own` ended and forgets it. The end frame goes
+/// through the same channel as the values, so the frontend sees it after all of them; once a
+/// call's last argument ended, its channel is dropped and Tauri releases the frontend side.
+fn relay_end(channels: &Channels, own: u64) {
+    let removed = channels.lock().remove(&own);
+    if let Some((c, id)) = removed {
+        let _ = c.send(ChannelFrame { id, data: String::new(), end: true });
+    }
+}
+
+/// Ends every streaming argument: the connection is gone.
+fn relay_end_all(channels: &Channels) {
+    let removed: Vec<_> = channels.lock().drain().collect();
+    for (_, (c, id)) in removed {
+        let _ = c.send(ChannelFrame { id, data: String::new(), end: true });
+    }
+}
+
 #[derive(Default)]
 pub struct Connections(Mutex<HashMap<String, Arc<Connection>>>);
 
@@ -163,6 +189,7 @@ impl Connections {
         if let Some(c) = self.0.lock().remove(window) {
             c.peer.kill();
             c.forwards.lock().clear();
+            relay_end_all(&c.channels);
         }
     }
 }
@@ -190,12 +217,14 @@ pub struct RemoteProgress {
 
 pub(crate) type Progress = dyn Fn(RemoteStage, Option<f64>) + Send + Sync;
 
-/// A value for one streaming argument of a remote command (`data`: JSON text).
+/// A value for one streaming argument of a remote command (`data`: JSON text), or with `end`
+/// (and no `data`) the notice that the argument gets no more values.
 #[derive(Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelFrame {
     pub id: u64,
     pub data: String,
+    pub end: bool,
 }
 
 #[derive(Serialize, Deserialize, Type)]
@@ -241,13 +270,13 @@ impl Handler for ClientHandler {
                 }
             }
             "channel" => match serde_json::from_value::<ChannelMessage>(params) {
-                Ok(m) => {
-                    let channel = self.channels.lock().get(&m.id).cloned();
-                    if let Some((c, id)) = channel {
-                        let _ = c.send(ChannelFrame { id, data: m.data.to_string() });
-                    }
-                }
+                Ok(m) => relay_value(&self.channels, m),
                 Err(e) => tracing::warn!("remote channel: {e}"),
+            },
+            // Servers predating it never send it: their channels stay until the connection ends.
+            "channel_end" => match serde_json::from_value::<ChannelEndMessage>(params) {
+                Ok(m) => relay_end(&self.channels, m.id),
+                Err(e) => tracing::warn!("remote channel end: {e}"),
             },
             _ => {}
         }
@@ -579,8 +608,10 @@ pub async fn remote_connect(
     let peer = connection.peer.clone();
     let auth_plugins = state.plugins.clone();
     let auth_window = label.clone();
+    let relayed = connection.channels.clone();
     tauri::async_runtime::spawn(async move {
         peer.closed().await;
+        relay_end_all(&relayed);
         auth_plugins.forget_remote_loopbacks(&auth_window);
         if let Some(connection) = weak.upgrade() {
             connection.forwards.lock().clear();
@@ -994,6 +1025,64 @@ async fn invoke_reply(peer: &Peer, call: Invoke, entries_timeout: std::time::Dur
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A frontend relay channel recording its frames, and whether it was released.
+    fn relay() -> (Channel<ChannelFrame>, Arc<Mutex<Vec<Value>>>, Arc<std::sync::atomic::AtomicBool>) {
+        struct Released(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for Released {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (seen, guard) = (frames.clone(), Released(released.clone()));
+        let channel = Channel::new(move |body| {
+            let _ = &guard;
+            if let tauri::ipc::InvokeResponseBody::Json(json) = body {
+                seen.lock().push(serde_json::from_str(&json).unwrap());
+            }
+            Ok(())
+        });
+        (channel, frames, released)
+    }
+
+    #[test]
+    fn an_ended_argument_reaches_the_frontend_after_its_values_and_its_relay_is_released() {
+        let (channel, frames, released) = relay();
+        let channels: Channels = Arc::default();
+        channels.lock().insert(1, (channel.clone(), 10));
+        channels.lock().insert(2, (channel, 11));
+        relay_value(&channels, ChannelMessage { id: 1, data: serde_json::json!("a") });
+        relay_end(&channels, 1);
+        relay_end(&channels, 1);
+        assert!(!released.load(std::sync::atomic::Ordering::SeqCst), "argument 2 still streams");
+        relay_end(&channels, 2);
+        assert!(channels.lock().is_empty());
+        assert!(released.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(
+            *frames.lock(),
+            [
+                serde_json::json!({ "id": 10, "data": "\"a\"", "end": false }),
+                serde_json::json!({ "id": 10, "data": "", "end": true }),
+                serde_json::json!({ "id": 11, "data": "", "end": true }),
+            ]
+        );
+    }
+
+    #[test]
+    fn arguments_never_ended_by_the_server_stay_until_the_connection_ends() {
+        let (channel, frames, released) = relay();
+        let channels: Channels = Arc::default();
+        channels.lock().insert(1, (channel, 10));
+        relay_value(&channels, ChannelMessage { id: 1, data: serde_json::json!(1) });
+        relay_value(&channels, ChannelMessage { id: 1, data: serde_json::json!(2) });
+        assert_eq!(channels.lock().len(), 1);
+        relay_end_all(&channels);
+        assert!(channels.lock().is_empty());
+        assert!(released.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(frames.lock().last(), Some(&serde_json::json!({ "id": 10, "data": "", "end": true })));
+    }
 
     #[tokio::test]
     async fn conversation_read_times_out_when_the_host_never_replies() {
