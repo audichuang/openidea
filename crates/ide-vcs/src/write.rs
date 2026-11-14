@@ -17,6 +17,7 @@ use ide_core::workflow_settings::{FetchTagsMode, GitAnnotateMovement, GitAnnotat
 use ide_core::{CancellationToken, IdeError, IdeResult, IpcPath};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 const UNCOMMITTED_AUTHOR: &str = "Not Committed Yet";
 
@@ -150,10 +151,86 @@ pub(crate) fn blame(
     if encoding.has_ascii_conversion() {
         return converted_blame(r, path, (&rel, revision), &text, encoding, &plain_args, options.ignore_whitespace);
     }
+    let line_count = text.split_inclusive('\n').count();
+    let (base, commit) = {
+        let repo = r.gix()?;
+        let Some(base) = crate::repo::blob_at(&repo, &rel, revision)? else {
+            return Ok(uncommitted_lines(line_count));
+        };
+        (base, resolve(&repo, revision)?)
+    };
+    // The revision's blame is computed once per commit and shared; the editor's text is
+    // mapped onto it in-process, so typing never re-runs git.
+    let base_lines = revision_blame(r, &rel, revision, commit, &args)?;
+    let base = decode(&base, encoding);
+    let mut lines =
+        if base_lines.len() == base.split_inclusive('\n').count() && !has_lone_cr(&base) && !has_lone_cr(&text) {
+            crate::blame::map_onto_text(&base_lines, &base, &text, &uncommitted_lines(1)[0], options.ignore_whitespace)
+        } else {
+            // A textconv filter changed the line count, or a lone CR splits lines differently
+            // for git and the diff: let git blame the text itself, as before the cache.
+            contents_blame(
+                r,
+                path,
+                &rel,
+                &disk,
+                current_text,
+                &text,
+                revision,
+                encoding,
+                &args,
+                options.ignore_whitespace,
+            )?
+        };
+    // Defensive: always exactly one entry per line.
+    lines.truncate(line_count);
+    while lines.len() < line_count {
+        lines.extend(uncommitted_lines(1));
+    }
+    Ok(lines)
+}
+
+/// The blame of `rel` as committed at `revision` (`commit`), from the repository's cache.
+/// `args` is the `git blame` command before the revision (options, ignore list); runs with
+/// other options are cached apart.
+fn revision_blame(
+    r: &Repo,
+    rel: &str,
+    revision: &str,
+    commit: gix::ObjectId,
+    args: &[&str],
+) -> IdeResult<Arc<Vec<BlameLine>>> {
+    r.blame_cache().get_or_run(rel, revision, commit, &args.join("\0"), |cancel| {
+        let args = [args, &[revision, "--", rel]].concat();
+        Ok(crate::blame::parse_porcelain(&cli::run_cancellable(r.root(), &args, cancel)?.stdout_str(), r.root(), rel))
+    })
+}
+
+fn has_lone_cr(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes.iter().enumerate().any(|(i, &b)| b == b'\r' && bytes.get(i + 1) != Some(&b'\n'))
+}
+
+/// Blames `text` itself with `git blame --contents` (uncached; one git run per call).
+#[allow(clippy::too_many_arguments)]
+fn contents_blame(
+    r: &Repo,
+    path: &Path,
+    rel: &str,
+    disk: &[u8],
+    current_text: Option<&str>,
+    text: &str,
+    revision: &str,
+    encoding: TextEncoding,
+    prefix: &[&str],
+    ignore_whitespace: bool,
+) -> IdeResult<Vec<BlameLine>> {
     let contents = match current_text {
-        Some(_) if crate::diff::normalize_eol(&text) == crate::diff::normalize_eol(&decode(&disk, encoding)) => disk,
+        Some(_) if crate::diff::normalize_eol(text) == crate::diff::normalize_eol(&decode(disk, encoding)) => {
+            disk.to_vec()
+        }
         Some(_) => {
-            let disk_text = decode(&disk, encoding);
+            let disk_text = decode(disk, encoding);
             let eol = if disk_text.contains("\r\n") {
                 "\r\n"
             } else if disk_text.contains('\r') {
@@ -161,31 +238,25 @@ pub(crate) fn blame(
             } else {
                 "\n"
             };
-            let contents = crate::diff::normalize_eol(&text).replace('\n', eol);
-            encode(&contents, encoding, has_bom(&disk, encoding))?
+            let contents = crate::diff::normalize_eol(text).replace('\n', eol);
+            encode(&contents, encoding, has_bom(disk, encoding))?
         }
-        None => disk,
+        None => disk.to_vec(),
     };
-    let line_count = text.split_inclusive('\n').count();
-    let tracked_in_head = {
-        let repo = r.gix()?;
-        crate::repo::blob_at(&repo, &rel, revision)?.is_some()
-    };
-    if !tracked_in_head {
-        return Ok(uncommitted_lines(line_count));
-    }
     // Restricted blame reads committed blobs only. Feeding working-tree bytes to
     // Git's --contents path would run configured clean filters, so it blames the
     // revision plain. Git learned to combine `--contents` with a revision in 2.41;
     // older releases reject the pair (`fatal: cannot use --contents with final
     // commit object name`) and take the same plain path — the edited lines are
     // marked uncommitted below either way (issue #755).
+    let mut args = prefix.to_vec();
+    let plain_args = [prefix, &[revision, "--", rel]].concat();
     let (out, contents_blame) = if crate::execution_allowed() {
         args.extend(["--contents", "-"]);
         if revision != "HEAD" {
             args.push(revision);
         }
-        args.extend(["--", &rel]);
+        args.extend(["--", rel]);
         let out = cli::run_raw(r.root(), &args, Some(&contents))?;
         if out.code == Some(0) {
             (out, true)
@@ -197,7 +268,7 @@ pub(crate) fn blame(
     } else {
         (run(r.root(), &plain_args, None)?, false)
     };
-    let mut lines = crate::blame::parse_porcelain(&out.stdout_str(), r.root(), &rel);
+    let mut lines = crate::blame::parse_porcelain(&out.stdout_str(), r.root(), rel);
     for line in &mut lines {
         if line.commit.bytes().all(|b| b == b'0') {
             line.author = UNCOMMITTED_AUTHOR.to_string();
@@ -207,21 +278,16 @@ pub(crate) fn blame(
     }
     if !contents_blame {
         let base = r.file_at(path, Some(revision), encoding)?.unwrap_or_default();
-        for hunk in blame_hunks(&base, &text, options.ignore_whitespace).into_iter().rev() {
+        for hunk in blame_hunks(&base, text, ignore_whitespace).into_iter().rev() {
             let start = (hunk.old_start as usize).min(lines.len());
             let end = (start + hunk.old_lines as usize).min(lines.len());
             lines.splice(start..end, uncommitted_lines(hunk.lines as usize));
         }
     }
-    // Defensive: always exactly one entry per line.
-    lines.truncate(line_count);
-    while lines.len() < line_count {
-        lines.extend(uncommitted_lines(1));
-    }
     Ok(lines)
 }
 
-fn blame_hunks(base: &str, text: &str, ignore_whitespace: bool) -> Vec<crate::LineHunk> {
+pub(crate) fn blame_hunks(base: &str, text: &str, ignore_whitespace: bool) -> Vec<crate::LineHunk> {
     if !ignore_whitespace {
         return crate::diff::line_hunks(base, text);
     }
@@ -253,10 +319,10 @@ fn converted_blame(
     let raw = crate::text_encoding::decode_raw(&base, encoding);
     let raw = crate::diff::normalize_eol(&raw);
     let mut logical = Vec::new();
-    for (line, metadata) in raw.split_inclusive('\n').zip(physical) {
+    for (line, metadata) in raw.split_inclusive('\n').zip(physical.iter()) {
         let displayed = encoding.display_text(line);
         let displayed = crate::diff::normalize_eol(&displayed);
-        logical.extend(std::iter::repeat_n(metadata, displayed.split_inclusive('\n').count()));
+        logical.extend(std::iter::repeat_n(metadata.clone(), displayed.split_inclusive('\n').count()));
     }
     let base = decode(&base, encoding);
     let hunks = blame_hunks(&base, &current, ignore_whitespace);
