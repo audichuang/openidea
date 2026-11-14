@@ -413,11 +413,11 @@ const DETACHED_LINES = 1000;
  * `viewState` is CodeMirror's private state (@codemirror/view 6.43): no public API sets it.
  */
 function updateDetached(view: EditorView, trs: readonly Transaction[]) {
-  let { from, to } = view.viewport;
-  for (const tr of trs) {
-    from = tr.changes.mapPos(from, -1);
-    to = tr.changes.mapPos(to, 1);
-  }
+  // Compose first: CodeMirror maps the viewport through all changes of a batch at once, and
+  // mapping per transaction can land elsewhere when later changes overlap earlier ones.
+  const changes = trs.map((tr) => tr.changes).reduce((a, b) => a.compose(b));
+  const from = changes.mapPos(view.viewport.from, -1);
+  const to = changes.mapPos(view.viewport.to, 1);
   const doc = trs[trs.length - 1]?.state.doc;
   const viewState = (view as unknown as { viewState?: { inView: boolean } }).viewState;
   if (view.inView || !doc || !viewState || doc.lineAt(to).number - doc.lineAt(from).number <= DETACHED_LINES)
