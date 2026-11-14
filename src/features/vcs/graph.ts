@@ -286,33 +286,22 @@ export function collapseLinear<
 export function pruneFilteredEdges(commits: readonly GraphCommit[]): GraphCommit[] {
   const positions = new Map(commits.map((c, i) => [c.id, i]));
   const kindOf = (c: GraphCommit, i: number) => c.edgeTypes?.[i] ?? (c.dashed?.[i] ? "filtered" : "normal");
+  const pruned = (c: GraphCommit) => c.parents.length >= 2 && c.parents.some((_, i) => kindOf(c, i) === "filtered");
+  if (!commits.some(pruned)) return [...commits];
+  const reaches = filteredReachability(commits, positions);
   return commits.map((c) => {
-    if (c.parents.length < 2) return c;
-    if (!c.parents.some((_, i) => kindOf(c, i) === "filtered")) return c;
-    // Walk the parents shallowest first, tracking the rows the kept connections reach:
-    // a filtered parent already covered by them adds nothing (and a dropped one was
-    // covered itself, so its own reach is covered too). Parents only appear later in
-    // the log, so no walk goes past the deepest parent of the commit.
-    const limit = Math.max(...c.parents.map((p) => positions.get(p) ?? -1));
+    if (!pruned(c)) return c;
+    // Walk the parents shallowest first: a filtered parent that a kept connection already
+    // reaches adds nothing (and a dropped one was reached itself, so what it reaches is too).
     const drop = new Set<number>();
-    const covered = new Set<number>();
+    const kept: number[] = [];
     for (const i of c.parents
       .map((_, i) => i)
       .sort((a, b) => (positions.get(c.parents[a]!) ?? Infinity) - (positions.get(c.parents[b]!) ?? Infinity))) {
       const pos = positions.get(c.parents[i]!);
-      if (kindOf(c, i) === "filtered" && pos != null && covered.has(pos)) {
-        drop.add(i);
-        continue;
-      }
-      for (const stack = pos == null ? [] : [pos]; stack.length;) {
-        const at = stack.pop()!;
-        if (covered.has(at)) continue;
-        covered.add(at);
-        for (const p of commits[at]!.parents) {
-          const next = positions.get(p);
-          if (next != null && next <= limit) stack.push(next);
-        }
-      }
+      if (pos == null) continue;
+      if (kindOf(c, i) === "filtered" && reaches(c, kept, pos)) drop.add(i);
+      else kept.push(pos);
     }
     if (!drop.size) return c;
     const keep = c.parents.map((_, i) => i).filter((i) => !drop.has(i));
@@ -323,6 +312,120 @@ export function pruneFilteredEdges(commits: readonly GraphCommit[]): GraphCommit
       ...(c.edgeTypes ? { edgeTypes: keep.map((i) => c.edgeTypes![i]!) } : {}),
     };
   });
+}
+
+/**
+ * `reaches(c, from, target)`: whether row `target` is `from` itself or an ancestor of one
+ * of them, walking only rows no deeper than `c`'s deepest parent.
+ *
+ * In log order (parents after their children) that depth bound never cuts a path to a
+ * parent of `c`, so the answer depends only on the two rows and is shared between rows:
+ * a spanning-forest interval proves most hits at once, a post-order bound rules out most
+ * misses, and the remaining walks are memoised per target. Logs with a parent listed
+ * above its child keep a bounded walk per row.
+ */
+function filteredReachability(commits: readonly GraphCommit[], positions: ReadonlyMap<string, number>) {
+  const n = commits.length;
+  const parents = commits.map((c) =>
+    c.parents.flatMap((p) => {
+      const at = positions.get(p);
+      return at == null ? [] : [at];
+    }),
+  );
+  if (parents.some((ps, i) => ps.some((p) => p <= i))) {
+    return (c: GraphCommit, from: readonly number[], target: number) => {
+      const limit = Math.max(...c.parents.map((p) => positions.get(p) ?? -1));
+      const seen = new Set<number>();
+      for (const stack = [...from]; stack.length;) {
+        const at = stack.pop()!;
+        if (at === target) return true;
+        if (seen.has(at)) continue;
+        seen.add(at);
+        for (const p of parents[at]!) if (p <= limit) stack.push(p);
+      }
+      return false;
+    };
+  }
+
+  // Depth-first spanning forest from the top rows: pre/post order intervals, and `low`,
+  // the smallest post order among everything a row reaches (descendants finish first).
+  const pre = new Int32Array(n).fill(-1);
+  const post = new Int32Array(n);
+  const low = new Int32Array(n);
+  let clock = 0;
+  let finished = 0;
+  for (let root = 0; root < n; root++) {
+    if (pre[root] !== -1) continue;
+    pre[root] = clock++;
+    const stack = [root];
+    const next = [0];
+    while (stack.length) {
+      const at = stack.at(-1)!;
+      const ps = parents[at]!;
+      const k = next.at(-1)!;
+      if (k < ps.length) {
+        next[next.length - 1] = k + 1;
+        const p = ps[k]!;
+        if (pre[p] === -1) {
+          pre[p] = clock++;
+          stack.push(p);
+          next.push(0);
+        }
+        continue;
+      }
+      post[at] = finished++;
+      let min = post[at]!;
+      for (const p of ps) min = Math.min(min, low[p]!);
+      low[at] = min;
+      stack.pop();
+      next.pop();
+    }
+  }
+  const inTree = (from: number, target: number) => pre[from]! <= pre[target]! && post[target]! <= post[from]!;
+  const excluded = (from: number, target: number) =>
+    from > target || post[target]! < low[from]! || post[target]! > post[from]!;
+
+  // Walk results per target, dropped once they outgrow the log so memory stays linear.
+  const memo = new Map<number, Map<number, boolean>>();
+  let memoSize = 0;
+  const reachesOne = (from: number, target: number): boolean => {
+    if (from === target || inTree(from, target)) return true;
+    if (excluded(from, target)) return false;
+    if (memoSize > 4 * n) {
+      memo.clear();
+      memoSize = 0;
+    }
+    let known = memo.get(target);
+    if (!known) memo.set(target, (known = new Map()));
+    const cached = known.get(from);
+    if (cached != null) return cached;
+    const path = [from];
+    const next = [0];
+    const settle = (value: boolean, nodes: readonly number[]) => {
+      for (const at of nodes) known.set(at, value);
+      memoSize += nodes.length;
+      return value;
+    };
+    while (path.length) {
+      const at = path.at(-1)!;
+      const ps = parents[at]!;
+      const k = next.at(-1)!;
+      if (k === ps.length) {
+        settle(false, [at]);
+        path.pop();
+        next.pop();
+        continue;
+      }
+      next[next.length - 1] = k + 1;
+      const p = ps[k]!;
+      if (p === target || inTree(p, target) || known.get(p) === true) return settle(true, path);
+      if (excluded(p, target) || known.has(p)) continue;
+      path.push(p);
+      next.push(0);
+    }
+    return false;
+  };
+  return (_c: GraphCommit, from: readonly number[], target: number) => from.some((at) => reachesOne(at, target));
 }
 
 /** Ids reachable from the given heads (log order: children before parents). */
