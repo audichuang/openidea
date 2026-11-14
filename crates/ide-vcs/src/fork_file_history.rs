@@ -20,11 +20,13 @@ thread_local! {
     pub(crate) static SKIPPED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
-/// Whether the walk excluding the parents of `created` can drop any of `listed` (the
-/// first walk's commits), so that it has to run.
+/// Whether the walk of `revs` excluding the parents of `created` can drop any of `listed`
+/// (the first walk's commits), so that it has to run. Replace refs never get here: the
+/// caller has no `repo` for them.
 pub(crate) fn exclusion_walk_needed(
     repo: &gix::Repository,
     index: &mut LogIndex,
+    revs: &[String],
     listed: &[ObjectId],
     created: &[ObjectId],
     cancel: &CancellationToken,
@@ -34,7 +36,13 @@ pub(crate) fn exclusion_walk_needed(
         return Ok(true);
     }
     // Shallow boundaries are parentless for Git but not in every graph source.
-    if repo.is_shallow().unwrap_or(true) {
+    // Grafts: Git walks other parents than the graph read below.
+    if repo.is_shallow().unwrap_or(true) || crate::history::grafts_in_effect(repo) {
+        return Ok(true);
+    }
+    // A range or negative revision can hide a creation's ancestors from the first walk,
+    // and then the second simplifies the merges around them differently.
+    if revs.iter().any(|rev| rev.starts_with('^') || rev.contains("..")) {
         return Ok(true);
     }
     if let Err(error) = index.ensure_nodes(repo, created, &HashSet::new(), cancel) {
@@ -199,16 +207,14 @@ mod tests {
     type Row = (String, Vec<String>, Option<String>);
 
     fn history(repo: &Repo, tips: &[String], first_parent: bool, disabled: bool) -> Vec<Row> {
+        let query = LogQuery { branches: tips.to_vec(), first_parent, ..Default::default() };
+        history_of(repo, &query, disabled)
+    }
+
+    fn history_of(repo: &Repo, query: &LogQuery, disabled: bool) -> Vec<Row> {
         DISABLED.with(|d| d.set(disabled));
-        let log: Vec<Commit> = repo
-            .log(&LogQuery {
-                path: Some("file".into()),
-                follow: true,
-                branches: tips.to_vec(),
-                first_parent,
-                ..Default::default()
-            })
-            .unwrap();
+        let log: Vec<Commit> =
+            repo.log(&LogQuery { path: Some("file".into()), follow: true, ..query.clone() }).unwrap();
         DISABLED.with(|d| d.set(false));
         log.into_iter().map(|c| (c.id, c.graph_parents.unwrap_or_default(), c.history_path)).collect()
     }
@@ -324,6 +330,83 @@ mod tests {
         assert_eq!(skipped, 0);
         assert!(ids.contains(&recreated.as_str()));
         assert!(!ids.contains(&first.as_str()) && !ids.contains(&deleted.as_str()));
+    }
+
+    /// `git <args>` with `stdin`, as user T.
+    fn git_in(dir: &Path, args: &[&str], stdin: &str) -> String {
+        let mut child = Command::new("git")
+            .current_dir(dir)
+            .args(["-c", "user.name=T", "-c", "user.email=t@e"])
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(stdin.as_bytes()).unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "{args:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A commit of `tree` with `parents`, without touching the work tree.
+    fn commit_tree(dir: &Path, tree: &str, parents: &[&str], message: &str) -> String {
+        let mut args = vec!["commit-tree", tree, "-m", message];
+        for parent in parents {
+            args.extend(["-p", parent]);
+        }
+        git_in(dir, &args, "")
+    }
+
+    /// The tree holding only `file` with `text`, and the empty tree.
+    fn trees(dir: &Path, text: &str) -> (String, String) {
+        let blob = git_in(dir, &["hash-object", "-w", "--stdin"], text);
+        (git_in(dir, &["mktree"], &format!("100644 blob {blob}\tfile\n")), git_in(dir, &["mktree"], ""))
+    }
+
+    fn ids(rows: &[Row]) -> Vec<&str> {
+        rows.iter().map(|row| row.0.as_str()).collect()
+    }
+
+    #[test]
+    fn a_range_scope_keeps_the_second_walk() {
+        // With a range the excluded side can hide a creation's ancestors from the first
+        // walk, and the second walk simplifies the merges around them differently.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        git(dir, &["init", "-q", "-b", "main"]);
+        let (file, empty) = trees(dir, "same\n");
+        let n6 = commit_tree(dir, &file, &[], "n6");
+        let n7 = commit_tree(dir, &empty, &[], "n7");
+        let n14 = commit_tree(dir, &empty, &[&n6, &n7], "n14");
+        let n16 = commit_tree(dir, &file, &[&n6, &n7], "n16");
+        let n18 = commit_tree(dir, &file, &[&n7], "n18");
+        let n22 = commit_tree(dir, &file, &[&n14, &n18], "n22");
+        git(dir, &["reset", "-q", "--hard", &n22]);
+        let repo = Repo::discover(dir).unwrap().unwrap();
+        let query = LogQuery { range: Some(format!("{n16}..{n22}")), ..Default::default() };
+        let old = history_of(&repo, &query, true);
+        assert_eq!(ids(&old), [n18.as_str()]);
+        assert_eq!(history_of(&repo, &query, false), old);
+    }
+
+    #[test]
+    fn grafted_parents_keep_the_second_walk() {
+        // Git walks the grafted parents; the commit graph the shortcut reads does not.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        git(dir, &["init", "-q", "-b", "main"]);
+        let (file, empty) = trees(dir, "same\n");
+        let f = commit_tree(dir, &file, &[], "F adds");
+        let d = commit_tree(dir, &empty, &[&f], "D deletes");
+        let c = commit_tree(dir, &file, &[], "C adds");
+        git(dir, &["reset", "-q", "--hard", &c]);
+        std::fs::write(dir.join(".git/info/grafts"), format!("{c} {d}\n")).unwrap();
+        let repo = Repo::discover(dir).unwrap().unwrap();
+        // D is a tip too, so the history behind the graft stays reachable without it.
+        let query = LogQuery { branches: vec![c.clone(), d.clone()], ..Default::default() };
+        let old = history_of(&repo, &query, true);
+        assert_eq!(ids(&old), [c.as_str()]);
+        assert_eq!(history_of(&repo, &query, false), old);
     }
 
     /// `FH_REPO=<repo> FH_PATHS=<file of paths> [FH_RUNS=n]`: the full log of each path with
