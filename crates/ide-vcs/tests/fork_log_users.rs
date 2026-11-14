@@ -62,3 +62,22 @@ fn log_users_follow_new_commits_deleted_branches_and_other_worktrees() {
     assert_eq!(repo.log_users().unwrap(), expected(&dir));
     assert!(repo.log_users().unwrap().contains(&"Eve <eve@example.com>".to_string()));
 }
+
+#[test]
+fn log_users_follow_a_deepened_shallow_clone() {
+    let tmp = tempfile::tempdir().unwrap();
+    let origin = tmp.path().join("origin");
+    std::fs::create_dir(&origin).unwrap();
+    git(&origin, &["init", "-q"]);
+    commit_as(&origin, "Ann", "a");
+    commit_as(&origin, "Bob", "b");
+    let url = format!("file://{}", origin.display());
+    let clone = tmp.path().join("clone");
+    git(tmp.path(), &["clone", "-q", "--depth", "1", &url, clone.to_str().unwrap()]);
+    let repo = Repo::discover(&clone).unwrap().unwrap();
+    assert_eq!(repo.log_users().unwrap(), ["Bob <bob@example.com>"]);
+    // No ref moves, yet Ann's commit becomes reachable.
+    git(&clone, &["fetch", "-q", "--unshallow"]);
+    assert_eq!(repo.log_users().unwrap(), expected(&clone));
+    assert!(repo.log_users().unwrap().contains(&"Ann <ann@example.com>".to_string()));
+}
