@@ -2662,6 +2662,8 @@ export type BlockHistoryAnchor = {
 /**  The revision list and its first few diffs. The rest load as the user navigates. */
 export type BlockHistorySummary = {
 	anchor: BlockHistoryAnchor | null,
+	/**  The anchor's lines as HEAD has them; None from servers that predate it. */
+	head: string | null,
 	revisions: BlockRevisionSummary[],
 	diffs: BlockRevision[],
 };
