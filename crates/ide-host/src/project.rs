@@ -11,6 +11,7 @@ use ide_text::{AppliedChange, ByteEdit};
 use ide_vcs::{Backend, Repo, Repos};
 use ide_vfs::Watcher;
 use ide_workspace::documents::DocumentObserver;
+use ide_workspace::history_recorder::ExternalChangeRecorder;
 use ide_workspace::{DocumentInfo, Documents, FileMoves, LocalHistory, ProjectRoots, SettingsStore, SourceFolder};
 use parking_lot::{Mutex, RwLock};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -378,7 +379,7 @@ impl Host {
             let sink = sink.clone();
             let root = root.clone();
             let detected_roots = detected_roots.clone();
-            let history = history.clone();
+            let history = ExternalChangeRecorder::new(history.clone(), HISTORY_BATCH_LIMIT);
             let remote = self.remote.clone();
             let runtime = self.runtime.clone();
             let lsp = lsp.clone();
@@ -404,6 +405,9 @@ impl Host {
                     }
                     // Atomic saves by external tools surface as `created`.
                     documents.on_disk_changed(&[&changed[..], &ignored].concat());
+                    if batch.rescan {
+                        documents.sync_from_disk();
+                    }
                     if let Some(plugins) = crate::plugins::editor_plugin_host() {
                         plugins.invalidate_endpoints(&root, &[changed.clone(), batch.removed.clone()].concat());
                         plugins.post_files_changed(&window, &root, &files_events_active, batch);
@@ -414,7 +418,7 @@ impl Host {
                     if batch.created.iter().chain(&batch.removed).any(|p| languages.is_framework_marker(p)) {
                         documents.redetect_languages();
                     }
-                    record_external_changes(&history, &changed, &batch.removed);
+                    history.record(&changed, &batch.removed);
                     if trusted.load(Ordering::Acquire) && !batch.removed.is_empty() {
                         delete_deployed(
                             &runtime,
@@ -863,7 +867,7 @@ fn light_watcher(
     documents: &Arc<Documents>,
     history: &Arc<LocalHistory>,
 ) -> IdeResult<Watcher> {
-    let (documents, history) = (documents.clone(), history.clone());
+    let (documents, history) = (documents.clone(), ExternalChangeRecorder::new(history.clone(), HISTORY_BATCH_LIMIT));
     Watcher::start_with(
         dir,
         Vec::new(),
@@ -871,7 +875,10 @@ fn light_watcher(
         Box::new(move |batch| {
             let changed: Vec<PathBuf> = batch.created.iter().chain(&batch.modified).cloned().collect();
             documents.on_disk_changed(&changed);
-            record_external_changes(&history, &changed, &batch.removed);
+            if batch.rescan {
+                documents.sync_from_disk();
+            }
+            history.record(&changed, &batch.removed);
         }),
         ide_vfs::WatchMode::Flat,
     )
@@ -1287,10 +1294,6 @@ fn ignored_changes(batch: &ide_vfs::FsBatch) -> (Vec<PathBuf>, Vec<PathBuf>) {
     batch.ignored.iter().cloned().partition(|p| p.symlink_metadata().is_ok())
 }
 
-fn record_external_changes(history: &LocalHistory, changed: &[PathBuf], removed: &[PathBuf]) {
-    history.record_external_changes(changed, removed, HISTORY_BATCH_LIMIT);
-}
-
 pub fn history_retention(settings: &ide_core::settings::Settings) -> ide_workspace::Retention {
     ide_workspace::Retention {
         working_days: settings.files.local_history_days,
@@ -1468,7 +1471,8 @@ fn content_root_watcher(
     phpstan: Option<&Arc<crate::phpstan::Phpstan>>,
 ) -> Option<Watcher> {
     let (kotlin_bridge, phpstan) = (kotlin_bridge.cloned(), phpstan.cloned());
-    let (index, documents, history, lsp) = (index.clone(), documents.clone(), history.clone(), lsp.clone());
+    let history = ExternalChangeRecorder::new(history.clone(), HISTORY_BATCH_LIMIT);
+    let (index, documents, lsp) = (index.clone(), documents.clone(), lsp.clone());
     let root = dir.to_path_buf();
     Watcher::start(
         dir,
@@ -1490,7 +1494,10 @@ fn content_root_watcher(
                 phpstan.files_removed(batch.removed.iter());
             }
             documents.on_disk_changed(&[&changed[..], &ignored].concat());
-            record_external_changes(&history, &changed, &batch.removed);
+            if batch.rescan {
+                documents.sync_from_disk();
+            }
+            history.record(&changed, &batch.removed);
         }),
     )
     .map_err(|e| tracing::warn!("content root watcher {}: {e}", dir.display()))
