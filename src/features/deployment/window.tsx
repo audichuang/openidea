@@ -5,7 +5,7 @@
 import { useSyncExternalStore } from "react";
 import { emitTo } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { activateEmbeddedDocuments } from "@/editor/core/embeddedDocuments";
+import { activateEmbeddedDocuments, isNotSaved } from "@/editor/core/embeddedDocuments";
 import { AUX_CLOSED, type AuxCloseResult } from "@/platform/auxWindow";
 import { commands, type SyncStep } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
@@ -145,7 +145,8 @@ export function activateDeploymentWindow(parent: string): () => void {
       void native.close();
     } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
       event.preventDefault();
-      void documents.save().catch(fail);
+      // A file that changed on disk was already warned about and stays unsaved.
+      void documents.save().catch((error: unknown) => isNotSaved(error) || fail(error));
     }
   };
   window.addEventListener("keydown", onKey);

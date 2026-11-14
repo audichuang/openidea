@@ -193,16 +193,27 @@ impl DiskStamp {
     }
 }
 
+/// What [`Documents::reload_locked`] did.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Reload {
+    /// The buffer holds the file's text and matches the disk.
+    Reloaded,
+    /// The file is no longer text (binary): the buffer and its baseline were left as they were.
+    Unloadable,
+}
+
 fn file_hash(path: &Path) -> Option<blake3::Hash> {
     std::fs::read(path).ok().map(|bytes| blake3::hash(&bytes))
 }
 
 impl DocState {
-    /// The buffer matches the file on disk again, read or written at `mtime`.
-    fn synced(&mut self, mtime: f64) {
+    /// The buffer matches the file on disk again, read or written at `mtime`. `hash` is of
+    /// the bytes that were decoded or written, never of a second read, which could see an
+    /// external write the buffer does not hold.
+    fn synced(&mut self, mtime: f64, hash: Option<blake3::Hash>) {
         self.disk_mtime = mtime;
         self.disk_len = disk_len(&self.path);
-        self.disk_hash = file_hash(&self.path);
+        self.disk_hash = hash;
         self.conflict = None;
         self.clean_text = (!self.large).then(|| self.doc.clone());
     }
@@ -300,7 +311,7 @@ impl Documents {
                 let loaded = Self::load_as(&st.path, &st.encoding, enabled)?;
                 self.replace_locked(id, st, &loaded.text)?;
                 st.native_to_ascii = enabled;
-                st.synced(loaded.mtime_ms);
+                st.synced(loaded.mtime_ms, loaded.content_hash);
                 Ok(())
             });
             if let Err(e) = result {
@@ -494,7 +505,7 @@ impl Documents {
             encoding_chosen: false,
             disk_mtime: loaded.mtime_ms,
             disk_len: disk_len(path),
-            disk_hash: file_hash(path),
+            disk_hash: loaded.content_hash,
             clean_text: None,
             conflict: None,
             closed: false,
@@ -744,8 +755,10 @@ impl Documents {
             self.notify_changed(doc, st, &applied, &edits);
             let version = st.doc.version();
             if reload {
+                // A file that cannot be loaded (now binary) keeps the buffer dirty on its old baseline.
                 match self.reload_locked(doc, st, false) {
-                    Ok(()) => self.set_dirty(doc, st, false),
+                    Ok(Reload::Reloaded) => self.set_dirty(doc, st, false),
+                    Ok(Reload::Unloadable) => tracing::warn!("reload {}: not a text file now", st.path.display()),
                     Err(e) => tracing::warn!("reload {}: {e}", st.path.display()),
                 }
             }
@@ -871,12 +884,13 @@ impl Documents {
                 return Ok(());
             }
             let text = st.doc.text_for_save();
-            let mtime = if st.native_to_ascii {
+            let (mtime, hash) = if st.native_to_ascii {
                 ide_vfs::save_properties_text(&st.path, &text)?
             } else {
-                ide_vfs::save_text(&st.path, &text, &st.encoding, st.has_bom)?
+                let bytes = ide_vfs::encode(&text, &st.encoding, st.has_bom)?;
+                (ide_vfs::write_atomic(&st.path, &bytes)?, blake3::hash(&bytes))
             };
-            st.synced(mtime);
+            st.synced(mtime, Some(hash));
             self.set_dirty(doc, st, false);
             if st.observed {
                 let text = st.doc.text();
@@ -1181,7 +1195,7 @@ impl Documents {
                 st.encoding_chosen = true;
                 st.has_bom = loaded.has_bom;
                 self.replace_locked(doc, st, &loaded.text)?;
-                st.synced(loaded.mtime_ms);
+                st.synced(loaded.mtime_ms, loaded.content_hash);
                 // Reloading is not an edit: the buffer matches the file again.
                 self.set_dirty(doc, st, false);
                 return Ok(DocumentEncoding { encoding: st.encoding.clone(), has_bom: st.has_bom });
@@ -1319,7 +1333,7 @@ impl Documents {
     /// Re-reads the document from disk and replaces its text (minimal diff).
     /// `keep_codec` re-reads with the document's selected encoding instead of
     /// re-detecting it.
-    fn reload_locked(&self, id: DocId, st: &mut DocState, keep_codec: bool) -> IdeResult<()> {
+    fn reload_locked(&self, id: DocId, st: &mut DocState, keep_codec: bool) -> IdeResult<Reload> {
         let loaded = if keep_codec {
             Self::load_as(&st.path, &st.encoding, st.native_to_ascii)?
         } else {
@@ -1333,11 +1347,17 @@ impl Documents {
             st.native_to_ascii = native_to_ascii;
             loaded
         };
-        if loaded.binary || st.binary {
+        if st.binary {
+            // A binary placeholder holds no text: only its disk state follows the file.
             st.disk_mtime = loaded.mtime_ms;
             st.disk_len = disk_len(&st.path);
-            st.disk_hash = file_hash(&st.path);
-            return Ok(());
+            st.disk_hash = loaded.content_hash;
+            return Ok(Reload::Reloaded);
+        }
+        if loaded.binary {
+            // The text buffer cannot show this file: keep it, its baseline and its conflict, so
+            // nothing treats the buffer as matching the disk and autosave writes over it.
+            return Ok(Reload::Unloadable);
         }
         st.encoding = loaded.encoding;
         st.has_bom = loaded.has_bom;
@@ -1345,8 +1365,8 @@ impl Documents {
         let ec_eol = st.editorconfig.as_ref().and_then(|ec| ec.end_of_line);
         st.doc.set_line_ending(ec_eol.unwrap_or_else(|| LineEnding::detect(&loaded.text)));
         self.replace_locked(id, st, &loaded.text)?;
-        st.synced(loaded.mtime_ms);
-        Ok(())
+        st.synced(loaded.mtime_ms, loaded.content_hash);
+        Ok(Reload::Reloaded)
     }
 
     /// Reloads the open documents among `paths` from disk, discarding unsaved
@@ -1359,8 +1379,10 @@ impl Documents {
                 if st.uri.is_some() || st.binary || ide_vfs::is_archive_path(&st.path) {
                     return Ok(());
                 }
-                self.reload_locked(id, st, false)?;
-                self.set_dirty(id, st, false);
+                match self.reload_locked(id, st, false)? {
+                    Reload::Reloaded => self.set_dirty(id, st, false),
+                    Reload::Unloadable => tracing::warn!("reload {}: not a text file now", st.path.display()),
+                }
                 Ok(())
             });
             if let Err(e) = result {
@@ -1414,11 +1436,30 @@ impl Documents {
                     }
                     return Ok(());
                 }
-                self.reload_locked(id, st, force_clean)
+                self.reload_locked(id, st, force_clean).map(drop)
             });
             if let Err(e) = result {
                 tracing::warn!("reload {}: {e}", path.display());
             }
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    /// The baseline is the hash of the bytes the buffer was decoded from, not of a second
+    /// read: this kernel file holds different bytes on every read.
+    #[test]
+    fn open_hashes_the_bytes_it_decoded() {
+        let docs = Documents::new(Arc::new(|_| {}), Box::new(|_, _| LanguageId::plain_text()));
+        let path = Path::new("/proc/sys/kernel/random/uuid");
+        let id = docs.open(path).unwrap().id;
+        docs.with_doc(id, |st| {
+            assert_eq!(st.disk_hash, Some(blake3::hash(st.doc.text().as_bytes())));
+            Ok(())
+        })
+        .unwrap();
     }
 }
