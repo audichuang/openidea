@@ -1307,6 +1307,52 @@ fn partial_commit_of_chosen_hunks_leaves_worktree_and_index_alone() {
 }
 
 #[test]
+fn pending_changes_stages_same_size_edits_at_the_index_timestamp() {
+    use std::time::{Duration, SystemTime};
+
+    let fx = Fixture::new();
+    fx.git(&["config", "core.trustctime", "false"]);
+    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
+    let stamp = SystemTime::UNIX_EPOCH + Duration::from_secs(now.as_secs() - 60);
+    let path = fx.path("bin.dat");
+    let index = fx.dir.join(".git/index");
+    let set_modified = |path: &Path| {
+        std::fs::OpenOptions::new().write(true).open(path).unwrap().set_modified(stamp).unwrap();
+    };
+
+    fx.write("bin.dat", "\0\x01");
+    fx.write("excluded.txt", "base\n");
+    set_modified(&path);
+    fx.commit_all("base");
+    fx.write("excluded.txt", "staged\n");
+    fx.git(&["add", "excluded.txt"]);
+    set_modified(&index);
+    fx.write("bin.dat", "\0\x02");
+    set_modified(&path);
+    let index_before = std::fs::read(&index).unwrap();
+
+    let options = CommitOptions {
+        stage: vec![path.clone().into()],
+        exclude: vec![fx.path("excluded.txt").into()],
+        ..Default::default()
+    };
+    let changes = fx.repo().pending_changes(&options, 1 << 20, &|_| Ok(encoding_rs::UTF_8)).unwrap();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].path, path);
+    assert_eq!(changes[0].status, "modified");
+    assert!(changes[0].diff.is_none());
+    assert_eq!(std::fs::read(&index).unwrap(), index_before);
+    assert_eq!(
+        std::fs::metadata(&index).unwrap().modified().unwrap(),
+        std::fs::metadata(&path).unwrap().modified().unwrap()
+    );
+
+    fx.repo().commit_with("same-size edit", &options, &|_| Ok(encoding_rs::UTF_8)).unwrap();
+    assert_eq!(fx.repo().file_bytes_at(&path, Some("HEAD")).unwrap().unwrap(), b"\0\x02");
+    assert_eq!(fx.git(&["diff", "--cached", "--name-only"]), "excluded.txt");
+}
+
+#[test]
 fn pending_changes_show_what_the_commit_would_hold_without_touching_the_index() {
     let fx = Fixture::new();
     let base = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n";
