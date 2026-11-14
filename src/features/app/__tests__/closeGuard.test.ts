@@ -147,6 +147,14 @@ describe("decideClose", () => {
     expect(d.saveAll).toHaveBeenCalled();
   });
 
+  it("keeps the window when Save leaves documents whose files changed on disk unsaved", async () => {
+    const { d } = deps([{ button: "save", checked: false }]);
+    d.unsavedAfterSave = vi.fn(() => 1);
+    await expect(decideClose({ ...base, dirty: 2 }, d)).resolves.toBe(false);
+    expect(d.saveAll).toHaveBeenCalled();
+    expect(d.onSaveFailed).toHaveBeenCalled();
+  });
+
   it("discards without saving", async () => {
     const { d } = deps([{ button: "discard", checked: false }]);
     await expect(decideClose({ ...base, dirty: 1, quitting: true }, d)).resolves.toBe(true);
