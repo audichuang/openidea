@@ -51,7 +51,9 @@ fn anchor(
     };
     let hunks = if head == current { Vec::new() } else { crate::diff::line_hunks(&head, &current) };
     Ok(head_range(&hunks, lines).map(|lines| {
-        // HEAD's block, written the way parsed diffs write theirs.
+        // HEAD's block, written the way parsed diffs write theirs, with the
+        // editor's line endings (`line_hunks` counted lines the same way).
+        let head = crate::diff::normalize_eol(&head);
         let mut block = String::new();
         for line in head.lines().skip(lines.0 as usize).take((lines.1 - lines.0) as usize + 1) {
             push_line(&mut block, line);
