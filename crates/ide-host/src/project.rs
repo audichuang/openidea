@@ -12,6 +12,7 @@ use ide_text::{AppliedChange, ByteEdit};
 use ide_vcs::{Backend, Repo, Repos};
 use ide_vfs::Watcher;
 use ide_workspace::documents::DocumentObserver;
+use ide_workspace::history_recorder::ExternalChangeRecorder;
 use ide_workspace::{DocumentInfo, Documents, FileMoves, LocalHistory, ProjectRoots, SettingsStore, SourceFolder};
 use parking_lot::{Mutex, RwLock};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -440,7 +441,7 @@ impl Host {
             let root = root.clone();
             let detected_roots = detected_roots.clone();
             let member_excludes = member_excludes.clone();
-            let history = history.clone();
+            let history = ExternalChangeRecorder::new(history.clone(), HISTORY_BATCH_LIMIT);
             let remote = self.remote.clone();
             let runtime = self.runtime.clone();
             let lsp = lsp.clone();
@@ -484,7 +485,7 @@ impl Host {
                     if batch.created.iter().chain(&batch.removed).any(|p| languages.is_framework_marker(p)) {
                         documents.redetect_languages();
                     }
-                    record_external_changes(&history, &changed, &batch.removed);
+                    history.record(&changed, &batch.removed);
                     if trusted.load(Ordering::Acquire) && !batch.removed.is_empty() {
                         delete_deployed(
                             &runtime,
@@ -1053,7 +1054,7 @@ fn light_watcher(
     documents: &Arc<Documents>,
     history: &Arc<LocalHistory>,
 ) -> IdeResult<Watcher> {
-    let (documents, history) = (documents.clone(), history.clone());
+    let (documents, history) = (documents.clone(), ExternalChangeRecorder::new(history.clone(), HISTORY_BATCH_LIMIT));
     Watcher::start_with(
         dir,
         Vec::new(),
@@ -1061,7 +1062,7 @@ fn light_watcher(
         Box::new(move |batch| {
             let changed: Vec<PathBuf> = batch.created.iter().chain(&batch.modified).cloned().collect();
             documents.on_disk_changed(&changed);
-            record_external_changes(&history, &changed, &batch.removed);
+            history.record(&changed, &batch.removed);
         }),
         ide_vfs::WatchMode::Flat,
     )
@@ -1584,10 +1585,6 @@ fn ignored_changes(batch: &ide_vfs::FsBatch) -> (Vec<PathBuf>, Vec<PathBuf>) {
     batch.ignored.iter().cloned().partition(|p| p.symlink_metadata().is_ok())
 }
 
-fn record_external_changes(history: &LocalHistory, changed: &[PathBuf], removed: &[PathBuf]) {
-    history.record_external_changes(changed, removed, HISTORY_BATCH_LIMIT);
-}
-
 pub fn history_retention(settings: &ide_core::settings::Settings) -> ide_workspace::Retention {
     ide_workspace::Retention {
         working_days: settings.files.local_history_days,
@@ -1884,7 +1881,8 @@ fn content_root_watcher(
     phpstan: Option<&Arc<crate::phpstan::Phpstan>>,
 ) -> Option<Watcher> {
     let (kotlin_bridge, phpstan) = (kotlin_bridge.cloned(), phpstan.cloned());
-    let (index, documents, history, lsp) = (index.clone(), documents.clone(), history.clone(), lsp.clone());
+    let history = ExternalChangeRecorder::new(history.clone(), HISTORY_BATCH_LIMIT);
+    let (index, documents, lsp) = (index.clone(), documents.clone(), lsp.clone());
     let (root, events) = (dir.to_path_buf(), sink.clone());
     Watcher::start(
         dir,
@@ -1906,7 +1904,7 @@ fn content_root_watcher(
                 phpstan.files_removed(batch.removed.iter());
             }
             documents.on_disk_changed(&[&changed[..], &ignored].concat());
-            record_external_changes(&history, &changed, &batch.removed);
+            history.record(&changed, &batch.removed);
             // A member outside the project folder: its repository changes (commit, checkout,
             // fetch, pull) reach the UI only through this watcher.
             if batch.vcs.iter().any(|p| vcs_path_changed(p)) {
