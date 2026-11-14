@@ -191,6 +191,22 @@ impl DocState {
         self.disk_conflict = false;
         self.clean_text = (!self.large).then(|| self.doc.clone());
     }
+
+    /// The file changed on disk under unsaved changes: autosave leaves it alone, and the text read
+    /// before no longer matches the file, so undoing back to it is not clean.
+    fn mark_disk_conflict(&mut self, mtime: f64, len: u64) {
+        self.disk_mtime = mtime;
+        self.disk_len = len;
+        self.disk_conflict = true;
+        self.clean_text = None;
+    }
+
+    /// Disk state (mtime, length) of a file that changed since we last read or wrote it.
+    fn changed_on_disk(&self) -> Option<(f64, u64)> {
+        let meta = std::fs::metadata(&self.path).ok()?;
+        let stamp = (ide_vfs::mtime_ms(&meta), meta.len());
+        (stamp != (self.disk_mtime, self.disk_len)).then_some(stamp)
+    }
 }
 
 fn keys_for(path: &Path) -> Vec<PathBuf> {
@@ -916,9 +932,19 @@ impl Documents {
     }
 
     /// An automatic save (switching tabs, the window losing focus): `false` when the file changed
-    /// on disk after this buffer was edited, which only an explicit save may overwrite.
+    /// on disk after this buffer was edited, which only an explicit save may overwrite. Checks the
+    /// disk too, since no watcher event may have reported the change; warns once.
     pub fn autosave(&self, doc: DocId) -> IdeResult<bool> {
         self.with_doc(doc, |st| {
+            if st.dirty
+                && !st.disk_conflict
+                && st.uri.is_none()
+                && let Some((mtime, len)) = st.changed_on_disk()
+            {
+                // As if the watcher had reported it: its later event for this change is a no-op.
+                st.mark_disk_conflict(mtime, len);
+                self.warn_changed_on_disk(doc, st);
+            }
             if st.dirty && st.disk_conflict {
                 return Ok(false);
             }
@@ -1034,6 +1060,11 @@ impl Documents {
 
     pub fn has_unsaved_changes(&self) -> bool {
         self.registry.lock().docs.values().any(|entry| entry.slot.lock().dirty)
+    }
+
+    /// Reported once per disk state; the editor offers to load the file or keep the buffer.
+    fn warn_changed_on_disk(&self, doc: DocId, st: &DocState) {
+        self.sink.emit(IdeEvent::DocDiskConflict { doc, path: st.path.to_string_lossy().into_owned() });
     }
 
     /// Saves every dirty document; reports the first failure after trying all.
@@ -1450,12 +1481,8 @@ impl Documents {
                     return Ok(());
                 }
                 if st.dirty {
-                    st.disk_mtime = mtime;
-                    st.disk_len = meta.len();
-                    st.disk_conflict = true;
-                    // The text read before no longer matches the file: undoing back to it is not clean.
-                    st.clean_text = None;
-                    self.sink.emit(IdeEvent::DocDiskConflict { doc: id, path: st.path.to_string_lossy().into_owned() });
+                    st.mark_disk_conflict(mtime, meta.len());
+                    self.warn_changed_on_disk(id, st);
                     return Ok(());
                 }
                 self.reload_locked(id, st, force_clean)
