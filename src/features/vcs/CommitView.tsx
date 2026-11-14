@@ -1225,7 +1225,7 @@ export function CommitMessageField({
 }: {
   included: number;
   runner: CommitRunner;
-  /** The message takes the initial focus of the dialog it is in (the Commit dialog). */
+  /** Prefer the message as the initial focus of the Commit dialog or tool window. */
   autoFocus?: boolean;
 }) {
   const message = useCommit((s) => s.message);
@@ -1411,7 +1411,7 @@ function CommitPanel({ included }: { included: number }) {
 
   return (
     <div className={styles.commit}>
-      <CommitMessageField included={included} runner={runner} />
+      <CommitMessageField included={included} runner={runner} autoFocus />
       <div className={styles.commitActions}>
         <Button variant="primary" disabled={!canCommit} onClick={() => void runner.run(false)} title="⌘↩">
           <T>{commitLabel(amend, checkProblems.length > 0)}</T>
