@@ -202,7 +202,7 @@ pub(crate) fn file_history(
             && match repo.as_ref() {
                 Some(repo) if !first_parent => {
                     let listed: Vec<ObjectId> = records.iter().map(|(id, _)| *id).collect();
-                    crate::fork_file_history::exclusion_walk_needed(repo, index, &listed, &created, cancel)?
+                    crate::fork_file_history::exclusion_walk_needed(repo, index, &revs, &listed, &created, cancel)?
                 }
                 _ => true,
             };
@@ -274,7 +274,6 @@ fn file_history_context(
     index.db()?;
     if [
         "GIT_SHALLOW_FILE",
-        "GIT_GRAFT_FILE",
         "GIT_LITERAL_PATHSPECS",
         "GIT_GLOB_PATHSPECS",
         "GIT_NOGLOB_PATHSPECS",
@@ -282,7 +281,7 @@ fn file_history_context(
     ]
     .iter()
     .any(|name| std::env::var_os(name).is_some())
-        || !matches!(std::fs::metadata(repo.common_dir().join("info/grafts")), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+        || grafts_in_effect(repo)
     {
         return None;
     }
@@ -296,6 +295,12 @@ fn file_history_context(
     let config = crate::cli::run_cancellable(r.root(), &["config", "--null", "--list"], cancel).ok()?;
     let config = blake3::hash(&config.stdout).to_hex().to_string();
     Some(history_cache_key("context", &(binary.to_string_lossy(), modified, metadata.len(), config, shallow)))
+}
+
+/// Git walks grafted parents; gitoxide and the commit index see the recorded ones.
+pub(crate) fn grafts_in_effect(repo: &gix::Repository) -> bool {
+    std::env::var_os("GIT_GRAFT_FILE").is_some()
+        || !matches!(std::fs::metadata(repo.common_dir().join("info/grafts")), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
 }
 
 fn only_literal_file(text: &str, path: &str) -> bool {
