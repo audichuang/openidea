@@ -92,6 +92,21 @@ describe("detachTab", () => {
     expect(notify).toHaveBeenCalledWith(expect.objectContaining({ level: "error", body: "save failed" }));
   });
 
+  it("keeps the tab and opens no window when the file changed on disk", async () => {
+    const backend = createMemoryBackend({ [path]: "original\n" });
+    ctrl = new EditorController(backend);
+    ctrl.start();
+    await ctrl.openFile(path, { focus: false });
+    const [pane, id] = current();
+    ctrl.slotFor(id)!.dispatchLocal({ changes: { from: 0, to: 8, insert: "edited" } });
+    backend.autosave = vi.fn(async () => false);
+    const save = vi.spyOn(backend, "save");
+    expect(await ctrl.detachTab(pane, id)).toBe(false);
+    expect(save).not.toHaveBeenCalled();
+    expect(hasTab(id)).toBe(true);
+    expect(commands.windowOpenFileInNewWindow).not.toHaveBeenCalled();
+  });
+
   it("keeps a pinned text tab if window creation fails", async () => {
     ctrl = new EditorController(createMemoryBackend({ [path]: "original\n" }));
     ctrl.start();

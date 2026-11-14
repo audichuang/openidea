@@ -24,7 +24,7 @@ import {
   type DocumentAttachmentOptions,
   type TextEditorHandle,
 } from "@/editor/api";
-import type { DocAttachmentTarget, DocumentManager } from "./document";
+import { notSaved, type DocAttachmentTarget, type DocumentManager } from "./document";
 import { saveOnBlur } from "../saveOnBlur";
 
 class AttachedView implements DocAttachmentTarget {
@@ -188,7 +188,10 @@ export async function attachDocument(
             model.onLocal(tr.changes, target);
       }),
     ],
-    save: async (options) => void (await model.save(options?.exact ? "exact" : "explicit")),
+    save: async (options) => {
+      // Callers act on the saved file next (git add, upload): a kept external change stops them.
+      if (await model.save(options?.exact ? "exact" : "explicit")) throw notSaved(model.path);
+    },
     synced: () => model.sync.whenIdle(),
     dirty: () => model.getMeta().dirty,
     undo: () => historyCommand(undo),
