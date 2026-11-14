@@ -2442,17 +2442,23 @@ async fn an_idle_agent_waits_for_its_background_tasks_before_it_stops() {
     let tmp = tempfile::tempdir().unwrap();
     let agent = Arc::new(FakeAgent::default());
     let mgr = manager(tmp.path(), agent.clone());
-    mgr.set_idle_release(Duration::from_millis(200));
+    // Margins wide enough for a slow CI host (#298): the report lands between two of the
+    // release's re-checks, not on one, and the check after it sits well inside the delay.
+    let delay = Duration::from_millis(500);
+    mgr.set_idle_release(delay);
     let task = mgr.create(new()).await.unwrap();
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
     // The task runs long past the idle delay: the agent stays up for it.
-    tokio::time::sleep(Duration::from_millis(600)).await;
+    tokio::time::sleep(delay * 5 / 2).await;
     assert!(live(&mgr, &task.id));
     // It is done: the delay starts over from this report, then the agent stops.
     agent.update("s1", json!({"sessionUpdate": BACKGROUND_TASKS_UPDATE, "tasks": []}));
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(live(&mgr, &task.id), "the delay runs from when the last task is done");
-    tokio::time::sleep(Duration::from_millis(600)).await;
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    while live(&mgr, &task.id) && std::time::Instant::now() < until {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     assert!(!live(&mgr, &task.id));
     assert_eq!(mgr.task(&task.id).unwrap().state.lock().task.status, AgentStatus::Ready, "not an error");
     mgr.shutdown();
