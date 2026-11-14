@@ -223,6 +223,10 @@ pub trait Handler: Send + Sync + 'static {
 
     /// Called once the response to a `method` request is queued: what it sends follows the response.
     fn after_response(&self, _method: &str) {}
+
+    /// Called once, on the notification thread, after the transport ended (EOF, read error or
+    /// kill) and every notification that arrived before it has been handled.
+    fn on_closed(&self) {}
 }
 
 /// A [`Handler`] that ignores notifications and rejects requests.
@@ -250,6 +254,9 @@ struct Inner {
     pid: Option<u32>,
     /// Fired when the reader task has stopped (EOF, error or kill).
     reader_done: CancellationToken,
+    /// Fired by `supervise` when the bounded drain gave up on a reader that a descendant
+    /// keeps alive; the reader then ends as at EOF, queueing `Closed` itself.
+    abandon_reader: CancellationToken,
     /// Fired once the child process has exited and been reaped (after [`Peer::kill`],
     /// also what it started); at once when there is no child.
     exited: CancellationToken,
@@ -451,7 +458,11 @@ impl Peer {
                     }
                     inner.reader_done.cancelled().await;
                 };
-                let _ = tokio::time::timeout(OUTPUT_DRAIN, drained).await;
+                if tokio::time::timeout(OUTPUT_DRAIN, drained).await.is_err() {
+                    // Stop the reader so `Closed` is queued behind what it already dispatched.
+                    inner.abandon_reader.cancel();
+                    inner.reader_done.cancelled().await;
+                }
             }
             inner.mark_closed(status.and_then(|s| s.code()));
         });
@@ -521,6 +532,7 @@ impl Peer {
             kill: CancellationToken::new(),
             pid,
             reader_done: CancellationToken::new(),
+            abandon_reader: CancellationToken::new(),
             exited: CancellationToken::new(),
         });
         if pid.is_none() {
@@ -579,6 +591,12 @@ impl Peer {
                             Incoming::Response(tx, result) => {
                                 let _ = tx.send(result);
                             }
+                            Incoming::Closed => {
+                                let h = handler.clone();
+                                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| h.on_closed())).is_err() {
+                                    tracing::error!("jsonrpc close handler panicked");
+                                }
+                            }
                         }
                     }
                 })
@@ -606,6 +624,7 @@ impl Peer {
                     let msg = tokio::select! {
                         msg = framing.read(&mut reader, &mut noise) => msg,
                         _ = inner.kill.cancelled() => break,
+                        _ = inner.abandon_reader.cancelled() => break,
                     };
                     match msg {
                         Ok(Some(body)) => {
@@ -622,8 +641,9 @@ impl Peer {
                         }
                     }
                 }
-                inner.reader_done.cancel();
                 inner.close_transport();
+                let _ = notif_tx.send(Incoming::Closed);
+                inner.reader_done.cancel();
                 if close_on_eof || inner.kill.is_cancelled() {
                     inner.mark_closed(None);
                     inner.kill.cancel();
@@ -758,6 +778,8 @@ enum Incoming {
     Notification(String, Value),
     Request(Value, String, Value),
     Response(oneshot::Sender<Result<Value, RpcError>>, Result<Value, RpcError>),
+    /// The reader stopped: everything dispatched before it is ahead of this in the queue.
+    Closed,
 }
 
 async fn handle_request(inner: Arc<Inner>, handler: Arc<dyn Handler>, id: Value, method: String, params: Value) {

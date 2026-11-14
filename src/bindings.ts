@@ -2881,10 +2881,14 @@ export type ChangelistState = {
 	files?: { [key in string]: string },
 };
 
-/**  A value for one streaming argument of a remote command (`data`: JSON text). */
+/**
+ *  A value for one streaming argument of a remote command (`data`: JSON text), or with `end`
+ *  (and no `data`) the notice that the argument gets no more values.
+ */
 export type ChannelFrame = {
 	id: number,
 	data: string,
+	end: boolean,
 };
 
 export type CheckStatus = "pending" | "success" | "failure" | "cancelled" | "skipped" | "neutral";
