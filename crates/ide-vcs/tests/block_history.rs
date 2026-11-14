@@ -108,6 +108,29 @@ fn summary_carries_heads_block_when_the_newest_row_is_a_merge_without_a_diff() {
 }
 
 #[test]
+fn summary_head_uses_the_editors_line_endings() {
+    // The editor text is LF-normalised, so a clean file must give HEAD's block
+    // equal to it (no Local Changes row), whatever line ending it was committed with.
+    for content in ["one\r", "one\n", "one\r\n"] {
+        let fx = Fixture::new();
+        fx.write("a.txt", content);
+        fx.commit("Add a");
+        let summary = fx
+            .repo()
+            .block_history_summary(
+                &fx.path("a.txt"),
+                Some("one\n"),
+                (0, 0),
+                encoding_rs::UTF_8,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(summary.head.as_deref(), Some("one\n"), "{content:?}");
+        assert_eq!(summary.diffs[0].after, "one\n", "{content:?}");
+    }
+}
+
+#[test]
 fn lazy_revisions_match_the_full_history_even_after_head_moves() {
     let fx = renamed_history();
     let repo = fx.repo();
