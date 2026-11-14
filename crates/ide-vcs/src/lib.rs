@@ -669,6 +669,7 @@ pub mod changelists;
 mod cli;
 mod compare;
 mod diff;
+mod fork_file_history;
 mod history;
 mod ignore;
 mod index_writes;
