@@ -6,42 +6,95 @@
 //! Annotate blamed it) for half a minute or more after a `git checkout`.
 
 use crate::history::LocalHistory;
+use parking_lot::{Condvar, Mutex};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Sender, channel};
 use std::thread::JoinHandle;
 
 type Batch = (Vec<PathBuf>, Vec<PathBuf>);
+
+/// Batches waiting for the worker. Past this, the two oldest are merged, so a
+/// backlog cannot grow without bound while the watcher thread never blocks.
+const MAX_PENDING_BATCHES: usize = 64;
+
+#[derive(Default)]
+struct Pending {
+    batches: VecDeque<Batch>,
+    /// Batches merged into a newer one because the queue was full.
+    coalesced: u64,
+    closed: bool,
+}
+
+impl Pending {
+    /// Queues a batch. `changed` is cut to `limit` here, as the worker would do
+    /// anyway, so a huge checkout does not keep every path alive while queued.
+    /// `removed` is kept whole: dropping it would lose the "Deleted" markers.
+    fn push(&mut self, mut changed: Vec<PathBuf>, removed: Vec<PathBuf>, limit: usize) {
+        changed.truncate(limit);
+        if self.batches.len() >= MAX_PENDING_BATCHES
+            && let Some((old_changed, old_removed)) = self.batches.pop_front()
+        {
+            // Merge the oldest into the next one: the order is kept and only
+            // changed files beyond `limit` are given up (they stay unrecorded).
+            if let Some((next_changed, next_removed)) = self.batches.front_mut() {
+                let mut merged = old_changed;
+                merged.append(next_changed);
+                merged.truncate(limit);
+                *next_changed = merged;
+                let mut gone = old_removed;
+                gone.append(next_removed);
+                *next_removed = gone;
+            }
+            self.coalesced += 1;
+            tracing::debug!("local history: queue full, {} batches merged so far", self.coalesced);
+        }
+        self.batches.push_back((changed, removed));
+    }
+}
+
+#[derive(Default)]
+struct Shared {
+    pending: Mutex<Pending>,
+    wake: Condvar,
+}
 
 /// Queues watcher batches for [`LocalHistory::record_external_changes`], one at a
 /// time and in order. Dropping it waits for the batch being recorded and skips
 /// the queued ones, so nothing writes into the history after the project closed.
 pub struct ExternalChangeRecorder {
-    queue: Option<Sender<Batch>>,
-    stop: Arc<AtomicBool>,
+    shared: Option<Arc<Shared>>,
+    limit: usize,
     worker: Option<JoinHandle<()>>,
 }
 
 impl ExternalChangeRecorder {
     /// `limit`: files snapshotted per batch, as in `record_external_changes`.
     pub fn new(history: Arc<LocalHistory>, limit: usize) -> Self {
-        let (tx, rx) = channel::<Batch>();
-        let stop = Arc::new(AtomicBool::new(false));
-        let stopping = stop.clone();
+        let shared = Arc::new(Shared::default());
+        let worker_shared = shared.clone();
         let worker = std::thread::Builder::new()
             .name("openidea-history".into())
             .spawn(move || {
-                for (changed, removed) in rx {
-                    if stopping.load(Ordering::Acquire) {
-                        break;
-                    }
+                loop {
+                    let (changed, removed) = {
+                        let mut pending = worker_shared.pending.lock();
+                        loop {
+                            if pending.closed {
+                                return;
+                            }
+                            if let Some(batch) = pending.batches.pop_front() {
+                                break batch;
+                            }
+                            worker_shared.wake.wait(&mut pending);
+                        }
+                    };
                     history.record_external_changes(&changed, &removed, limit);
                 }
             })
             .map_err(|e| tracing::warn!("local history worker: {e}"))
             .ok();
-        Self { queue: worker.as_ref().map(|_| tx), stop, worker }
+        Self { shared: worker.as_ref().map(|_| shared), limit, worker }
     }
 
     /// Returns at once; the batch is recorded after the ones queued before it.
@@ -49,16 +102,22 @@ impl ExternalChangeRecorder {
         if changed.is_empty() && removed.is_empty() {
             return;
         }
-        if let Some(queue) = &self.queue {
-            let _ = queue.send((changed.to_vec(), removed.to_vec()));
+        if let Some(shared) = &self.shared {
+            let keep = &changed[..changed.len().min(self.limit)];
+            shared.pending.lock().push(keep.to_vec(), removed.to_vec(), self.limit);
+            shared.wake.notify_one();
         }
     }
 }
 
 impl Drop for ExternalChangeRecorder {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        self.queue.take();
+        if let Some(shared) = &self.shared {
+            let mut pending = shared.pending.lock();
+            pending.closed = true;
+            pending.batches.clear();
+            shared.wake.notify_one();
+        }
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -129,6 +188,32 @@ mod tests {
     }
 
     #[test]
+    fn queues_at_most_the_limit_of_changed_paths() {
+        let paths: Vec<PathBuf> = (0..23_000).map(|i| PathBuf::from(format!("/p/{i}"))).collect();
+        let mut pending = Pending::default();
+        pending.push(paths.clone(), vec![PathBuf::from("/gone")], 500);
+        let (changed, removed) = &pending.batches[0];
+        assert_eq!(changed, &paths[..500]);
+        assert_eq!(removed, &[PathBuf::from("/gone")]);
+    }
+
+    #[test]
+    fn full_queue_merges_oldest_batches_in_order() {
+        let mut pending = Pending::default();
+        for i in 0..MAX_PENDING_BATCHES + 10 {
+            pending.push(vec![PathBuf::from(format!("/c{i}"))], vec![PathBuf::from(format!("/r{i}"))], 500);
+        }
+        assert_eq!(pending.batches.len(), MAX_PENDING_BATCHES);
+        assert_eq!(pending.coalesced, 10);
+        let (changed, removed) = &pending.batches[0];
+        let want = |p: &str| (0..=10).map(|i| PathBuf::from(format!("/{p}{i}"))).collect::<Vec<_>>();
+        assert_eq!(changed, &want("c"));
+        assert_eq!(removed, &want("r"));
+        let last = pending.batches.back().unwrap();
+        assert_eq!(last.0, vec![PathBuf::from(format!("/c{}", MAX_PENDING_BATCHES + 9))]);
+    }
+
+    #[test]
     fn records_batches_in_order() {
         let tmp = tempfile::tempdir().unwrap();
         let root = dunce::canonicalize(tmp.path()).unwrap();
@@ -151,5 +236,10 @@ mod tests {
             assert!(Instant::now() < deadline);
             std::thread::sleep(Duration::from_millis(10));
         }
+        let entries = history.list(&file).unwrap();
+        let texts: Vec<_> = entries.iter().map(|e| history.content(&e.id).unwrap()).collect();
+        assert!(entries.iter().all(|e| e.label == "External change"), "{entries:?}");
+        // Newest first.
+        assert_eq!(texts, ["two", "one"]);
     }
 }
