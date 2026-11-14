@@ -703,3 +703,25 @@ fn an_overwritten_open_file_keeps_the_editorconfig_charset() {
 
     assert_eq!(docs.snapshot(doc.id).unwrap().encoding, "utf-8");
 }
+
+/// Undoing a refactoring of a document whose file changed on disk keeps the conflict:
+/// the restored buffer is not re-based on the external contents, so autosave keeps them.
+#[test]
+fn undo_keeps_the_conflict_of_a_file_that_changed_on_disk() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().canonicalize().unwrap().join("main.ts");
+    std::fs::write(&path, "old").unwrap();
+    let (docs, events) = recorded_documents();
+    let info = docs.open(&path).unwrap();
+    docs.edit(info.id, 0, ChangeSet { changes: vec![TextChange { from: 3, to: 3, insert: " own".into() }] }).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    std::fs::write(&path, "external").unwrap();
+    docs.on_disk_changed(std::slice::from_ref(&path));
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&path, "new")], ..Default::default() }).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "external");
+    docs.undo_workspace_edit(undo_id(&events)).unwrap();
+    assert_eq!(docs.snapshot(info.id).unwrap().text, "old own");
+    let _ = docs.autosave(info.id);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "external");
+    assert!(docs.snapshot(info.id).unwrap().dirty);
+}
