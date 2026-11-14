@@ -1,5 +1,6 @@
 //! Commit history (topological walk) and per-commit changed files via gitoxide.
 
+use crate::log_index::LogIndex;
 use crate::repo::{gx, resolve, to_string};
 use crate::{ChangeKind, ChangedFile, Commit, LogOrder, LogQuery, Repo, RevisionChange};
 use gix::ObjectId;
@@ -146,7 +147,7 @@ fn run_log(
 /// rename from any parent continues the history under the old path from that parent.
 /// Unlike `--follow`, this sees renames done in merges and history merged in from other
 /// branches.
-fn file_history(
+pub(crate) fn file_history(
     r: &Repo,
     scopes: &[String],
     rel: &str,
@@ -172,7 +173,7 @@ fn file_history(
         if first_parent {
             opts.push("--first-parent".into());
         }
-        let mut run = |excluded: &[String]| -> IdeResult<Vec<(ObjectId, Option<char>)>> {
+        let run = |index: &mut LogIndex, excluded: &[String]| -> IdeResult<Vec<(ObjectId, Option<char>)>> {
             let key = context
                 .as_ref()
                 .filter(|_| revs.iter().all(|rev| ObjectId::from_hex(rev.as_bytes()).is_ok()))
@@ -191,17 +192,25 @@ fn file_history(
             }
             Ok(parse_name_status_log(&text))
         };
-        let records = run(&[])?;
+        let records = run(index, &[])?;
         // Where the file appears its history ends: what is behind that is another file of
         // the same name (a rename continues the history below). The commits of the history
         // are those not behind a creation; the statuses come from the full listing (with
         // its parents excluded a merge shows no changes).
         let created: Vec<ObjectId> = records.iter().filter(|(_, s)| *s == Some('A')).map(|(id, _)| *id).collect();
-        let kept: Option<HashSet<ObjectId>> = if created.is_empty() {
+        let needed = !created.is_empty()
+            && match repo.as_ref() {
+                Some(repo) if !first_parent => {
+                    let listed: Vec<ObjectId> = records.iter().map(|(id, _)| *id).collect();
+                    crate::fork_file_history::exclusion_walk_needed(repo, index, &revs, &listed, &created, cancel)?
+                }
+                _ => true,
+            };
+        let kept: Option<HashSet<ObjectId>> = if !needed {
             None
         } else {
             let excluded: Vec<String> = created.iter().map(|id| format!("^{id}^@")).collect();
-            Some(run(&excluded)?.into_iter().map(|(id, _)| id).collect())
+            Some(run(index, &excluded)?.into_iter().map(|(id, _)| id).collect())
         };
         let mut created = Vec::new();
         for (id, first_status) in records {
@@ -265,7 +274,6 @@ fn file_history_context(
     index.db()?;
     if [
         "GIT_SHALLOW_FILE",
-        "GIT_GRAFT_FILE",
         "GIT_LITERAL_PATHSPECS",
         "GIT_GLOB_PATHSPECS",
         "GIT_NOGLOB_PATHSPECS",
@@ -273,7 +281,7 @@ fn file_history_context(
     ]
     .iter()
     .any(|name| std::env::var_os(name).is_some())
-        || !matches!(std::fs::metadata(repo.common_dir().join("info/grafts")), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+        || grafts_in_effect(repo)
     {
         return None;
     }
@@ -287,6 +295,12 @@ fn file_history_context(
     let config = crate::cli::run_cancellable(r.root(), &["config", "--null", "--list"], cancel).ok()?;
     let config = blake3::hash(&config.stdout).to_hex().to_string();
     Some(history_cache_key("context", &(binary.to_string_lossy(), modified, metadata.len(), config, shallow)))
+}
+
+/// Git walks grafted parents; gitoxide and the commit index see the recorded ones.
+pub(crate) fn grafts_in_effect(repo: &gix::Repository) -> bool {
+    std::env::var_os("GIT_GRAFT_FILE").is_some()
+        || !matches!(std::fs::metadata(repo.common_dir().join("info/grafts")), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
 }
 
 fn only_literal_file(text: &str, path: &str) -> bool {
