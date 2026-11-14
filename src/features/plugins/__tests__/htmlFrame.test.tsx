@@ -35,7 +35,11 @@ describe("html bodies in the app", () => {
         "*",
       );
     });
-    const doc = (post.mock.calls[0]![0] as { document: string }).document;
+    // The theme message of the mount effect may be posted after the spy is attached: read the
+    // document from the call that carries it, not from the first call.
+    const doc = post.mock.calls
+      .map(([message]) => (message as { document?: string }).document)
+      .find((document) => document !== undefined);
     expect(doc).toContain('<meta http-equiv="Content-Security-Policy"');
     expect(doc).toContain("window.openidea");
 
