@@ -6,7 +6,7 @@ import { ipcBackend } from "./backend";
 import { previewExtensions } from "./cm/preview";
 import { installColorScheme } from "./colorSchemeRuntime";
 import { attachDocument } from "./model/attachment";
-import { DocumentManager, type DocModel } from "./model/document";
+import { DocumentManager, notSaved, type DocModel } from "./model/document";
 
 class EmbeddedDocumentManager extends DocumentManager {
   // Keep files visited in this comparison until it closes, including unsaved
@@ -30,7 +30,11 @@ export function activateEmbeddedDocuments() {
     dirty: () => [...manager.byPath.values()].some((model) => model.getMeta().dirty),
     save: () => manager.saveAll("explicit"),
     savePaths: (paths: readonly string[]) =>
-      Promise.all(paths.map((path) => manager.get(path)?.save("explicit"))).then(() => {}),
+      Promise.all(
+        paths.map(async (path) => {
+          if (await manager.get(path)?.save("explicit")) throw notSaved(path);
+        }),
+      ).then(() => {}),
     async dispose() {
       _provideDocumentAttacher(null);
       _provideCodePreview(null);

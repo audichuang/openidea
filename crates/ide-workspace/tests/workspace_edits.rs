@@ -648,7 +648,7 @@ fn replacing_a_directory_symlink_does_not_resolve_later_child_paths_through_its_
 #[test]
 fn undo_keeps_the_conflict_of_a_file_that_changed_on_disk() {
     let tmp = tempfile::tempdir().unwrap();
-    let path = tmp.path().canonicalize().unwrap().join("main.ts");
+    let path = tmp.path().join("main.ts");
     std::fs::write(&path, "old").unwrap();
     let (docs, events) = recorded_documents();
     let info = docs.open(&path).unwrap();

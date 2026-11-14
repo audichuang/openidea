@@ -1587,7 +1587,8 @@ export class EditorController implements SlotHost {
         if (isTextTab(tab)) {
           const slot = await this.ensureSlot(tabId);
           if (!slot) return false;
-          await slot.model.save("explicit", { overwrite: true });
+          // A file changed on disk keeps the tab: the new window would show the disk version.
+          if (await slot.model.save("explicit")) return false;
         }
         try {
           await call(commands.windowOpenFileInNewWindow(inProject ? project.root : null, path));
