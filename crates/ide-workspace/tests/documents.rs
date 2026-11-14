@@ -1036,3 +1036,77 @@ fn reload_from_disk_discards_unsaved_changes_only_for_given_paths() {
     assert_eq!(snap.text, "// bravo\n");
     assert!(snap.dirty);
 }
+
+/// Typing a character and undoing it returns the buffer to the text on disk: the
+/// document is clean again, so a later checkout reloads it instead of warning.
+#[test]
+fn undo_back_to_the_disk_text_leaves_the_document_clean() {
+    let f = fixture();
+    let path = f.root.join("undo.txt");
+    fs::write(&path, "alpha\n").unwrap();
+    let id = f.docs.open(&path).unwrap().id;
+    let v = f.docs.edit(id, 0, change(0, 0, "x")).unwrap();
+    assert!(f.docs.is_dirty(id).unwrap());
+    f.docs.edit(id, v, change(0, 1, "")).unwrap();
+    assert!(!f.docs.is_dirty(id).unwrap());
+    assert_eq!(dirty_events(&f.events.lock()), vec![true, false]);
+
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    fs::write(&path, "checked out\n").unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+    assert_eq!(f.docs.snapshot(id).unwrap().text, "checked out\n");
+}
+
+/// Autosave never writes over a file that changed on disk since the buffer was
+/// read, whether or not the watcher reported the change; an explicit save still does.
+#[test]
+fn autosave_keeps_a_file_that_changed_on_disk() {
+    for reported in [false, true] {
+        let f = fixture();
+        let path = f.root.join("stale.txt");
+        fs::write(&path, "old\n").unwrap();
+        let id = f.docs.open(&path).unwrap().id;
+        f.docs.edit(id, 0, change(0, 0, "x")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        fs::write(&path, "checked out\n").unwrap();
+        if reported {
+            f.docs.on_disk_changed(std::slice::from_ref(&path));
+        }
+        assert!(!f.docs.autosave(id).unwrap(), "reported={reported}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "checked out\n", "reported={reported}");
+        assert!(f.docs.is_dirty(id).unwrap());
+        // One warning per disk state, from the watcher or from the refused autosave.
+        assert!(!f.docs.autosave(id).unwrap());
+        f.docs.on_disk_changed(std::slice::from_ref(&path));
+        let warnings = f
+            .events
+            .lock()
+            .iter()
+            .filter(|e| matches!(e, IdeEvent::Notify { level: NotifyLevel::Warning, .. }))
+            .count();
+        assert_eq!(warnings, 1, "reported={reported}");
+
+        f.docs.save(id).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "xold\n");
+        f.docs.edit(id, f.docs.version(id).unwrap(), change(0, 0, "y")).unwrap();
+        assert!(f.docs.autosave(id).unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "yxold\n");
+    }
+}
+
+/// A document opened through a symlinked directory (macOS `/tmp` → `/private/tmp`)
+/// follows watcher events, which report the canonical path.
+#[test]
+fn document_opened_through_a_symlinked_directory_reloads_on_canonical_events() {
+    let f = fixture();
+    let real_dir = f.root.join("real");
+    fs::create_dir(&real_dir).unwrap();
+    let link_dir = f.root.join("link");
+    std::os::unix::fs::symlink(&real_dir, &link_dir).unwrap();
+    fs::write(real_dir.join("run.py"), "old\n").unwrap();
+    let id = f.docs.open(&link_dir.join("run.py")).unwrap().id;
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    fs::write(real_dir.join("run.py"), "new\n").unwrap();
+    f.docs.on_disk_changed(&[real_dir.join("run.py")]);
+    assert_eq!(f.docs.snapshot(id).unwrap().text, "new\n");
+}
