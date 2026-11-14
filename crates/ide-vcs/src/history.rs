@@ -512,9 +512,12 @@ pub(crate) fn log(r: &Repo, q: &LogQuery, cancel: &CancellationToken) -> IdeResu
         } else {
             // Immutable metadata is reused across roots, filters, merges and ref changes.
             all.request = q.request;
+            // Marks for the HEAD in the key, not the one checked out when the walk ends.
+            let head = refs.get("HEAD").and_then(|id| ObjectId::from_hex(id.as_bytes()).ok());
             let rows = std::sync::Arc::new(crate::log_index::IndexedView::new(log_indexed_rows(
                 r,
                 &all,
+                head,
                 cancel,
                 &r.log_index,
             )?));
@@ -608,12 +611,13 @@ fn materialize_row(
     Ok(commit)
 }
 
+/// Points the shared current-branch set at `head`, the HEAD the caller's rows are for.
 fn update_head_reachable(
     repo: &gix::Repository,
     index: &mut crate::log_index::LogIndex,
+    head: Option<ObjectId>,
     cancel: &CancellationToken,
 ) -> IdeResult<()> {
-    let head = repo.head_id().ok().map(|id| id.detach());
     let shallow_stamp =
         repo.shallow_file().ok().and_then(|path| std::fs::metadata(path).ok()).and_then(|m| m.modified().ok());
     let stamp = head.map(|id| (id, shallow_stamp));
@@ -705,7 +709,7 @@ fn log_indexed(
     {
         let mut guard = lock(shared);
         let index = &mut *guard;
-        update_head_reachable(&repo, index, cancel)?;
+        update_head_reachable(&repo, index, repo.head_id().ok().map(|id| id.detach()), cancel)?;
         let id = tips[0];
         let record = index.get(&repo, id)?;
         let mut commit = (*record).clone();
@@ -735,7 +739,7 @@ fn log_indexed(
         commit.message_truncated = false;
         return Ok(vec![commit]);
     }
-    let rows = log_indexed_rows(r, q, cancel, shared)?;
+    let rows = log_indexed_rows(r, q, repo.head_id().ok().map(|id| id.detach()), cancel, shared)?;
     let mut guard = lock(shared);
     let index = &mut *guard;
     let db = index.db().cloned();
@@ -754,6 +758,7 @@ fn log_indexed(
 fn log_indexed_rows(
     r: &Repo,
     q: &LogQuery,
+    head: Option<ObjectId>,
     cancel: &CancellationToken,
     shared: &std::sync::Mutex<LogIndex>,
 ) -> IdeResult<Vec<crate::log_index::IndexedRow>> {
@@ -923,7 +928,7 @@ fn log_indexed_rows(
     let index = &mut *guard;
     // Under the guard that builds the rows: a query run meanwhile (after a branch switch)
     // may have moved the shared set to another HEAD.
-    update_head_reachable(&repo, index, cancel)?;
+    update_head_reachable(&repo, index, head, cancel)?;
     let db = index.db().cloned();
     let txn = db.as_ref().and_then(|db| db.begin_read().ok());
     let table = txn.as_ref().and_then(|t| t.open_table(crate::log_index::COMMITS).ok());
