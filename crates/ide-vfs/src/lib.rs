@@ -347,6 +347,9 @@ pub struct FsBatch {
     pub ignored: Vec<PathBuf>,
     /// Subtrees whose ignore rules changed (including repository-level rules).
     pub ignore_rules: Vec<PathBuf>,
+    /// The OS dropped events (FSEvents "must scan subdirs", e.g. during a large
+    /// checkout): files may have changed without being listed above.
+    pub rescan: bool,
 }
 
 impl FsBatch {
@@ -358,6 +361,7 @@ impl FsBatch {
             && self.excluded_dirs.is_empty()
             && self.ignored.is_empty()
             && self.ignore_rules.is_empty()
+            && !self.rescan
     }
 }
 
