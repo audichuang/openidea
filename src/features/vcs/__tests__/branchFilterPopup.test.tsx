@@ -114,9 +114,9 @@ describe("branch filter popup", () => {
         onClose={vi.fn()}
       />,
     );
-    const names = [...document.querySelectorAll("li, [role='option']")].map((el) => el.textContent?.trim());
-    const order = ["zeta", "alpha", "main"].map((n) => names.indexOf(n));
-    expect(order.every((i) => i >= 0)).toBe(true);
-    expect(order).toEqual([...order].sort((a, b) => a - b));
+    // The favorites passed in (another repository's) replace the stored ones; `main` is not one of them.
+    expect(rowTexts()).toEqual(["HEAD (Current Branch)", "zeta", "Local", "Remote"]);
+    fireEvent.click(screen.getByText("Local"));
+    expect(rowTexts()).toEqual(["HEAD (Current Branch)", "zeta", "Local", "zeta", "alpha", "main", "Remote"]);
   });
 });
