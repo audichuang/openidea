@@ -60,3 +60,20 @@ export const layoutInput = (entries: readonly GraphEntry[]) =>
   entries.map((e) =>
     e.kind === "commit" ? { id: e.id, parents: e.parents } : { id: e.id, parents: e.parents, dashed: [true] },
   );
+
+const entryIndexes = new WeakMap<readonly GraphEntry[], Map<string, GraphEntry>>();
+
+/** The entries for the selected ids, in selection order; unknown ids are skipped. */
+export function selectedEntries(entries: readonly GraphEntry[], ids: readonly string[]): GraphEntry[] {
+  // Indexed once per entries array: Select All selects every row, re-rendered on each change.
+  let index = entryIndexes.get(entries);
+  if (!index) {
+    index = new Map();
+    for (const e of entries) if (!index.has(e.id)) index.set(e.id, e);
+    entryIndexes.set(entries, index);
+  }
+  return ids.flatMap((id) => {
+    const e = index.get(id);
+    return e ? [e] : [];
+  });
+}
