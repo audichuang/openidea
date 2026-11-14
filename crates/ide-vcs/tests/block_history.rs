@@ -98,13 +98,17 @@ fn summary_carries_heads_block_when_the_newest_row_is_a_merge_without_a_diff() {
     fx.write("a.txt", "a\nb\nc\nD\n");
     fx.commit("Main edit");
     fx.git(&["merge", "-q", "--no-edit", "side"]);
-    let summary = fx
-        .repo()
-        .block_history_summary(&fx.path("a.txt"), None, (0, 3), encoding_rs::UTF_8, &CancellationToken::new())
-        .unwrap();
+    let (repo, path, cancel) = (fx.repo(), fx.path("a.txt"), CancellationToken::new());
+    let summary = repo.block_history_summary(&path, None, (0, 3), encoding_rs::UTF_8, &cancel).unwrap();
     assert!(summary.revisions[0].summary.starts_with("Merge"));
     assert_eq!(summary.diffs[0].after, "");
     assert_eq!(summary.head.as_deref(), Some("A\nb\nc\nD\n"));
+    // The first streamed message carries the same block.
+    let mut first = None;
+    repo.block_history_streamed(&path, None, (0, 3), encoding_rs::UTF_8, &cancel, |f| first = Some(f)).unwrap();
+    let first = first.expect("the first rows were not sent");
+    assert!(first.revisions[0].summary.starts_with("Merge"));
+    assert_eq!(first.head, summary.head);
 }
 
 #[test]
