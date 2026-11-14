@@ -1335,6 +1335,7 @@ export function displayedLogGraph() {
 
 export async function goToParent(c: Commit) {
   const generation = useGitLog.getState().generation;
+  // One layout per look: the visible parents change as pages load (collapsed runs fold away).
   const find = () => {
     const { graph, unpruned, commits } = displayedLogGraph();
     const key = commitKey(c);
@@ -1342,10 +1343,11 @@ export async function goToParent(c: Commit) {
     // A filtered connection below the loaded page is only decided once its target loads.
     const pending = unpruned.find((x) => x.id === key)?.parents ?? [];
     const loaded = new Set(commits.map(commitKey));
+    const wanted = new Set(parents);
     return {
       parents,
       complete: pending.every((p) => loaded.has(p)),
-      candidates: commits.filter((x) => parents.includes(commitKey(x))),
+      candidates: commits.filter((x) => wanted.has(commitKey(x))),
     };
   };
   if (!find().parents.length) return;
