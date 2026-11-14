@@ -227,6 +227,8 @@ export class DocModel {
   private refreshTimer: ReturnType<typeof setTimeout> | undefined;
   private saving: Promise<void> = Promise.resolve();
   private meta: DocMeta;
+  /** Version of a backend "clean" report that arrived before the edit it describes was acked. */
+  private pendingClean: number | null = null;
 
   constructor(
     readonly manager: DocumentManager,
@@ -295,6 +297,7 @@ export class DocModel {
           });
         },
         onError: (e) => logError(`document ${this.path}: sync error`, e),
+        onSettled: () => this.settleClean(),
       },
       manager.scheduler,
     );
@@ -630,9 +633,47 @@ export class DocModel {
     }
   }
 
+  /**
+   * The backend's dirty flag changed. A clean flag only holds for the text at its version: it
+   * waits while the edit it describes is unacknowledged, and is dropped once local typing the
+   * backend has not seen yet (or a later version) supersedes it.
+   */
+  onBackendDirty(dirty: boolean, version?: number | null) {
+    if (dirty) {
+      this.pendingClean = null;
+      if (!this.meta.dirty) this.setMeta({ dirty: true });
+      return;
+    }
+    if (version == null) {
+      // An older server: only trust the flag when nothing local is in flight.
+      if (this.sync.idle) this.markClean();
+      return;
+    }
+    this.pendingClean = version;
+    this.settleClean();
+  }
+
+  private settleClean() {
+    const version = this.pendingClean;
+    if (version === null || this.sync.serverVersion < version) return;
+    this.pendingClean = null;
+    if (this.sync.serverVersion === version && this.sync.idle) this.markClean();
+  }
+
+  private markClean() {
+    this.modified.clear();
+    if (this.meta.dirty) this.setMeta({ dirty: false });
+  }
+
   // --- saving -----------------------------------------------------------------
 
-  save(reason: "explicit" | "auto" | "exact"): Promise<void> {
+  /**
+   * Saves the document. Unless `overwrite` (the user saving this very document), a file that
+   * changed on disk since the buffer was read is kept: the save is refused, the buffer stays
+   * dirty and `refused` resolves true.
+   */
+  save(reason: "explicit" | "auto" | "exact", options: { overwrite?: boolean } = {}): Promise<boolean> {
+    let refused = false;
     const run = async () => {
       if (this.closed || this.meta.readOnly || !this.meta.dirty) return;
       const slot = this.primarySlot();
@@ -669,16 +710,19 @@ export class DocModel {
       await this.sync.whenIdle();
       if (this.closed) return;
       const backend = this.manager.backend;
-      if (reason === "auto" && backend.autosave) {
+      if (!options.overwrite && backend.autosave) {
         // Refused: the file changed on disk; the buffer stays dirty and the backend warned.
-        if (!(await backend.autosave(this.doc))) return;
+        if (!(await backend.autosave(this.doc))) {
+          refused = true;
+          return;
+        }
       } else await backend.save(this.doc);
       this.modified.clear();
       this.setMeta({ dirty: false });
       _emitEditorEvent({ type: "docSaved", doc: this.doc, path: this.path });
     };
     this.saving = this.saving.then(run, run);
-    return this.saving;
+    return this.saving.then(() => refused);
   }
 
   dispose() {
@@ -725,13 +769,7 @@ export class DocumentManager {
       this.workspaceHistory.start(),
       this.backend.onPatched((e) => this.byId.get(e.doc)?.sync.remote(e)),
       this.backend.onLanguage?.((e) => this.byId.get(e.doc)?.setLanguage(e.language, e.uiMode)) ?? (() => {}),
-      this.backend.onDirty((e) => {
-        const m = this.byId.get(e.doc);
-        if (m && m.getMeta().dirty !== e.dirty) {
-          m.setMeta({ dirty: e.dirty });
-          if (!e.dirty) m.modified.clear();
-        }
-      }),
+      this.backend.onDirty((e) => this.byId.get(e.doc)?.onBackendDirty(e.dirty, e.version)),
     );
     let prev = useEditorRegistry.getState().contributions;
     this.disposers.push(
@@ -795,6 +833,9 @@ export class DocumentManager {
     // Defer so that "close tab + reopen in split" in one tick keeps the model.
     queueMicrotask(async () => {
       if (model.inUse() || model.closed) return;
+      // Typing still on its way to the backend decides whether there is anything to save.
+      await model.sync.whenIdle();
+      if (model.inUse() || model.closed) return;
       const files = this.settings()?.files;
       if (files?.autoSave !== false && model.getMeta().dirty) {
         try {
@@ -835,16 +876,35 @@ export class DocumentManager {
     for (const m of this.byPath.values()) m.applySettings();
   }
 
-  /** Saves dirty documents; failures are notified, and an explicit Save All also rejects with them. */
-  async saveAll(reason: "explicit" | "auto") {
+  /**
+   * Saves dirty documents; failures are notified, and an explicit Save All also rejects with them.
+   * Only `overwrite` (the document the user saves with Save) may replace a file that changed on
+   * disk; the others are kept dirty and an explicit Save All names them.
+   */
+  async saveAll(reason: "explicit" | "auto", overwrite?: DocModel | null) {
     const errors: unknown[] = [];
+    const refused: DocModel[] = [];
     await Promise.all(
       [...this.byPath.values()].map((m) =>
-        m.save(reason).catch((e) => {
-          errors.push(e);
-        }),
+        m.save(reason, { overwrite: m === overwrite }).then(
+          (r) => {
+            if (r) refused.push(m);
+          },
+          (e) => {
+            errors.push(e);
+          },
+        ),
       ),
     );
+    // Blur already warned once per disk state; a Save All, Run or VCS operation says it again.
+    if (reason === "explicit" && refused.length) {
+      const files = refused.map((m) => m.path).join("\n");
+      this.notify({
+        level: "warning",
+        title: "Not saved: changed on disk",
+        body: tx`${files} changed on disk and kept the external changes. Save it from its editor to overwrite them, or reload it from disk.`,
+      });
+    }
     if (errors.length) {
       const e = errors[0];
       this.notify({ level: "error", title: "Could not save", body: e instanceof Error ? e.message : String(e) });
