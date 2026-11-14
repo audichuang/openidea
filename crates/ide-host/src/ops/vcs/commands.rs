@@ -822,6 +822,49 @@ pub async fn vcs_block_history_revisions(
     result
 }
 
+/// Every revision's spot, in chunks while Git walks the history (see
+/// [`Repo::block_history_spots`]). Cancelling `request` stops Git.
+pub async fn vcs_block_history_spots(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    path: PathBuf,
+    anchor: BlockHistoryAnchor,
+    on_spots: Channel<Vec<BlockRevisionSpot>>,
+) -> IdeResult<()> {
+    let project = host.project(window)?;
+    let cancel = host.begin_project_read_request(window, request);
+    let result = blocking(move || {
+        project.with_repo_of(&path, |r| {
+            r.block_history_spots(&path, &anchor, &cancel, |spots| {
+                let _ = on_spots.send(spots);
+            })
+        })
+    })
+    .await;
+    host.end_request(request);
+    result
+}
+
+/// The diffs of up to four revisions read from their spots ([`Repo::block_history_revisions_at`]).
+pub async fn vcs_block_history_revisions_at(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    path: PathBuf,
+    spots: Vec<BlockRevisionSpot>,
+) -> IdeResult<Vec<BlockRevision>> {
+    let project = host.project(window)?;
+    let cancel = host.begin_project_read_request(window, request);
+    let result = blocking(move || {
+        project
+            .with_repo_of(&path, |r| r.block_history_revisions_at(&spots, project.vcs_encoding(&path, None)?, &cancel))
+    })
+    .await;
+    host.end_request(request);
+    result
+}
+
 #[command(trust = always)]
 pub async fn vcs_log(host: &Host, window: &str, repo: Option<PathBuf>, query: LogQuery) -> IdeResult<Vec<Commit>> {
     let project = LogAccess::new(host, window, repo.as_deref());
