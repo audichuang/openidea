@@ -786,6 +786,7 @@ impl EventFilter {
         }
         batch.excluded_dirs = excluded_dirs.into_iter().collect();
         batch.ignore_rules = rule_dirs.into_iter().collect();
+        batch.rescan = events.clone().any(Event::need_rescan);
         let rule_dirs = batch.ignore_rules.clone();
         (batch, rule_dirs)
     }
@@ -801,6 +802,19 @@ mod tests {
     }
 
     const TRANSIENT_PATHS: &[&str] = &["fresh.txt", "src/fresh.rs", "src/tasks/fresh.py"];
+
+    #[test]
+    fn dropped_events_still_reach_the_consumer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let filter = EventFilter::new(root.clone(), &[]);
+        // How FSEvents reports events it dropped ("rescan: user dropped").
+        let dropped = Event::new(EventKind::Other).add_path(root.clone()).set_flag(notify::event::Flag::Rescan);
+        let batch = filter.batch(&[dropped]);
+        assert!(!batch.is_empty(), "nothing would re-read the files whose events were dropped");
+        assert!(batch.rescan);
+        assert!(!filter.batch(&[ev(EventKind::Other, vec![root])]).rescan);
+    }
 
     /// Delivers a whole debounce window without depending on OS scheduling.
     struct TransientWatcher(Box<dyn notify::EventHandler>);
