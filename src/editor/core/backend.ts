@@ -24,6 +24,7 @@ import {
   type TextChange,
 } from "@/platform/ipc";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { useRemote } from "@/platform/remote";
 
 import { EditorState } from "@codemirror/state";
 import { customRegions } from "./cm/regions";
@@ -49,7 +50,7 @@ export interface DocBackend {
   close(doc: DocId): Promise<void>;
   edit(doc: DocId, baseVersion: number, changes: TextChange[]): Promise<number>;
   save(doc: DocId): Promise<void>;
-  /** Implicit save (focus loss, tab switch); `false` when the file changed on disk since it was read and was kept. */
+  /** Save that keeps a file changed on disk since it was read; `false` when it did (the buffer stays dirty). */
   autosave?(doc: DocId): Promise<boolean>;
   /** Re-check every open file for external changes missed by file watchers. */
   syncFromDisk?(): Promise<void>;
@@ -71,7 +72,8 @@ export interface DocBackend {
    */
   languageOf?(path: string, firstLine?: string): Promise<DocumentLanguage>;
   onPatched(handler: (e: DocPatchedEvent) => void): () => void;
-  onDirty(handler: (e: { doc: DocId; dirty: boolean }) => void): () => void;
+  /** `version`: the document version the flag holds for (absent from older servers). */
+  onDirty(handler: (e: { doc: DocId; dirty: boolean; version?: number | null }) => void): () => void;
   /** Files changed on disk (used to refresh nothing but closed-file state). */
   onFsChanged?(handler: (e: { removed: string[] }) => void): () => void;
   /**
@@ -86,6 +88,14 @@ export interface DocBackend {
   onLanguage?(handler: (e: { doc: DocId; language: string; uiMode: string | null }) => void): () => void;
 }
 
+/** Remote sessions whose server predates `doc_autosave`. */
+const withoutAutosave = new WeakSet<object>();
+
+/** The remote server does not know the command (`rpc.rs` answers METHOD_NOT_FOUND). */
+function missingRemoteCommand(e: unknown): boolean {
+  return e instanceof IpcError && e.kind === "protocol" && e.message.includes("is not available remotely");
+}
+
 export const ipcBackend: DocBackend = {
   open: (path) => call(commands.docOpen(path)),
   openVirtual: (uri) => call(commands.docOpenVirtual(uri)),
@@ -94,7 +104,20 @@ export const ipcBackend: DocBackend = {
   close: async (doc) => void (await call(commands.docClose(doc))),
   edit: (doc, baseVersion, changes) => call(commands.docEdit(doc, baseVersion, { changes })),
   save: async (doc) => void (await call(commands.docSave(doc))),
-  autosave: (doc) => call(commands.docAutosave(doc)),
+  autosave: async (doc) => {
+    const session = useRemote.getState().session;
+    if (!session || !withoutAutosave.has(session)) {
+      try {
+        return await call(commands.docAutosave(doc));
+      } catch (e) {
+        if (!session || !missingRemoteCommand(e)) throw e;
+        withoutAutosave.add(session);
+      }
+    }
+    // A released openidea-server has no guarded save: save as before it existed.
+    await call(commands.docSave(doc));
+    return true;
+  },
   syncFromDisk: async () => void (await call(commands.docSyncFromDisk())),
   snapshot: (doc) => call(commands.docSnapshot(doc)),
   setLineEnding: async (doc, le) => void (await call(commands.docSetLineEnding(doc, le))),
@@ -393,7 +416,7 @@ export function createMemoryBackend(files: Record<string, string> = {}): MemoryB
   const docs = new Map<DocId, MemDoc>();
   const byPath = new Map<string, DocId>();
   const patched = new Set<(e: DocPatchedEvent) => void>();
-  const dirtyHandlers = new Set<(e: { doc: DocId; dirty: boolean }) => void>();
+  const dirtyHandlers = new Set<(e: { doc: DocId; dirty: boolean; version?: number | null }) => void>();
   let nextId = 1;
   const store = new Map(Object.entries(files));
   const savedBoms = new Map<string, boolean>();
@@ -442,7 +465,7 @@ export function createMemoryBackend(files: Record<string, string> = {}): MemoryB
   };
   const setDirty = (d: MemDoc, before: boolean) => {
     const now = d.text !== d.saved || d.hasBom !== d.savedBom;
-    if (now !== before) dirtyHandlers.forEach((h) => h({ doc: d.id, dirty: now }));
+    if (now !== before) dirtyHandlers.forEach((h) => h({ doc: d.id, dirty: now, version: d.version }));
   };
   const delay = <T>(v: () => T): Promise<T> =>
     backend.latency > 0
