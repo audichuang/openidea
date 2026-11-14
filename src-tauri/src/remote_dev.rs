@@ -101,10 +101,13 @@ impl Forward {
 type Channels = Arc<Mutex<HashMap<u64, (Channel<ChannelFrame>, u64)>>>;
 
 /// Forwards a value of the server's streaming argument `m.id` to the frontend channel relaying it.
+///
+/// Frames are sent while holding the map lock, so a value can never follow the end frame of the
+/// same argument: `relay_end` removes the entry (and sends) under that same lock.
 fn relay_value(channels: &Channels, m: ChannelMessage) {
-    let channel = channels.lock().get(&m.id).cloned();
-    if let Some((c, id)) = channel {
-        let _ = c.send(ChannelFrame { id, data: m.data.to_string(), end: false });
+    let channels = channels.lock();
+    if let Some((c, id)) = channels.get(&m.id) {
+        let _ = c.send(ChannelFrame { id: *id, data: m.data.to_string(), end: false });
     }
 }
 
@@ -112,16 +115,16 @@ fn relay_value(channels: &Channels, m: ChannelMessage) {
 /// through the same channel as the values, so the frontend sees it after all of them; once a
 /// call's last argument ended, its channel is dropped and Tauri releases the frontend side.
 fn relay_end(channels: &Channels, own: u64) {
-    let removed = channels.lock().remove(&own);
-    if let Some((c, id)) = removed {
+    let mut channels = channels.lock();
+    if let Some((c, id)) = channels.remove(&own) {
         let _ = c.send(ChannelFrame { id, data: String::new(), end: true });
     }
 }
 
 /// Ends every streaming argument: the connection is gone.
 fn relay_end_all(channels: &Channels) {
-    let removed: Vec<_> = channels.lock().drain().collect();
-    for (_, (c, id)) in removed {
+    let mut channels = channels.lock();
+    for (_, (c, id)) in channels.drain() {
         let _ = c.send(ChannelFrame { id, data: String::new(), end: true });
     }
 }
@@ -189,7 +192,8 @@ impl Connections {
         if let Some(c) = self.0.lock().remove(window) {
             c.peer.kill();
             c.forwards.lock().clear();
-            relay_end_all(&c.channels);
+            // The streaming arguments end from the peer's notification thread once the values
+            // already received were forwarded (`Handler::on_closed`).
         }
     }
 }
@@ -247,6 +251,25 @@ struct ClientHandler {
     channels: Channels,
 }
 
+impl ClientHandler {
+    /// The streaming-argument part of a notification; `false` when `method` is not one.
+    fn relay_notification(channels: &Channels, method: &str, params: &Value) -> bool {
+        match method {
+            "channel" => match serde_json::from_value::<ChannelMessage>(params.clone()) {
+                Ok(m) => relay_value(channels, m),
+                Err(e) => tracing::warn!("remote channel: {e}"),
+            },
+            // Servers predating it never send it: their channels stay until the connection ends.
+            "channel_end" => match serde_json::from_value::<ChannelEndMessage>(params.clone()) {
+                Ok(m) => relay_end(channels, m.id),
+                Err(e) => tracing::warn!("remote channel end: {e}"),
+            },
+            _ => return false,
+        }
+        true
+    }
+}
+
 impl Handler for ClientHandler {
     fn on_notification(&self, method: &str, params: Value) {
         match method {
@@ -269,17 +292,15 @@ impl Handler for ClientHandler {
                     Err(e) => tracing::warn!("remote plugin event: {e}"),
                 }
             }
-            "channel" => match serde_json::from_value::<ChannelMessage>(params) {
-                Ok(m) => relay_value(&self.channels, m),
-                Err(e) => tracing::warn!("remote channel: {e}"),
-            },
-            // Servers predating it never send it: their channels stay until the connection ends.
-            "channel_end" => match serde_json::from_value::<ChannelEndMessage>(params) {
-                Ok(m) => relay_end(&self.channels, m.id),
-                Err(e) => tracing::warn!("remote channel end: {e}"),
-            },
-            _ => {}
+            _ => {
+                Self::relay_notification(&self.channels, method, &params);
+            }
         }
+    }
+
+    /// Runs behind every notification received, so no forwarded value is lost to the end frames.
+    fn on_closed(&self) {
+        relay_end_all(&self.channels);
     }
 
     fn on_request(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
@@ -608,10 +629,8 @@ pub async fn remote_connect(
     let peer = connection.peer.clone();
     let auth_plugins = state.plugins.clone();
     let auth_window = label.clone();
-    let relayed = connection.channels.clone();
     tauri::async_runtime::spawn(async move {
         peer.closed().await;
-        relay_end_all(&relayed);
         auth_plugins.forget_remote_loopbacks(&auth_window);
         if let Some(connection) = weak.upgrade() {
             connection.forwards.lock().clear();
@@ -1082,6 +1101,67 @@ mod tests {
         assert!(channels.lock().is_empty());
         assert!(released.load(std::sync::atomic::Ordering::SeqCst));
         assert_eq!(frames.lock().last(), Some(&serde_json::json!({ "id": 10, "data": "", "end": true })));
+    }
+
+    /// A handler whose notification thread waits for `gate` before each notification.
+    struct Gated {
+        channels: Channels,
+        gate: Arc<std::sync::Barrier>,
+    }
+    impl Handler for Gated {
+        fn on_notification(&self, method: &str, params: Value) {
+            self.gate.wait();
+            ClientHandler::relay_notification(&self.channels, method, &params);
+        }
+        fn on_request(&self, method: &str, _: Value) -> Result<Value, (i64, String)> {
+            Err((ide_jsonrpc::codes::METHOD_NOT_FOUND, format!("unhandled method {method}")))
+        }
+        fn on_closed(&self) {
+            relay_end_all(&self.channels);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn values_received_before_the_connection_closed_are_forwarded_before_the_end() {
+        use tokio::io::AsyncWriteExt;
+        let (client, mut server) = tokio::io::duplex(65536);
+        let (reader, writer) = tokio::io::split(client);
+        let (channel, frames, released) = relay();
+        let channels: Channels = Arc::default();
+        channels.lock().insert(1, (channel, 10));
+        let gate = Arc::new(std::sync::Barrier::new(2));
+        let peer = Peer::connect(reader, writer, Arc::new(Gated { channels: channels.clone(), gate: gate.clone() }));
+        // Three values and then EOF arrive while the notification thread is held at its gate.
+        for n in 1..=3 {
+            let body = serde_json::json!({
+                "jsonrpc": "2.0", "method": "channel", "params": { "id": 1, "data": n }
+            })
+            .to_string();
+            server.write_all(format!("Content-Length: {}\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        }
+        drop(server);
+        peer.closed().await;
+        // The connection is closed with every value still queued; only now may the thread run.
+        for _ in 0..3 {
+            let gate = gate.clone();
+            tokio::task::spawn_blocking(move || gate.wait()).await.unwrap();
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !released.load(std::sync::atomic::Ordering::SeqCst) {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the relay is released once the connection ended");
+        assert_eq!(
+            *frames.lock(),
+            [
+                serde_json::json!({ "id": 10, "data": "1", "end": false }),
+                serde_json::json!({ "id": 10, "data": "2", "end": false }),
+                serde_json::json!({ "id": 10, "data": "3", "end": false }),
+                serde_json::json!({ "id": 10, "data": "", "end": true }),
+            ]
+        );
     }
 
     #[tokio::test]
