@@ -24,6 +24,7 @@ import { LogIdContext } from "../logContext";
 import { loadLogDetails } from "../logDetails";
 import { useLogOptions } from "../logOptions";
 import { presentLogGraph } from "../logPresentation";
+import { survivingRowShift } from "../logScrollAnchor";
 import { nextSpeedMatch } from "../logSearch";
 import {
   PAGE,
@@ -242,12 +243,8 @@ export function CommitList({ fileHistory = false }: { fileHistory?: boolean }) {
     if (!element || previous === commits || (revealTick !== lastRevealed.current && selectedIndex >= 0)) return;
     const top = Math.max(0, Math.floor((element.scrollTop - ROW) / row));
     // Preserve the first surviving visible commit and its pixel offset.
-    for (let i = top; i < previous.length; i++) {
-      const next = commits.findIndex((c) => commitKey(c) === commitKey(previous[i]!));
-      if (next < 0) continue;
-      element.scrollTop += (next - i) * row;
-      break;
-    }
+    const shift = survivingRowShift(previous, commits, top);
+    if (shift !== null) element.scrollTop += shift * row;
   }, [commits, revealTick, selectedIndex, row]);
   const finished = done;
   const virtualizer = useVirtualizer({
