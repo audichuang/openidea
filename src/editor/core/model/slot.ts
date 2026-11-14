@@ -271,7 +271,8 @@ export class EditorSlot {
   // --- transactions ---------------------------------------------------------
 
   private onTransactions(trs: readonly Transaction[], view: EditorView) {
-    view.update(trs);
+    if (view === this.kept) updateDetached(view, trs);
+    else view.update(trs);
     let selection = false;
     let reformatted = false;
     let navigatedFrom: { line: number; col: number } | undefined;
@@ -398,6 +399,34 @@ export class EditorSlot {
     const head = s.selection.main.head;
     const line = s.doc.lineAt(head);
     return { line: line.number - 1, col: head - line.from, offset: head };
+  }
+}
+
+/** Lines a kept view may draw for changes before it is fitted to its (empty) visible range instead. */
+const DETACHED_LINES = 1000;
+
+/**
+ * Updates a kept view. Measured while detached, it is out of view, and CodeMirror then maps
+ * its viewport through changes instead of fitting it: a reload that replaces most of the text
+ * (a checkout) would draw every new line. When the mapped viewport would be that large, the
+ * update runs as if in view so CodeMirror fits the viewport; showing the view re-measures it.
+ * `viewState` is CodeMirror's private state (@codemirror/view 6.43): no public API sets it.
+ */
+function updateDetached(view: EditorView, trs: readonly Transaction[]) {
+  // Compose first: CodeMirror maps the viewport through all changes of a batch at once, and
+  // mapping per transaction can land elsewhere when later changes overlap earlier ones.
+  const changes = trs.map((tr) => tr.changes).reduce((a, b) => a.compose(b));
+  const from = changes.mapPos(view.viewport.from, -1);
+  const to = changes.mapPos(view.viewport.to, 1);
+  const doc = trs[trs.length - 1]?.state.doc;
+  const viewState = (view as unknown as { viewState?: { inView: boolean } }).viewState;
+  if (view.inView || !doc || !viewState || doc.lineAt(to).number - doc.lineAt(from).number <= DETACHED_LINES)
+    return view.update(trs);
+  viewState.inView = true;
+  try {
+    view.update(trs);
+  } finally {
+    viewState.inView = false;
   }
 }
 
