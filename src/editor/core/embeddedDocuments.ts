@@ -8,6 +8,8 @@ import { installColorScheme } from "./colorSchemeRuntime";
 import { attachDocument } from "./model/attachment";
 import { DocumentManager, notSaved, type DocModel } from "./model/document";
 
+export { isNotSaved } from "./model/document";
+
 class EmbeddedDocumentManager extends DocumentManager {
   // Keep files visited in this comparison until it closes, including unsaved
   // edits in a row that is no longer selected. No project tab/session is made.
@@ -28,7 +30,11 @@ export function activateEmbeddedDocuments() {
   });
   return {
     dirty: () => [...manager.byPath.values()].some((model) => model.getMeta().dirty),
-    save: () => manager.saveAll("explicit"),
+    // A refused document stays unsaved: callers (closing the window) must not go on as if saved.
+    async save() {
+      const refused = await manager.saveAll("explicit");
+      if (refused.length) throw notSaved(refused.join(", "));
+    },
     savePaths: (paths: readonly string[]) =>
       Promise.all(
         paths.map(async (path) => {
