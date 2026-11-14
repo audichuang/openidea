@@ -57,7 +57,7 @@ const TEXT = "one\nTWO\nTHREE\nfour\n";
 const first = revision("a", "Shout three", "TWO\nthree\n", "TWO\nTHREE\n");
 const second = revision("b", "Shout two", "two\nthree\n", "TWO\nthree\n");
 const anchor = { commit: "a".repeat(40), lines: [1, 2] as [number, number] };
-const history: BlockHistorySummary = { anchor, revisions: [first, second], diffs: [first] };
+const history: BlockHistorySummary = { anchor, head: null, revisions: [first, second], diffs: [first] };
 const ok = (data: unknown) => Promise.resolve({ status: "ok", data });
 
 function open(data: SelectionHistoryData) {
@@ -96,7 +96,18 @@ describe("rows", () => {
     const edited = historyRows(history, "TWO\nTHREE!\n");
     expect(edited[0]).toEqual({ kind: "local", head: "TWO\nTHREE\n", current: "TWO\nTHREE!\n" });
     expect(edited).toHaveLength(3);
-    expect(historyRows({ anchor: null, revisions: [], diffs: [] }, "new\n")).toEqual([]);
+    expect(historyRows({ anchor: null, head: null, revisions: [], diffs: [] }, "new\n")).toEqual([]);
+  });
+
+  it("compares with HEAD's block, not the newest row's diff, when that row is a merge without one", () => {
+    const merge = revision("m", "Merge branch 'main'", "", "");
+    const merged: BlockHistorySummary = { anchor, head: "TWO\nTHREE\n", revisions: [merge, first], diffs: [merge] };
+    expect(historyRows(merged, "TWO\nTHREE\n").map((r) => r.kind)).toEqual(["revision", "revision"]);
+    expect(historyRows(merged, "TWO\nTHREE!\n")[0]).toEqual({
+      kind: "local",
+      head: "TWO\nTHREE\n",
+      current: "TWO\nTHREE!\n",
+    });
   });
 });
 
