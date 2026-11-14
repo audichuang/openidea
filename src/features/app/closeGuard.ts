@@ -13,7 +13,7 @@
  * `general.closeTabsWithWindow` is on, that close drops the saved editor tabs.
  */
 import { commands, isTauri, onIdeEvent, type Settings } from "@/platform/ipc";
-import { t } from "@/platform/i18n";
+import { t, tx } from "@/platform/i18n";
 import { closeProject, provideLeaveProjectGuard, useProject } from "@/platform/project";
 import { useWindowGroup } from "@/platform/windowGroups";
 import { workflowSettings } from "@/platform/workflowSettings";
@@ -73,6 +73,8 @@ export interface CloseInput {
 export interface CloseDeps {
   ask: Ask;
   saveAll: () => Promise<void>;
+  /** Documents still unsaved after `saveAll`: their files changed on disk and were kept. */
+  unsavedAfterSave?: () => number;
   disableConfirmExit: () => Promise<void>;
   disableConfirmTerminate: () => Promise<void>;
   /** Running Run/Debug process names in this window. */
@@ -140,8 +142,15 @@ export async function decideClose(input: CloseInput, deps: CloseDeps): Promise<b
         ],
         icon: "warning",
       });
-      if (r.button === "save") await deps.saveAll();
-      else if (r.button === "discard") await session?.discard();
+      if (r.button === "save") {
+        await deps.saveAll();
+        if ((deps.unsavedAfterSave?.() ?? 0) > 0)
+          throw new Error(
+            tx(
+              "Some files changed on disk and were not saved. Save them from their editors or reload them, then close again.",
+            ),
+          );
+      } else if (r.button === "discard") await session?.discard();
       else return false;
     }
     // IDEA asks, then shows "Terminating 'X'" while the graceful shutdown runs; a Kill button
@@ -163,6 +172,7 @@ const defaultDeps: CloseDeps = {
   saveAll: async () => {
     await maybeEditorService()?.saveAll();
   },
+  unsavedAfterSave: () => maybeEditorService()?.dirtyDocumentIds?.().length ?? 0,
   prepareClose: async () => maybeEditorService()?.prepareClose?.(),
   reveal: async () => {
     const { tabs } = useWindowGroup.getState();

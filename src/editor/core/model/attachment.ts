@@ -171,7 +171,7 @@ export async function attachDocument(
             model.onLocal(tr.changes, target);
       }),
     ],
-    save: (options) => model.save(options?.exact ? "exact" : "explicit"),
+    save: async (options) => void (await model.save(options?.exact ? "exact" : "explicit")),
     synced: () => model.sync.whenIdle(),
     dirty: () => model.getMeta().dirty,
     undo: () => historyCommand(undo),

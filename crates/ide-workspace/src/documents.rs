@@ -162,15 +162,39 @@ struct DocState {
     /// Disk state we last loaded or wrote; changes matching it are our own.
     disk_mtime: f64,
     disk_len: u64,
+    /// Hash of the bytes the file held then; `None` when it could not be read.
+    disk_hash: Option<blake3::Hash>,
     /// Text as of that disk state: an edit that returns to it (undo) leaves the
     /// document clean. `None` once a pending encoding / line-ending / BOM change
     /// makes the buffer differ from the file whatever the text, and for large files.
     clean_text: Option<Document>,
     /// External disk state already reported as conflicting with unsaved changes.
-    conflict: Option<(f64, u64)>,
+    conflict: Option<DiskStamp>,
     closed: bool,
     /// URI of a virtual document (no file behind it).
     uri: Option<String>,
+}
+
+/// A file's state on disk: modification time, length and a hash of its bytes
+/// (`None`: missing or unreadable).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DiskStamp {
+    mtime: f64,
+    len: u64,
+    hash: Option<blake3::Hash>,
+}
+
+impl DiskStamp {
+    fn read(path: &Path) -> Self {
+        match std::fs::metadata(path) {
+            Ok(meta) => Self { mtime: ide_vfs::mtime_ms(&meta), len: meta.len(), hash: file_hash(path) },
+            Err(_) => Self { mtime: 0.0, len: 0, hash: None },
+        }
+    }
+}
+
+fn file_hash(path: &Path) -> Option<blake3::Hash> {
+    std::fs::read(path).ok().map(|bytes| blake3::hash(&bytes))
 }
 
 impl DocState {
@@ -178,15 +202,24 @@ impl DocState {
     fn synced(&mut self, mtime: f64) {
         self.disk_mtime = mtime;
         self.disk_len = disk_len(&self.path);
+        self.disk_hash = file_hash(&self.path);
         self.conflict = None;
         self.clean_text = (!self.large).then(|| self.doc.clone());
     }
 
-    /// Disk state (mtime, length) of a file that changed since we last read or wrote it.
-    fn changed_on_disk(&self) -> Option<(f64, u64)> {
-        let meta = std::fs::metadata(&self.path).ok()?;
-        let stamp = (ide_vfs::mtime_ms(&meta), meta.len());
-        (stamp != (self.disk_mtime, self.disk_len)).then_some(stamp)
+    /// Disk state of a file whose bytes changed since we last read or wrote it. The
+    /// bytes decide, not the stamp: a same-length write can restore the mtime, and a
+    /// touch or stash pop rewrites identical bytes. A missing or unreadable file
+    /// counts as changed. Identical bytes adopt the new stamp.
+    fn changed_on_disk(&mut self) -> Option<DiskStamp> {
+        let current = DiskStamp::read(&self.path);
+        if current.hash.is_none() || current.hash != self.disk_hash {
+            return Some(current);
+        }
+        self.disk_mtime = current.mtime;
+        self.disk_len = current.len;
+        self.conflict = None;
+        None
     }
 }
 
@@ -455,6 +488,7 @@ impl Documents {
             encoding_chosen: false,
             disk_mtime: loaded.mtime_ms,
             disk_len: disk_len(path),
+            disk_hash: file_hash(path),
             clean_text: None,
             conflict: None,
             closed: false,
@@ -531,6 +565,7 @@ impl Documents {
             encoding_chosen: false,
             disk_mtime: 0.0,
             disk_len: 0,
+            disk_hash: None,
             clean_text: None,
             conflict: None,
             closed: false,
@@ -598,7 +633,7 @@ impl Documents {
     fn set_dirty(&self, doc: DocId, st: &mut DocState, dirty: bool) {
         if st.dirty != dirty {
             st.dirty = dirty;
-            self.sink.emit(IdeEvent::DocDirty { doc, dirty });
+            self.sink.emit(IdeEvent::DocDirty { doc, dirty, version: Some(st.doc.version()) });
         }
     }
 
@@ -626,10 +661,20 @@ impl Documents {
                     tracing::warn!("edit of {} rejected: {e}", st.path.display());
                 }
             })?;
-            let dirty = !st.clean_text.as_ref().is_some_and(|clean| clean.same_text(&st.doc));
-            self.set_dirty(doc, st, dirty);
+            let clean = st.clean_text.as_ref().is_some_and(|clean| clean.same_text(&st.doc));
+            // Back to the text of a file that changed on disk meanwhile (its watcher event was
+            // spent warning about the unsaved changes): show what the file holds now.
+            let reload = clean && st.uri.is_none() && st.changed_on_disk().is_some();
+            self.set_dirty(doc, st, !clean || reload);
             self.notify_changed(doc, st, &applied, &edits);
-            Ok(st.doc.version())
+            let version = st.doc.version();
+            if reload {
+                match self.reload_locked(doc, st, false) {
+                    Ok(()) => self.set_dirty(doc, st, false),
+                    Err(e) => tracing::warn!("reload {}: {e}", st.path.display()),
+                }
+            }
+            Ok(version)
         })
     }
 
@@ -798,7 +843,7 @@ impl Documents {
             title: format!("{name} changed on disk"),
             body: Some(format!(
                 "{} was modified externally but has unsaved changes in the editor. \
-                 Saving will overwrite the external changes.",
+                 Saving it from its editor overwrites the external changes; Reload from Disk discards the editor's.",
                 st.path.display()
             )),
         });
@@ -1093,6 +1138,7 @@ impl Documents {
         if loaded.binary || st.binary {
             st.disk_mtime = loaded.mtime_ms;
             st.disk_len = disk_len(&st.path);
+            st.disk_hash = file_hash(&st.path);
             return Ok(());
         }
         st.encoding = loaded.encoding;
@@ -1147,13 +1193,12 @@ impl Documents {
                 // echo our own saves: a clean document whose stamp matches is re-checked by
                 // bytes — an external write that preserved both length and mtime differs
                 // from what saving this buffer would write, our own save's echo does not.
-                // Native-to-ascii properties documents and dirty documents keep the stamp
-                // dedup: the former's disk bytes legitimately differ from the buffer text,
-                // the latter warn once per disk state.
+                // Native-to-ascii properties documents keep the stamp dedup: their disk bytes
+                // legitimately differ from the buffer text. Dirty documents compare the file's
+                // bytes with the ones they are based on, and warn once per disk state.
                 if unchanged
                     && (!force_clean || st.dirty)
                     && (dedup
-                        || st.dirty
                         || st.native_to_ascii
                         || ide_vfs::encode(&st.doc.text_for_save(), &st.encoding, st.has_bom)
                             .map(|bytes| bytes == std::fs::read(&st.path).unwrap_or_default())
@@ -1162,9 +1207,11 @@ impl Documents {
                     return Ok(());
                 }
                 if st.dirty {
-                    // The stamp the buffer is based on stays: autosave must not overwrite this.
-                    if st.conflict != Some((mtime, meta.len())) {
-                        st.conflict = Some((mtime, meta.len()));
+                    // The disk state the buffer is based on stays: autosave must not overwrite this.
+                    if let Some(stamp) = st.changed_on_disk()
+                        && st.conflict != Some(stamp)
+                    {
+                        st.conflict = Some(stamp);
                         self.warn_changed_on_disk(st);
                     }
                     return Ok(());

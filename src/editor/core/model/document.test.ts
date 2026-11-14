@@ -296,6 +296,74 @@ describe("DocumentManager + slots", () => {
     }
   });
 
+  it("saves typing made while an undo back to the saved text was in flight when the last tab closes", async () => {
+    const { backend, manager, frame } = setup({ "/p/run.py": "old\n" });
+    const model = await manager.acquire("/p/run.py");
+    const slot = new EditorSlot(model, "t1", host);
+    try {
+      slot.dispatchLocal({ changes: { from: 0, insert: "x" } });
+      await frame();
+      expect(model.getMeta().dirty).toBe(true);
+      backend.latency = 40;
+      slot.dispatchLocal({ changes: { from: 0, to: 1 } });
+      await frame();
+      slot.dispatchLocal({ changes: { from: 0, insert: "y" } });
+      // The undo's clean event arrives while the new typing is still waiting to be sent.
+      await new Promise((r) => setTimeout(r, 50));
+      slot.dispose();
+      await new Promise((r) => setTimeout(r, 150));
+      await settle();
+      expect(backend.files.get("/p/run.py")).toBe("yold\n");
+    } finally {
+      manager.stop();
+    }
+  });
+
+  it("marks typing undone back to the saved text clean even when the clean event beats the edit's reply", async () => {
+    const { backend, manager, frame } = setup({ "/p/run.py": "old\n" });
+    const model = await manager.acquire("/p/run.py");
+    const slot = new EditorSlot(model, "t1", host);
+    try {
+      slot.dispatchLocal({ changes: { from: 0, insert: "x" } });
+      await frame();
+      backend.latency = 20;
+      slot.dispatchLocal({ changes: { from: 0, to: 1 } });
+      await frame();
+      await new Promise((r) => setTimeout(r, 60));
+      await settle();
+      expect(model.getMeta().dirty).toBe(false);
+    } finally {
+      manager.stop();
+    }
+  });
+
+  it("Save All does not overwrite a document whose file changed on disk", async () => {
+    const { backend, manager } = setup({ "/p/a.txt": "a\n", "/p/b.txt": "b\n" });
+    const notify = vi.spyOn(manager, "notify");
+    const a = await manager.acquire("/p/a.txt");
+    const b = await manager.acquire("/p/b.txt");
+    const slots = [new EditorSlot(a, "t1", host), new EditorSlot(b, "t2", host)];
+    for (const slot of slots) slot.dispatchLocal({ changes: { from: 0, insert: "x" } });
+    backend.autosave = vi.fn(async () => false);
+    const save = vi.spyOn(backend, "save");
+    try {
+      await manager.saveAll("explicit");
+      expect(save).not.toHaveBeenCalled();
+      expect(backend.files.get("/p/a.txt")).toBe("a\n");
+      expect(a.getMeta().dirty).toBe(true);
+      expect(notify).toHaveBeenCalledWith(expect.objectContaining({ level: "warning" }));
+
+      // Save from the active editor overwrites its own document only.
+      await manager.saveAll("explicit", a);
+      expect(save).toHaveBeenCalledTimes(1);
+      expect(save).toHaveBeenCalledWith(a.doc);
+      expect(backend.files.get("/p/a.txt")).toBe("xa\n");
+      expect(b.getMeta().dirty).toBe(true);
+    } finally {
+      manager.stop();
+    }
+  });
+
   it("keeps a document whose autosave was refused open when its last tab closes", async () => {
     const { backend, manager } = setup({ "/p/run.py": "old\n" });
     const model = await manager.acquire("/p/run.py");
