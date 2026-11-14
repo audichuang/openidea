@@ -177,3 +177,25 @@ fn annotate_tracks_whitespace_and_line_movement() {
         assert!(copied[7].origin_path.as_ref().unwrap().0.ends_with(source));
     }
 }
+
+#[test]
+fn ignoring_a_commit_refreshes_the_cached_blame_of_the_same_repository() {
+    let (fx, first, second) = reformatted_file();
+    let file = fx.path("file.txt");
+    let repo = fx.repo();
+    assert_eq!(commits(&repo, &file), vec![first.clone(), second.clone()]);
+    // Starting the list writes the file and the local config; the next annotate must not reuse
+    // the blame cached for the same commit before the list existed.
+    repo.ignore_blame_revision(&second).unwrap();
+    assert_eq!(commits(&repo, &file), vec![first.clone(), first.clone()]);
+
+    let (fx, first, second) = reformatted_file();
+    let file = fx.path("file.txt");
+    fx.write("custom-revs", "# formatting\n");
+    fx.git(&["config", "--local", "blame.ignoreRevsFile", "custom-revs"]);
+    let repo = fx.repo();
+    assert_eq!(commits(&repo, &file), vec![first.clone(), second.clone()]);
+    // Appending to a configured list changes only that file.
+    repo.ignore_blame_revision(&second).unwrap();
+    assert_eq!(commits(&repo, &file), vec![first.clone(), first]);
+}
