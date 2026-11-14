@@ -10,6 +10,7 @@ import { tx } from "@/platform/i18n";
 import { AnsiStream, stripAnsi, type Span } from "@/ui/ansi";
 import { call, commands, isCancelled, nextRequestId, type DocId } from "@/platform/ipc";
 import { ipcBackend } from "@/editor/core/backend";
+import { notSaved } from "@/editor/core/model/document";
 import { attachDocument, editorsFor } from "@/editor/api";
 import {
   maybeEditorService,
@@ -573,7 +574,7 @@ export async function applyFileEdits(path: string, edits: TextEdit[], opts: { sa
  * an editor may hold the same document, kept with unsaved changes after it refused that.
  */
 export async function saveOpenedDocument(doc: DocId, path: string) {
-  if (!(await ipcBackend.autosave!(doc))) throw new Error(tx`${path} changed on disk and was not saved.`);
+  if (!(await ipcBackend.autosave!(doc))) throw notSaved(path);
 }
 
 /** Replaces the whole content of a working file. */
