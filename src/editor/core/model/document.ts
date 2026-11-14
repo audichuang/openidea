@@ -694,7 +694,13 @@ export class DocModel {
 
   // --- saving -----------------------------------------------------------------
 
-  save(reason: "explicit" | "auto" | "exact"): Promise<void> {
+  /**
+   * Saves the document. Unless `overwrite` (the user saving this very document), a file that
+   * changed on disk since the buffer was read is kept: the save is refused, the buffer stays
+   * dirty and `refused` resolves true.
+   */
+  save(reason: "explicit" | "auto" | "exact", options: { overwrite?: boolean } = {}): Promise<boolean> {
+    let refused = false;
     const run = async () => {
       if (this.closed || this.meta.readOnly || !this.meta.dirty) return;
       const slot = this.primarySlot();
@@ -741,9 +747,12 @@ export class DocModel {
       const backend = this.manager.backend;
       const version = this.sync.serverVersion;
       const observedDirty = this.backendDirty;
-      // Autosave never overwrites external changes made after the buffer was edited.
-      if (reason === "auto" && backend.autosave) {
-        if (!(await backend.autosave(this.doc))) return;
+      if (!options.overwrite && backend.autosave) {
+        // Refused: the file changed on disk; the buffer stays dirty and the backend warned.
+        if (!(await backend.autosave(this.doc))) {
+          refused = true;
+          return;
+        }
       } else await backend.save(this.doc);
       // The reply does not identify what was saved. It only confirms the version
       // we sent if the buffer and the observed backend dirty state haven't moved on.
@@ -752,7 +761,7 @@ export class DocModel {
       _emitEditorEvent({ type: "docSaved", doc: this.doc, path: this.path });
     };
     this.saving = this.saving.then(run, run);
-    return this.saving;
+    return this.saving.then(() => refused);
   }
 
   /** Save As turned this untitled buffer into the file `info` points at. */
@@ -922,6 +931,9 @@ export class DocumentManager {
       if (model.inUse() || model.closed) return;
       const handoff = model.handoffRelease;
       model.handoffRelease = false;
+      // Typing still on its way to the backend decides whether there is anything to save.
+      await model.sync.whenIdle();
+      if (model.inUse() || model.closed) return;
       const files = this.settings()?.files;
       if (!handoff && files?.autoSave !== false && model.getMeta().dirty) {
         try {
@@ -977,20 +989,39 @@ export class DocumentManager {
     for (const m of this.byPath.values()) m.applySettings();
   }
 
-  /** Saves dirty documents; failures are notified, and an explicit Save All also rejects with them. */
-  async saveAll(reason: "explicit" | "auto", skipUntitled = false) {
+  /**
+   * Saves dirty documents; failures are notified, and an explicit Save All also rejects with them.
+   * Only `overwrite` (the document the user saves with Save) may replace a file that changed on
+   * disk; the others are kept dirty and an explicit Save All names them.
+   */
+  async saveAll(reason: "explicit" | "auto", overwrite?: DocModel | null, skipUntitled = false) {
     const errors: unknown[] = [];
+    const refused: DocModel[] = [];
     await Promise.all(
       [...this.byPath.values()]
         .filter((m) => !(skipUntitled && isUntitledUri(m.path)))
         .map((m) =>
-          m.save(reason).catch((e) => {
-            // The notification shows the message only; the log keeps the stack for reports.
-            logError(`saving ${m.path} failed`, e);
-            errors.push(e);
-          }),
+          m.save(reason, { overwrite: m === overwrite }).then(
+            (r) => {
+              if (r) refused.push(m);
+            },
+            (e) => {
+              // The notification shows the message only; the log keeps the stack for reports.
+              logError(`saving ${m.path} failed`, e);
+              errors.push(e);
+            },
+          ),
         ),
     );
+    // Blur already warned once per disk state; a Save All, Run or VCS operation says it again.
+    if (reason === "explicit" && refused.length) {
+      const files = refused.map((m) => m.path).join("\n");
+      this.notify({
+        level: "warning",
+        title: "Not saved: changed on disk",
+        body: tx`${files} changed on disk and kept the external changes. Save it from its editor to overwrite them, or reload it from disk.`,
+      });
+    }
     if (errors.length) {
       const e = errors[0];
       this.notify({ level: "error", title: "Could not save", body: e instanceof Error ? e.message : String(e) });
