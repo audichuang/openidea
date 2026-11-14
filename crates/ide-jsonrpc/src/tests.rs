@@ -448,6 +448,35 @@ async fn spawn_process_reports_exit_code_and_stderr() {
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
+async fn closed_is_queued_once_when_a_descendant_keeps_stdout_open() {
+    struct CountClosed(Arc<std::sync::atomic::AtomicUsize>);
+    impl Handler for CountClosed {
+        fn on_notification(&self, _: &str, _: Value) {}
+        fn on_request(&self, method: &str, _: Value) -> Result<Value, (i64, String)> {
+            Err((-32601, format!("unhandled {method}")))
+        }
+        fn on_closed(&self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let peer = Peer::spawn(
+        "sh",
+        &["-c".into(), "sleep 5 & exit 7".into()],
+        &std::env::temp_dir(),
+        &[],
+        Arc::new(CountClosed(count.clone())),
+        Box::new(|_| {}),
+    )
+    .unwrap();
+    assert_eq!(tokio::time::timeout(Duration::from_secs(4), peer.closed()).await.unwrap(), Some(7));
+    eventually(|| count.load(Ordering::SeqCst) == 1).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
 async fn kill_terminates_process() {
     let peer =
         Peer::spawn("sleep", &["30".into()], &std::env::temp_dir(), &[], Arc::new(NoopHandler), Box::new(|_| {}))
