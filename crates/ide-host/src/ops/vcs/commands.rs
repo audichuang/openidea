@@ -469,6 +469,40 @@ pub async fn vcs_block_history_summary(
     result
 }
 
+/// [`vcs_block_history_summary`] in two steps: `on_first` gets the anchor and the first
+/// few revisions with diffs as soon as Git has them; the full revision list is returned.
+/// Cancelling `request` stops both Git processes.
+pub async fn vcs_block_history_streamed(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    path: PathBuf,
+    text: Option<String>,
+    lines: (u32, u32),
+    on_first: Channel<BlockHistorySummary>,
+) -> IdeResult<Vec<BlockRevisionSummary>> {
+    let project = host.project(window)?;
+    let cancel = host.begin_project_read_request(window, request);
+    let result = blocking(move || {
+        let text = text.or_else(|| project.documents.text_of(&path));
+        project.with_repo_of(&path, |r| {
+            r.block_history_streamed(
+                &path,
+                text.as_deref(),
+                lines,
+                project.vcs_encoding(&path, None)?,
+                &cancel,
+                |first| {
+                    let _ = on_first.send(first);
+                },
+            )
+        })
+    })
+    .await;
+    host.end_request(request);
+    result
+}
+
 pub async fn vcs_block_history_revisions(
     host: &Host,
     window: &str,
@@ -484,6 +518,49 @@ pub async fn vcs_block_history_revisions(
         project.with_repo_of(&path, |r| {
             r.block_history_revisions(&path, &anchor, index, &commits, project.vcs_encoding(&path, None)?, &cancel)
         })
+    })
+    .await;
+    host.end_request(request);
+    result
+}
+
+/// Every revision's spot, in chunks while Git walks the history (see
+/// [`Repo::block_history_spots`]). Cancelling `request` stops Git.
+pub async fn vcs_block_history_spots(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    path: PathBuf,
+    anchor: BlockHistoryAnchor,
+    on_spots: Channel<Vec<BlockRevisionSpot>>,
+) -> IdeResult<()> {
+    let project = host.project(window)?;
+    let cancel = host.begin_project_read_request(window, request);
+    let result = blocking(move || {
+        project.with_repo_of(&path, |r| {
+            r.block_history_spots(&path, &anchor, &cancel, |spots| {
+                let _ = on_spots.send(spots);
+            })
+        })
+    })
+    .await;
+    host.end_request(request);
+    result
+}
+
+/// The diffs of up to four revisions read from their spots ([`Repo::block_history_revisions_at`]).
+pub async fn vcs_block_history_revisions_at(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    path: PathBuf,
+    spots: Vec<BlockRevisionSpot>,
+) -> IdeResult<Vec<BlockRevision>> {
+    let project = host.project(window)?;
+    let cancel = host.begin_project_read_request(window, request);
+    let result = blocking(move || {
+        project
+            .with_repo_of(&path, |r| r.block_history_revisions_at(&spots, project.vcs_encoding(&path, None)?, &cancel))
     })
     .await;
     host.end_request(request);
@@ -1487,6 +1564,18 @@ pub(crate) fn register(d: &mut Dispatcher) {
         )
         .await
     });
+    d.add("vcs_block_history_streamed", |c| async move {
+        vcs_block_history_streamed(
+            &c.host,
+            &c.window,
+            c.arg("request")?,
+            c.arg("path")?,
+            c.arg("text")?,
+            c.arg("lines")?,
+            c.sender("onFirst")?,
+        )
+        .await
+    });
     d.add("vcs_block_history_revisions", |c| async move {
         vcs_block_history_revisions(
             &c.host,
@@ -1498,6 +1587,20 @@ pub(crate) fn register(d: &mut Dispatcher) {
             c.arg("commits")?,
         )
         .await
+    });
+    d.add("vcs_block_history_spots", |c| async move {
+        vcs_block_history_spots(
+            &c.host,
+            &c.window,
+            c.arg("request")?,
+            c.arg("path")?,
+            c.arg("anchor")?,
+            c.sender("onSpots")?,
+        )
+        .await
+    });
+    d.add("vcs_block_history_revisions_at", |c| async move {
+        vcs_block_history_revisions_at(&c.host, &c.window, c.arg("request")?, c.arg("path")?, c.arg("spots")?).await
     });
     d.add("vcs_log", |c| async move { vcs_log(&c.host, &c.window, c.arg("repo")?, c.arg("query")?).await });
     d.add("vcs_log_refs", |c| async move { vcs_log_refs(&c.host, &c.window, c.arg("repo")?).await });

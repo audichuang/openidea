@@ -130,6 +130,126 @@ fn lazy_revisions_match_the_full_history_even_after_head_moves() {
 }
 
 #[test]
+fn streamed_history_matches_the_summary() {
+    let fx = renamed_history();
+    fx.write("b.txt", "one\ntwo again\nTHREE\nfour\nFIVE\n");
+    fx.commit("Lower two");
+    fx.write("b.txt", "one\ntwo again\nthree again\nfour\nFIVE\n");
+    fx.commit("Lower three");
+    let repo = fx.repo();
+    let path = fx.path("b.txt");
+    let cancel = CancellationToken::new();
+    // An unsaved line at the top, so the selection maps to HEAD's lines 1..=2.
+    let edited = "new\none\ntwo again\nthree again\nfour\nFIVE\n";
+    let summary = repo.block_history_summary(&path, Some(edited), (2, 3), encoding_rs::UTF_8, &cancel).unwrap();
+    let mut first = None;
+    let revisions = repo
+        .block_history_streamed(&path, Some(edited), (2, 3), encoding_rs::UTF_8, &cancel, |f| first = Some(f))
+        .unwrap();
+    let first = first.expect("the first rows were not sent");
+    assert_eq!(serde_json::to_value(&revisions).unwrap(), serde_json::to_value(&summary.revisions).unwrap());
+    assert_eq!(revisions.len(), 5);
+    assert_eq!(serde_json::to_value(&first.anchor).unwrap(), serde_json::to_value(&summary.anchor).unwrap());
+    assert_eq!(serde_json::to_value(&first.diffs).unwrap(), serde_json::to_value(&summary.diffs).unwrap());
+    assert_eq!(serde_json::to_value(&first.revisions).unwrap(), serde_json::to_value(&summary.revisions[..4]).unwrap());
+    // The first rows reach across the rename.
+    let paths: Vec<_> = first.diffs.iter().map(|d| d.path.as_str()).collect();
+    assert_eq!(paths, ["b.txt", "b.txt", "b.txt", "a.txt"]);
+
+    // Only uncommitted lines selected: the first (empty) answer still arrives.
+    let mut first = None;
+    let revisions = repo
+        .block_history_streamed(&path, Some(edited), (0, 0), encoding_rs::UTF_8, &cancel, |f| first = Some(f))
+        .unwrap();
+    let first = first.expect("the empty answer was not sent");
+    assert!(revisions.is_empty() && first.anchor.is_none() && first.revisions.is_empty());
+}
+
+/// renamed_history, then renamed to a non-ASCII name, edited on two branches (one also
+/// moves the block down) and merged, then edited once more.
+fn merged_history() -> Fixture {
+    let fx = renamed_history();
+    fx.git(&["mv", "b.txt", "ü c.txt"]);
+    fx.commit("Rename b to ü c");
+    fx.git(&["checkout", "-q", "-b", "side"]);
+    fx.write("ü c.txt", "zero\nzero again\none\nTWO side\nTHREE\nfour\nFIVE\n");
+    fx.commit("Side: lines above, two");
+    fx.git(&["checkout", "-q", "main"]);
+    fx.write("ü c.txt", "one\nTWO\nTHREE\nfour main\nFIVE\n");
+    fx.commit("Main: four");
+    fx.git(&["merge", "-q", "--no-edit", "side"]);
+    fx.write("ü c.txt", "zero\nzero again\none\nTWO side\nTHREE merged\nfour main\nFIVE\n");
+    fx.commit("Three after the merge");
+    fx
+}
+
+#[test]
+fn spots_read_the_same_diffs_as_the_full_walk() {
+    let fx = merged_history();
+    let repo = fx.repo();
+    let path = fx.path("ü c.txt");
+    let cancel = CancellationToken::new();
+    for lines in [(3, 5), (0, 6), (4, 4)] {
+        let full = history(&repo, &path, None, lines);
+        let anchor =
+            repo.block_history_summary(&path, None, lines, encoding_rs::UTF_8, &cancel).unwrap().anchor.unwrap();
+        let mut spots = Vec::new();
+        repo.block_history_spots(&path, &anchor, &cancel, |chunk| spots.extend(chunk)).unwrap();
+        assert_eq!(
+            spots.iter().map(|spot| spot.id.as_str()).collect::<Vec<_>>(),
+            full.revisions.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            "{lines:?}"
+        );
+        for (spot, expected) in spots.iter().zip(&full.revisions) {
+            let actual =
+                repo.block_history_revisions_at(std::slice::from_ref(spot), encoding_rs::UTF_8, &cancel).unwrap();
+            assert_eq!(serde_json::to_value(&actual).unwrap(), serde_json::to_value([expected]).unwrap(), "{spot:?}");
+        }
+        for batch in spots.chunks(4) {
+            let actual = repo.block_history_revisions_at(batch, encoding_rs::UTF_8, &cancel).unwrap();
+            assert_eq!(
+                actual.iter().map(|d| &d.id).collect::<Vec<_>>(),
+                batch.iter().map(|s| &s.id).collect::<Vec<_>>()
+            );
+        }
+        if lines == (3, 5) {
+            // The merge is listed without a diff, and the walk reaches across both renames.
+            assert!(spots.iter().any(|spot| spot.ranges.as_ref().is_some_and(Vec::is_empty)), "{spots:?}");
+            let paths: std::collections::BTreeSet<_> =
+                spots.iter().flat_map(|spot| spot.ranges.iter().flatten().map(|range| range.path.as_str())).collect();
+            assert_eq!(paths.into_iter().collect::<Vec<_>>(), ["a.txt", "b.txt", "ü c.txt"]);
+        }
+    }
+}
+
+#[test]
+fn spots_are_checked() {
+    let fx = renamed_history();
+    let repo = fx.repo();
+    let cancel = CancellationToken::new();
+    let id = fx.git(&["rev-parse", "HEAD"]);
+    let spot = |ranges| BlockRevisionSpot { id: id.clone(), ranges };
+    let range = |path: &str, start, end| BlockSpotRange { path: path.into(), start, end };
+    for bad in [
+        vec![spot(None)],
+        vec![spot(Some(vec![range("b.txt", 0, 1)]))],
+        vec![spot(Some(vec![range("b.txt", 3, 2)]))],
+        vec![spot(Some(vec![range("", 1, 2)]))],
+        vec![BlockRevisionSpot { id: "HEAD".into(), ranges: Some(Vec::new()) }],
+        vec![spot(Some(Vec::new())); 5],
+        Vec::new(),
+    ] {
+        let err = repo.block_history_revisions_at(&bad, encoding_rs::UTF_8, &cancel).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::InvalidInput, "{bad:?}");
+    }
+    // A spot whose commit does not change those lines.
+    let err = repo
+        .block_history_revisions_at(&[spot(Some(vec![range("b.txt", 1, 1)]))], encoding_rs::UTF_8, &cancel)
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::NotFound);
+}
+
+#[test]
 fn maps_an_edited_selection_to_head_lines() {
     let fx = renamed_history();
     let repo = fx.repo();
@@ -166,5 +286,13 @@ fn cancelled_requests_stop() {
     let cancel = CancellationToken::new();
     cancel.cancel();
     let err = fx.repo().block_history(&fx.path("b.txt"), None, (1, 2), encoding_rs::UTF_8, &cancel).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Cancelled);
+    let err = fx
+        .repo()
+        .block_history_streamed(&fx.path("b.txt"), None, (1, 2), encoding_rs::UTF_8, &cancel, |_| {})
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Cancelled);
+    let anchor = BlockHistoryAnchor { commit: fx.git(&["rev-parse", "HEAD"]), lines: (1, 2) };
+    let err = fx.repo().block_history_spots(&fx.path("b.txt"), &anchor, &cancel, |_| {}).unwrap_err();
     assert_eq!(err.kind, ErrorKind::Cancelled);
 }

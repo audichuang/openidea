@@ -184,6 +184,19 @@ async fn restricted_vcs_commands_run_no_program_of_the_repository() {
             vcs::vcs_block_history_summary(host, w, RequestId(3), file.clone(), None, (0, 1))
         ),
         call!(
+            "vcs_block_history_streamed",
+            "",
+            vcs::vcs_block_history_streamed(
+                host,
+                w,
+                RequestId(5),
+                file.clone(),
+                None,
+                (0, 1),
+                ops::Channel::new(|_| {})
+            )
+        ),
+        call!(
             "vcs_block_history_revisions",
             "",
             vcs::vcs_block_history_revisions(
@@ -194,6 +207,32 @@ async fn restricted_vcs_commands_run_no_program_of_the_repository() {
                 ide_vcs::BlockHistoryAnchor { commit: project.head.clone(), lines: (0, 1) },
                 0,
                 vec![project.first.clone()]
+            )
+        ),
+        call!(
+            "vcs_block_history_spots",
+            "",
+            vcs::vcs_block_history_spots(
+                host,
+                w,
+                RequestId(6),
+                file.clone(),
+                ide_vcs::BlockHistoryAnchor { commit: project.head.clone(), lines: (0, 1) },
+                ops::Channel::new(|_| {})
+            )
+        ),
+        call!(
+            "vcs_block_history_revisions_at",
+            "",
+            vcs::vcs_block_history_revisions_at(
+                host,
+                w,
+                RequestId(7),
+                file.clone(),
+                vec![ide_vcs::BlockRevisionSpot {
+                    id: project.first.clone(),
+                    ranges: Some(vec![ide_vcs::BlockSpotRange { path: "src/a.txt".into(), start: 1, end: 2 }])
+                }]
             )
         ),
         call!("vcs_log", "", vcs::vcs_log(host, w, root(), Default::default())),

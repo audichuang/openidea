@@ -682,7 +682,16 @@ export const commands = {
 	 */
 	vcsBlockHistory: (request: RequestId, path: string, text: string | null, lines: [number, number]) => typedError<BlockHistory, IdeError>(__TAURI_INVOKE("vcs_block_history", { request, path, text, lines })),
 	vcsBlockHistorySummary: (request: RequestId, path: string, text: string | null, lines: [number, number]) => typedError<BlockHistorySummary, IdeError>(__TAURI_INVOKE("vcs_block_history_summary", { request, path, text, lines })),
+	/**
+	 *  History for Selection with the first rows early: `on_first` gets the anchor and the
+	 *  first few revisions with diffs, then the full revision list is returned.
+	 */
+	vcsBlockHistoryStreamed: (request: RequestId, path: string, text: string | null, lines: [number, number], onFirst: Channel<BlockHistorySummary>) => typedError<BlockRevisionSummary[], IdeError>(__TAURI_INVOKE("vcs_block_history_streamed", { request, path, text, lines, onFirst })),
 	vcsBlockHistoryRevisions: (request: RequestId, path: string, anchor: BlockHistoryAnchor, index: number, commits: string[]) => typedError<BlockRevision[], IdeError>(__TAURI_INVOKE("vcs_block_history_revisions", { request, path, anchor, index, commits })),
+	/**  Where each revision's diff starts, in chunks while Git walks the history. */
+	vcsBlockHistorySpots: (request: RequestId, path: string, anchor: BlockHistoryAnchor, onSpots: Channel<BlockRevisionSpot[]>) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_block_history_spots", { request, path, anchor, onSpots })),
+	/**  The diffs of up to four revisions, each read starting at its own commit. */
+	vcsBlockHistoryRevisionsAt: (request: RequestId, path: string, spots: BlockRevisionSpot[]) => typedError<BlockRevision[], IdeError>(__TAURI_INVOKE("vcs_block_history_revisions_at", { request, path, spots })),
 	vcsLog: (repo: string | null, query: LogQuery) => typedError<Commit_Serialize[], IdeError>(__TAURI_INVOKE("vcs_log", { repo, query })),
 	vcsLogRefs: (repo: string | null) => typedError<{ [key in string]: string }, IdeError>(__TAURI_INVOKE("vcs_log_refs", { repo })),
 	vcsLogUsers: (repo: string | null) => typedError<string[], IdeError>(__TAURI_INVOKE("vcs_log_users", { repo })),
@@ -2641,6 +2650,20 @@ export type BlockRevision = {
 	afterLine: number,
 };
 
+/**
+ *  Where a selection history row's diff comes from: the line ranges `git log -L` followed
+ *  in that commit, so its diff can be read starting there instead of walking down from the
+ *  anchor. Listed in the same order as the revisions.
+ */
+export type BlockRevisionSpot = {
+	id: string,
+	/**
+	 *  The ranges in this commit; empty when Git shows the commit without a diff (a merge).
+	 *  None when they cannot be passed back to Git (a path that is not UTF-8).
+	 */
+	ranges: BlockSpotRange[] | null,
+};
+
 export type BlockRevisionSummary = {
 	id: string,
 	shortId: string,
@@ -2648,6 +2671,13 @@ export type BlockRevisionSummary = {
 	email: string,
 	timeMs: number | null,
 	summary: string,
+};
+
+/**  Lines `start..=end` (1-based) of `path` (repository-relative) in a commit. */
+export type BlockSpotRange = {
+	path: string,
+	start: number,
+	end: number,
 };
 
 export type Branch = {

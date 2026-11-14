@@ -3,7 +3,8 @@
 
 use crate::text_encoding::{TextEncoding, decode};
 use crate::{
-    BlockHistory, BlockHistoryAnchor, BlockHistorySummary, BlockRevision, BlockRevisionSummary, LineHunk, Repo, cli,
+    BlockHistory, BlockHistoryAnchor, BlockHistorySummary, BlockRevision, BlockRevisionSpot, BlockRevisionSummary,
+    BlockSpotRange, LineHunk, Repo, cli,
 };
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use std::path::Path;
@@ -60,12 +61,21 @@ fn run(
     options: &[&str],
     cancel: &CancellationToken,
 ) -> IdeResult<cli::Output> {
+    let range = anchor_range(rel, anchor);
+    cli::run_cancellable(r.root(), &log_args(options, &[range], &anchor.commit), cancel)
+}
+
+fn anchor_range(rel: &str, anchor: &BlockHistoryAnchor) -> String {
     let (start, end) = anchor.lines;
-    let range = format!("-L{},{}:{rel}", u64::from(start) + 1, u64::from(end) + 1);
+    format!("-L{},{}:{rel}", u64::from(start) + 1, u64::from(end) + 1)
+}
+
+fn log_args<'a>(options: &[&'a str], ranges: &'a [String], commit: &'a str) -> Vec<&'a str> {
     let mut args = vec!["log", "--no-color", "--no-ext-diff", "--no-textconv", FORMAT];
     args.extend_from_slice(options);
-    args.extend([range.as_str(), "--end-of-options", anchor.commit.as_str()]);
-    cli::run_cancellable(r.root(), &args, cancel)
+    args.extend(ranges.iter().map(String::as_str));
+    args.extend(["--end-of-options", commit]);
+    args
 }
 
 pub(crate) fn summary(
@@ -80,23 +90,66 @@ pub(crate) fn summary(
     let Some(anchor) = anchor(r, &rel, current_text, lines, encoding, cancel)? else {
         return Ok(BlockHistorySummary { anchor: None, revisions: Vec::new(), diffs: Vec::new() });
     };
+    let mut diffs = Vec::new();
+    let revisions = walk(r, &rel, &anchor, encoding, cancel, |first| diffs = first)?;
+    Ok(BlockHistorySummary { anchor: Some(anchor), revisions, diffs })
+}
+
+/// [`summary`] in two steps: `on_first` gets the anchor and the first few revisions
+/// with their diffs as soon as Git has them, and the full revision list is returned
+/// when the slower query that lists every revision ends.
+pub(crate) fn summary_streamed(
+    r: &Repo,
+    path: &Path,
+    current_text: Option<&str>,
+    lines: (u32, u32),
+    encoding: TextEncoding,
+    cancel: &CancellationToken,
+    on_first: impl FnOnce(BlockHistorySummary) + Send,
+) -> IdeResult<Vec<BlockRevisionSummary>> {
+    let rel = r.rel_path(path)?;
+    let Some(anchor) = anchor(r, &rel, current_text, lines, encoding, cancel)? else {
+        on_first(BlockHistorySummary { anchor: None, revisions: Vec::new(), diffs: Vec::new() });
+        return Ok(Vec::new());
+    };
+    walk(r, &rel, &anchor, encoding, cancel, |diffs| {
+        let revisions = diffs.iter().map(summary_of).collect();
+        on_first(BlockHistorySummary { anchor: Some(anchor.clone()), revisions, diffs });
+    })
+}
+
+/// Every revision of the block, newest first; `on_diffs` gets the first few with
+/// their diffs as soon as their query ends.
+fn walk(
+    r: &Repo,
+    rel: &str,
+    anchor: &BlockHistoryAnchor,
+    encoding: TextEncoding,
+    cancel: &CancellationToken,
+    on_diffs: impl FnOnce(Vec<BlockRevision>) + Send,
+) -> IdeResult<Vec<BlockRevisionSummary>> {
     // Git can emit the list without patches while another process prepares
     // the first few diffs. Neither query depends on the other's output.
     let limit = format!("-n{DIFF_BATCH}");
     let allowed = crate::execution_allowed();
-    let (out, patches) = std::thread::scope(|scope| {
+    let (out, first) = std::thread::scope(|scope| {
         let patches = scope.spawn(|| {
             let _execution = crate::ExecutionScope::enter(allowed);
-            run(r, &rel, &anchor, &[&limit], cancel)
+            let out = run(r, rel, anchor, &[&limit], cancel)?;
+            let diffs = parse_log(&out.stdout, encoding);
+            let ids: Vec<_> = diffs.iter().map(|diff| diff.id.clone()).collect();
+            on_diffs(diffs);
+            Ok::<_, IdeError>(ids)
         });
-        let out = run(r, &rel, &anchor, &["--no-patch"], cancel);
-        let patches = patches.join().map_err(|_| IdeError::internal("selection history diff query panicked"))?;
-        Ok::<_, IdeError>((out?, patches?))
+        let out = run(r, rel, anchor, &["--no-patch"], cancel);
+        let first = patches.join().map_err(|_| IdeError::internal("selection history diff query panicked"))?;
+        Ok::<_, IdeError>((out?, first?))
     })?;
     let revisions: Vec<_> = records(&out.stdout).filter_map(|record| parse_summary(split_header(record).0)).collect();
-    let diffs = parse_log(&patches.stdout, encoding);
-    check_diffs(&diffs, revisions.iter().take(DIFF_BATCH).map(|row| row.id.as_str()))?;
-    Ok(BlockHistorySummary { anchor: Some(anchor), revisions, diffs })
+    if revisions.iter().take(DIFF_BATCH).map(|row| row.id.as_str()).ne(first.iter().map(String::as_str)) {
+        return Err(IdeError::not_found("selection history revisions no longer match"));
+    }
+    Ok(revisions)
 }
 
 pub(crate) fn revisions(
@@ -139,6 +192,194 @@ fn check_diffs<'a>(diffs: &[BlockRevision], ids: impl Iterator<Item = &'a str>) 
         return Err(IdeError::not_found("selection history revisions no longer match"));
     }
     Ok(())
+}
+
+/// Spots sent per chunk while the walk goes on.
+const SPOT_CHUNK: usize = 256;
+
+/// Every revision's spot, in the order of the revision list (the same walk, with patches).
+/// Only the diff headers are kept: the patches of a large block add up to gigabytes.
+pub(crate) fn spots(
+    r: &Repo,
+    path: &Path,
+    anchor: &BlockHistoryAnchor,
+    cancel: &CancellationToken,
+    mut on_spots: impl FnMut(Vec<BlockRevisionSpot>) + Send,
+) -> IdeResult<()> {
+    gix::ObjectId::from_hex(anchor.commit.as_bytes())
+        .map_err(|_| IdeError::invalid("invalid selection history anchor"))?;
+    let range = anchor_range(&r.rel_path(path)?, anchor);
+    let args = log_args(&[], std::slice::from_ref(&range), &anchor.commit);
+    let mut reader = SpotReader::default();
+    let mut chunk = Vec::new();
+    cli::run_cancellable_lines(r.root(), &args, cancel, &mut |line| {
+        if let Some(spot) = reader.line(line) {
+            chunk.push(spot);
+            if chunk.len() == SPOT_CHUNK {
+                on_spots(std::mem::take(&mut chunk));
+            }
+        }
+    })?;
+    chunk.extend(reader.finish());
+    on_spots(chunk);
+    Ok(())
+}
+
+/// Reads spots from `git log -L` output line by line.
+#[derive(Default)]
+struct SpotReader {
+    spot: Option<BlockRevisionSpot>,
+    section: Section,
+}
+
+/// Where the reader is in a commit's diff.
+#[derive(Default)]
+enum Section {
+    /// The commit header, before any file.
+    #[default]
+    Header,
+    /// A file's header lines, with its `+++` path once read (None: not readable).
+    File(Option<Option<String>>),
+    /// A file's hunks.
+    Hunks(Option<String>),
+}
+
+impl SpotReader {
+    /// Feeds one line; returns the previous commit's spot when `line` starts the next one.
+    fn line(&mut self, line: &[u8]) -> Option<BlockRevisionSpot> {
+        let line = line.strip_suffix(b"\n").unwrap_or(line);
+        if let Some(header) = line.strip_prefix(&[RECORD]) {
+            let id = header.split(|b| *b == 0x1f).next().unwrap_or_default();
+            let next = BlockRevisionSpot { id: String::from_utf8_lossy(id).into_owned(), ranges: Some(Vec::new()) };
+            self.section = Section::Header;
+            return self.spot.replace(next);
+        }
+        let spot = self.spot.as_mut()?;
+        // Patch lines start with ' ', '+', '-' or '\\', so these prefixes only match headers.
+        if line.starts_with(b"diff --git ") {
+            self.section = Section::File(None);
+        } else if let (Section::File(path @ None), Some(name)) = (&mut self.section, line.strip_prefix(b"+++ ")) {
+            *path = Some(unquote_path(name));
+        } else if let Some(hunk) = line.strip_prefix(b"@@ ") {
+            let path = match std::mem::take(&mut self.section) {
+                Section::File(path) => path.flatten(),
+                Section::Hunks(path) => path,
+                Section::Header => None,
+            };
+            match (&mut spot.ranges, path.clone().zip(post_image(hunk))) {
+                (Some(ranges), Some((path, (start, end)))) => ranges.push(BlockSpotRange { path, start, end }),
+                (ranges, _) => *ranges = None,
+            }
+            self.section = Section::Hunks(path);
+        }
+        None
+    }
+
+    fn finish(&mut self) -> Option<BlockRevisionSpot> {
+        self.spot.take()
+    }
+}
+
+/// The new side of a hunk header (`-12,3 +14,5 @@ …` → lines 14..=18); None for an empty side.
+fn post_image(hunk: &[u8]) -> Option<(u32, u32)> {
+    let hunk = std::str::from_utf8(hunk.split(|b| *b == b'@').next()?).ok()?;
+    let side = hunk.split_whitespace().find_map(|part| part.strip_prefix('+'))?;
+    let (start, count) = side.split_once(',').unwrap_or((side, "1"));
+    let (start, count) = (start.parse::<u32>().ok()?, count.parse::<u32>().ok()?);
+    (start > 0 && count > 0).then(|| (start, start + (count - 1)))
+}
+
+/// The repository path of a `+++ b/…` line, C-quoted or not; None when it is not UTF-8
+/// (or not a `b/` path), as it then could not be passed back to Git.
+fn unquote_path(path: &[u8]) -> Option<String> {
+    // Git ends a name containing a space with a tab; a name with a tab of its own is quoted.
+    let path = path.strip_suffix(b"\t").unwrap_or(path);
+    let bytes = match path.strip_prefix(b"\"").and_then(|p| p.strip_suffix(b"\"")) {
+        None => path.to_vec(),
+        Some(inner) => {
+            let mut out = Vec::new();
+            let mut i = 0;
+            while i < inner.len() {
+                let c = inner[i];
+                i += 1;
+                if c != b'\\' {
+                    out.push(c);
+                    continue;
+                }
+                let escaped = *inner.get(i)?;
+                i += 1;
+                out.push(match escaped {
+                    b'a' => 0x07,
+                    b'b' => 0x08,
+                    b't' => b'\t',
+                    b'n' => b'\n',
+                    b'v' => 0x0b,
+                    b'f' => 0x0c,
+                    b'r' => b'\r',
+                    b'0'..=b'3' => {
+                        let digits = inner.get(i..i + 2)?;
+                        i += 2;
+                        let octal = std::str::from_utf8(&[escaped, digits[0], digits[1]]).ok()?.to_owned();
+                        u8::from_str_radix(&octal, 8).ok()?
+                    }
+                    other => other,
+                });
+            }
+            out
+        }
+    };
+    String::from_utf8(bytes).ok()?.strip_prefix("b/").map(str::to_owned)
+}
+
+/// Reads each revision's diff starting at its own commit, with the ranges the full walk
+/// followed there; the output equals that commit's record in the full walk.
+pub(crate) fn revisions_at(
+    r: &Repo,
+    spots: &[BlockRevisionSpot],
+    encoding: TextEncoding,
+    cancel: &CancellationToken,
+) -> IdeResult<Vec<BlockRevision>> {
+    if spots.is_empty() || spots.len() > DIFF_BATCH {
+        return Err(IdeError::invalid("invalid selection history batch size"));
+    }
+    let mut runs = Vec::new();
+    for spot in spots {
+        gix::ObjectId::from_hex(spot.id.as_bytes()).map_err(|_| IdeError::invalid("invalid selection history spot"))?;
+        let ranges = spot.ranges.as_deref().ok_or_else(|| IdeError::invalid("invalid selection history spot"))?;
+        let valid = |range: &&BlockSpotRange| {
+            range.start > 0
+                && range.end >= range.start
+                && !range.path.is_empty()
+                && !range.path.contains('\0')
+                && !Path::new(&range.path).is_absolute()
+        };
+        if ranges.len() > 64 || !ranges.iter().all(|range| valid(&range)) {
+            return Err(IdeError::invalid("invalid selection history spot"));
+        }
+        let ranges: Vec<_> =
+            ranges.iter().map(|range| format!("-L{},{}:{}", range.start, range.end, range.path)).collect();
+        runs.push((spot.id.as_str(), ranges));
+    }
+    let allowed = crate::execution_allowed();
+    std::thread::scope(|scope| {
+        let runs: Vec<_> = runs
+            .iter()
+            .map(|(id, ranges)| {
+                scope.spawn(move || {
+                    let _execution = crate::ExecutionScope::enter(allowed);
+                    // A commit shown without a diff (a merge) is just its header.
+                    let options: &[&str] = if ranges.is_empty() { &["-n1", "--no-patch"] } else { &["-n1"] };
+                    let out = cli::run_cancellable(r.root(), &log_args(options, ranges, id), cancel)?;
+                    let diffs = parse_log(&out.stdout, encoding);
+                    check_diffs(&diffs, std::iter::once(*id))?;
+                    Ok(diffs.into_iter().next().expect("checked above"))
+                })
+            })
+            .collect();
+        runs.into_iter()
+            .map(|run| run.join().map_err(|_| IdeError::internal("selection history diff query panicked"))?)
+            .collect()
+    })
 }
 
 /// The HEAD lines (0-based, inclusive) of `lines` in the current text, given the
@@ -192,6 +433,18 @@ fn parse_summary(header: &[u8]) -> Option<BlockRevisionSummary> {
         time_ms: fields.next()?.trim().parse::<f64>().ok()? * 1000.0,
         summary: fields.next().unwrap_or_default().to_owned(),
     })
+}
+
+fn summary_of(revision: &BlockRevision) -> BlockRevisionSummary {
+    let BlockRevision { id, short_id, author, email, time_ms, summary, .. } = revision;
+    BlockRevisionSummary {
+        id: id.clone(),
+        short_id: short_id.clone(),
+        author: author.clone(),
+        email: email.clone(),
+        time_ms: *time_ms,
+        summary: summary.clone(),
+    }
 }
 
 fn parse_record(record: &[u8], encoding: TextEncoding) -> Option<BlockRevision> {
@@ -335,5 +588,16 @@ mod tests {
     fn unquotes_c_quoted_paths() {
         assert_eq!(unquote(r#""b/a \"q\"\tb.txt""#), "b/a \"q\"\tb.txt");
         assert_eq!(unquote("b/plain.txt"), "b/plain.txt");
+    }
+
+    #[test]
+    fn reads_spot_paths_as_git_writes_them() {
+        assert_eq!(unquote_path(b"b/src/a.txt").as_deref(), Some("src/a.txt"));
+        // A space makes git end the name with a tab.
+        assert_eq!(unquote_path(b"b/\xc3\xbc c.txt\t").as_deref(), Some("\u{fc} c.txt"));
+        assert_eq!(unquote_path(br#""b/a\tb \"q\".txt""#).as_deref(), Some("a\tb \"q\".txt"));
+        assert_eq!(unquote_path(br#""b/\303\274.txt""#).as_deref(), Some("\u{fc}.txt"));
+        assert_eq!(unquote_path(br#""b/\377.txt""#), None);
+        assert_eq!(unquote_path(b"/dev/null"), None);
     }
 }

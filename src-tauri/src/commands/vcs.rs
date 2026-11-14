@@ -92,6 +92,31 @@ pub async fn vcs_block_history_summary(
     ide_host::ops::vcs::vcs_block_history_summary(&state.host, window.label(), request, path, text, lines).await
 }
 
+/// History for Selection with the first rows early: `on_first` gets the anchor and the
+/// first few revisions with diffs, then the full revision list is returned.
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_block_history_streamed(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    path: PathBuf,
+    text: Option<String>,
+    lines: (u32, u32),
+    on_first: tauri::ipc::Channel<BlockHistorySummary>,
+) -> IdeResult<Vec<BlockRevisionSummary>> {
+    ide_host::ops::vcs::vcs_block_history_streamed(
+        &state.host,
+        window.label(),
+        request,
+        path,
+        text,
+        lines,
+        super::sender(on_first),
+    )
+    .await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn vcs_block_history_revisions(
@@ -105,6 +130,41 @@ pub async fn vcs_block_history_revisions(
 ) -> IdeResult<Vec<BlockRevision>> {
     ide_host::ops::vcs::vcs_block_history_revisions(&state.host, window.label(), request, path, anchor, index, commits)
         .await
+}
+
+/// Where each revision's diff starts, in chunks while Git walks the history.
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_block_history_spots(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    path: PathBuf,
+    anchor: BlockHistoryAnchor,
+    on_spots: Channel<Vec<BlockRevisionSpot>>,
+) -> IdeResult<()> {
+    ide_host::ops::vcs::vcs_block_history_spots(
+        &state.host,
+        window.label(),
+        request,
+        path,
+        anchor,
+        super::sender(on_spots),
+    )
+    .await
+}
+
+/// The diffs of up to four revisions, each read starting at its own commit.
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_block_history_revisions_at(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    path: PathBuf,
+    spots: Vec<BlockRevisionSpot>,
+) -> IdeResult<Vec<BlockRevision>> {
+    ide_host::ops::vcs::vcs_block_history_revisions_at(&state.host, window.label(), request, path, spots).await
 }
 
 #[tauri::command]
