@@ -132,6 +132,41 @@ pub async fn vcs_block_history_revisions(
         .await
 }
 
+/// Where each revision's diff starts, in chunks while Git walks the history.
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_block_history_spots(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    path: PathBuf,
+    anchor: BlockHistoryAnchor,
+    on_spots: Channel<Vec<BlockRevisionSpot>>,
+) -> IdeResult<()> {
+    ide_host::ops::vcs::vcs_block_history_spots(
+        &state.host,
+        window.label(),
+        request,
+        path,
+        anchor,
+        super::sender(on_spots),
+    )
+    .await
+}
+
+/// The diffs of up to four revisions, each read starting at its own commit.
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_block_history_revisions_at(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    path: PathBuf,
+    spots: Vec<BlockRevisionSpot>,
+) -> IdeResult<Vec<BlockRevision>> {
+    ide_host::ops::vcs::vcs_block_history_revisions_at(&state.host, window.label(), request, path, spots).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn vcs_blame(

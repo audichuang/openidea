@@ -4,9 +4,15 @@
  * newest first, each shown as the block before and after it. Unsaved or
  * uncommitted edits of the block come first as Local Changes.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Channel } from "@tauri-apps/api/core";
-import type { BlockHistorySummary, BlockRevision, BlockRevisionSummary, RequestId } from "@/bindings";
+import type {
+  BlockHistorySummary,
+  BlockRevision,
+  BlockRevisionSpot,
+  BlockRevisionSummary,
+  RequestId,
+} from "@/bindings";
 import { call, commands, isCancelled, nextRequestId } from "@/platform/ipc";
 import { useRemote } from "@/platform/remote";
 import { List, Spinner, T } from "@/ui";
@@ -152,6 +158,29 @@ export function SelectionHistoryEditor({ input }: { input: EditorInput }) {
     [history, data],
   );
   const current = rows[Math.min(active, rows.length - 1)];
+
+  // Where each revision's diff starts, filled in while Git walks the history again with
+  // patches: a row it has reached reads its diff in constant time instead of re-walking
+  // the history down to it (`--skip`). Kept out of state: arriving spots change nothing shown.
+  const spots = useRef<{ history: BlockHistorySummary; spots: BlockRevisionSpot[] } | null>(null);
+  useEffect(() => {
+    const anchor = history?.anchor;
+    if (!anchor || history.revisions.length <= DIFF_BATCH) return;
+    const session = useRemote.getState().session;
+    if (session && !session.commands.includes("vcs_block_history_spots")) return;
+    const found = { history, spots: [] as BlockRevisionSpot[] };
+    spots.current = found;
+    return historyRequest(
+      (request) => {
+        const channel = new Channel<BlockRevisionSpot[]>();
+        channel.onmessage = (chunk) => found.spots.push(...chunk);
+        return call(commands.vcsBlockHistorySpots(request, data.path, anchor, channel));
+      },
+      () => {},
+      // Rows keep loading their diffs the slower way.
+      () => {},
+    );
+  }, [history, data.path]);
   const [diffs, setDiffs] = useState<{ history: BlockHistorySummary; revisions: Map<string, BlockRevision> } | null>(
     null,
   );
@@ -171,8 +200,16 @@ export function SelectionHistoryEditor({ input }: { input: EditorInput }) {
     const { anchor } = history;
     const index = current.index;
     const commits = history.revisions.slice(index, index + DIFF_BATCH).map((row) => row.id);
+    const found = spots.current?.history === history ? spots.current.spots.slice(index, index + DIFF_BATCH) : [];
+    const at =
+      found.length === commits.length && found.every((spot, i) => spot.id === commits[i] && spot.ranges) ? found : null;
     return historyRequest(
-      (request) => call(commands.vcsBlockHistoryRevisions(request, data.path, anchor, index, commits)),
+      (request) =>
+        call(
+          at
+            ? commands.vcsBlockHistoryRevisionsAt(request, data.path, at)
+            : commands.vcsBlockHistoryRevisions(request, data.path, anchor, index, commits),
+        ),
       (batch) => {
         setDiffError(null);
         setDiffs((previous) => {

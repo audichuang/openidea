@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { EditorState } from "@codemirror/state";
-import type { BlockHistorySummary, BlockRevision } from "@/bindings";
+import type { BlockHistorySummary, BlockRevision, BlockRevisionSpot } from "@/bindings";
 
 const vcsBlockHistory = vi.fn();
 const vcsBlockHistorySummary = vi.fn();
 const vcsBlockHistoryRevisions = vi.fn();
 const vcsBlockHistoryStreamed = vi.fn();
+const vcsBlockHistorySpots = vi.fn();
+const vcsBlockHistoryRevisionsAt = vi.fn();
 const remoteSession = vi.fn<() => { commands: string[] } | null>(() => null);
 const cancelRequest = vi.fn();
 
@@ -21,6 +23,8 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       vcsBlockHistoryStreamed: (...args: unknown[]) => vcsBlockHistoryStreamed(...args),
       vcsBlockHistoryRevisions: (...args: unknown[]) => vcsBlockHistoryRevisions(...args),
       vcsBlockHistory: (...args: unknown[]) => vcsBlockHistory(...args),
+      vcsBlockHistorySpots: (...args: unknown[]) => vcsBlockHistorySpots(...args),
+      vcsBlockHistoryRevisionsAt: (...args: unknown[]) => vcsBlockHistoryRevisionsAt(...args),
       cancelRequest: (id: number) => cancelRequest(id),
     },
   };
@@ -95,6 +99,8 @@ beforeEach(() => {
   vcsBlockHistorySummary.mockReset();
   vcsBlockHistoryRevisions.mockReset();
   vcsBlockHistoryStreamed.mockReset();
+  vcsBlockHistorySpots.mockReset().mockReturnValue(new Promise(() => {}));
+  vcsBlockHistoryRevisionsAt.mockReset();
   remoteSession.mockReset().mockReturnValue(null);
   cancelRequest.mockReset().mockReturnValue(ok(null));
 });
@@ -251,5 +257,76 @@ describe("History for Selection tab", () => {
     await screen.findByText("Shout two");
     expect(vcsBlockHistoryStreamed).not.toHaveBeenCalled();
     expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  describe("deep rows", () => {
+    const deep = ["c", "d", "e", "f"].map((id, i) => revision(id, `Edit ${i}`, `${id}\n`, `${id}!\n`));
+    const all = [first, second, ...deep];
+    const long: BlockHistorySummary = {
+      anchor,
+      revisions: all.map(summaryOf),
+      diffs: [first, second, ...deep.slice(0, 2)],
+    };
+    const spotOf = (r: BlockRevision): BlockRevisionSpot => ({
+      id: r.id,
+      ranges: [{ path: "src/a.txt", start: 2, end: 3 }],
+    });
+
+    it("reads a deep row's diff from its spot once Git has walked past it", async () => {
+      streams(long);
+      let send!: (spots: BlockRevisionSpot[]) => void;
+      vcsBlockHistorySpots.mockImplementation((_request, _path, _anchor, channel) => {
+        send = (spots) => channel.onmessage(spots);
+        return new Promise(() => {});
+      });
+      vcsBlockHistoryRevisionsAt.mockReturnValue(ok(deep.slice(3)));
+      open({ path: "/p/src/a.txt", lines: [1, 2], text: TEXT });
+      await screen.findByText("Edit 3");
+      expect(vcsBlockHistorySpots).toHaveBeenCalledWith(expect.any(Number), "/p/src/a.txt", anchor, expect.anything());
+      act(() => send(all.slice(0, 3).map(spotOf)));
+      act(() => send(all.slice(3).map(spotOf)));
+      fireEvent.click(screen.getByText("Edit 3"));
+      await waitFor(() => expect(screen.getByTestId("diff").textContent).toBe("fffffff^: f\n| fffffff: f!\n"));
+      expect(vcsBlockHistoryRevisionsAt).toHaveBeenCalledWith(
+        expect.any(Number),
+        "/p/src/a.txt",
+        all.slice(5).map(spotOf),
+      );
+      expect(vcsBlockHistoryRevisions).not.toHaveBeenCalled();
+    });
+
+    it("walks down to rows Git has not reached yet, and to rows whose spot is unusable", async () => {
+      streams(long);
+      let send!: (spots: BlockRevisionSpot[]) => void;
+      vcsBlockHistorySpots.mockImplementation((_request, _path, _anchor, channel) => {
+        send = (spots) => channel.onmessage(spots);
+        return new Promise(() => {});
+      });
+      vcsBlockHistoryRevisions.mockReturnValue(ok(deep.slice(3)));
+      const pending = open({ path: "/p/src/a.txt", lines: [1, 2], text: TEXT });
+      await screen.findByText("Edit 3");
+      act(() => send([...all.slice(0, 5).map(spotOf), { id: deep[3]!.id, ranges: null }]));
+      fireEvent.click(screen.getByText("Edit 3"));
+      await waitFor(() => expect(screen.getByTestId("diff").textContent).toBe("fffffff^: f\n| fffffff: f!\n"));
+      expect(vcsBlockHistoryRevisions).toHaveBeenCalledWith(expect.any(Number), "/p/src/a.txt", anchor, 5, [
+        deep[3]!.id,
+      ]);
+      expect(vcsBlockHistoryRevisionsAt).not.toHaveBeenCalled();
+      // Closing the tab stops the walk.
+      pending.unmount();
+      expect(cancelRequest).toHaveBeenCalledWith(vcsBlockHistorySpots.mock.calls[0]![0]);
+    });
+
+    it("does not ask a server without spots for them", async () => {
+      remoteSession.mockImplementation(() => ({
+        commands: ["vcs_block_history", "vcs_block_history_summary", "vcs_block_history_streamed"],
+      }));
+      streams(long);
+      vcsBlockHistoryRevisions.mockReturnValue(ok(deep.slice(3)));
+      open({ path: "/p/src/a.txt", lines: [1, 2], text: TEXT });
+      fireEvent.click(await screen.findByText("Edit 3"));
+      await waitFor(() => expect(vcsBlockHistoryRevisions).toHaveBeenCalled());
+      expect(vcsBlockHistorySpots).not.toHaveBeenCalled();
+    });
   });
 });
