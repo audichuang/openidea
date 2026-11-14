@@ -764,6 +764,7 @@ pub struct Repo {
     ignored: std::sync::RwLock<IgnoredNames>,
     log_index: std::sync::Mutex<log_index::LogIndex>,
     log_signatures: std::sync::Mutex<std::collections::HashMap<String, LogDetails>>,
+    blame_cache: blame::BlameCache,
 }
 
 impl Repo {
@@ -771,6 +772,9 @@ impl Repo {
     /// repository is in Restricted Mode until [`Repo::set_execution_allowed`] says otherwise.
     pub fn discover(path: &Path) -> IdeResult<Option<Self>> {
         repo::discover(path)
+    }
+    pub(crate) fn blame_cache(&self) -> &blame::BlameCache {
+        &self.blame_cache
     }
     /// The worktree root.
     pub fn root(&self) -> &Path {
