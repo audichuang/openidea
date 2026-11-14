@@ -8,7 +8,7 @@ import { gitGraphBridge } from "@/workbench/gitGraphBridge";
 import { CommitList } from "./CommitList";
 import { findMatches, useGraphData, useGraphExtras, useRepoState, type GraphFilters } from "./data";
 import { BottomPane } from "./Details";
-import { buildEntries, layoutInput } from "./entries";
+import { buildEntries, layoutInput, selectedEntries } from "./entries";
 import { BisectBanner } from "./panels";
 import { PrView } from "./PrView";
 import { Toolbar } from "./Toolbar";
@@ -71,9 +71,7 @@ export function GitGraphEditor() {
 
   const selected = view.selection.repo === activeRepo ? view.selection.ids : [];
   const setSelected = (ids: string[]) => set({ selection: { repo: activeRepo, ids } });
-  const selectedEntries = selected
-    .map((id) => entries.find((e) => e.id === id))
-    .filter((e): e is (typeof entries)[number] => !!e);
+  const selectedRows = selectedEntries(entries, selected);
   const jumpTo = (id: string) => set({ selection: { repo: activeRepo, ids: [id] }, panel: "details" });
   const step = (dir: 1 | -1) => {
     if (!matches.length) return;
@@ -141,7 +139,7 @@ export function GitGraphEditor() {
               <BottomPane
                 panel={view.panel}
                 onPanel={(panel) => set({ panel, ...(panel === "tree" ? { treeRev: null } : {}) })}
-                entries={selectedEntries}
+                entries={selectedRows}
                 repo={activeRepo}
                 version={repoState.version}
                 treeRev={view.treeRev}

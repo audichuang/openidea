@@ -57,6 +57,7 @@ import { hasPrimaryModifier } from "@/platform/keymap";
 import { laneColor, reachableFrom, type GraphRow, type GraphSegment } from "./graph";
 import { nextSpeedMatch } from "./logSearch";
 import { presentLogGraph } from "./logPresentation";
+import { survivingRowShift } from "./logScrollAnchor";
 import {
   closeLogTab,
   extendCommitSelection,
@@ -1436,12 +1437,8 @@ function CommitList() {
     if (!element || previous === commits || (revealTick !== lastRevealed.current && selectedIndex >= 0)) return;
     const top = Math.max(0, Math.floor((element.scrollTop - ROW) / ROW));
     // Preserve the first surviving visible commit and its pixel offset.
-    for (let i = top; i < previous.length; i++) {
-      const next = commits.findIndex((c) => commitKey(c) === commitKey(previous[i]!));
-      if (next < 0) continue;
-      element.scrollTop += (next - i) * ROW;
-      break;
-    }
+    const shift = survivingRowShift(previous, commits, top);
+    if (shift !== null) element.scrollTop += shift * ROW;
   }, [commits, revealTick, selectedIndex]);
   const finished = done;
   const virtualizer = useVirtualizer({
