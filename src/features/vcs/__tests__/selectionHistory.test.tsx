@@ -166,6 +166,18 @@ describe("History for Selection tab", () => {
     expect(vcsBlockHistoryRevisions).toHaveBeenCalledTimes(1);
   });
 
+  it("uses HEAD's block from the first streamed rows when the newest row is a merge", async () => {
+    const merge = revision("m", "Merge branch 'main'", "", "");
+    streams({ anchor, head: "TWO\nTHREE\n", revisions: [merge, first], diffs: [merge, first] });
+    const view = open({ path: "/p/src/a.txt", lines: [1, 2], text: TEXT });
+    await screen.findByText("Merge branch 'main'");
+    expect(screen.queryByText("Local Changes")).toBeNull();
+    view.unmount();
+    open({ path: "/p/src/a.txt", lines: [1, 2], text: "one\nTWO\nTHREE!\nfour\n" });
+    await screen.findByText("Local Changes");
+    expect(screen.getByTestId("diff").textContent).toBe("HEAD: TWO\nTHREE\n| Local Changes: TWO\nTHREE!\n");
+  });
+
   it("ignores an older response after the user changes revision", async () => {
     streams(history);
     let complete!: (result: { status: string; data: BlockRevision[] }) => void;
@@ -194,11 +206,11 @@ describe("History for Selection tab", () => {
   });
 
   it("says why there is nothing to show", async () => {
-    streams({ anchor: null, revisions: [], diffs: [] });
+    streams({ anchor: null, head: null, revisions: [], diffs: [] });
     const { unmount } = open({ path: "/p/a.txt", lines: [0, 0], text: "new\n" });
     await screen.findByText("These lines are not committed yet");
     unmount();
-    streams({ anchor, revisions: [], diffs: [] });
+    streams({ anchor, head: null, revisions: [], diffs: [] });
     open({ path: "/p/a.txt", lines: [0, 0], text: "old\n" });
     await screen.findByText("No commits changed these lines");
   });
@@ -223,6 +235,7 @@ describe("History for Selection tab", () => {
     const third = revision("c", "Add", "", "two\nthree\n");
     const full: BlockHistorySummary = {
       anchor,
+      head: null,
       revisions: [first, second, third].map(summaryOf),
       diffs: [first, second],
     };
@@ -246,7 +259,7 @@ describe("History for Selection tab", () => {
     let send!: () => void;
     vcsBlockHistoryStreamed.mockImplementation(
       (_request, _path, _text, _lines, channel: { onmessage: (m: BlockHistorySummary) => void }) => {
-        send = () => channel.onmessage({ anchor, revisions: full.slice(0, 1), diffs: [first] });
+        send = () => channel.onmessage({ anchor, head: null, revisions: full.slice(0, 1), diffs: [first] });
         return ok(full);
       },
     );
@@ -275,6 +288,7 @@ describe("History for Selection tab", () => {
     const all = [first, second, ...deep];
     const long: BlockHistorySummary = {
       anchor,
+      head: null,
       revisions: all.map(summaryOf),
       diffs: [first, second, ...deep.slice(0, 2)],
     };
