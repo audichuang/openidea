@@ -195,33 +195,20 @@ impl DocState {
         self.clean_text = (!self.large).then(|| self.doc.clone());
     }
 
-    /// The bytes saving `doc` with this document's encoding, BOM and conversion would write.
-    fn bytes_for_save(&self, doc: &Document) -> IdeResult<Vec<u8>> {
-        let text = doc.text_for_save();
-        Ok(if self.native_to_ascii {
-            ide_vfs::encode_properties_ascii(&text).into_bytes()
-        } else {
-            ide_vfs::encode(&text, &self.encoding, self.has_bom)?
-        })
+    /// The file changed on disk under unsaved changes: autosave leaves it alone, and the text read
+    /// before no longer matches the file, so undoing back to it is not clean.
+    fn mark_disk_conflict(&mut self, mtime: f64, len: u64) {
+        self.disk_mtime = mtime;
+        self.disk_len = len;
+        self.disk_conflict = true;
+        self.clean_text = None;
     }
 
-    /// Whether the file changed on disk since the buffer last matched it. A moved stamp with the
-    /// same bytes (touch, a tool rewriting the file unchanged) is no change and its stamp is adopted. Reads the file
-    /// only when the mtime moved but the length did not; without a clean text to compare (large
-    /// files, a pending encoding, line-ending or BOM change, a reported conflict) a moved stamp counts.
-    fn changed_on_disk(&mut self, meta: &std::fs::Metadata) -> bool {
-        let mtime = ide_vfs::mtime_ms(meta);
-        if mtime == self.disk_mtime && meta.len() == self.disk_len {
-            return false;
-        }
-        let same_bytes = meta.len() == self.disk_len
-            && self.clean_text.as_ref().is_some_and(|clean| {
-                self.bytes_for_save(clean).is_ok_and(|bytes| std::fs::read(&self.path).is_ok_and(|disk| disk == bytes))
-            });
-        if same_bytes {
-            self.disk_mtime = mtime;
-        }
-        !same_bytes
+    /// Disk state (mtime, length) of a file that changed since we last read or wrote it.
+    fn changed_on_disk(&self) -> Option<(f64, u64)> {
+        let meta = std::fs::metadata(&self.path).ok()?;
+        let stamp = (ide_vfs::mtime_ms(&meta), meta.len());
+        (stamp != (self.disk_mtime, self.disk_len)).then_some(stamp)
     }
 }
 
@@ -951,10 +938,19 @@ impl Documents {
     }
 
     /// An automatic save (switching tabs, the window losing focus): `false` when the file changed
-    /// on disk after this buffer was edited, which only an explicit save may overwrite.
+    /// on disk after this buffer was edited, which only an explicit save may overwrite. Checks the
+    /// disk too, since no watcher event may have reported the change; warns once.
     pub fn autosave(&self, doc: DocId) -> IdeResult<bool> {
         self.with_doc(doc, |st| {
-            self.check_disk_conflict(doc, st);
+            if st.dirty
+                && !st.disk_conflict
+                && st.uri.is_none()
+                && let Some((mtime, len)) = st.changed_on_disk()
+            {
+                // As if the watcher had reported it: its later event for this change is a no-op.
+                st.mark_disk_conflict(mtime, len);
+                self.warn_changed_on_disk(doc, st);
+            }
             if st.dirty && st.disk_conflict {
                 return Ok(false);
             }
@@ -1093,6 +1089,11 @@ impl Documents {
 
     pub fn has_unsaved_changes(&self) -> bool {
         self.registry.lock().docs.values().any(|entry| entry.slot.lock().dirty)
+    }
+
+    /// Reported once per disk state; the editor offers to load the file or keep the buffer.
+    fn warn_changed_on_disk(&self, doc: DocId, st: &DocState) {
+        self.sink.emit(IdeEvent::DocDiskConflict { doc, path: st.path.to_string_lossy().into_owned() });
     }
 
     /// Saves every dirty document; reports the first failure after trying all.
@@ -1509,10 +1510,8 @@ impl Documents {
                     return Ok(());
                 }
                 if st.dirty {
-                    if !st.changed_on_disk(&meta) {
-                        return Ok(());
-                    }
-                    self.disk_conflict(id, st, &meta);
+                    st.mark_disk_conflict(mtime, meta.len());
+                    self.warn_changed_on_disk(id, st);
                     return Ok(());
                 }
                 self.reload_locked(id, st, force_clean)
