@@ -384,6 +384,9 @@ describe("git graph bridge", () => {
     const { rows, input, onSelect } = renderFilter(REPO);
     expect(screen.getByText("Local")).toBeTruthy();
     expect(screen.getByText("Remote")).toBeTruthy();
+    fireEvent.click(screen.getByText("Local"));
+    fireEvent.click(screen.getByText("Remote"));
+    expect(screen.getByText("origin/dev")).toBeTruthy();
     expect(screen.queryByText("origin/HEAD")).toBeNull();
     const order = ["zeta", "alpha", "main"].map((n) => rows().indexOf(n));
     expect(order.every((i) => i >= 0)).toBe(true);
@@ -397,7 +400,9 @@ describe("git graph bridge", () => {
   it("uses the default favorites for a repository the vcs feature has not selected", () => {
     useFavoriteBranches.setState({ key: `openidea.vcs.favoriteBranches:${REPO}`, names: ["zeta"] });
     const { rows } = renderFilter("/other");
+    fireEvent.click(screen.getByText("Local"));
     const order = ["main", "alpha", "zeta"].map((n) => rows().indexOf(n));
+    expect(order.every((i) => i >= 0)).toBe(true);
     expect(order).toEqual([...order].sort((a, b) => a - b));
   });
 
