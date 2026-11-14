@@ -371,6 +371,8 @@ export const commands = {
 	 */
 	docEdit: (doc: DocId, baseVersion: number, changes: ChangeSet) => typedError<number, IdeError>(__TAURI_INVOKE("doc_edit", { doc, baseVersion, changes })),
 	docSave: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_save", { doc })),
+	/**  Implicit save; `false` when the file changed on disk since the editor read it and was kept. */
+	docAutosave: (doc: DocId) => typedError<boolean, IdeError>(__TAURI_INVOKE("doc_autosave", { doc })),
 	docSaveAll: () => typedError<null, IdeError>(__TAURI_INVOKE("doc_save_all")),
 	docSyncFromDisk: () => typedError<null, IdeError>(__TAURI_INVOKE("doc_sync_from_disk")),
 	docSnapshot: (doc: DocId) => typedError<DocumentInfo, IdeError>(__TAURI_INVOKE("doc_snapshot", { doc })),
@@ -6306,7 +6308,12 @@ ignoreRules?: IpcPath[] } |
 /**  Part of a grouped transaction; the editor must not record a file-local undo. */
 workspaceEdit?: boolean } | 
 /**  A document's dirty flag changed (saved / modified externally). */
-{ type: "docDirty"; doc: DocId; dirty: boolean } | 
+{ type: "docDirty"; doc: DocId; dirty: boolean; 
+/**
+ *  Document version the flag was computed at: a clean flag older than the
+ *  editor's unacknowledged typing is stale. Absent from older servers.
+ */
+version?: number | null } | 
 /**  A complete workspace edit can be undone as one operation. */
 { type: "workspaceEditApplied"; id: number; paths: IpcPath[] } | 
 /**

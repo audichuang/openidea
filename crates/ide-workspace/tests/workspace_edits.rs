@@ -481,7 +481,8 @@ fn rename_after_restoring_inplace_typing_saves_but_real_unsaved_work_stays_dirty
         docs.edit(info.id, version, ChangeSet { changes: vec![TextChange { from: 0, to: 3, insert: text.into() }] })
             .unwrap();
     }
-    assert!(docs.snapshot(info.id).unwrap().dirty);
+    // Typing reverted to the text on disk leaves the document clean.
+    assert!(!docs.snapshot(info.id).unwrap().dirty);
     docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&path, "new")], ..Default::default() }).unwrap();
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
     assert!(!docs.snapshot(info.id).unwrap().dirty);
@@ -559,7 +560,8 @@ fn undo_accepts_typing_that_was_reverted_to_the_saved_refactoring() {
         )
         .unwrap();
     }
-    assert!(docs.snapshot(info.id).unwrap().dirty);
+    // Typing reverted to the saved refactoring leaves the document clean.
+    assert!(!docs.snapshot(info.id).unwrap().dirty);
     docs.undo_workspace_edit(id).unwrap();
     assert_eq!(std::fs::read_to_string(path).unwrap(), "old");
     assert_eq!(docs.snapshot(info.id).unwrap().text, "old");
@@ -639,4 +641,26 @@ fn replacing_a_directory_symlink_does_not_resolve_later_child_paths_through_its_
         assert_eq!(std::fs::read_to_string(target.join("file.txt")).unwrap(), "old target\n");
         assert_eq!(std::fs::read_to_string(link.join("file.txt")).unwrap(), "new file\n");
     }
+}
+
+/// Undoing a refactoring of a document whose file changed on disk keeps the conflict:
+/// the restored buffer is not re-based on the external contents, so autosave keeps them.
+#[test]
+fn undo_keeps_the_conflict_of_a_file_that_changed_on_disk() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("main.ts");
+    std::fs::write(&path, "old").unwrap();
+    let (docs, events) = recorded_documents();
+    let info = docs.open(&path).unwrap();
+    docs.edit(info.id, 0, ChangeSet { changes: vec![TextChange { from: 3, to: 3, insert: " own".into() }] }).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    std::fs::write(&path, "external").unwrap();
+    docs.on_disk_changed(std::slice::from_ref(&path));
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&path, "new")], ..Default::default() }).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "external");
+    docs.undo_workspace_edit(undo_id(&events)).unwrap();
+    assert_eq!(docs.snapshot(info.id).unwrap().text, "old own");
+    let _ = docs.autosave(info.id);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "external");
+    assert!(docs.snapshot(info.id).unwrap().dirty);
 }

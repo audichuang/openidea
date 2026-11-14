@@ -72,10 +72,11 @@ async function captureWrites(page: Page) {
     Object.assign(window, { mergeWrites: calls });
     commands.fsReadText = async () => ({ status: "ok", data: "working copy\n" });
     commands.docOpen = async () => ({ status: "ok", data: { id: 777, version: 1 } });
-    for (const command of ["docEdit", "docSave", "docClose", "fsDelete", "vcsStage"])
+    for (const command of ["docEdit", "docAutosave", "docClose", "fsDelete", "vcsStage"])
       commands[command] = async (...args: unknown[]) => {
         calls.push({ command, args });
-        return { status: "ok", data: null };
+        // The file did not change on disk: the guarded save writes it.
+        return { status: "ok", data: command === "docAutosave" ? true : null };
       };
   });
 }
@@ -104,7 +105,7 @@ test("CRLF resolutions use UTF-16 editor positions and preserve line endings on 
   await page.locator("#merge-host").getByRole("button", { name: "Apply", exact: true }).click();
   await expect.poll(async () => (await writes(page)).some((call) => call.command === "vcsStage")).toBe(true);
   const calls = await writes(page);
-  expect(calls.map((call) => call.command)).toEqual(["docEdit", "docSave", "docClose", "vcsStage"]);
+  expect(calls.map((call) => call.command)).toEqual(["docEdit", "docAutosave", "docClose", "vcsStage"]);
   expect(calls[0]!.args[2]).toEqual({ changes: [{ from: 0, to: 13, insert: ours }] });
 });
 

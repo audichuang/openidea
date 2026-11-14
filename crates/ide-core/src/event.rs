@@ -70,6 +70,11 @@ pub enum IdeEvent {
     DocDirty {
         doc: DocId,
         dirty: bool,
+        /// Document version the flag was computed at: a clean flag older than the
+        /// editor's unacknowledged typing is stale. Absent from older servers.
+        #[serde(default)]
+        #[specta(optional)]
+        version: Option<u32>,
     },
     /// A complete workspace edit can be undone as one operation.
     WorkspaceEditApplied {

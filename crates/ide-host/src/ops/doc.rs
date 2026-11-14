@@ -32,6 +32,14 @@ pub async fn save(host: &Host, window: &str, doc: DocId) -> IdeResult<()> {
     host.debugger.refresh_source_mirrors(host.owner_window(window)).await
 }
 
+/// Implicit save (focus loss, tab switch); `false` when the file changed on disk and was kept.
+pub async fn autosave(host: &Host, window: &str, doc: DocId) -> IdeResult<bool> {
+    let project = host.project(window)?;
+    let saved = host.blocking(move || project.documents.autosave(doc)).await?;
+    host.debugger.refresh_source_mirrors(host.owner_window(window)).await?;
+    Ok(saved)
+}
+
 pub async fn save_all(host: &Host, window: &str) -> IdeResult<()> {
     let project = host.project(window)?;
     host.blocking(move || project.documents.save_all()).await?;

@@ -1036,3 +1036,170 @@ fn reload_from_disk_discards_unsaved_changes_only_for_given_paths() {
     assert_eq!(snap.text, "// bravo\n");
     assert!(snap.dirty);
 }
+
+/// Typing a character and undoing it returns the buffer to the text on disk: the
+/// document is clean again, so a later checkout reloads it instead of warning.
+#[test]
+fn undo_back_to_the_disk_text_leaves_the_document_clean() {
+    let f = fixture();
+    let path = f.root.join("undo.txt");
+    fs::write(&path, "alpha\n").unwrap();
+    let id = f.docs.open(&path).unwrap().id;
+    let v = f.docs.edit(id, 0, change(0, 0, "x")).unwrap();
+    assert!(f.docs.is_dirty(id).unwrap());
+    f.docs.edit(id, v, change(0, 1, "")).unwrap();
+    assert!(!f.docs.is_dirty(id).unwrap());
+    assert_eq!(dirty_events(&f.events.lock()), vec![true, false]);
+
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    fs::write(&path, "checked out\n").unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+    assert_eq!(f.docs.snapshot(id).unwrap().text, "checked out\n");
+}
+
+/// Autosave never writes over a file that changed on disk since the buffer was
+/// read, whether or not the watcher reported the change; an explicit save still does.
+#[test]
+fn autosave_keeps_a_file_that_changed_on_disk() {
+    for reported in [false, true] {
+        let f = fixture();
+        let path = f.root.join("stale.txt");
+        fs::write(&path, "old\n").unwrap();
+        let id = f.docs.open(&path).unwrap().id;
+        f.docs.edit(id, 0, change(0, 0, "x")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        fs::write(&path, "checked out\n").unwrap();
+        if reported {
+            f.docs.on_disk_changed(std::slice::from_ref(&path));
+        }
+        assert!(!f.docs.autosave(id).unwrap(), "reported={reported}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "checked out\n", "reported={reported}");
+        assert!(f.docs.is_dirty(id).unwrap());
+        // One warning per disk state, from the watcher or from the refused autosave.
+        assert!(!f.docs.autosave(id).unwrap());
+        f.docs.on_disk_changed(std::slice::from_ref(&path));
+        let warnings = f
+            .events
+            .lock()
+            .iter()
+            .filter(|e| matches!(e, IdeEvent::Notify { level: NotifyLevel::Warning, .. }))
+            .count();
+        assert_eq!(warnings, 1, "reported={reported}");
+
+        f.docs.save(id).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "xold\n");
+        f.docs.edit(id, f.docs.version(id).unwrap(), change(0, 0, "y")).unwrap();
+        assert!(f.docs.autosave(id).unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "yxold\n");
+    }
+}
+
+/// A document opened through a symlinked directory (macOS `/tmp` → `/private/tmp`)
+/// follows watcher events, which report the canonical path.
+#[cfg(unix)]
+#[test]
+fn document_opened_through_a_symlinked_directory_reloads_on_canonical_events() {
+    let f = fixture();
+    let real_dir = f.root.join("real");
+    fs::create_dir(&real_dir).unwrap();
+    let link_dir = f.root.join("link");
+    std::os::unix::fs::symlink(&real_dir, &link_dir).unwrap();
+    fs::write(real_dir.join("run.py"), "old\n").unwrap();
+    let id = f.docs.open(&link_dir.join("run.py")).unwrap().id;
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    fs::write(real_dir.join("run.py"), "new\n").unwrap();
+    f.docs.on_disk_changed(&[real_dir.join("run.py")]);
+    assert_eq!(f.docs.snapshot(id).unwrap().text, "new\n");
+}
+
+fn warnings(events: &[IdeEvent]) -> usize {
+    events.iter().filter(|e| matches!(e, IdeEvent::Notify { level: NotifyLevel::Warning, .. })).count()
+}
+
+/// Undoing typing after the file changed on disk returns the buffer to stale text: the
+/// watcher event was already spent on the warning, so the document reloads the disk text.
+#[test]
+fn undo_back_to_stale_text_after_an_external_change_reloads_from_disk() {
+    let f = fixture();
+    let path = f.root.join("conflict.txt");
+    fs::write(&path, "old\n").unwrap();
+    let id = f.docs.open(&path).unwrap().id;
+    let v = f.docs.edit(id, 0, change(0, 0, "x")).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    fs::write(&path, "new\n").unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+    f.docs.edit(id, v, change(0, 1, "")).unwrap();
+    let snap = f.docs.snapshot(id).unwrap();
+    assert_eq!(snap.text, "new\n");
+    assert!(!snap.dirty);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "new\n");
+}
+
+/// An external write of the same length that restored the modification time is still
+/// a change: autosave compares the bytes, not only the (mtime, length) stamp.
+#[test]
+fn autosave_keeps_a_same_length_external_write_with_a_restored_mtime() {
+    let f = fixture();
+    let path = f.root.join("stamp.txt");
+    fs::write(&path, "aaaa\n").unwrap();
+    let modified = fs::metadata(&path).unwrap().modified().unwrap();
+    let id = f.docs.open(&path).unwrap().id;
+    f.docs.edit(id, 0, change(0, 0, "x")).unwrap();
+    fs::write(&path, "bbbb\n").unwrap();
+    fs::File::options().write(true).open(&path).unwrap().set_modified(modified).unwrap();
+    let _ = f.docs.autosave(id);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "bbbb\n");
+    assert!(f.docs.is_dirty(id).unwrap());
+}
+
+/// A file deleted outside the editor is not recreated by an autosave.
+#[test]
+fn autosave_does_not_recreate_a_deleted_file() {
+    let f = fixture();
+    let path = f.root.join("gone.txt");
+    fs::write(&path, "old\n").unwrap();
+    let id = f.docs.open(&path).unwrap().id;
+    f.docs.edit(id, 0, change(0, 0, "x")).unwrap();
+    fs::remove_file(&path).unwrap();
+    let _ = f.docs.autosave(id);
+    assert!(!path.exists());
+    assert!(f.docs.is_dirty(id).unwrap());
+    // Saving it explicitly recreates it.
+    f.docs.save(id).unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), "xold\n");
+}
+
+/// A touch, stash pop or cloud sync that rewrote identical bytes is no conflict:
+/// no warning, and autosave writes the buffer.
+#[test]
+fn identical_content_with_a_new_mtime_is_not_a_conflict() {
+    let f = fixture();
+    let path = f.root.join("touched.txt");
+    fs::write(&path, "same\n").unwrap();
+    let id = f.docs.open(&path).unwrap().id;
+    f.docs.edit(id, 0, change(0, 0, "x")).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    fs::write(&path, "same\n").unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+    let _ = f.docs.autosave(id);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "xsame\n");
+    assert!(!f.docs.is_dirty(id).unwrap());
+    assert_eq!(warnings(&f.events.lock()), 0);
+}
+
+/// "Nothing to save" and "refused" are different answers: the editor disposes the
+/// first and keeps the second.
+#[test]
+fn autosave_tells_a_clean_document_from_a_refused_one() {
+    let f = fixture();
+    let clean = f.root.join("clean.txt");
+    let stale = f.root.join("stale2.txt");
+    fs::write(&clean, "a\n").unwrap();
+    fs::write(&stale, "b\n").unwrap();
+    let clean = f.docs.open(&clean).unwrap().id;
+    let refused = f.docs.open(&stale).unwrap().id;
+    f.docs.edit(refused, 0, change(0, 0, "x")).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    fs::write(&stale, "external\n").unwrap();
+    assert_ne!(f.docs.autosave(clean).unwrap(), f.docs.autosave(refused).unwrap());
+}

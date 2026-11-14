@@ -1,6 +1,6 @@
 //! Preflight, rollback and grouped undo for edits spanning documents and files.
 
-use super::{DocState, Documents, RegEntry, disk_len, keys_for};
+use super::{DocState, Documents, RegEntry, keys_for};
 use ide_core::error::ErrorKind;
 use ide_core::{DocId, FileEdit, IdeError, IdeEvent, IdeResult, NullSink, WorkspaceEdit, WorkspaceEditPrecondition};
 use parking_lot::Mutex;
@@ -753,11 +753,22 @@ impl Documents {
                 state.encoding_chosen = before.encoding_chosen;
                 state.has_bom = before.has_bom;
                 state.doc.set_line_ending(before.doc.line_ending());
-                state.disk_mtime = fs::metadata(&state.path).map(|m| ide_vfs::mtime_ms(&m)).unwrap_or(0.0);
-                state.disk_len = disk_len(&state.path);
+                let meta = fs::metadata(&state.path);
                 let disk_failed =
                     text_path(&state.path).is_ok_and(|path| failed_paths.iter().any(|failed| path.starts_with(failed)));
                 let dirty = disk_failed || (before.dirty && differs_from_disk(state)?);
+                if dirty {
+                    // The file holds the backup again, the disk state `before` was based on:
+                    // keep that baseline and its conflict, so autosave still refuses to write
+                    // over an external change the buffer never saw.
+                    state.disk_mtime = meta.as_ref().map(ide_vfs::mtime_ms).unwrap_or(0.0);
+                    state.disk_len = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                    state.disk_hash = before.disk_hash;
+                    state.conflict = before.conflict;
+                    state.clean_text = before.clean_text.clone();
+                } else {
+                    state.synced(meta.as_ref().map(ide_vfs::mtime_ms).unwrap_or(0.0));
+                }
                 self.set_dirty(*id, state, dirty);
                 Ok(())
             });
@@ -800,8 +811,7 @@ impl Documents {
                 self.replace_locked(id, state, &loaded.text)?;
                 state.encoding = loaded.encoding;
                 state.has_bom = loaded.has_bom;
-                state.disk_mtime = loaded.mtime_ms;
-                state.disk_len = disk_len(path);
+                state.synced(loaded.mtime_ms);
                 Ok(())
             })?;
         }

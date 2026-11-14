@@ -7,7 +7,9 @@ import { create } from "zustand";
 import type { GitOperation, RemoteOp } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
-import { call, commands, isCancelled, nextRequestId } from "@/platform/ipc";
+import { call, commands, isCancelled, nextRequestId, type DocId } from "@/platform/ipc";
+import { ipcBackend } from "@/editor/core/backend";
+import { notSaved } from "@/editor/core/model/document";
 import { attachDocument, editorsFor } from "@/editor/api";
 import { maybeEditorService, notifications, type NotificationService } from "@/workbench/contributions";
 import { cancelTask, upsertTaskSoon, useTasks } from "@/workbench/tasks";
@@ -525,10 +527,18 @@ export async function applyFileEdits(path: string, edits: TextEdit[], opts: { sa
   const info = await call(commands.docOpen(path));
   try {
     await call(commands.docEdit(info.id, info.version, { changes: [...edits].sort((a, b) => a.from - b.from) }));
-    await call(commands.docSave(info.id));
+    await saveOpenedDocument(info.id, path);
   } finally {
     void commands.docClose(info.id);
   }
+}
+
+/**
+ * Saves a document opened for an operation, without writing over a file that changed on disk:
+ * an editor may hold the same document, kept with unsaved changes after it refused that.
+ */
+export async function saveOpenedDocument(doc: DocId, path: string) {
+  if (!(await ipcBackend.autosave!(doc))) throw notSaved(path);
 }
 
 /** Replaces the whole content of a working file. */
