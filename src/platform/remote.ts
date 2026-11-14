@@ -42,6 +42,29 @@ export const useRemote = create<RemoteState>(() => ({
 
 let routed = new Set<string>();
 let nextChannel = 1;
+/**
+ * Streaming arguments of remote calls whose server side has not ended yet, by id, with the
+ * channel their values arrive on. Servers predating the end notice never end theirs: they stay
+ * until the session ends.
+ */
+const liveChannels = new Map<number, { channel: Channel<unknown>; relay: Channel<ChannelFrame> }>();
+
+function unregister(channel: Channel<never>) {
+  (
+    window as unknown as { __TAURI_INTERNALS__: { unregisterCallback(id: number): void } }
+  ).__TAURI_INTERNALS__.unregisterCallback(channel.id);
+}
+
+function releaseChannels() {
+  const relays = new Set<Channel<ChannelFrame>>();
+  for (const { channel, relay } of liveChannels.values()) {
+    unregister(channel);
+    relays.add(relay);
+  }
+  relays.forEach(unregister);
+  liveChannels.clear();
+}
+
 const BUILD_MODEL_COMMANDS = new Set(["build_model", "build_sync", "gradle_link_projects", "gradle_unlink_projects"]);
 
 /**
@@ -80,7 +103,20 @@ async function remoteInvoke(cmd: string, args?: InvokeArgs, options?: InvokeOpti
     }
   }
   const onChannel = new Channel<ChannelFrame>();
-  onChannel.onmessage = (frame) => channels.get(frame.id)?.onmessage(JSON.parse(frame.data));
+  // Tauri delivers the frames in order, so an end frame comes after every value of its channel.
+  // The backend drops its relay once all of the call's channels ended, which unregisters it.
+  onChannel.onmessage = (frame) => {
+    const channel = channels.get(frame.id);
+    if (!channel) return;
+    if (frame.end) {
+      channels.delete(frame.id);
+      liveChannels.delete(frame.id);
+      unregister(channel);
+    } else {
+      channel.onmessage(JSON.parse(frame.data));
+    }
+  };
+  for (const [id, channel] of channels) liveChannels.set(id, { channel, relay: onChannel });
   const result = await invokeLocal<string>("remote_invoke", { cmd, args: json, onChannel }, options);
   const value = JSON.parse(result);
   // Released servers predating independent Gradle builds return a single build.
@@ -168,6 +204,7 @@ export function enableRemote(session: RemoteSession) {
 
 export function disableRemote() {
   routed = new Set();
+  releaseChannels();
   setInvokeRoute(null);
   useRemote.setState({ session: null, lost: null, takenOver: false, reconnecting: false });
 }
