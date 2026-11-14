@@ -81,3 +81,61 @@ fn log_users_follow_a_deepened_shallow_clone() {
     assert_eq!(repo.log_users().unwrap(), expected(&clone));
     assert!(repo.log_users().unwrap().contains(&"Ann <ann@example.com>".to_string()));
 }
+
+#[test]
+fn log_users_cache_matches_the_tips_it_is_keyed_by() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("repo");
+    std::fs::create_dir(&dir).unwrap();
+    git(&dir, &["init", "-q"]);
+    commit_as(&dir, "Ann", "a");
+    let repo = Repo::discover(&dir).unwrap().unwrap();
+    // A ref moves between the tips snapshot and the full read.
+    let d = dir.clone();
+    ide_vcs::set_log_users_after_tips_hook(Some(Box::new(move || commit_as(&d, "Bob", "b"))));
+    let _ = repo.log_users().unwrap();
+    ide_vcs::set_log_users_after_tips_hook(None);
+    git(&dir, &["reset", "-q", "--hard", "HEAD~1"]);
+    assert_eq!(repo.log_users().unwrap(), ["Ann <ann@example.com>"]);
+}
+
+#[test]
+fn log_users_follow_replace_refs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("repo");
+    std::fs::create_dir(&dir).unwrap();
+    git(&dir, &["init", "-q"]);
+    commit_as(&dir, "Ann", "a");
+    commit_as(&dir, "Bob", "b");
+    let repo = Repo::discover(&dir).unwrap().unwrap();
+    assert_eq!(repo.log_users().unwrap(), ["Ann <ann@example.com>", "Bob <bob@example.com>"]);
+    git(&dir, &["replace", "--graft", "HEAD"]);
+    assert_eq!(repo.log_users().unwrap(), expected(&dir));
+    assert_eq!(repo.log_users().unwrap(), ["Bob <bob@example.com>"]);
+    // A new commit while a replace ref exists is a full read, not an incremental one.
+    commit_as(&dir, "Cid", "c");
+    assert_eq!(repo.log_users().unwrap(), expected(&dir));
+    git(&dir, &["replace", "-d", &git(&dir, &["rev-parse", "HEAD~1"])]);
+    assert_eq!(repo.log_users().unwrap(), expected(&dir));
+    assert!(repo.log_users().unwrap().contains(&"Ann <ann@example.com>".to_string()));
+}
+
+#[test]
+fn log_users_follow_grafts_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("repo");
+    std::fs::create_dir(&dir).unwrap();
+    git(&dir, &["init", "-q"]);
+    commit_as(&dir, "Ann", "a");
+    commit_as(&dir, "Bob", "b");
+    let repo = Repo::discover(&dir).unwrap().unwrap();
+    assert_eq!(repo.log_users().unwrap(), ["Ann <ann@example.com>", "Bob <bob@example.com>"]);
+    let head = git(&dir, &["rev-parse", "HEAD"]);
+    std::fs::create_dir_all(dir.join(".git/info")).unwrap();
+    std::fs::write(dir.join(".git/info/grafts"), format!("{head}\n")).unwrap();
+    assert_eq!(repo.log_users().unwrap(), expected(&dir));
+    assert_eq!(repo.log_users().unwrap(), ["Bob <bob@example.com>"]);
+    std::fs::remove_file(dir.join(".git/info/grafts")).unwrap();
+    assert_eq!(repo.log_users().unwrap(), expected(&dir));
+    assert!(repo.log_users().unwrap().contains(&"Ann <ann@example.com>".to_string()));
+}
