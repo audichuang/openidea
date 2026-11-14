@@ -87,6 +87,27 @@ fn follows_the_block_through_edits_and_a_rename() {
 }
 
 #[test]
+fn summary_carries_heads_block_when_the_newest_row_is_a_merge_without_a_diff() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "a\nb\nc\nd\n");
+    fx.commit("Add a");
+    fx.git(&["switch", "-q", "-c", "side"]);
+    fx.write("a.txt", "A\nb\nc\nd\n");
+    fx.commit("Side edit");
+    fx.git(&["switch", "-q", "main"]);
+    fx.write("a.txt", "a\nb\nc\nD\n");
+    fx.commit("Main edit");
+    fx.git(&["merge", "-q", "--no-edit", "side"]);
+    let summary = fx
+        .repo()
+        .block_history_summary(&fx.path("a.txt"), None, (0, 3), encoding_rs::UTF_8, &CancellationToken::new())
+        .unwrap();
+    assert!(summary.revisions[0].summary.starts_with("Merge"));
+    assert_eq!(summary.diffs[0].after, "");
+    assert_eq!(summary.head.as_deref(), Some("A\nb\nc\nD\n"));
+}
+
+#[test]
 fn lazy_revisions_match_the_full_history_even_after_head_moves() {
     let fx = renamed_history();
     let repo = fx.repo();
