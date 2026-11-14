@@ -227,6 +227,10 @@ pub trait Handler: Send + Sync + 'static {
     /// Adjusts every message from the peer (responses included) before it is dispatched, e.g.
     /// to repair values the peer spells more loosely than the types that read them accept.
     fn normalize_incoming(&self, _message: &mut Value) {}
+
+    /// Called once, on the notification thread, after the transport ended (EOF, read error or
+    /// kill) and every notification that arrived before it has been handled.
+    fn on_closed(&self) {}
 }
 
 /// A [`Handler`] that ignores notifications and rejects requests.
@@ -583,6 +587,12 @@ impl Peer {
                             Incoming::Response(tx, result) => {
                                 let _ = tx.send(result);
                             }
+                            Incoming::Closed => {
+                                let h = handler.clone();
+                                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| h.on_closed())).is_err() {
+                                    tracing::error!("jsonrpc close handler panicked");
+                                }
+                            }
                         }
                     }
                 })
@@ -629,6 +639,7 @@ impl Peer {
                 }
                 inner.reader_done.cancel();
                 inner.close_transport();
+                let _ = notif_tx.send(Incoming::Closed);
                 if close_on_eof || inner.kill.is_cancelled() {
                     inner.mark_closed(None);
                     inner.kill.cancel();
@@ -763,6 +774,8 @@ enum Incoming {
     Notification(String, Value),
     Request(Value, String, Value),
     Response(oneshot::Sender<Result<Value, RpcError>>, Result<Value, RpcError>),
+    /// The reader stopped: everything dispatched before it is ahead of this in the queue.
+    Closed,
 }
 
 async fn handle_request(inner: Arc<Inner>, handler: Arc<dyn Handler>, id: Value, method: String, params: Value) {
