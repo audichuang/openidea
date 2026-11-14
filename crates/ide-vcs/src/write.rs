@@ -13,6 +13,7 @@ use ide_core::{CancellationToken, IdeError, IdeResult};
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 const UNCOMMITTED_AUTHOR: &str = "Not Committed Yet";
 
@@ -131,10 +132,78 @@ pub(crate) fn blame(
     if encoding.has_ascii_conversion() {
         return converted_blame(r, path, &rel, &text, revision, encoding, &ignore);
     }
+    let line_count = text.split_inclusive('\n').count();
+    let (base, commit) = {
+        let repo = r.gix()?;
+        let Some(base) = crate::repo::blob_at(&repo, &rel, revision)? else {
+            return Ok(uncommitted_lines(line_count));
+        };
+        (base, resolve(&repo, revision)?)
+    };
+    // The revision's blame is computed once per commit and shared; the editor's text is
+    // mapped onto it in-process, so typing never re-runs git.
+    let base_lines = revision_blame(r, &rel, revision, commit, &ignore)?;
+    let base = decode(&base, encoding);
+    let mut lines =
+        if base_lines.len() == base.split_inclusive('\n').count() && !has_lone_cr(&base) && !has_lone_cr(&text) {
+            crate::blame::map_onto_text(&base_lines, &base, &text, &uncommitted_lines(1)[0])
+        } else {
+            // A textconv filter changed the line count, or a lone CR splits lines differently
+            // for git and the diff: let git blame the text itself, as before the cache.
+            contents_blame(r, path, &rel, &disk, current_text, &text, revision, encoding, &ignore)?
+        };
+    // Defensive: always exactly one entry per line.
+    lines.truncate(line_count);
+    while lines.len() < line_count {
+        lines.extend(uncommitted_lines(1));
+    }
+    Ok(lines)
+}
+
+/// The blame of `rel` as committed at `revision` (`commit`), from the repository's cache.
+fn revision_blame(
+    r: &Repo,
+    rel: &str,
+    revision: &str,
+    commit: gix::ObjectId,
+    ignore: &[String],
+) -> IdeResult<Arc<Vec<BlameLine>>> {
+    let textconv = crate::execution_allowed();
+    r.blame_cache().get_or_run(rel, revision, commit, textconv, |cancel| {
+        let mut args = vec!["--literal-pathspecs", "blame"];
+        if !textconv {
+            args.push("--no-textconv");
+        }
+        args.extend(ignore.iter().map(String::as_str));
+        args.extend(["--porcelain", revision, "--", rel]);
+        Ok(crate::blame::parse_porcelain(&cli::run_cancellable(r.root(), &args, cancel)?.stdout_str()))
+    })
+}
+
+fn has_lone_cr(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes.iter().enumerate().any(|(i, &b)| b == b'\r' && bytes.get(i + 1) != Some(&b'\n'))
+}
+
+/// Blames `text` itself with `git blame --contents` (uncached; one git run per call).
+#[allow(clippy::too_many_arguments)]
+fn contents_blame(
+    r: &Repo,
+    path: &Path,
+    rel: &str,
+    disk: &[u8],
+    current_text: Option<&str>,
+    text: &str,
+    revision: &str,
+    encoding: TextEncoding,
+    ignore: &[String],
+) -> IdeResult<Vec<BlameLine>> {
     let contents = match current_text {
-        Some(_) if crate::diff::normalize_eol(&text) == crate::diff::normalize_eol(&decode(&disk, encoding)) => disk,
+        Some(_) if crate::diff::normalize_eol(text) == crate::diff::normalize_eol(&decode(disk, encoding)) => {
+            disk.to_vec()
+        }
         Some(_) => {
-            let disk_text = decode(&disk, encoding);
+            let disk_text = decode(disk, encoding);
             let eol = if disk_text.contains("\r\n") {
                 "\r\n"
             } else if disk_text.contains('\r') {
@@ -142,19 +211,11 @@ pub(crate) fn blame(
             } else {
                 "\n"
             };
-            let contents = crate::diff::normalize_eol(&text).replace('\n', eol);
-            encode(&contents, encoding, has_bom(&disk, encoding))?
+            let contents = crate::diff::normalize_eol(text).replace('\n', eol);
+            encode(&contents, encoding, has_bom(disk, encoding))?
         }
-        None => disk,
+        None => disk.to_vec(),
     };
-    let line_count = text.split_inclusive('\n').count();
-    let tracked_in_head = {
-        let repo = r.gix()?;
-        crate::repo::blob_at(&repo, &rel, revision)?.is_some()
-    };
-    if !tracked_in_head {
-        return Ok(uncommitted_lines(line_count));
-    }
     // Restricted blame reads committed blobs only. Feeding working-tree bytes to
     // Git's --contents path would run configured clean filters, so it blames the
     // revision plain. Git learned to combine `--contents` with a revision in 2.41;
@@ -164,7 +225,7 @@ pub(crate) fn blame(
     let contents_args = {
         let mut args = vec!["--literal-pathspecs", "blame", "--porcelain"];
         args.extend(ignore.iter().map(String::as_str));
-        args.extend(["--contents", "-", revision, "--", &rel]);
+        args.extend(["--contents", "-", revision, "--", rel]);
         args
     };
     let plain_args: Vec<&str> = {
@@ -173,7 +234,7 @@ pub(crate) fn blame(
             args.push("--no-textconv");
         }
         args.extend(ignore.iter().map(String::as_str));
-        args.extend(["--porcelain", revision, "--", &rel]);
+        args.extend(["--porcelain", revision, "--", rel]);
         args
     };
     let (out, contents_blame) = if crate::execution_allowed() {
@@ -197,16 +258,11 @@ pub(crate) fn blame(
     }
     if !contents_blame {
         let base = r.file_at(path, Some(revision), encoding)?.unwrap_or_default();
-        for hunk in crate::diff::line_hunks(&base, &text).into_iter().rev() {
+        for hunk in crate::diff::line_hunks(&base, text).into_iter().rev() {
             let start = (hunk.old_start as usize).min(lines.len());
             let end = (start + hunk.old_lines as usize).min(lines.len());
             lines.splice(start..end, uncommitted_lines(hunk.lines as usize));
         }
-    }
-    // Defensive: always exactly one entry per line.
-    lines.truncate(line_count);
-    while lines.len() < line_count {
-        lines.extend(uncommitted_lines(1));
     }
     Ok(lines)
 }
@@ -223,24 +279,15 @@ fn converted_blame(
     let current = crate::diff::normalize_eol(text);
     let mut result = uncommitted_lines(current.split_inclusive('\n').count());
     let Some(base) = r.file_bytes_at(path, Some(revision))? else { return Ok(result) };
-    let args: Vec<&str> = {
-        let mut args = vec!["--literal-pathspecs", "blame"];
-        if !crate::execution_allowed() {
-            args.push("--no-textconv");
-        }
-        args.extend(ignore.iter().map(String::as_str));
-        args.extend(["--porcelain", revision, "--", rel]);
-        args
-    };
-    let out = run(r.root(), &args, None)?;
-    let physical = crate::blame::parse_porcelain(&out.stdout_str());
+    let commit = resolve(&r.gix()?, revision)?;
+    let physical = revision_blame(r, rel, revision, commit, ignore)?;
     let raw = crate::text_encoding::decode_raw(&base, encoding);
     let raw = crate::diff::normalize_eol(&raw);
     let mut logical = Vec::new();
-    for (line, metadata) in raw.split_inclusive('\n').zip(physical) {
+    for (line, metadata) in raw.split_inclusive('\n').zip(physical.iter()) {
         let displayed = encoding.display_text(line);
         let displayed = crate::diff::normalize_eol(&displayed);
-        logical.extend(std::iter::repeat_n(metadata, displayed.split_inclusive('\n').count()));
+        logical.extend(std::iter::repeat_n(metadata.clone(), displayed.split_inclusive('\n').count()));
     }
     let base = decode(&base, encoding);
     let hunks = crate::diff::line_hunks(&base, &current);
