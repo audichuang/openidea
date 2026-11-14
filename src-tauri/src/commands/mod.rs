@@ -231,6 +231,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         doc::doc_edit,
         doc::doc_save,
         doc::doc_save_as,
+        doc::doc_autosave,
         doc::doc_save_all,
         doc::doc_sync_from_disk,
         doc::doc_snapshot,
