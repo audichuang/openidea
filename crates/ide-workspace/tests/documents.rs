@@ -1304,3 +1304,39 @@ fn autosave_tells_a_clean_document_from_a_refused_one() {
     fs::write(&stale, "external\n").unwrap();
     assert_ne!(f.docs.autosave(clean).unwrap(), f.docs.autosave(refused).unwrap());
 }
+
+/// Undoing back to the text a file held before it was replaced by binary content, or
+/// deleted, cannot reload it: the document stays dirty on its old baseline and conflict, so
+/// autosave keeps the file and warns once.
+#[test]
+fn undo_back_to_stale_text_after_the_file_became_unloadable_keeps_it_unsaved() {
+    let binary = b"\0\x01\x02binary\0".to_vec();
+    for (binary_file, reported) in [(true, false), (true, true), (false, false), (false, true)] {
+        let case = format!("binary={binary_file} reported={reported}");
+        let f = fixture();
+        let path = f.root.join("turned.txt");
+        fs::write(&path, "old\n").unwrap();
+        let id = f.docs.open(&path).unwrap().id;
+        let v = f.docs.edit(id, 0, change(0, 0, "x")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        if binary_file {
+            fs::write(&path, &binary).unwrap();
+        } else {
+            fs::remove_file(&path).unwrap();
+        }
+        if reported {
+            f.docs.on_disk_changed(std::slice::from_ref(&path));
+        }
+        let v = f.docs.edit(id, v, change(0, 1, "")).unwrap();
+        assert!(f.docs.is_dirty(id).unwrap(), "{case}");
+        assert!(!f.docs.autosave(id).unwrap(), "{case}");
+        f.docs.edit(id, v, change(0, 0, "y")).unwrap();
+        assert!(!f.docs.autosave(id).unwrap(), "{case}");
+        if binary_file {
+            assert_eq!(fs::read(&path).unwrap(), binary, "{case}");
+        } else {
+            assert!(!path.exists(), "{case}");
+        }
+        assert_eq!(warnings(&f.events.lock()), 1, "{case}");
+    }
+}
