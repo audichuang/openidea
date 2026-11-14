@@ -120,9 +120,10 @@ describe("pruneFilteredEdges cost", () => {
   });
 
   it("matches the previous implementation on random logs", () => {
-    for (let seed = 1; seed <= 400; seed++) {
+    for (let seed = 1; seed <= 460; seed++) {
       const rand = random(seed);
-      const n = 2 + Math.floor(rand() * 40);
+      // Some long logs, so memoised walks are shared between rows.
+      const n = seed > 400 ? 200 + Math.floor(rand() * 300) : 2 + Math.floor(rand() * 40);
       const commits = randomLog(rand, n, seed % 4 === 0);
       const expected = oldPruneFilteredEdges(commits);
       const actual = pruneFilteredEdges(commits);
