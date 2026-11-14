@@ -3,6 +3,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { ProjectInfo, Settings } from "./ipc";
 import { useProject } from "./project";
 import { disableRemote, enableRemote, useRemote } from "./remote";
+import { invoke } from "./tauriCore";
 import { encodeArgs, remoteRouting } from "./remote";
 
 describe("remote invoke", () => {
@@ -92,5 +93,73 @@ describe("remote session lifetime", () => {
     useProject.setState({ project });
     useProject.setState({ settings: { editor: { fontSize: 14 } } as unknown as Settings });
     expect(useRemote.getState().session).not.toBeNull();
+  });
+});
+
+describe("remote invoke channel release", () => {
+  const registered = new Set<number>();
+  const callbacks = new Map<number, (m: unknown) => void>();
+  let next = 1000;
+  let behave: (frames: (frame: unknown) => void) => Promise<string>;
+  let emit: (message: unknown) => void;
+
+  beforeAll(() => {
+    Object.assign(window, {
+      __TAURI_INTERNALS__: {
+        transformCallback: (cb: (m: unknown) => void) => {
+          const id = next++;
+          registered.add(id);
+          callbacks.set(id, cb);
+          return id;
+        },
+        unregisterCallback: (id: number) => {
+          registered.delete(id);
+          callbacks.delete(id);
+        },
+        invoke: (_cmd: string, args: { args: string; onChannel: { id: number } }) => {
+          const frameId = (JSON.parse(args.args) as { onEvent: { $channel: number } }).onEvent.$channel;
+          const relayId = args.onChannel.id;
+          let index = 0;
+          emit = (message) =>
+            callbacks.get(relayId)?.({ index: index++, message: { id: frameId, data: JSON.stringify(message) } });
+          return behave(emit);
+        },
+      },
+    });
+  });
+
+  afterEach(() => disableRemote());
+
+  const call = () => {
+    const seen: unknown[] = [];
+    const channel = new Channel<unknown>((m) => seen.push(m));
+    return { seen, promise: invoke("fs_search", { onEvent: channel }) };
+  };
+
+  it("returns the registered callbacks to the baseline after completed and failed calls", async () => {
+    enableRemote({
+      target: { kind: "wsl", distro: "Ubuntu" },
+      root: "/r",
+      host: "h",
+      os: "linux",
+      commands: ["fs_search"],
+    });
+    const baseline = registered.size;
+    behave = async (frames) => {
+      frames("hit");
+      return "null";
+    };
+    for (let i = 0; i < 20; i++) {
+      const { seen, promise } = call();
+      await promise;
+      expect(seen).toEqual(["hit"]);
+    }
+    behave = () => Promise.reject(new Error("cancelled"));
+    for (let i = 0; i < 20; i++) {
+      await expect(call().promise).rejects.toThrow("cancelled");
+    }
+    expect(registered.size).toBe(baseline);
+    // A frame after release is dropped without throwing.
+    expect(() => emit("late")).not.toThrow();
   });
 });

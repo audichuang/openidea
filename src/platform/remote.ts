@@ -54,11 +54,32 @@ export function encodeArgs(args: unknown): { json: string; channels: Map<number,
   return { json: JSON.stringify(plain), channels };
 }
 
+/**
+ * Unregisters the Tauri callback of each encoded channel. Over a remote call the
+ * channel never receives its `end` message, so it would stay registered (with
+ * whatever its `onmessage` closure holds) for the life of the window.
+ */
+function releaseChannels(channels: Map<number, Channel<unknown>>, relay: Channel<ChannelFrame>) {
+  const released = [...channels.values(), relay];
+  channels.clear();
+  // Frames still in flight find no entry in `channels` and are dropped.
+  const internals = (window as unknown as { __TAURI_INTERNALS__: { unregisterCallback(id: number): void } })
+    .__TAURI_INTERNALS__;
+  for (const channel of released) internals.unregisterCallback(channel.id);
+}
+
 async function remoteInvoke(cmd: string, args?: InvokeArgs, options?: InvokeOptions): Promise<unknown> {
   const { json, channels } = encodeArgs(args);
   const onChannel = new Channel<ChannelFrame>();
   onChannel.onmessage = (frame) => channels.get(frame.id)?.onmessage(JSON.parse(frame.data));
-  const result = await invokeLocal<string>("remote_invoke", { cmd, args: json, onChannel }, options);
+  let result: string;
+  try {
+    result = await invokeLocal<string>("remote_invoke", { cmd, args: json, onChannel }, options);
+  } finally {
+    // Let frames already queued behind the result reach their channel first.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    releaseChannels(channels, onChannel);
+  }
   const value = JSON.parse(result);
   // Released servers predating independent Gradle builds return a single build.
   if (BUILD_MODEL_COMMANDS.has(cmd) && value?.gradle && !Array.isArray(value.gradle)) {
