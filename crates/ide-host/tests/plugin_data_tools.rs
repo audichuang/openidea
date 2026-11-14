@@ -17,6 +17,11 @@ const ID: &str = "test.data-tools";
 fn fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/data-tools")
 }
+/// Production's command budget. A tighter one fails these tests on slow CI hosts, where any call
+/// (instantiation, activation, a host write) can take several hundred milliseconds (#298).
+fn budget() -> Duration {
+    Limits::default().timeout
+}
 struct Harness {
     host: Arc<Host>,
     plugins: Arc<PluginHost>,
@@ -27,7 +32,7 @@ struct Harness {
 }
 impl Harness {
     fn new() -> Self {
-        Self::with_timeout(Duration::from_millis(250))
+        Self::with_timeout(budget())
     }
     fn with_timeout(timeout: Duration) -> Self {
         ide_ssh::secrets::testing::use_memory_store();
@@ -59,7 +64,8 @@ impl Harness {
             PluginHost::new(
                 tmp.path().join("plugins"),
                 Arc::new(move |w: Option<&str>, e| out.lock().unwrap().push((w.unwrap_or_default().to_owned(), e))),
-                Limits { timeout, ..Default::default() },
+                // Unlimited fuel: the spin test must end on the wall-clock budget, not on fuel.
+                Limits { timeout, fuel: u64::MAX, ..Default::default() },
             )
             .unwrap(),
         );
@@ -137,7 +143,7 @@ async fn database_connect_asks_only_the_invoking_window_and_uses_normal_connecti
     .unwrap();
     assert_eq!(window, "main");
     assert!(!f.plugins.answer_command("second", &request, ide_host::plugins::CommandAnswer::Value(None)));
-    tokio::time::sleep(Duration::from_millis(350)).await; // Password entry can outlive the 250 ms command budget.
+    tokio::time::sleep(budget() + Duration::from_millis(100)).await; // Password entry can outlive the command budget.
     ops::db::connect(&f.host, "main", &source).await.unwrap();
     f.plugins.answer_command("main", &request, ide_host::plugins::CommandAnswer::Value(None));
     run.await.unwrap().unwrap();
@@ -189,7 +195,8 @@ async fn mcp_listing_dispatch_confirmation_and_lifecycle_use_plugin_authority() 
     let (r, root) = (registry.clone(), f.root.clone());
     let spin =
         tokio::task::spawn_blocking(move || r.call(&root, "test_data_tools__spin", "{}", CancellationToken::new()));
-    assert!(spin.await.unwrap().is_err(), "command budget interrupts wasm");
+    let err = spin.await.unwrap().unwrap_err();
+    assert!(format!("{err:?}").contains("timed out"), "command budget interrupts wasm: {err:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -205,7 +212,7 @@ async fn database_imports_are_denied_without_the_optional_grant() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn official_api_examples_install_and_render_real_component_contributions() {
-    // The real examples' first calls compile and scan; 250 ms is too tight on Windows runners.
+    // The real examples' first calls compile and scan.
     let f = Harness::with_timeout(Duration::from_secs(10));
     f.host.set_project_trust(&f.root, true, false).await.unwrap();
     let official = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/official");
