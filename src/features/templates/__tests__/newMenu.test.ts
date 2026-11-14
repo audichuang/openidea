@@ -22,10 +22,12 @@ describe("New menu templates by directory kind", () => {
       "tsx",
       "javascript",
       "python",
+      "jupyter",
       "go",
       "go-mod",
       "php",
       "php-class",
+      "csharp",
     ]);
     expect(ids(common)).toEqual([
       "html",
@@ -44,7 +46,7 @@ describe("New menu templates by directory kind", () => {
 
   it("leads with Python File in a Python package and hides package-info", () => {
     const { primary, common, other } = newMenuTemplates(MENU_TEMPLATES, "python");
-    expect(ids(primary)).toEqual(["python"]);
+    expect(ids(primary)).toEqual(["python", "jupyter"]);
     expect(ids(other)).toEqual([
       "rust",
       "typescript",
@@ -55,6 +57,7 @@ describe("New menu templates by directory kind", () => {
       "php",
       "php-class",
       "java",
+      "csharp",
       "kotlin",
     ]);
     expect(ids(common)).not.toContain("package-info");
