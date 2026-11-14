@@ -135,6 +135,8 @@ async function openPushDialog() {
   render(<VcsDialogHost />);
   await act(() => showPushDialog());
   await screen.findByRole("textbox", { name: "Target branch of a" });
+  // The fork starts with no repository checked (#224).
+  fireEvent.click(screen.getByRole("button", { name: "Select All" }));
 }
 
 it("asks to confirm each forced target and pushes nothing when one is declined", async () => {
