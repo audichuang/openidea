@@ -528,6 +528,116 @@ fn blame_against_another_revision() {
     assert!(repo.blame(&fx.path("b.txt"), Some(text), Some("no-such-ref"), encoding_rs::UTF_8).is_err());
 }
 
+/// Commit per line from `git blame --contents` of `text` (the pre-cache implementation);
+/// `None` for uncommitted lines.
+fn contents_blame_commits(fx: &Fixture, rel: &str, text: &str) -> Vec<Option<String>> {
+    use std::io::Write;
+    let mut child = Command::new("git")
+        .current_dir(&fx.dir)
+        .args(["blame", "--porcelain", "--contents", "-", "HEAD", "--", rel])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success());
+    let mut lines: Vec<(u32, Option<String>)> = Vec::new();
+    for l in String::from_utf8(out.stdout).unwrap().lines() {
+        let parts: Vec<_> = l.split(' ').collect();
+        if parts.len() >= 3 && parts[0].len() == 40 && parts[0].bytes().all(|b| b.is_ascii_hexdigit()) {
+            let sha = parts[0];
+            lines.push((parts[2].parse().unwrap(), (!sha.bytes().all(|b| b == b'0')).then(|| sha.to_owned())));
+        }
+    }
+    lines.sort_by_key(|(n, _)| *n);
+    lines.into_iter().map(|(_, c)| c).collect()
+}
+
+#[test]
+fn edited_blame_matches_git_blame_of_the_contents() {
+    let fx = Fixture::new();
+    let v1: Vec<String> = (0..30).map(|i| format!("line {i}\n")).collect();
+    fx.write("f.py", &v1.concat());
+    fx.commit_all("first");
+    let mut v2 = v1.clone();
+    v2[5] = "changed 5\n".into();
+    v2.insert(10, "\n".into());
+    v2.insert(11, "inserted\n".into());
+    fx.write("f.py", &v2.concat());
+    fx.commit_all("second");
+    let mut v3 = v2.clone();
+    v3[0] = "head 0\n".into();
+    v3.remove(20);
+    v3.push("tail\n".into());
+    fx.write("f.py", &v3.concat());
+    fx.commit_all("third");
+    let base = v3.concat();
+    let repo = fx.repo();
+
+    let edit = |f: &dyn Fn(&mut Vec<String>)| {
+        let mut v = v3.clone();
+        f(&mut v);
+        v.concat()
+    };
+    let cases = [
+        base.clone(),
+        edit(&|v| v.insert(0, "new first\n".into())),
+        edit(&|v| v[0] = "edited first\n".into()),
+        edit(&|v| {
+            v.remove(0);
+        }),
+        edit(&|v| v[15] = "middle edit\n".into()),
+        edit(&|v| v.insert(15, "middle insert\n".into())),
+        edit(&|v| {
+            v.drain(12..16);
+        }),
+        edit(&|v| v.push("appended\n".into())),
+        edit(&|v| *v.last_mut().unwrap() = "tail".into()),
+        edit(&|v| *v.last_mut().unwrap() = "tail edited".into()),
+        edit(&|v| v.insert(10, "\n".into())),
+        edit(&|v| v.insert(8, "line 3\n".into())),
+        edit(&|v| {
+            v.drain(4..8);
+            v.insert(20, "moved\n".into());
+        }),
+        String::new(),
+    ];
+    for (i, text) in cases.iter().enumerate() {
+        let expected = contents_blame_commits(&fx, "f.py", text);
+        let actual: Vec<_> = repo
+            .blame(&fx.path("f.py"), Some(text), None, encoding_rs::UTF_8)
+            .unwrap()
+            .into_iter()
+            .map(|l| (!l.commit.bytes().all(|b| b == b'0')).then_some(l.commit))
+            .collect();
+        assert_eq!(actual, expected, "case {i}:\n{text}");
+    }
+}
+
+#[test]
+fn blame_follows_head_and_line_endings() {
+    let fx = Fixture::new();
+    fx.write("crlf.txt", "a\r\nb\r\nc\r\n");
+    let first = fx.commit_all("first");
+    let repo = fx.repo();
+    // The editor's LF text of a CRLF file: only the edited line is uncommitted.
+    let lines = repo.blame(&fx.path("crlf.txt"), Some("a\nB\nc\n"), None, encoding_rs::UTF_8).unwrap();
+    assert_eq!(lines.iter().map(|l| l.commit == first).collect::<Vec<_>>(), [true, false, true]);
+    assert_eq!(lines[1].author, "Not Committed Yet");
+    // A new commit is picked up, not served from the cached blame of the old HEAD.
+    fx.write("crlf.txt", "a\r\nB\r\nc\r\n");
+    let second = fx.commit_all("second");
+    let lines = repo.blame(&fx.path("crlf.txt"), Some("a\nB\nc\n"), None, encoding_rs::UTF_8).unwrap();
+    assert_eq!(lines.iter().map(|l| l.commit.as_str()).collect::<Vec<_>>(), [&first, &second, &first]);
+    // A lone CR is one line for git: blamed by git itself, as before the cache.
+    fx.write("cr.txt", "a\rb\nc\n");
+    let cr = fx.commit_all("lone cr");
+    let lines = repo.blame(&fx.path("cr.txt"), None, None, encoding_rs::UTF_8).unwrap();
+    assert_eq!(lines.len(), 2);
+    assert!(lines.iter().all(|l| l.commit == cr));
+}
+
 #[test]
 fn log_filters_pagination_and_refs() {
     let fx = Fixture::new();
