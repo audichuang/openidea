@@ -1,7 +1,11 @@
-import { pasteClipboardFiles, readClipboardPlainText, readClipboardText } from "@/platform/clipboard";
+import {
+  pasteClipboardFiles,
+  readClipboardImage,
+  readClipboardPlainText,
+  readClipboardText,
+} from "@/platform/clipboard";
 import { call, commands, type TerminalId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
-import { usePlatform } from "@/platform/platformInfo";
 import { notifications } from "@/workbench/contributions";
 
 export interface TerminalPasteTarget {
@@ -121,24 +125,9 @@ export function installTerminalPaste(host: HTMLElement, paste: (text: string) =>
 export async function pasteTerminalClipboard(paste: (text: string) => void, getTarget?: Target) {
   const target = getTarget?.();
   try {
-    // WebKitGTK pastes nothing from a menu through either WebView path; the native
-    // clipboard has the text. An image-only clipboard still takes the paths below.
-    if (target && usePlatform.getState().os === "linux") {
-      const text = await readClipboardPlainText().catch(() => "");
-      if (text) {
-        if (target.current()) paste(text);
-        return;
-      }
-    }
-    // Native paste preserves clipboard blobs where Clipboard.read() is unavailable.
-    if (target && document.queryCommandSupported?.("paste") && document.execCommand("paste")) return;
-    const images =
-      target && navigator.clipboard?.read
-        ? navigator.clipboard.read().then(
-            (items) => ({ items }),
-            (error: unknown) => ({ error }),
-          )
-        : null;
+    // Text, file paths and images come from the backend: the webview's own clipboard reads below
+    // make macOS WebKit ask the user to confirm with a "Paste" callout, so they run only where the
+    // backend cannot read the image.
     const text = target?.remote
       ? await readClipboardPlainText().catch(() => "")
       : await readClipboardText(undefined, target ? (paths) => pathsText(paths, target) : undefined);
@@ -148,11 +137,27 @@ export async function pasteTerminalClipboard(paste: (text: string) => void, getT
       return;
     }
     if (!target) return;
+    // The backend reads the image too; the webview reads below only where it cannot (Linux).
+    const image = await readClipboardImage();
+    if (image !== undefined) {
+      if (image && target.current()) await pasteMedia(image, target, paste);
+      return;
+    }
+    // Native paste preserves clipboard blobs where Clipboard.read() is unavailable.
+    if (document.queryCommandSupported?.("paste") && document.execCommand("paste")) return;
+    // Only reached where the backend cannot read images (Linux), so the webview is the only source.
+    // oxlint-disable-next-line no-restricted-properties
+    const webClipboard = navigator.clipboard;
+    const images = webClipboard?.read
+      ? await webClipboard.read().then(
+          (items) => ({ items }),
+          (error: unknown) => ({ error }),
+        )
+      : null;
     if (images) {
-      const result = await images;
-      if ("error" in result) throw result.error;
+      if ("error" in images) throw images.error;
       if (!target.current()) return;
-      for (const item of result.items) {
+      for (const item of images.items) {
         const mime = item.types.find(isMedia);
         if (mime) {
           const image = await item.getType(mime);

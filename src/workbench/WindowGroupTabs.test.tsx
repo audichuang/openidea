@@ -1,6 +1,7 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { executeAction } from "@/platform/actions";
+import { usePlatform } from "@/platform/platformInfo";
 import { useWindowGroup } from "@/platform/windowGroups";
 import { useContextMenuStore } from "@/ui/Menu";
 import { WindowGroupTabs } from "./WindowGroupTabs";
@@ -63,4 +64,23 @@ it("offers closing the other tabs and those on either side of the clicked tab", 
   void middle("Close Tabs to the Left").run?.();
   expect(executeAction).toHaveBeenLastCalledWith("window.closeTabsToLeft", "project-1");
   expect(menuFor("Docs")("Close Tabs to the Right").disabled).toBe(true);
+});
+
+describe("macOS", () => {
+  const saved = usePlatform.getState();
+  afterEach(() => usePlatform.setState(saved));
+
+  it("draws the tabs itself below the toolbar, the system tab bar being hidden", () => {
+    usePlatform.setState({ os: "macos", overlayTitleBar: true, framelessTitleBar: false });
+    render(<WindowGroupTabs />);
+    expect(screen.getByRole("tab", { name: "Frontend" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Close Backend" }));
+    expect(executeAction).toHaveBeenLastCalledWith("window.closeTab", "project-1");
+  });
+
+  it("hides them in Distraction Free Mode", () => {
+    usePlatform.setState({ os: "macos", overlayTitleBar: true, framelessTitleBar: false });
+    render(<WindowGroupTabs hidePageTabs />);
+    expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
+  });
 });

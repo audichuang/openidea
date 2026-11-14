@@ -162,6 +162,7 @@ impl Host {
             let build_cache = self.local_data_dir.join("cache").join(&project_key).join("build");
             let sink = sink.clone();
             let formatter_problem = std::sync::Mutex::new(None);
+            let lombok_problem = std::sync::Mutex::new(None::<String>);
             lsp.set_config_hook(Box::new(move |cfg, server_root| {
                 let member = ide_workspace::workspace::Workspace::load(&root).ok().flatten().and_then(|w| {
                     w.projects.into_iter().filter(|p| server_root.starts_with(p)).max_by_key(|p| p.components().count())
@@ -223,15 +224,37 @@ impl Host {
                         .collect();
                     let min_java = ide_sdk::java::jdtls_min_java(cfg);
                     let jdks = ide_sdk::java::jdtls_jdks(min_java, &data_dir);
+                    let own_lombok = ide_sdk::lombok::agent_in_args(cfg.args.iter().map(String::as_str));
+                    // The app always attaches its agent: what is parsed out of a wrapper script
+                    // (shell logic, variables, PATH differences) only feeds the warning below.
                     let lombok = ide_sdk::lombok::lombok_agent(
                         server_root,
-                        ide_sdk::lombok::agent_in_args(cfg.args.iter().map(String::as_str)),
+                        own_lombok,
                         ide_tools::managed_bundle(&data_dir, "lombok"),
                         ide_sdk::apply::maven_local_repository(root, &effective),
                     );
                     if let Some(problem) = lombok.problem() {
                         tracing::warn!("{problem}");
                     }
+                    let lombok = lombok.jar().map(Path::to_path_buf);
+                    // `cfg.env` already carries the language server's PATH here, which
+                    // `wrapper_lombok_agent` searches like the launch does.
+                    let duplicate = ide_sdk::jdtls::wrapper_lombok_agent(cfg).zip(lombok.as_deref()).and_then(
+                        |((script, agent), app)| ide_sdk::lombok::duplicate_agents_problem(&script, &agent, app),
+                    );
+                    let mut previous = lombok_problem.lock().unwrap();
+                    if duplicate != *previous {
+                        if let Some(body) = &duplicate {
+                            tracing::warn!("{body}");
+                            sink.emit(IdeEvent::Notify {
+                                level: ide_core::event::NotifyLevel::Warning,
+                                title: "Two Lombok agents in the Java language server".into(),
+                                body: Some(body.clone()),
+                            });
+                        }
+                        *previous = duplicate;
+                    }
+                    drop(previous);
                     let server_jdk = ide_sdk::apply::jdtls_jdk(root, &effective).unwrap_or_else(|e| {
                         cfg.launch_error = Some(e);
                         None
@@ -252,7 +275,7 @@ impl Host {
                         server_jdk.as_ref(),
                         min_java,
                         &bundles,
-                        lombok.jar(),
+                        lombok.as_deref(),
                     );
                     ide_sdk::apply::configure_gradle_runtime(cfg, root, server_root, &effective);
                     ide_sdk::jdtls::launch_directly(cfg);
@@ -1168,6 +1191,12 @@ impl Project {
         content_roots(&self.settings.effective(), &self.root, &self.build_cache_dir())
     }
 
+    /// [`Self::content_roots`] plus the configured ones whose folder is missing: a paste still
+    /// knows their labels, so their files are not restored into the project folder instead.
+    pub fn declared_content_roots(&self) -> Vec<PathBuf> {
+        declared_content_roots(&self.settings.effective(), &self.root, &self.build_cache_dir())
+    }
+
     /// Applies Settings › File Types; open documents whose language changed are
     /// re-detected (language servers and syntax trees follow) and the index
     /// re-parses the files whose language changed.
@@ -1271,16 +1300,7 @@ fn ignored_changes(batch: &ide_vfs::FsBatch) -> (Vec<PathBuf>, Vec<PathBuf>) {
 }
 
 fn record_external_changes(history: &LocalHistory, changed: &[PathBuf], removed: &[PathBuf]) {
-    for path in changed.iter().take(HISTORY_BATCH_LIMIT) {
-        if let Err(e) = history.record_file(path, "External change", false) {
-            tracing::debug!("local history: {e}");
-        }
-    }
-    if !removed.is_empty()
-        && let Err(e) = history.note_removed(removed)
-    {
-        tracing::debug!("local history: {e}");
-    }
+    history.record_external_changes(changed, removed, HISTORY_BATCH_LIMIT);
 }
 
 pub fn history_retention(settings: &ide_core::settings::Settings) -> ide_workspace::Retention {
@@ -1314,6 +1334,12 @@ pub(crate) fn workspace_member_roots(root: &Path) -> Vec<PathBuf> {
 /// project folders outside the project, and directories of Maven POMs linked from
 /// outside it (`build_cache` is the Gradle sync cache).
 fn content_roots(settings: &ide_core::settings::Settings, root: &Path, build_cache: &Path) -> Vec<PathBuf> {
+    // A root whose folder was deleted, renamed or unmounted stays configured but is not content.
+    declared_content_roots(settings, root, build_cache).into_iter().filter(|p| p.is_dir()).collect()
+}
+
+/// [`content_roots`] including the configured ones whose folder is missing.
+fn declared_content_roots(settings: &ide_core::settings::Settings, root: &Path, build_cache: &Path) -> Vec<PathBuf> {
     if let Ok(Some(workspace)) = ide_workspace::workspace::Workspace::load(root) {
         if workspace.is_container(root) {
             return workspace.projects;
@@ -1408,7 +1434,7 @@ fn extra_content_roots(settings: &ide_core::settings::Settings, root: &Path, bui
         .chain(ide_build::gradle_external_roots(root, build_cache, &settings.languages.java.gradle))
         .chain(ide_build::maven_external_roots(root, &settings.languages.java.maven.linked_projects))
     {
-        if p.is_absolute() && p.is_dir() && !p.starts_with(root) && !out.contains(&p) {
+        if p.is_absolute() && !p.starts_with(root) && !out.contains(&p) {
             out.push(p);
         }
     }
@@ -1591,8 +1617,9 @@ fn independent_eclipse_projects(root: &Path) -> Vec<PathBuf> {
 }
 
 /// The detected roots with the last Gradle sync's source sets first: Gradle evaluated what
-/// static detection guesses. Folders outside the project keep their absolute path, which
-/// `normalize` turns into the same form the UI compares (`Users/me/svc/src/main/java`).
+/// static detection guesses. Provenance retains the owning model project as `Gradle`
+/// at the root or `<owner>/Gradle` for nested projects, preserving absolute external owners.
+/// External source folder paths retain the normalized form the UI compares (`Users/me/svc/src/main/java`).
 fn with_gradle_roots(
     root: &Path,
     build_cache: &Path,
@@ -1602,7 +1629,7 @@ fn with_gradle_roots(
     use ide_build::gradle::ReportedRoot;
     use ide_workspace::roots::RootKind;
     let mut out: Vec<SourceFolder> = Vec::new();
-    for (dir, kind) in ide_build::gradle_source_roots(root, build_cache, settings) {
+    for (dir, kind, owner) in ide_build::gradle_source_roots(root, build_cache, settings) {
         if !dir.is_dir() {
             continue;
         }
@@ -1615,7 +1642,9 @@ fn with_gradle_roots(
             ReportedRoot::Excluded => RootKind::Excluded,
         };
         if !out.iter().any(|f| f.path == path) {
-            out.push(SourceFolder { path, kind, detected_from: Some("Gradle".into()) });
+            let owner = owner.strip_prefix(root).unwrap_or(&owner).to_string_lossy().replace('\\', "/");
+            let detected_from = if owner.is_empty() { "Gradle".into() } else { format!("{owner}/Gradle") };
+            out.push(SourceFolder { path, kind, detected_from: Some(detected_from) });
         }
     }
     out.extend(detected.iter().filter(|d| !out.iter().any(|o| o.path == d.path)).cloned().collect::<Vec<_>>());
@@ -1951,6 +1980,32 @@ mod gradle_roots_tests {
     use ide_workspace::RootKind;
 
     #[test]
+    fn gradle_sync_keeps_the_model_owner_of_custom_and_shared_roots() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let cache = root.join("cache");
+        let app = root.join("app");
+        let shared = root.join("custom/code");
+        for dir in [&cache, &app, &shared, &app.join("build")] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(root.join("build.gradle"), "").unwrap();
+        let json = serde_json::json!({ "hash": "", "at_ms": 1.0, "error": null, "tasks": [], "projects": [
+            { "path": ":app", "dir": app, "buildDir": app.join("build"), "sourceSets": [
+                { "name": "main", "test": false, "src": [shared], "res": [] } ] },
+            { "path": ":", "dir": root, "sourceSets": [
+                { "name": "main", "test": false, "src": [shared], "res": [] } ] }
+        ]});
+        std::fs::write(cache.join("gradle.json"), json.to_string()).unwrap();
+        let out = with_gradle_roots(&root, &cache, &Default::default(), &[]);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].path, "custom/code");
+        assert_eq!(out[0].detected_from.as_deref(), Some("app/Gradle"));
+        assert_eq!(out[1].path, "app/build");
+        assert_eq!(out[1].detected_from.as_deref(), Some("app/Gradle"));
+    }
+
+    #[test]
     fn gradle_sync_roots_win_and_reach_outside_the_project() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = dunce::canonicalize(tmp.path()).unwrap();
@@ -1973,14 +2028,15 @@ mod gradle_roots_tests {
         std::fs::write(root.join("build.gradle"), "").unwrap();
         let out = with_gradle_roots(&root, &cache, &Default::default(), &[guessed, other.clone()]);
         let abs = |p: PathBuf| ide_workspace::roots::normalize(&s(p));
-        let got: Vec<(String, RootKind)> = out.iter().map(|f| (f.path.clone(), f.kind)).collect();
+        let owner = format!("{}/Gradle", svc.to_string_lossy().replace('\\', "/"));
+        let got: Vec<_> = out.iter().map(|f| (f.path.clone(), f.kind, f.detected_from.clone())).collect();
         assert_eq!(
             got,
             [
-                ("src/it/java".into(), RootKind::Test),
-                (abs(svc.join("src/main/java")), RootKind::Source),
-                (abs(svc.join("build")), RootKind::Excluded),
-                ("web".into(), RootKind::Source),
+                ("src/it/java".into(), RootKind::Test, Some("Gradle".into())),
+                (abs(svc.join("src/main/java")), RootKind::Source, Some(owner.clone())),
+                (abs(svc.join("build")), RootKind::Excluded, Some(owner)),
+                ("web".into(), RootKind::Source, None),
             ]
         );
     }

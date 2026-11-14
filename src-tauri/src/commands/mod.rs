@@ -13,6 +13,7 @@ pub mod app;
 pub mod build;
 pub mod bytes;
 pub mod caches;
+pub mod clip;
 pub mod clipboard;
 pub mod coverage;
 pub mod db;
@@ -24,6 +25,7 @@ pub mod docker;
 pub mod env;
 pub mod file_dialog;
 pub mod fonts;
+pub mod fork_graph;
 pub mod fs;
 pub mod github;
 pub mod heap;
@@ -188,11 +190,26 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         fs::fs_compare_directories,
         fs::fs_read_text,
         fs::fs_open_with_system,
+        clip::clip_copy,
+        clip::clip_paste_preview,
+        clip::clip_paste_preview_file,
+        clip::clip_paste_apply,
+        clip::clip_copy_branch_series,
+        clip::clip_paste_branch_series,
+        fork_graph::graph_stashes,
+        fork_graph::graph_working_state,
+        fork_graph::graph_reflog,
+        fork_graph::graph_author_stats,
+        fork_graph::graph_tree,
+        fork_graph::graph_bisect_state,
+        fork_graph::graph_bisect,
+        fork_graph::graph_ref_op,
         clipboard::clipboard_write_text,
         clipboard::clipboard_text,
         clipboard::clipboard_file_list,
         clipboard::clipboard_has_files,
         clipboard::clipboard_image,
+        clipboard::clipboard_image_data_url,
         clipboard::clipboard_set_file_list,
         fonts::system_font_families,
         doc::doc_open,
@@ -311,6 +328,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_file_mode,
         vcs::vcs_blame,
         vcs::vcs_block_history,
+        vcs::vcs_block_history_summary,
+        vcs::vcs_block_history_revisions,
         vcs::vcs_log,
         vcs::vcs_log_refs,
         vcs::vcs_log_users,
@@ -484,6 +503,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         sdk::sdk_python_packages,
         sdk::sdk_python_pip,
         window::window_open_project,
+        window::window_open_project_tab,
         window::window_open_files,
         window::window_open_file_in_new_window,
         window::window_open_remote,
@@ -497,10 +517,11 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         window::window_toggle_zoom,
         window::window_flash_taskbar,
         window::window_set_titlebar_height,
-        window::window_is_fullscreen,
         window_drag::window_start_drag,
         window::window_take_launch,
         window::window_complete_launch,
+        window::window_launch_settled,
+        window::window_owns_session,
         window::window_close_context,
         window::window_open_projects,
         window::app_quit,

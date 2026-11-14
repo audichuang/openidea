@@ -1,10 +1,13 @@
-use crate::{window_groups as groups, windows::WindowsState};
+use crate::window_groups as groups;
 use ide_core::{IdeError, IdeResult};
 use tauri::{Manager, WebviewWindow};
 
 #[tauri::command]
 #[specta::specta]
 pub fn window_group_current(window: WebviewWindow) -> IdeResult<Vec<groups::WindowTab>> {
+    // AppKit (⌃Tab, Window menu) changes the selected tab without telling the app.
+    #[cfg(target_os = "macos")]
+    groups::sync(window.app_handle());
     Ok(groups::current(window.app_handle(), window.label()))
 }
 
@@ -58,13 +61,16 @@ pub fn window_group_cancel_close(window: WebviewWindow) {
 #[tauri::command]
 #[specta::specta]
 pub async fn window_group_reorder(window: WebviewWindow, labels: Vec<String>) -> IdeResult<()> {
-    window.state::<WindowsState>().groups.lock().reorder(window.label(), labels)?;
-    groups::select(window.app_handle(), window.label(), window.label())?;
+    groups::reorder(window.app_handle(), window.label(), labels)?;
     groups::persist(window.app_handle()).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn window_group_restore(window: WebviewWindow) -> IdeResult<()> {
-    groups::restore(window.app_handle(), window.label()).await
+    groups::restore(window.app_handle(), window.label()).await?;
+    // The window's project, if any, is open now: name its system tab after it.
+    #[cfg(target_os = "macos")]
+    groups::sync(window.app_handle());
+    Ok(())
 }

@@ -1,0 +1,1169 @@
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use crate::fsutil;
+use crate::gitrun::{CancelToken, RunOptions};
+use crate::paths;
+use crate::settings::Settings;
+use crate::transfer::{CanonicalRootId, ExportItem, ExportPlan, ExportSelection, SourceKind, TransferError};
+
+/// Why a refused path was skipped, beyond "unreadable": counts and the first few names, which are
+/// part of the owner's `skipped` total (its `skipped_paths` hold only the unreadable ones).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WalkRefusals {
+    /// A name the payload cannot carry portably (`\`, `"`, a tab, another character the path rules refuse,
+    /// or not UTF-8).
+    pub unportable: usize,
+    pub unportable_paths: Vec<String>,
+    /// A symlink to a folder inside a walked folder: not followed.
+    pub symlink_dirs: usize,
+    pub symlink_dir_paths: Vec<String>,
+}
+
+impl WalkRefusals {
+    fn unportable(&mut self, path: String) {
+        self.unportable += 1;
+        note_skipped(&mut self.unportable_paths, path);
+    }
+
+    fn symlink_dir(&mut self, path: String) {
+        self.symlink_dirs += 1;
+        note_skipped(&mut self.symlink_dir_paths, path);
+    }
+
+    /// Adds `other`'s counts and names, keeping the first [`super::SKIPPED_PATHS_SHOWN`] names.
+    pub fn merge(&mut self, other: WalkRefusals) {
+        self.unportable += other.unportable;
+        self.symlink_dirs += other.symlink_dirs;
+        for p in other.unportable_paths {
+            note_skipped(&mut self.unportable_paths, p);
+        }
+        for p in other.symlink_dir_paths {
+            note_skipped(&mut self.symlink_dir_paths, p);
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderExpansion {
+    pub sel: ExportSelection,
+    /// Walked files the payload cannot carry (see `folder_file_rel`).
+    pub skipped: usize,
+    /// The first [`super::SKIPPED_PATHS_SHOWN`] of those files' root-relative paths, so a notice can name them.
+    pub skipped_paths: Vec<String>,
+    /// Which of `skipped` were unportable names or symlinked folders (their names are not in `skipped_paths`).
+    pub detail: WalkRefusals,
+    /// The walk stopped at the file limit with files left.
+    pub truncated: bool,
+    /// When `truncated` is true, the item count in `sel.items` at the moment
+    /// truncation occurred. Items beyond this index are subsequent picked items
+    /// that sort after the truncated folder, and must not be planned until the
+    /// folder is fully expanded or the prefix alone satisfies the file limit.
+    pub truncated_at: Option<usize>,
+}
+
+/// Records a dropped file's path while the notice can still show it.
+fn note_skipped(paths: &mut Vec<String>, path: String) {
+    if paths.len() < super::SKIPPED_PATHS_SHOWN {
+        paths.push(path);
+    }
+}
+
+/// `path` relative to `root`, components joined with `/` (lossy for non-UTF-8 names). A backslash inside a
+/// name stays a backslash.
+fn rel_display(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Records why the export refuses the file at `path` under `root` (see [`folder_file_rel`]): a name the
+/// payload cannot carry is reported as such, anything else as unreadable.
+fn note_refused(skipped_paths: &mut Vec<String>, detail: &mut WalkRefusals, root: &Path, path: &Path) {
+    let name_ok = path
+        .strip_prefix(root)
+        .ok()
+        .and_then(|p| p.components().map(|c| c.as_os_str().to_str()).collect::<Option<Vec<_>>>())
+        .is_some_and(|parts| paths::is_exportable_relative_path(&parts.join("/")));
+    if name_ok {
+        note_skipped(skipped_paths, rel_display(root, path));
+    } else {
+        detail.unportable(rel_display(root, path));
+    }
+}
+
+/// The payload path of a walked file, or None when the export would refuse
+/// it: a name a header cannot carry (`< > : " | ? *`, control characters,
+/// a trailing space, `\` on Unix), non-UTF-8, a dangling or out-of-root
+/// symlink, a FIFO/socket/device, or a file this user cannot open.
+pub(crate) fn folder_file_rel(root: &Path, path: &Path) -> Option<String> {
+    let rel = path
+        .strip_prefix(root)
+        .ok()?
+        .components()
+        .map(|c| c.as_os_str().to_str())
+        .collect::<Option<Vec<_>>>()?
+        .join("/");
+    if !paths::is_exportable_relative_path(&rel)
+        || !std::fs::metadata(path).is_ok_and(|meta| meta.is_file())
+        || paths::escapes_all_roots(&[root], path)
+        || std::fs::File::open(path).is_err()
+    {
+        return None;
+    }
+    Some(rel)
+}
+
+/// A symlink at `path` that resolves to a directory. A copy never follows it, whether it is selected
+/// directly or found while a folder is expanded: it is counted and named as a symlinked folder.
+pub fn is_dir_symlink(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.is_symlink()) && std::fs::metadata(path).is_ok_and(|m| m.is_dir())
+}
+
+/// What one copy produced: the payload and the counts its status line
+/// reports. `copied == 0` means nothing could be copied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CopyOutcome {
+    pub payload: String,
+    pub copied: usize,
+    /// UTF-16 code units of the payload.
+    pub chars: usize,
+    pub lines: usize,
+    #[serde(default)]
+    pub words: usize,
+    #[serde(default)]
+    pub tokens: usize,
+    /// Files left out: unreadable, over the size limit, or a name a folder
+    /// walk could not carry.
+    pub skipped: usize,
+    /// The file limit cut the copy short.
+    pub truncated: bool,
+    /// Non-text files carried as Base64 (Include only); also in `copied`.
+    #[serde(default)]
+    pub non_text_files: usize,
+    /// What the copy dialog shows; under Exclude, what Include would add
+    /// (also when nothing else was copied).
+    #[serde(default)]
+    pub non_text: crate::nontext::NonTextSummary,
+}
+
+/// [`CopyOutcome`] plus the detail a local CLI prints: per-file skip
+/// reasons and the size/unreadable split its notes report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CopyReport {
+    pub outcome: CopyOutcome,
+    pub files: Vec<crate::format::PayloadFile>,
+    pub skipped_file_size: usize,
+    /// Plan-level unreadable plus the folder walk's refusals.
+    pub skipped_unreadable: usize,
+    /// The first few unreadable files' paths: the plan's payload paths, then the selection's and folder walk's refusals.
+    pub skipped_unreadable_paths: Vec<String>,
+    /// The folder walk's refusals that were unportable names or symlinked folders: part of `outcome.skipped`,
+    /// not of `skipped_unreadable`.
+    pub skip_detail: WalkRefusals,
+    pub file_limit_reached: bool,
+}
+
+/// The copy engine for a selection, shared by the desktop app, a remote
+/// worker and the local CLI: expands folders in progressively doubling
+/// batches starting at `file_limit` (so files a filter later excludes
+/// cannot hide the eligible ones behind the first batch, exactly as
+/// [`plan_export_expanding`] does), in input order — the TS copy layout —
+/// plans the payload (at most [`super::CLIPBOARD_PAYLOAD_MAX`]), runs
+/// `hold` (an e2e hook), and checks the sources did not change meanwhile.
+pub fn copy_selection(
+    sel: ExportSelection,
+    settings: &Settings,
+    file_limit: usize,
+    opts: &RunOptions,
+    hold: impl FnOnce(&ExportPlan),
+) -> Result<CopyOutcome, TransferError> {
+    match copy_selection_detailed(sel, settings, file_limit, opts, hold) {
+        Ok(report) => Ok(report.outcome),
+        // Every file under the folders was skipped: the wire answer is an
+        // empty copy with one skip, not an error.
+        Err(TransferError::EmptySelection) => Ok(CopyOutcome {
+            payload: String::new(),
+            copied: 0,
+            chars: 0,
+            lines: 0,
+            words: 0,
+            tokens: 0,
+            skipped: 1,
+            truncated: false,
+            non_text_files: 0,
+            non_text: Default::default(),
+        }),
+        Err(err) => Err(err),
+    }
+}
+
+/// [`copy_selection`] with the detail a local CLI prints: the per-file
+/// skip reasons and the size/unreadable split its notes report.
+/// [`TransferError::EmptySelection`] reaches the caller, so a surface can
+/// say「every file in the selected folders was skipped」its own way.
+pub fn copy_selection_detailed(
+    sel: ExportSelection,
+    settings: &Settings,
+    file_limit: usize,
+    opts: &RunOptions,
+    hold: impl FnOnce(&ExportPlan),
+) -> Result<CopyReport, TransferError> {
+    let cancel = opts.cancel.clone().unwrap_or_default();
+    // Expands in doubling batches, as `plan_export_expanding` plans: when
+    // a batch truncates, the prefix alone answers if the file limit is
+    // already reached; otherwise the next batch doubles, because the items
+    // this prefix plans away (a filter's exclusions) say nothing about
+    // what the rest of the folder holds.
+    let mut limit = file_limit;
+    let (expanded, plan) = loop {
+        let expanded = expand_folder_items_in_input_order(sel.clone(), limit, &cancel)?;
+        if !expanded.truncated {
+            let plan = super::plan_export_with(&expanded.sel, settings, Some(super::CLIPBOARD_PAYLOAD_MAX), opts)?;
+            break (expanded, plan);
+        }
+        let trunc_idx = expanded.truncated_at.unwrap_or(expanded.sel.items.len());
+        let prefix_items = expanded.sel.items[..trunc_idx].to_vec();
+        match sel.with_items(prefix_items) {
+            Ok(prefix_sel) => {
+                match super::plan_export_with(&prefix_sel, settings, Some(super::CLIPBOARD_PAYLOAD_MAX), opts) {
+                    Ok(plan) if plan.file_limit_reached => break (expanded, plan),
+                    Ok(_) => {}
+                    Err(e) => return Err(e),
+                }
+            }
+            Err(TransferError::EmptySelection) => {}
+            Err(e) => return Err(e),
+        }
+        if limit == usize::MAX {
+            let plan = super::plan_export_with(&expanded.sel, settings, Some(super::CLIPBOARD_PAYLOAD_MAX), opts)?;
+            break (expanded, plan);
+        }
+        limit = limit.saturating_mul(2);
+    };
+    let mut plan = plan;
+    // The walk stopped at the limit: files it never listed are left out too.
+    plan.non_text.limit_left_out_lower_bound = expanded.truncated;
+    let skipped = plan.skipped_unreadable_count + plan.skipped_file_size_count + expanded.skipped;
+    // `expanded.skipped` also counts unportable names and symlinked folders: not unreadable.
+    let walk_unreadable = expanded.skipped - expanded.detail.unportable - expanded.detail.symlink_dirs;
+    let unreadable_paths: Vec<String> = plan
+        .skipped_unreadable_paths
+        .iter()
+        .chain(&expanded.skipped_paths)
+        .take(super::SKIPPED_PATHS_SHOWN)
+        .cloned()
+        .collect();
+    if plan.files.is_empty() {
+        return Ok(CopyReport {
+            outcome: CopyOutcome {
+                payload: String::new(),
+                copied: 0,
+                chars: 0,
+                lines: 0,
+                words: 0,
+                tokens: 0,
+                skipped,
+                truncated: false,
+                non_text_files: 0,
+                non_text: plan.non_text.clone(),
+            },
+            files: plan.files,
+            skipped_file_size: plan.skipped_file_size_count,
+            skipped_unreadable: plan.skipped_unreadable_count + walk_unreadable,
+            skipped_unreadable_paths: unreadable_paths,
+            skip_detail: expanded.detail,
+            file_limit_reached: plan.file_limit_reached,
+        });
+    }
+    hold(&plan);
+    plan.revalidate_with(opts)?;
+    Ok(CopyReport {
+        outcome: CopyOutcome {
+            copied: plan.copied_file_count,
+            chars: plan.stats.chars,
+            lines: plan.stats.lines,
+            words: plan.stats.words,
+            tokens: plan.stats.tokens,
+            skipped,
+            truncated: expanded.truncated || plan.file_limit_reached,
+            payload: plan.payload,
+            non_text_files: plan.non_text_file_count,
+            non_text: plan.non_text.clone(),
+        },
+        files: plan.files,
+        skipped_file_size: plan.skipped_file_size_count,
+        skipped_unreadable: plan.skipped_unreadable_count + walk_unreadable,
+        skipped_unreadable_paths: unreadable_paths,
+        skip_detail: expanded.detail,
+        file_limit_reached: plan.file_limit_reached,
+    })
+}
+
+/// A selected folder copies its files, walked in the copy job: a folder
+/// item itself cannot export. A repo's files (and `.git`) never come
+/// along, not even when the selected folder is one; a path already
+/// selected is not added twice. A file the export would refuse is skipped
+/// and counted, never failing the whole copy.
+///
+/// Picked files (and Changes/Log items) are never starved: the folders
+/// share the `limit` left after them in basket order (root path, then the
+/// folder's relative path, as the Project selection is sorted), and the
+/// walk stops one file past it so a huge folder is never held in full.
+///
+/// Pre-seeds `seen` with all explicit items before walking so that explicit
+/// items retain their position (GUI basket-order semantics).
+pub fn expand_folder_items(
+    sel: ExportSelection,
+    limit: usize,
+    cancel: &CancelToken,
+) -> Result<FolderExpansion, TransferError> {
+    expand_folder_items_inner(sel, limit, cancel, false)
+}
+
+/// Expands folder items preserving first-occurrence deduplication in input order.
+///
+/// Unlike [`expand_folder_items`], `seen` starts empty and grows as items are
+/// emitted. If an explicit item was already traversed by an earlier folder walk
+/// or an earlier identical explicit item, it is dropped at its later position.
+/// Used by the CLI copy path to preserve argument-order file layout matching TS.
+pub fn expand_folder_items_in_input_order(
+    sel: ExportSelection,
+    limit: usize,
+    cancel: &CancelToken,
+) -> Result<FolderExpansion, TransferError> {
+    expand_folder_items_inner(sel, limit, cancel, true)
+}
+
+fn expand_folder_items_inner(
+    mut sel: ExportSelection,
+    limit: usize,
+    cancel: &CancelToken,
+    input_order_dedupe: bool,
+) -> Result<FolderExpansion, TransferError> {
+    let is_folder = |item: &ExportItem| {
+        if item.source != SourceKind::File {
+            return false;
+        }
+        let path = item.root.path().join(&item.relative_path);
+        let Ok(sym_meta) = std::fs::symlink_metadata(&path) else {
+            return false;
+        };
+        sym_meta.is_dir()
+    };
+    let is_refused_dir = |item: &ExportItem| {
+        item.source == SourceKind::File && is_dir_symlink(&item.root.path().join(&item.relative_path))
+    };
+    if !input_order_dedupe && !sel.items.iter().any(|item| is_folder(item) || is_refused_dir(item)) {
+        return Ok(FolderExpansion {
+            sel,
+            skipped: 0,
+            skipped_paths: Vec::new(),
+            detail: WalkRefusals::default(),
+            truncated: false,
+            truncated_at: None,
+        });
+    }
+    let picked = sel.items.iter().filter(|item| !is_folder(item) && !is_refused_dir(item)).count();
+    let mut budget = limit.saturating_sub(picked);
+    let mut skipped = 0usize;
+    let mut skipped_paths: Vec<String> = Vec::new();
+    let mut detail = WalkRefusals::default();
+    let mut truncated = false;
+    let mut truncated_at = None;
+    let mut seen: HashSet<(PathBuf, String)> = if input_order_dedupe {
+        HashSet::new()
+    } else {
+        sel.items.iter().map(|item| (item.root.path().to_path_buf(), item.relative_path.clone())).collect()
+    };
+    let mut items = Vec::with_capacity(sel.items.len());
+    for item in std::mem::take(&mut sel.items) {
+        if !is_folder(&item) {
+            if is_refused_dir(&item) {
+                skipped += 1;
+                detail.symlink_dir(item.relative_path.clone());
+                continue;
+            }
+            if input_order_dedupe {
+                let key = (item.root.path().to_path_buf(), item.relative_path.clone());
+                if !seen.insert(key) {
+                    continue;
+                }
+            }
+            items.push(item);
+            continue;
+        }
+        let root = item.root.path();
+        let dir = root.join(&item.relative_path);
+        let walk = fsutil::list_files_recursive(&dir, |d| {
+            !(d.file_name() == Some(".git".as_ref()) || d.join(".git").exists())
+        });
+        for walked in walk {
+            if cancel.is_cancelled() || truncated {
+                break;
+            }
+            let path = match walked {
+                fsutil::WalkItem::File(path) => path,
+                fsutil::WalkItem::UnreadableDir(dir) => {
+                    skipped += 1;
+                    note_skipped(&mut skipped_paths, rel_display(root, &dir));
+                    continue;
+                }
+                fsutil::WalkItem::SymlinkedDir(link) => {
+                    skipped += 1;
+                    detail.symlink_dir(rel_display(root, &link));
+                    continue;
+                }
+            };
+            if path.file_name() == Some(".git".as_ref()) {
+                continue;
+            }
+            let Some(rel) = folder_file_rel(root, &path) else {
+                skipped += 1;
+                note_refused(&mut skipped_paths, &mut detail, root, &path);
+                continue;
+            };
+            let key = (root.to_path_buf(), rel.clone());
+            if seen.contains(&key) {
+                continue;
+            }
+            if budget == 0 {
+                truncated_at = Some(items.len());
+                truncated = true;
+                break;
+            }
+            budget -= 1;
+            seen.insert(key);
+            items.push(ExportItem {
+                root: item.root.clone(),
+                relative_path: rel,
+                source: SourceKind::File,
+                change_type: None,
+                gitlink: false,
+            });
+        }
+    }
+    // The rebuild carries the optional fields over (`with_items`): a commit
+    // copy from a subfolder keeps its `filter_root`, so relative exclude
+    // rules keep matching folder-relative paths.
+    let sel = sel.with_items(items)?;
+    Ok(FolderExpansion { sel, skipped, skipped_paths, detail, truncated, truncated_at })
+}
+
+/// Plans an export by expanding folder items in progressively doubling batches,
+/// avoiding traversing the entire directory tree when a file count limit is active.
+///
+/// Uses input-order folder expansion so that files keep their first occurrence
+/// in input order matching the CLI / TS copy contract.
+///
+/// When an expansion batch is truncated by budget, only the prefix of items up to
+/// the truncation point (`truncated_at`) is planned, ensuring that any subsequent
+/// picked items sorting after the truncated folder cannot trigger a premature
+/// `file_limit_reached` before the folder's earlier files are traversed.
+pub fn plan_export_expanding(
+    sel: &ExportSelection,
+    settings: &Settings,
+    max_payload: Option<usize>,
+    opts: &RunOptions,
+    cancel: &CancelToken,
+) -> Result<(ExportPlan, usize), TransferError> {
+    let mut limit = if settings.set_max_file_count {
+        let count_limit = if settings.file_count_limit > 0.0 { settings.file_count_limit as usize } else { 0 };
+        64usize.max(4usize.saturating_mul(count_limit))
+    } else {
+        usize::MAX
+    };
+
+    let mut plan_opts = opts.clone();
+    if plan_opts.cancel.is_none() {
+        plan_opts.cancel = Some(cancel.clone());
+    }
+
+    loop {
+        let expanded = expand_folder_items_in_input_order(sel.clone(), limit, cancel)?;
+        if !expanded.truncated {
+            let plan = super::plan_export_with(&expanded.sel, settings, max_payload, &plan_opts)?;
+            return Ok((plan, expanded.skipped));
+        }
+
+        let trunc_idx = expanded.truncated_at.unwrap_or(expanded.sel.items.len());
+        let prefix_items = expanded.sel.items[..trunc_idx].to_vec();
+        match sel.with_items(prefix_items) {
+            Ok(prefix_sel) => match super::plan_export_with(&prefix_sel, settings, max_payload, &plan_opts) {
+                Ok(plan) if plan.file_limit_reached => {
+                    return Ok((plan, expanded.skipped));
+                }
+                Ok(_) => {}
+                Err(e) => return Err(e),
+            },
+            Err(TransferError::EmptySelection) => {}
+            Err(e) => return Err(e),
+        }
+
+        if limit == usize::MAX {
+            let plan = super::plan_export_with(&expanded.sel, settings, max_payload, &plan_opts)?;
+            return Ok((plan, expanded.skipped));
+        }
+        limit = limit.saturating_mul(2);
+    }
+}
+
+/// Selection generated from user paths.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathSelection {
+    pub sel: ExportSelection,
+    /// Items dropped before planning (FIFO/socket/device, out-of-root or dangling symlink, header-unrepresentable or non-UTF-8 name, unopenable file).
+    pub skipped: usize,
+    /// The first [`super::SKIPPED_PATHS_SHOWN`] of those items' root-relative paths.
+    pub skipped_paths: Vec<String>,
+    /// Which of `skipped` were unportable names (their names are not in `skipped_paths`).
+    pub detail: WalkRefusals,
+}
+
+fn lexical_normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    if out.as_os_str().is_empty() { PathBuf::from(std::path::MAIN_SEPARATOR_STR) } else { out }
+}
+
+fn collect_root_children(
+    canonical_root: &CanonicalRootId,
+    source_path: &Path,
+    items: &mut Vec<ExportItem>,
+    seen: &mut HashSet<String>,
+    skipped: &mut usize,
+    skipped_paths: &mut Vec<String>,
+    detail: &mut WalkRefusals,
+) -> Result<(), TransferError> {
+    let read_dir = match std::fs::read_dir(canonical_root.path()) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(TransferError::PathNotFound(source_path.to_path_buf()));
+        }
+        Err(e) => return Err(TransferError::Io(e)),
+    };
+    let mut child_names = Vec::new();
+    for entry in read_dir {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name == ".git" {
+            continue;
+        }
+        child_names.push(name);
+    }
+    fsutil::sort_names_js_order(&mut child_names);
+
+    for name in child_names {
+        let Some(name_str) = name.to_str() else {
+            *skipped += 1;
+            detail.unportable(name.to_string_lossy().into_owned());
+            continue;
+        };
+        let child_path = canonical_root.path().join(&name);
+        let child_sym_meta = match std::fs::symlink_metadata(&child_path) {
+            Ok(m) => m,
+            Err(_) => {
+                *skipped += 1;
+                note_skipped(skipped_paths, name_str.to_string());
+                continue;
+            }
+        };
+        if child_sym_meta.is_symlink() && is_dir_symlink(&child_path) {
+            *skipped += 1;
+            detail.symlink_dir(name_str.to_string());
+        } else if child_sym_meta.is_dir() {
+            if seen.insert(name_str.to_string()) {
+                items.push(ExportItem {
+                    root: canonical_root.clone(),
+                    relative_path: name_str.to_string(),
+                    source: SourceKind::File,
+                    change_type: None,
+                    gitlink: false,
+                });
+            }
+        } else if let Some(valid_rel) = folder_file_rel(canonical_root.path(), &child_path) {
+            if seen.insert(valid_rel.clone()) {
+                items.push(ExportItem {
+                    root: canonical_root.clone(),
+                    relative_path: valid_rel,
+                    source: SourceKind::File,
+                    change_type: None,
+                    gitlink: false,
+                });
+            }
+        } else {
+            *skipped += 1;
+            note_refused(skipped_paths, detail, canonical_root.path(), &child_path);
+        }
+    }
+    Ok(())
+}
+
+/// What a path list left when every path was refused: the counts and names a notice reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusedPaths {
+    pub skipped: usize,
+    pub skipped_paths: Vec<String>,
+    pub detail: WalkRefusals,
+}
+
+/// Creates an export selection from user-specified path arguments, resolving relative paths against `cwd`.
+pub fn selection_from_paths(root: &Path, cwd: &Path, paths: &[PathBuf]) -> Result<PathSelection, TransferError> {
+    selection_from_paths_or_refused(root, cwd, paths)?.map_err(|_| TransferError::EmptySelection)
+}
+
+/// [`selection_from_paths`], except that a list whose every path was refused comes back as the refusals
+/// (`Ok(Err(..))`) instead of [`TransferError::EmptySelection`], so a caller can name them.
+pub fn selection_from_paths_or_refused(
+    root: &Path,
+    cwd: &Path,
+    paths: &[PathBuf],
+) -> Result<Result<PathSelection, RefusedPaths>, TransferError> {
+    let canonical_root = CanonicalRootId::new(root)?;
+    canonical_root.validate()?;
+
+    let lexical_root = if root.is_absolute() { lexical_normalize(root) } else { lexical_normalize(&cwd.join(root)) };
+    let source_root = paths::source_root_name(&[&lexical_root]);
+
+    let mut items = Vec::new();
+    let mut skipped = 0usize;
+    let mut skipped_paths: Vec<String> = Vec::new();
+    let mut detail = WalkRefusals::default();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for path in paths {
+        let full_path = if path.is_absolute() { path.to_path_buf() } else { cwd.join(path) };
+        let normalized = lexical_normalize(&full_path);
+
+        // A folder symlink is never followed, even one that points back at the root: it must be refused
+        // before the root test below, which compares canonical paths and would expand the root instead. The
+        // root's own spelling is not such a link, whatever it points through.
+        if normalized != lexical_root
+            && normalized != canonical_root.path()
+            && std::fs::symlink_metadata(&normalized).is_ok_and(|m| m.is_symlink())
+            && is_dir_symlink(&normalized)
+        {
+            let rel = normalized
+                .strip_prefix(&lexical_root)
+                .or_else(|_| normalized.strip_prefix(canonical_root.path()))
+                .ok()
+                .or_else(|| normalized.file_name().map(Path::new))
+                .unwrap_or(&normalized);
+            skipped += 1;
+            detail.symlink_dir(rel.to_string_lossy().replace('\\', "/"));
+            continue;
+        }
+
+        let is_root = normalized == lexical_root
+            || normalized == canonical_root.path()
+            || dunce::canonicalize(&normalized).ok().as_deref() == Some(canonical_root.path());
+        if is_root {
+            collect_root_children(
+                &canonical_root,
+                path,
+                &mut items,
+                &mut seen,
+                &mut skipped,
+                &mut skipped_paths,
+                &mut detail,
+            )?;
+            continue;
+        }
+
+        let (parent, file_name) = match (normalized.parent(), normalized.file_name()) {
+            (Some(p), Some(f)) => (p, f),
+            _ => return Err(TransferError::PathOutsideRoot(path.clone())),
+        };
+
+        let canonical_parent = match dunce::canonicalize(parent) {
+            Ok(p) => p,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if parent.strip_prefix(root).is_err()
+                    && parent.strip_prefix(&lexical_root).is_err()
+                    && parent.strip_prefix(canonical_root.path()).is_err()
+                {
+                    return Err(TransferError::PathOutsideRoot(path.clone()));
+                }
+                return Err(TransferError::PathNotFound(path.clone()));
+            }
+            Err(e) => return Err(TransferError::Io(e)),
+        };
+
+        let canonical_target = canonical_parent.join(file_name);
+
+        let fallback_rel = match canonical_target.strip_prefix(canonical_root.path()) {
+            Ok(r) => r,
+            Err(_) => return Err(TransferError::PathOutsideRoot(path.clone())),
+        };
+
+        let (rel, strip_root) = if let Ok(r) = normalized.strip_prefix(&lexical_root) {
+            (r, lexical_root.as_path())
+        } else if let Ok(r) = normalized.strip_prefix(canonical_root.path()) {
+            (r, canonical_root.path())
+        } else {
+            (fallback_rel, canonical_root.path())
+        };
+
+        if rel.as_os_str().is_empty() {
+            collect_root_children(
+                &canonical_root,
+                path,
+                &mut items,
+                &mut seen,
+                &mut skipped,
+                &mut skipped_paths,
+                &mut detail,
+            )?;
+            continue;
+        }
+
+        let rel_str = match rel
+            .components()
+            .map(|c| c.as_os_str().to_str())
+            .collect::<Option<Vec<_>>>()
+            .map(|parts| parts.join("/"))
+        {
+            Some(s) => s,
+            None => {
+                skipped += 1;
+                detail.unportable(rel_display(Path::new(""), rel));
+                continue;
+            }
+        };
+
+        let entry_path = strip_root.join(rel);
+
+        let sym_meta = match std::fs::symlink_metadata(&entry_path) {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(TransferError::PathNotFound(path.clone()));
+            }
+            Err(e) => return Err(TransferError::Io(e)),
+        };
+
+        if sym_meta.is_symlink() && is_dir_symlink(&entry_path) {
+            skipped += 1;
+            detail.symlink_dir(rel_str);
+            continue;
+        }
+
+        if sym_meta.is_dir() {
+            if seen.insert(rel_str.clone()) {
+                items.push(ExportItem {
+                    root: canonical_root.clone(),
+                    relative_path: rel_str,
+                    source: SourceKind::File,
+                    change_type: None,
+                    gitlink: false,
+                });
+            }
+        } else if let Some(valid_rel) = folder_file_rel(strip_root, &entry_path) {
+            if seen.insert(valid_rel.clone()) {
+                items.push(ExportItem {
+                    root: canonical_root.clone(),
+                    relative_path: valid_rel,
+                    source: SourceKind::File,
+                    change_type: None,
+                    gitlink: false,
+                });
+            }
+        } else {
+            skipped += 1;
+            note_refused(&mut skipped_paths, &mut detail, strip_root, &entry_path);
+        }
+    }
+
+    if items.is_empty() {
+        return Ok(Err(RefusedPaths { skipped, skipped_paths, detail }));
+    }
+
+    let sel = ExportSelection::new(vec![root.to_path_buf()], Some(root.to_path_buf()), items)?
+        .with_source_root(source_root)
+        .with_spelled_root(Some(lexical_root));
+
+    Ok(Ok(PathSelection { sel, skipped, skipped_paths, detail }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A folder symlink that points at the project root is a symlinked folder like any other, not the root.
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_symlink_to_the_root_is_not_expanded() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        std::fs::write(root.join("ok.txt"), "ok\n").unwrap();
+        std::os::unix::fs::symlink(&root, root.join("loop")).unwrap();
+        let refused = selection_from_paths_or_refused(&root, &root, &[root.join("loop")]).unwrap().unwrap_err();
+        assert_eq!(refused.skipped, 1);
+        assert_eq!(refused.detail.symlink_dirs, 1);
+        assert_eq!(refused.detail.symlink_dir_paths, vec!["loop".to_string()]);
+    }
+
+    #[test]
+    fn test_selection_from_paths_child_sort_order_matches_list_files_recursive() {
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = "\u{FF5E}.txt";
+        let f2 = "\u{1F600}.txt";
+        let p1 = dir.path().join(f1);
+        let p2 = dir.path().join(f2);
+        if std::fs::write(&p1, "1").is_err() || std::fs::write(&p2, "2").is_err() {
+            assert!(
+                std::env::var_os("SNIP_REQUIRE_ALL_TESTS").is_none(),
+                "filesystem refused UTF-16/surrogate test filenames"
+            );
+            return;
+        }
+
+        let sel = selection_from_paths(dir.path(), dir.path(), &[PathBuf::from(".")]).unwrap();
+        let sel_names: Vec<String> = sel.sel.items.into_iter().map(|item| item.relative_path).collect();
+
+        let walk_names: Vec<String> = fsutil::list_files_recursive(dir.path(), |_| true)
+            .filter_map(|w| match w {
+                fsutil::WalkItem::File(p) => p.file_name().and_then(|n| n.to_str()).map(ToString::to_string),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(sel_names, walk_names);
+        assert_eq!(sel_names, vec!["\u{1F600}.txt".to_string(), "\u{FF5E}.txt".to_string()]);
+    }
+
+    #[test]
+    fn test_plan_export_expanding_matches_unbounded() {
+        use crate::settings::{FilterAction, FilterRule, FilterType};
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // Create 30 small files in root: 15 keep, 15 skip
+        for i in 0..15 {
+            std::fs::write(root.join(format!("root_keep_{i:02}.txt")), format!("rk {i}")).unwrap();
+            std::fs::write(root.join(format!("root_skip_{i:02}.txt")), format!("rs {i}")).unwrap();
+        }
+        // Create a subdir with 100 files: 50 keep, 50 skip
+        let sub = root.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        for i in 0..50 {
+            std::fs::write(sub.join(format!("sub_keep_{i:02}.txt")), format!("sk {i}")).unwrap();
+            std::fs::write(sub.join(format!("sub_skip_{i:02}.txt")), format!("ss {i}")).unwrap();
+        }
+
+        let path_sel = selection_from_paths(root, root, &[PathBuf::from(".")]).unwrap();
+        let cancel = CancelToken::new();
+
+        let filter = FilterRule {
+            kind: FilterType::Pattern,
+            action: FilterAction::Exclude,
+            value: "*skip*".to_string(),
+            enabled: true,
+        };
+        let settings = Settings {
+            use_filters: true,
+            filter_rules: vec![filter],
+            set_max_file_count: true,
+            file_count_limit: 30.0,
+            ..Settings::default()
+        };
+
+        // 1. With file count limit active:
+        let (batched_plan, batched_skipped) =
+            plan_export_expanding(&path_sel.sel, &settings, None, &RunOptions::default(), &cancel).unwrap();
+
+        let unbounded_expansion = expand_folder_items(path_sel.sel.clone(), usize::MAX, &cancel).unwrap();
+        let unbounded_plan =
+            crate::transfer::plan_export_with(&unbounded_expansion.sel, &settings, None, &RunOptions::default())
+                .unwrap();
+
+        assert_eq!(batched_plan.files, unbounded_plan.files);
+        assert_eq!(batched_plan.payload, unbounded_plan.payload);
+        assert_eq!(batched_plan.copied_file_count, unbounded_plan.copied_file_count);
+        assert_eq!(batched_plan.file_limit_reached, unbounded_plan.file_limit_reached);
+        assert!(batched_plan.file_limit_reached);
+        assert_eq!(batched_plan.copied_file_count, 30);
+        assert_eq!(batched_skipped, 0);
+
+        // 2. With limit off:
+        let mut settings_no_limit = settings.clone();
+        settings_no_limit.set_max_file_count = false;
+
+        let (batched_plan_nl, _) =
+            plan_export_expanding(&path_sel.sel, &settings_no_limit, None, &RunOptions::default(), &cancel).unwrap();
+
+        let unbounded_plan_nl = crate::transfer::plan_export_with(
+            &unbounded_expansion.sel,
+            &settings_no_limit,
+            None,
+            &RunOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(batched_plan_nl.files, unbounded_plan_nl.files);
+        assert_eq!(batched_plan_nl.payload, unbounded_plan_nl.payload);
+        assert_eq!(batched_plan_nl.copied_file_count, unbounded_plan_nl.copied_file_count);
+        assert_eq!(batched_plan_nl.file_limit_reached, unbounded_plan_nl.file_limit_reached);
+        assert!(!batched_plan_nl.file_limit_reached);
+        assert_eq!(batched_plan_nl.copied_file_count, 65);
+    }
+
+    #[test]
+    fn copy_selection_expands_past_an_excluded_prefix() {
+        use crate::settings::{FilterAction, FilterRule, FilterType};
+
+        // A folder whose first 70 files the filter excludes and whose one
+        // eligible file sorts last: one expansion at the initial batch
+        // never reaches it, so the copy must double the batch, exactly as
+        // `plan_export_expanding` does for a local CLI copy.
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        for i in 0..70 {
+            std::fs::write(sub.join(format!("skip_{i:02}.txt")), "s\n").unwrap();
+        }
+        std::fs::write(sub.join("zz.txt"), "keep me\n").unwrap();
+        let settings = Settings {
+            use_filters: true,
+            filter_rules: vec![FilterRule {
+                kind: FilterType::Pattern,
+                action: FilterAction::Exclude,
+                value: "*skip*".to_string(),
+                enabled: true,
+            }],
+            ..Settings::default()
+        };
+        let sel = selection_from_paths(dir.path(), dir.path(), &[PathBuf::from("sub")]).unwrap().sel;
+        let out = copy_selection(sel, &settings, 64, &RunOptions::default(), |_| {}).unwrap();
+        assert_eq!(out.copied, 1, "the eligible file is copied");
+        assert!(out.payload.contains("zz.txt"), "{}", out.payload);
+        assert!(!out.payload.contains("skip_"), "{}", out.payload);
+    }
+
+    #[test]
+    fn copy_selection_keeps_filter_root_for_commit_items_in_a_subfolder() {
+        use crate::format::ChangeType;
+        use crate::settings::{FilterAction, FilterRule, FilterType};
+        use std::fs;
+        use std::process::Command;
+
+        // The remote worker's subfolder copy (copyserve): the commit is
+        // copied from the repo root with `filter_root` set to the folder
+        // the user opened, so a relative exclude rule matches
+        // folder-relative paths (`src/…`), not repo-relative ones
+        // (`pkg/src/…`). The folder-expansion rebuild must keep that root.
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        fs::create_dir_all(repo.join("pkg/src")).unwrap();
+        std::fs::write(repo.join("pkg/src/secret.rs"), "hush\n").unwrap();
+        std::fs::write(repo.join("pkg/keep.txt"), "keep\n").unwrap();
+        let cfg = dir.path().join("cfg");
+        fs::write(&cfg, "").unwrap();
+        let run = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .env("GIT_CONFIG_GLOBAL", &cfg)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&["config", "user.name", "T"]);
+        run(&["config", "user.email", "t@example.com"]);
+        run(&["add", "-A"]);
+        run(&["commit", "-q", "-m", "c"]);
+        let sha = run(&["rev-parse", "HEAD"]);
+
+        let root = CanonicalRootId::new(&repo).unwrap();
+        let item = |rel: &str| ExportItem {
+            root: root.clone(),
+            relative_path: rel.to_string(),
+            source: SourceKind::Commit { rev: sha.clone() },
+            change_type: Some(ChangeType::New),
+            gitlink: false,
+        };
+        let sel = ExportSelection::new(
+            vec![repo.clone()],
+            Some(repo.clone()),
+            vec![item("pkg/src/secret.rs"), item("pkg/keep.txt")],
+        )
+        .unwrap()
+        .with_filter_root(Some(repo.join("pkg")));
+
+        let settings = Settings {
+            use_filters: true,
+            filter_rules: vec![FilterRule {
+                kind: FilterType::Path,
+                action: FilterAction::Exclude,
+                value: "src".to_string(),
+                enabled: true,
+            }],
+            ..Settings::default()
+        };
+
+        let plan = crate::transfer::plan_export_with(&sel, &settings, None, &RunOptions::default()).unwrap();
+        let planned: Vec<&str> = plan.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(planned, ["pkg/keep.txt"], "the plan excludes pkg/src/secret.rs by the folder-relative rule");
+
+        let out = copy_selection(sel, &settings, 64, &RunOptions::default(), |_| {}).unwrap();
+        assert!(!out.payload.contains("secret.rs"), "{}", out.payload);
+        assert!(out.payload.contains("keep.txt"), "{}", out.payload);
+        assert_eq!(out.copied, 1);
+    }
+
+    #[test]
+    fn test_plan_export_expanding_folder_truncation_prefix_matches_unbounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // Folder a_bin sorting before b files
+        let a_bin = root.join("a_bin");
+        std::fs::create_dir_all(&a_bin).unwrap();
+        // 100 binary files in a_bin that consume expansion budget but are skipped by plan_export_with
+        for i in 0..100 {
+            std::fs::write(a_bin.join(format!("bin_{i:03}.bin")), [0u8, 1, 2]).unwrap();
+        }
+        // 1 valid text file at the end of a_bin
+        std::fs::write(a_bin.join("zz.txt"), "valid text in a_bin\n").unwrap();
+
+        // 31 picked text files sorting after a_bin
+        for i in 0..=30 {
+            std::fs::write(root.join(format!("b{i:02}.txt")), format!("content b{i:02}\n")).unwrap();
+        }
+
+        let path_sel = selection_from_paths(root, root, &[PathBuf::from(".")]).unwrap();
+        let cancel = CancelToken::new();
+        let settings = Settings::default();
+        assert!(settings.set_max_file_count);
+        assert_eq!(settings.file_count_limit, 30.0);
+
+        let (batched_plan, batched_skipped) =
+            plan_export_expanding(&path_sel.sel, &settings, None, &RunOptions::default(), &cancel).unwrap();
+
+        let unbounded_expansion = expand_folder_items(path_sel.sel.clone(), usize::MAX, &cancel).unwrap();
+        let unbounded_plan =
+            crate::transfer::plan_export_with(&unbounded_expansion.sel, &settings, None, &RunOptions::default())
+                .unwrap();
+
+        assert_eq!(batched_plan.files, unbounded_plan.files);
+        assert_eq!(batched_plan.payload, unbounded_plan.payload);
+        assert_eq!(batched_plan.copied_file_count, unbounded_plan.copied_file_count);
+        assert_eq!(batched_plan.file_limit_reached, unbounded_plan.file_limit_reached);
+        assert!(batched_plan.file_limit_reached);
+        assert_eq!(batched_plan.copied_file_count, 30);
+        assert_eq!(batched_plan.files[0].path, "a_bin/zz.txt");
+        assert_eq!(batched_plan.files[1].path, "b00.txt");
+        assert_eq!(batched_plan.files[29].path, "b28.txt");
+        assert_eq!(batched_skipped, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_refuse_git_dir_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let git_dir = root.join(".git");
+        let git_refs = git_dir.join("refs");
+        std::fs::create_dir_all(&git_refs).unwrap();
+        std::fs::write(git_refs.join("heads"), "dummy ref").unwrap();
+        std::fs::write(root.join("regular.txt"), "regular content").unwrap();
+
+        let link = root.join("link");
+        let link2 = root.join("link2");
+        std::os::unix::fs::symlink(&git_dir, &link).unwrap();
+        std::os::unix::fs::symlink(&git_refs, &link2).unwrap();
+
+        // 1. Through selection_from_paths with sibling regular file
+        let path_sel = selection_from_paths(
+            root,
+            root,
+            &[PathBuf::from("link"), PathBuf::from("link2"), PathBuf::from("regular.txt")],
+        )
+        .unwrap();
+        assert_eq!(path_sel.skipped, 2);
+        for item in &path_sel.sel.items {
+            assert!(!item.relative_path.starts_with("link"));
+            assert!(!item.relative_path.starts_with("link2"));
+            assert!(!item.relative_path.contains(".git"));
+        }
+        assert_eq!(path_sel.sel.items.len(), 1);
+        assert_eq!(path_sel.sel.items[0].relative_path, "regular.txt");
+
+        // 2. Through selection_from_paths with only links (all skipped)
+        let res_only_links = selection_from_paths(root, root, &[PathBuf::from("link"), PathBuf::from("link2")]);
+        assert!(matches!(res_only_links, Err(TransferError::EmptySelection)));
+
+        // 3. Through expand_folder_items with sibling regular file
+        let root_id = CanonicalRootId::new(root).unwrap();
+        let items = vec![
+            ExportItem {
+                root: root_id.clone(),
+                relative_path: "link".to_string(),
+                source: SourceKind::File,
+                change_type: None,
+                gitlink: false,
+            },
+            ExportItem {
+                root: root_id.clone(),
+                relative_path: "link2".to_string(),
+                source: SourceKind::File,
+                change_type: None,
+                gitlink: false,
+            },
+            ExportItem {
+                root: root_id.clone(),
+                relative_path: "regular.txt".to_string(),
+                source: SourceKind::File,
+                change_type: None,
+                gitlink: false,
+            },
+        ];
+        let sel = ExportSelection::new(vec![root.to_path_buf()], Some(root.to_path_buf()), items).unwrap();
+        let cancel = CancelToken::new();
+        let expanded = expand_folder_items(sel, 100, &cancel).unwrap();
+        assert_eq!(expanded.skipped, 2);
+        assert_eq!(expanded.sel.items.len(), 1);
+        assert_eq!(expanded.sel.items[0].relative_path, "regular.txt");
+        for item in &expanded.sel.items {
+            assert!(!item.relative_path.starts_with("link"));
+            assert!(!item.relative_path.starts_with("link2"));
+            assert!(!item.relative_path.contains(".git"));
+        }
+
+        // 4. Through expand_folder_items with only links
+        let items_only_links = vec![
+            ExportItem {
+                root: root_id.clone(),
+                relative_path: "link".to_string(),
+                source: SourceKind::File,
+                change_type: None,
+                gitlink: false,
+            },
+            ExportItem {
+                root: root_id,
+                relative_path: "link2".to_string(),
+                source: SourceKind::File,
+                change_type: None,
+                gitlink: false,
+            },
+        ];
+        let sel_only_links =
+            ExportSelection::new(vec![root.to_path_buf()], Some(root.to_path_buf()), items_only_links).unwrap();
+        let res_expand_only_links = expand_folder_items(sel_only_links, 100, &cancel);
+        assert!(matches!(res_expand_only_links, Err(TransferError::EmptySelection)));
+    }
+}

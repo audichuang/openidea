@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { call, commands, isTauri, onIdeEvent, type WindowTab } from "./ipc";
-import { startupLaunchHandled, useProject } from "./project";
+import { startupProjectKnown, useProject } from "./project";
 import { setContext } from "./context";
 
 export const useWindowGroup = create<{ tabs: WindowTab[] }>(() => ({ tabs: [] }));
@@ -16,8 +16,9 @@ export function reorderedTabs(tabs: readonly WindowTab[], source: string, target
 
 export async function refreshWindowGroup() {
   if (!isTauri()) return;
-  useWindowGroup.setState({ tabs: await call(commands.windowGroupCurrent()) });
-  setContext("windowGrouped", useWindowGroup.getState().tabs.length > 1);
+  const tabs = await call(commands.windowGroupCurrent());
+  useWindowGroup.setState({ tabs });
+  setContext("windowGrouped", tabs.length > 1);
 }
 
 export async function selectWindowTab(label: string) {
@@ -25,6 +26,8 @@ export async function selectWindowTab(label: string) {
 }
 
 export async function cycleWindowTab(forward: boolean) {
+  // macOS: AppKit may have changed the group since the last refresh.
+  await refreshWindowGroup();
   const tabs = useWindowGroup.getState().tabs;
   if (tabs.length < 2) return;
   const index = tabs.findIndex((tab) => tab.current);
@@ -35,13 +38,16 @@ export function installWindowGroups(): () => void {
   if (!isTauri()) return () => {};
   let disposed = false;
   const refresh = () => void refreshWindowGroup().catch(console.warn);
+  // Once this window's startup project is known, also when it stays on welcome: reopening the
+  // groups only when `main` later opens a project would pop them all up then (`restore` runs once).
   const restore = async () => {
-    await startupLaunchHandled();
-    if (disposed || !useProject.getState().project) return;
+    await startupProjectKnown();
+    if (disposed) return;
     await call(commands.windowGroupRestore());
     if (!disposed) await refreshWindowGroup();
   };
   const offEvent = onIdeEvent("windowGroupsChanged", refresh);
+
   const offProject = useProject.subscribe((state, prev) => {
     if (state.project?.root !== prev.project?.root) void restore().catch(console.warn);
   });

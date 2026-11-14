@@ -25,7 +25,7 @@ import {
 } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
 import { whenAllSynced, whenSynced, type EditorDocContext } from "@/editor/api";
-import { structure } from "@/editor/structure";
+import { structure, type NodeAt } from "@/editor/structure";
 import { docOf, incompleteNote, isUnavailable, lspRequest, reportLspError } from "./lsp";
 import { comparePos, offsetToPos, rangeToOffsets } from "./positions";
 import { showHint } from "./hint";
@@ -43,6 +43,7 @@ import {
 } from "./syntaxFallback";
 import { tx } from "@/platform/i18n";
 import { synchronizeDocumentIndexes } from "@/workbench/contributions";
+import { fileStem, renamesFileInstead, wordQueryRange } from "./renameFallback";
 
 async function applyEdit(view: EditorView, edit: WorkspaceEdit) {
   try {
@@ -109,6 +110,14 @@ export async function startRename(view: EditorView) {
       reportLspError(view, e, true);
       return;
     }
+    // Only this known jdtls refusal allows a top-level type to rename its file.
+    if (
+      e instanceof IpcError &&
+      e.kind === "protocol" &&
+      /^jdtls: Renaming this element is not supported\.?$/.test(e.message) &&
+      (await renameFileInstead(view, doc))
+    )
+      return;
     if (await startSyntaxRename(view, doc, pos, e, current)) return;
     // No server covers this file (a plain text file): Shift+F6 renames the file, like IDEA.
     if (isNoServer(e) && (await executeAction("project.rename"))) return;
@@ -120,6 +129,7 @@ export async function startRename(view: EditorView) {
     if ((await hasSyntaxErrors(doc.doc)) && current() && (await startSyntaxRename(view, doc, pos, undefined, current)))
       return;
     if (!current()) return;
+    if (await renameFileInstead(view, doc)) return;
     showHint(view, "This element can't be renamed");
     return;
   }
@@ -149,6 +159,21 @@ export async function startRename(view: EditorView) {
     commit: (newName) => void commitInplace(view, doc, pos, oldName, newName),
     dialog,
   });
+}
+
+/** Opens Rename File for this file when the word at the caret is its top-level type. */
+async function renameFileInstead(view: EditorView, doc: EditorDocContext): Promise<boolean> {
+  const word = view.state.wordAt(view.state.selection.main.head);
+  const name = word ? view.state.sliceDoc(word.from, word.to) : null;
+  if (!word || !name || name !== fileStem(doc.path)) return false;
+  let at: NodeAt | null = null;
+  try {
+    at = await structure.nodeAt(doc.doc, wordQueryRange(view.state.doc, word));
+  } catch (e) {
+    if (isCancelled(e)) return false;
+  }
+  if (!renamesFileInstead({ path: doc.path, language: doc.language, name, at })) return false;
+  return executeAction("project.rename", doc.path);
 }
 
 /** `name` with `[at, at + length)` replaced. */

@@ -285,12 +285,49 @@ export const commands = {
 	 *  trusted local project and the file must lie inside it.
 	 */
 	fsOpenWithSystem: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_open_with_system", { path })),
+	/**
+	 *  The clipboard text for `source` (file or commit payload); the UI writes it. `non_text`
+	 *  `Exclude` still reports the non-text files found, for the dialog that asks before `Include`.
+	 */
+	clipCopy: (source: ClipCopySource, nonText: ClipNonTextMode) => typedError<ClipCopyResult, IdeError>(__TAURI_INVOKE("clip_copy", { source, nonText })),
+	/**
+	 *  Plans pasting `text`: files restore under `dest` (default: the project root),
+	 *  commits replay into `repo` (the selected repository; default: `dest`'s). Nothing
+	 *  is written; `repos` take the `<repo>/` prefixes of a payload copied from several
+	 *  repositories.
+	 */
+	clipPastePreview: (text: string, dest: string | null, repo: string | null, adjustPaths: boolean, repos: string[]) => typedError<ClipPastePreview, IdeError>(__TAURI_INVOKE("clip_paste_preview", { text, dest, repo, adjustPaths, repos })),
+	/**
+	 *  What the open preview `id`'s file `index` (of kind `action`) writes and what the
+	 *  destination holds now, for the dialog's content pane.
+	 */
+	clipPastePreviewFile: (id: number, action: string, index: number) => typedError<ClipPasteFileContent, IdeError>(__TAURI_INVOKE("clip_paste_preview_file", { id, action, index })),
+	/**  Writes the preview `apply.id` as confirmed. */
+	clipPasteApply: (apply: ClipPasteApply) => typedError<ClipPasteResult, IdeError>(__TAURI_INVOKE("clip_paste_apply", { apply })),
+	/**  ClipCode for VS Code's Copy Branch Commits: `branch` since its fork point (or `full` history) as an mbox. */
+	clipCopyBranchSeries: (repo: string, branch: string, base: string | null, full: boolean) => typedError<ClipBranchSeries, IdeError>(__TAURI_INVOKE("clip_copy_branch_series", { repo, branch, base, full })),
+	/**  Paste Branch Commits: restores an mbox as the new branch `name` (`git am --3way`). */
+	clipPasteBranchSeries: (repo: string, text: string, name: string, onHead: boolean) => typedError<ClipBranchRestore, IdeError>(__TAURI_INVOKE("clip_paste_branch_series", { repo, text, name, onHead })),
+	/**  Stash entries with the commit each records and the commit it was made on. */
+	graphStashes: (repo: string | null) => typedError<GraphStash[], IdeError>(__TAURI_INVOKE("graph_stashes", { repo })),
+	/**  Staged, unstaged, untracked and conflicted counts of `repo`'s working tree. */
+	graphWorkingState: (repo: string | null) => typedError<GraphWorkingState, IdeError>(__TAURI_INVOKE("graph_working_state", { repo })),
+	graphReflog: (repo: string | null, reference: string, limit: number) => typedError<GraphReflogEntry[], IdeError>(__TAURI_INVOKE("graph_reflog", { repo, reference, limit })),
+	graphAuthorStats: (repo: string | null) => typedError<GraphAuthorStat[], IdeError>(__TAURI_INVOKE("graph_author_stats", { repo })),
+	/**  Every file of `rev` (`git ls-tree -r`). */
+	graphTree: (repo: string | null, rev: string) => typedError<GraphTreeEntry[], IdeError>(__TAURI_INVOKE("graph_tree", { repo, rev })),
+	graphBisectState: (repo: string | null) => typedError<GraphBisectState, IdeError>(__TAURI_INVOKE("graph_bisect_state", { repo })),
+	graphBisect: (repo: string | null, op: GraphBisectOp) => typedError<GraphBisectState, IdeError>(__TAURI_INVOKE("graph_bisect", { repo, op })),
+	/**  Tag deletion and push, and a branch's upstream. */
+	graphRefOp: (repo: string | null, op: GraphRefOp) => typedError<null, IdeError>(__TAURI_INVOKE("graph_ref_op", { repo, op })),
 	/**  Writes text locally, without WebView user-activation requirements. */
 	clipboardWriteText: (text: string) => typedError<null, IdeError>(__TAURI_INVOKE("clipboard_write_text", { text })),
 	/**
 	 *  The clipboard's plain text, read natively as [`clipboard_write_text`] writes it: a Paste
 	 *  from a menu has no paste event, and WebKitGTK gives `navigator.clipboard.readText()` no
-	 *  text there (#3041). None on Windows, where the WebView's clipboard is used.
+	 *  text there (#3041), and WebKit on macOS asks the user to confirm a paste the app started
+	 *  itself (menu, command, shortcut) with a "Paste" callout. Windows reads `CF_UNICODETEXT`
+	 *  too; None there when the clipboard stays busy, and the WebView reads it.
 	 */
 	clipboardText: () => typedError<string | null, IdeError>(__TAURI_INVOKE("clipboard_text")),
 	/**  Absolute paths on the clipboard, empty when it holds no file list. */
@@ -298,11 +335,20 @@ export const commands = {
 	/**  Whether the clipboard holds files: cheap, for the Paste item's enabled state. */
 	clipboardHasFiles: () => __TAURI_INVOKE<boolean>("clipboard_has_files"),
 	/**
+	 *  The clipboard's image, read natively so WebKit does not ask the user to
+	 *  confirm a paste the app started from a menu; `None` when it holds none.
+	 *  `unavailable` where the webview should read it (`ide_clipboard::image`).
+	 */
+	clipboardImage: () => typedError<{
+	mime: string,
+	data: number[],
+} | null, IdeError>(__TAURI_INVOKE("clipboard_image")),
+	/**
 	 *  The clipboard's image as a PNG data URL, for a paste whose event carried no
 	 *  files: WebKitGTK leaves `clipboardData` empty for a raw image (a screenshot).
 	 *  None when the clipboard holds no image, and always on other platforms.
 	 */
-	clipboardImage: () => typedError<string | null, IdeError>(__TAURI_INVOKE("clipboard_image")),
+	clipboardImageDataUrl: () => typedError<string | null, IdeError>(__TAURI_INVOKE("clipboard_image_data_url")),
 	/**
 	 *  Replaces the clipboard with `paths`, so Explorer can paste them. Best-effort:
 	 *  false when the clipboard stayed busy; the caller keeps working either way.
@@ -642,6 +688,8 @@ export const commands = {
 	 *  editor text. Cancellable with `cancel_request(request)`.
 	 */
 	vcsBlockHistory: (request: RequestId, path: string, text: string | null, lines: [number, number]) => typedError<BlockHistory, IdeError>(__TAURI_INVOKE("vcs_block_history", { request, path, text, lines })),
+	vcsBlockHistorySummary: (request: RequestId, path: string, text: string | null, lines: [number, number]) => typedError<BlockHistorySummary, IdeError>(__TAURI_INVOKE("vcs_block_history_summary", { request, path, text, lines })),
+	vcsBlockHistoryRevisions: (request: RequestId, path: string, anchor: BlockHistoryAnchor, index: number, commits: string[]) => typedError<BlockRevision[], IdeError>(__TAURI_INVOKE("vcs_block_history_revisions", { request, path, anchor, index, commits })),
 	vcsLog: (repo: string | null, query: LogQuery) => typedError<Commit_Serialize[], IdeError>(__TAURI_INVOKE("vcs_log", { repo, query })),
 	vcsLogRefs: (repo: string | null) => typedError<{ [key in string]: string }, IdeError>(__TAURI_INVOKE("vcs_log_refs", { repo })),
 	vcsLogUsers: (repo: string | null) => typedError<string[], IdeError>(__TAURI_INVOKE("vcs_log_users", { repo })),
@@ -1062,6 +1110,12 @@ export const commands = {
 	 */
 	windowOpenProject: (path: string, newWindow: boolean, files: string[]) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_project", { path, newWindow, files })),
 	/**
+	 *  [`window_open_project`] into a new tab of this window's group ("Open project in: New tab");
+	 *  a plain new window when this window has no local project. Remote projects don't join tab
+	 *  groups: a group saves and restores local project paths only.
+	 */
+	windowOpenProjectTab: (path: string, files: string[]) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_project_tab", { path, files })),
+	/**
 	 *  Loose `files` opened from a window without a local project: a file inside a local project
 	 *  open in some window goes to that window, the others to the LightEdit window (this one,
 	 *  another, or a new one from a remote project window). Returns the files this window opens
@@ -1116,8 +1170,6 @@ export const commands = {
 	windowFlashTaskbar: (flash: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("window_flash_taskbar", { flash })),
 	/**  Height of the web title bar in native logical pixels (CSS height × IDE zoom). */
 	windowSetTitlebarHeight: (height: number | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_set_titlebar_height", { height })),
-	/**  Whether this window is in native full screen (on macOS, also a tab of a fullscreen group). */
-	windowIsFullscreen: () => __TAURI_INVOKE<boolean>("window_is_fullscreen"),
 	/**
 	 *  Starts dragging `window` while the primary mouse button is still down; returns whether a drag began.
 	 * 
@@ -1155,6 +1207,13 @@ export const commands = {
 } | null>("window_take_launch"),
 	/**  Release the opening window's reservation after navigation or cancellation. */
 	windowCompleteLaunch: () => typedError<null, IdeError>(__TAURI_INVOKE("window_complete_launch")),
+	/**  This window is done with the launch it took: its project opened, failed to, or was cancelled. */
+	windowLaunchSettled: () => __TAURI_INVOKE<void>("window_launch_settled"),
+	/**
+	 *  Whether this window records the project reopened on the next launch: `main` while it is
+	 *  open, then a window left when it closed (told by `openidea://session-owner`).
+	 */
+	windowOwnsSession: () => __TAURI_INVOKE<boolean>("window_owns_session"),
 	windowCloseContext: () => __TAURI_INVOKE<CloseContext>("window_close_context"),
 	/**  Projects open in project windows, in window order (title bar project widget). */
 	windowOpenProjects: () => typedError<OpenProject[], IdeError>(__TAURI_INVOKE("window_open_projects")),
@@ -2592,6 +2651,19 @@ export type BlockHistory = {
 	revisions: BlockRevision[],
 };
 
+/**  The commit and line range used by every query in one selection history tab. */
+export type BlockHistoryAnchor = {
+	commit: string,
+	lines: [number, number],
+};
+
+/**  The revision list and its first few diffs. The rest load as the user navigates. */
+export type BlockHistorySummary = {
+	anchor: BlockHistoryAnchor | null,
+	revisions: BlockRevisionSummary[],
+	diffs: BlockRevision[],
+};
+
 /**  A commit that changed the block, with the block in its first parent and in it. */
 export type BlockRevision = {
 	id: string,
@@ -2608,6 +2680,15 @@ export type BlockRevision = {
 	/**  0-based first line of the block before and after the commit. */
 	beforeLine: number,
 	afterLine: number,
+};
+
+export type BlockRevisionSummary = {
+	id: string,
+	shortId: string,
+	author: string,
+	email: string,
+	timeMs: number | null,
+	summary: string,
 };
 
 export type Branch = {
@@ -2908,6 +2989,308 @@ export type ClearCachesResult = {
 export type CliInstallation = {
 	path: IpcPath,
 	pathDirectory: IpcPath | null,
+};
+
+export type ClipBranchRestore = {
+	branch: string,
+	commits: number,
+};
+
+/**  A branch's commits as a `git format-patch` mbox. */
+export type ClipBranchSeries = {
+	text: string,
+	commits: number,
+	/**  The fork point the patches apply onto; `None`: the entire history (self-contained). */
+	base: string | null,
+};
+
+/**  Which uncommitted side a Commit tool window copy reads. */
+export type ClipChangeSide = 
+/**  Working tree and index together, as the change list shows them. */
+"working" | "staged" | "unstaged";
+
+/**
+ *  Version Control › ClipCode: what a ClipCode copy puts on the clipboard. The keys and
+ *  defaults are the ClipCode plugins' (IntelliJ `CopyFileContentSettings`, VS Code
+ *  `clipcode.*`), so the same payload comes out of either.
+ */
+export type ClipCodeSettings = {
+	/**  `$FILE_PATH` is replaced with the file's path. */
+	headerFormat?: string,
+	preText?: string,
+	/**  Non-empty: written after a `// clipcode-end` line. */
+	postText?: string,
+	addExtraLineBetweenFiles?: boolean,
+	setMaxFileCount?: boolean,
+	fileCountLimit?: number,
+	/**  Larger files are copied as a "size exceeds limit" placeholder. */
+	maxFileSizeKB?: number,
+	/**  Non-text files (images, archives, Big5 or UTF-16 text) larger than this are not copied. */
+	maxNonTextFileSizeKB?: number,
+	showCopyNotification?: boolean,
+	useFilters?: boolean,
+	useIncludeFilters?: boolean,
+	useExcludeFilters?: boolean,
+	filterRules?: ClipFilterRule[],
+};
+
+export type ClipCopyResult = {
+	/**  The clipboard text. */
+	text: string,
+	/**  `files` or `commits`. */
+	mode: string,
+	files: number,
+	commits: number,
+	/**  UTF-16 code units, as ClipCode counts them. */
+	chars: number,
+	lines: number,
+	words: number,
+	tokens: number,
+	/**
+	 *  Files left out: unreadable, not UTF-8, over the size limit, or (commit
+	 *  mode) binary / symlink files whose change the replay cannot carry.
+	 */
+	skipped: number,
+	/**  Of `skipped`: over the size limit (copied as a placeholder). */
+	skippedSize: number,
+	/**  Of `skipped`: binary, not UTF-8 or unreadable. */
+	skippedUnreadable: number,
+	/**  The file limit cut the copy short. */
+	truncated: boolean,
+	/**  The file limit in force (`truncated` names it). */
+	fileLimit: number,
+	/**  Settings › ClipCode › "Show notification after copying". */
+	notify: boolean,
+	/**  Non-text files found (see [`ClipNonTextSummary`]). */
+	nonText: ClipNonTextSummary,
+	/**  Of `files`: non-text files carried as Base64 (`Include` only). */
+	nonTextCopied: number,
+	/**
+	 *  The first 10 files counted in `skippedUnreadable` that were unreadable, by payload path
+	 *  (files mode; commits mode names none).
+	 */
+	skippedUnreadablePaths: string[],
+	/**
+	 *  Of `skipped`: files whose name the payload cannot carry portably (a backslash, a double quote, a tab
+	 *  or another refused character), not unreadable ones.
+	 */
+	skippedUnportable: number,
+	/**  The first 10 of them by their real names (files mode). */
+	skippedUnportablePaths: string[],
+	/**  Of `skipped`: symlinks to a folder inside a copied folder, which are not followed. */
+	skippedSymlinkDirs: number,
+	/**  The first 10 of them (files mode). */
+	skippedSymlinkDirPaths: string[],
+};
+
+/**
+ *  What a copy takes. Paths are absolute; `paths` of a git source narrow it to
+ *  those files (empty: all of them).
+ */
+export type ClipCopySource = 
+/**  Files and folders as they are on disk (Project tool window). */
+{ kind: "files"; paths: string[] } | 
+/**  Uncommitted changes, labelled `[NEW]` / `[MODIFIED]` / `[DELETED]` / `[MOVED]`. */
+{ kind: "changes"; paths: string[]; side: ClipChangeSide } | 
+/**  The files a commit changed, at that commit. */
+{ kind: "commitFiles"; repo: string; rev: string; paths: string[] } | 
+/**  The files changed between two revisions (`base`..`tip` endpoints), at `tip`. */
+{ kind: "range"; repo: string; base: string; tip: string; paths: string[] } | 
+/**
+ *  The files changed between a root commit's empty base and `tip`, at `tip`
+ *  (a range whose oldest commit has no parent).
+ */
+{ kind: "rootRange"; repo: string; tip: string; paths: string[] } | 
+/**
+ *  The union of the files each of `revs` (newest first) changed, each read as of
+ *  the newest listed commit that touches it (`[DELETED]` when deleted there).
+ */
+{ kind: "commitList"; repo: string; revs: string[]; paths: string[] } | 
+/**  Commits for replay: `selected` must be one first-parent chain ending at `tip`. */
+{ kind: "commits"; repo: string; tip: string; selected: string[] } | 
+/**  The first-parent commits of `base`..`tip`, for replay (a pull request's commits). */
+{ kind: "commitRange"; repo: string; base: string; tip: string };
+
+/**
+ *  A ClipCode filter rule: `PATH` matches the path or a parent of it, `PATTERN` the file
+ *  name (`*` / `?` wildcards, else a regular expression).
+ */
+export type ClipFilterRule = {
+	/**  `PATH` | `PATTERN`. */
+	type?: string,
+	/**  `INCLUDE` | `EXCLUDE`. */
+	action?: string,
+	value?: string,
+	enabled?: boolean,
+};
+
+export type ClipNonTextFile = {
+	/**  The path as the payload spells it. */
+	path: string,
+	/**  Raw bytes. */
+	size: number | null,
+};
+
+/**
+ *  Whether a copy carries non-text files as Base64 (`docs/clipcode/non-text-files.md`).
+ *  A copy that finds some reports them in [`ClipCopyResult::non_text`]; the UI asks, then
+ *  copies again with `Include`. Never stored.
+ */
+export type ClipNonTextMode = 
+/**  Today's payload: non-text files are left out. */
+"exclude" | "include";
+
+/**  What the copy dialog shows. Under `Exclude` it is what `Include` would add. */
+export type ClipNonTextSummary = {
+	/**  Non-text files within the non-text limit. */
+	count: number,
+	/**  Σ raw size of those files. */
+	totalBytes: number | null,
+	/**  The payload size with them included. */
+	estimatedIncludeBytes: number | null,
+	/**  The first 10, in payload order. */
+	files: ClipNonTextFile[],
+	/**  Non-text files over the non-text limit: not copied either way. */
+	overLimitCount: number,
+	/**  Files over both per-file limits: never read, copied as size placeholders. */
+	unreadOverLimitCount: number,
+	/**  The larger per-file limit in bytes, which those files exceed. */
+	unreadLimitBytes: number | null,
+	/**  The estimate is over the whole-payload limit: `Include` would fail. */
+	exceedsPayloadCap: boolean,
+	/**  Files the file-count limit leaves out of what `Include` copies. */
+	limitLeftOut: number,
+	/**  `limit_left_out` is a lower bound (a folder walk stopped at the limit). */
+	limitLeftOutAtLeast: boolean,
+	/**  The `headerFormat` cannot be escaped: `Include` would write Base64 lines that read as file headers. */
+	headerCannotBeEscaped: boolean,
+};
+
+/**  A replayed commit that was not created because every file change of it was refused or skipped. */
+export type ClipNotCreated = {
+	/**  1-based position among the replayed commits. */
+	number: number,
+	/**  The commit message's first line. */
+	subject: string,
+	/**  A skip reason code, as in the preview rows (`NON_UTF8_TARGET`, ...). */
+	reason: string,
+};
+
+export type ClipPasteApply = {
+	id: number,
+	/**  Creates (by index) whose target exists and may be overwritten. */
+	overwrite: number[],
+	/**  Creates / deletes (by index) left out. */
+	uncheckedCreates: number[],
+	uncheckedDeletes: number[],
+	/**  Commit mode: replace files that exist in the destination. */
+	overwriteExisting: boolean,
+};
+
+/**  One file a file-mode paste would touch. */
+export type ClipPasteFile = {
+	/**  Index within its kind (creates / deletes), used to leave it out. */
+	index: number,
+	/**  The path in the payload. */
+	path: string,
+	/**  Absolute target, when it resolves. */
+	target: string | null,
+	/**  `create`, `overwrite`, `delete` or `skip`. */
+	action: string,
+	/**  Why it is skipped (`skip` only). */
+	reason: string | null,
+	/**  A non-text file (`create` / `overwrite`): shown as "non-text file · size", never as text. */
+	nonText: ClipPasteNonText | null,
+};
+
+/**
+ *  One file of the open paste preview, for the dialog's content pane: what the
+ *  paste writes and what the destination holds now.
+ */
+export type ClipPasteFileContent = {
+	/**  The content the paste writes (`create` and `overwrite`). */
+	incoming: string | null,
+	/**  The destination's text now (`overwrite` and `delete`). */
+	current: string | null,
+	/**  Why `current` is missing although the file exists: binary, too large, unreadable. */
+	note: string | null,
+	/**
+	 *  Set for a non-text entry: the pane shows "non-text file · size" and whether the target is
+	 *  identical, with no content and no diff (`incoming` and `current` stay empty).
+	 */
+	nonText: ClipPasteNonText | null,
+};
+
+/**  A non-text entry of a paste preview. Its Base64 is never exposed. */
+export type ClipPasteNonText = {
+	/**  Raw bytes the paste writes. */
+	size: number | null,
+	/**  The target exists and already holds exactly these bytes: left unchanged, no overwrite needed. */
+	identical: boolean,
+};
+
+export type ClipPastePreview = {
+	/**  Hand back to `clip_paste_apply`. */
+	id: number,
+	/**  `files` or `commits`. */
+	mode: string,
+	/**  Where the paste lands (the repository for commits). */
+	destination: string,
+	files: ClipPasteFile[],
+	commits: ClipReplayCommit[],
+	/**  A restore base the files would better land under (`adjustPaths`). */
+	suggestion: string | null,
+	adjusted: boolean,
+};
+
+export type ClipPasteResult = {
+	created: number,
+	overwritten: number,
+	deleted: number,
+	skipped: number,
+	/**  Commit ids the replay created, oldest first. */
+	commits: string[],
+	errors: string[],
+	/**  Commits the replay did not create, each with its reason as a code the UI words (never English text). */
+	notCreated: ClipNotCreated[],
+	/**  Non-text targets that already held the pasted bytes: not written. */
+	unchanged: number,
+	/**
+	 *  Non-text entries skipped because their Base64, size or SHA-256 did not verify (counted in
+	 *  `skipped`), by payload path.
+	 */
+	corruptNonText: string[],
+};
+
+export type ClipReplayCommit = {
+	message: string,
+	authorName: string,
+	authorEmail: string,
+	authorDate: string,
+	files: ClipReplayFile[],
+	/**  Why the replay stops at this commit, if it would. */
+	refused: string | null,
+};
+
+/**  One file of a replayed commit. */
+export type ClipReplayFile = {
+	path: string,
+	oldPath: string | null,
+	/**  `ADDED`, `MODIFIED`, `DELETED` or `RENAMED`. */
+	change: string,
+	/**  `WRITE`, `DELETE` or `SKIP`. */
+	action: string,
+	/**  The write replaces a file that exists in the destination. */
+	overwrites: boolean,
+	reason: string | null,
+	/**  Raw size of a non-text file this row writes (shown as "non-text file", never as a diff). */
+	nonTextSize: number | null,
+};
+
+/**  An image read from the clipboard, encoded as `mime`. */
+export type ClipboardImage = {
+	mime: string,
+	data: number[],
 };
 
 export type CloseContext = {
@@ -4835,7 +5218,9 @@ export type EnvReloaded = {
 	shellRead: boolean,
 };
 
-export type ErrorData = { type: "tool"; tool: string; missing: boolean };
+export type ErrorData = { type: "tool"; tool: string; missing: boolean } | 
+/**  A commit copy found nothing to copy: the selection changes no files. */
+{ type: "noNetChanges" };
 
 export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "invalidInput" | 
 /**  Document version mismatch; the UI must resync the full text. */
@@ -5310,7 +5695,7 @@ export type GeneralSettings = {
 	closeWithoutWelcome?: boolean,
 	/**  When on, closing a window drops its saved editor tabs, so they are not restored next time. */
 	closeTabsWithWindow?: boolean,
-	/**  Where Open… puts a project while one is open: `ask` | `new` | `same` | `attach`. */
+	/**  Where Open… puts a project while one is open: `ask` | `new` | `tab` | `same` | `attach`. */
 	openProjectIn?: string,
 	/**  Initial folder of the Open / Clone dialogs; empty = the OS default. */
 	defaultProjectDirectory?: string,
@@ -5430,6 +5815,8 @@ export type GitSettings = {
 	/**  Show blame after the current editor line. */
 	inlineBlame?: boolean,
 	showBranchInProjectView?: boolean,
+	/**  Annotate gutter background colours: `order` (by commit age) | `author` | `none`. */
+	annotateColors?: string,
 	/**  Path to the git executable; empty = auto-detect. */
 	executable?: string,
 	/**  Default of Update Project: `merge` | `rebase`. */
@@ -5440,6 +5827,9 @@ export type GitSettings = {
 	warnDetachedHead?: boolean,
 	/**  Background check for incoming commits: `auto` | `always` | `never`. */
 	incomingCheck?: string,
+	/**  Fetch every repository of the project in the background every `auto_fetch_minutes`. */
+	autoFetch?: boolean,
+	autoFetchMinutes?: number,
 	/**  Branch name globs, `;`/`,`-separated; force push to them is prohibited. */
 	protectedBranches?: string,
 	/**  Initial state of Commit Options › Sign-off Commit. */
@@ -5455,6 +5845,11 @@ export type GitSettings = {
 	pushDialogOnlyProtected?: boolean,
 	/**  Stashes and shelves share one tab. */
 	combineStashAndShelf?: boolean,
+	/**
+	 *  IDEA's "Enable staging area": the Commit tool window shows the index (Staged /
+	 *  Unstaged) instead of change lists, and Commit commits exactly what is staged.
+	 */
+	stagingArea?: boolean,
 };
 
 export type GoBuildTags = {
@@ -5570,6 +5965,62 @@ export type GradleTask = {
 	/**  Lower-case group (`build`, `build setup`, `other`). */
 	group: string,
 	description: string | null,
+};
+
+export type GraphAuthorStat = {
+	name: string,
+	email: string,
+	commits: number,
+};
+
+export type GraphBisectOp = { op: "start"; bad: string; good: string } | { op: "good"; rev: string } | { op: "bad"; rev: string } | { op: "skip"; rev: string } | { op: "reset" };
+
+export type GraphBisectState = {
+	active: boolean,
+	/**  The commit git checked out for the next verdict. */
+	current: string | null,
+	/**  Set once git names the first bad commit. */
+	culprit: string | null,
+	/**  git's last message. */
+	output: string,
+};
+
+export type GraphRefOp = { op: "deleteTag"; name: string } | { op: "pushTag"; remote: string; name: string } | { op: "deleteRemoteTag"; remote: string; name: string } | { op: "setUpstream"; branch: string; upstream: string } | { op: "unsetUpstream"; branch: string };
+
+export type GraphReflogEntry = {
+	id: string,
+	/**  `HEAD@{0}`. */
+	selector: string,
+	/**  `commit: message`, `checkout: moving from a to b`… */
+	action: string,
+	timeMs: number | null,
+};
+
+/**  A stash entry with the commit it records and the commit it was made on. */
+export type GraphStash = {
+	index: number,
+	id: string,
+	/**  The commit HEAD pointed at when the stash was made. */
+	base: string,
+	message: string,
+	timeMs: number | null,
+};
+
+export type GraphTreeEntry = {
+	/**  Repository-relative, `/`-separated. */
+	path: string,
+	/**  `blob`, `commit` (submodule) or `tree`. */
+	kind: string,
+	/**  Bytes; null for submodules. */
+	size: number | null,
+};
+
+/**  Counts for the graph's uncommitted-changes row. */
+export type GraphWorkingState = {
+	staged: number,
+	unstaged: number,
+	untracked: number,
+	conflicted: number,
 };
 
 export type GtkFilter = {
@@ -5910,9 +6361,7 @@ export type IdeEvent =
 /**  Project data source settings changed; reload the Database tree. */
 { type: "dbSourcesChanged" } | { type: "mcpRequest"; id: number; request: McpUiRequest } | { type: "mcpRequestClosed"; id: number } | 
 /**  Project window membership or selection changed. */
-{ type: "windowGroupsChanged" } | 
-/**  A window entered or left full screen, itself or as a member of a full-screen window group. */
-{ type: "windowFullscreenChanged" } | { type: "projectTrustChanged"; root: IpcPath; trusted: boolean } | 
+{ type: "windowGroupsChanged" } | { type: "projectTrustChanged"; root: IpcPath; trusted: boolean } | 
 /**  Files or directories changed on disk (after debouncing, ignore rules applied). */
 { type: "fsChanged"; created: IpcPath[]; modified: IpcPath[]; removed: IpcPath[]; 
 /**  Subtrees whose ignore rules changed, after the matchers were rebuilt. */
@@ -10472,6 +10921,8 @@ export type VcsSettings = {
 	shelf?: ShelfSettings,
 	/**  Issue Navigation: commit-message patterns turned into links. */
 	issueNavigation?: IssueLink[],
+	/**  ClipCode clipboard copies (the ClipCode plugins' settings). */
+	clipCode?: ClipCodeSettings,
 };
 
 /**  The tool that creates a new Python environment in "Add Python Interpreter". */

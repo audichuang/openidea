@@ -32,6 +32,8 @@ use tauri::{AppHandle, Emitter, Manager, Theme, WebviewWindow, WebviewWindowBuil
 
 /// Tells a window that a pending launch is waiting for it.
 pub const LAUNCH_EVENT: &str = "openidea://launch";
+/// Tells a window that it now records the project reopened on the next launch (`main` closed).
+pub const SESSION_OWNER_EVENT: &str = "openidea://session-owner";
 const MAIN: &str = "main";
 const PREFIX: &str = "project-";
 const CASCADE: f64 = 28.0;
@@ -191,26 +193,66 @@ pub fn wsl_launch(path: &Path) -> Option<RemoteLaunch> {
     Some(RemoteLaunch { target: RemoteTarget::Wsl { distro: w.distro }, path: w.path })
 }
 
+/// macOS: whether `main` reopens in fullscreen, kept here instead of by window-state. tao keeps
+/// every tab a fullscreen group has shown marked fullscreen (AppKit only tells the tab that entered
+/// or left), so window-state would reopen a group the user took out of fullscreen in fullscreen,
+/// and reopen each restored group member in a fullscreen Space of its own, which merging into a
+/// group refuses. Read from AppKit, group-aware; a group's other tabs join `main`'s Space. Only
+/// a first guess while `main`'s project is unknown: once it is, the saved group holding it
+/// decides (`SavedGroup::fullscreen`, `window_groups::restore`).
+#[cfg(target_os = "macos")]
+const MAIN_FULLSCREEN: &str = "main-window-fullscreen.json";
+
+/// Records whether `main` is in fullscreen (main thread; when Quit starts, or `main` closes).
+#[cfg(target_os = "macos")]
+pub fn save_main_fullscreen(app: &AppHandle) {
+    let Some(window) = app.get_webview_window(MAIN) else { return };
+    let fullscreen = crate::macos::in_fullscreen(&window);
+    let Ok(dir) = ide_host::data_dirs::config_dir(&app.config().identifier) else { return };
+    let bytes = serde_json::to_vec(&fullscreen).unwrap_or_default();
+    if let Err(e) = std::fs::create_dir_all(&dir)
+        .map_err(IdeError::from)
+        .and_then(|_| ide_vfs::write_atomic(&dir.join(MAIN_FULLSCREEN), &bytes).map(|_| ()))
+    {
+        tracing::warn!("cannot save the main window's fullscreen state: {}", e.message);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn main_was_fullscreen(app: &AppHandle) -> bool {
+    let Ok(dir) = ide_host::data_dirs::config_dir(&app.config().identifier) else { return false };
+    std::fs::read(dir.join(MAIN_FULLSCREEN)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(false)
+}
+
 #[derive(Default)]
 pub struct WindowsState {
     pub groups: Mutex<ide_workspace::window_groups::WindowGroups>,
+    /// `main` has decided whether this launch reopens the saved window groups, and started if so.
     pub groups_restored: AtomicBool,
-    /// Serialises writes of the saved session. Holds the previous run's session once read: it is
-    /// read before this run first overwrites the file, so restoring still sees it.
-    pub groups_persist: tokio::sync::Mutex<Option<Vec<ide_workspace::window_groups::SavedWindows>>>,
+    /// ... and has finished: until then saving keeps the saved groups not reopened yet. Stays
+    /// unset when the saved groups could not be read, so saving never overwrites them.
+    pub groups_restore_done: AtomicBool,
+    /// The saved groups the restore failed to reopen, kept in what is saved.
+    pub groups_unrestored: Mutex<Vec<ide_workspace::window_groups::SavedGroup>>,
+    pub groups_persist: tokio::sync::Mutex<()>,
     launches: Mutex<HashMap<String, Launch>>,
     /// A taken launch still owns its window until the frontend finishes opening it.
     opening: Mutex<HashMap<String, Launch>>,
     cli: Mutex<cli::Queue>,
+    /// The project each window took a launch for, until it opens a project: still opening it, or
+    /// it failed to open (or its trust prompt was cancelled) and is retried next launch.
+    launched: Mutex<HashMap<String, PathBuf>>,
     /// Most recently focused window label (menu events go there).
     last_focused: Mutex<Option<String>>,
+    /// The window recording the project reopened on the next launch, see [`SessionOwner`].
+    session_owner: Mutex<SessionOwner>,
     /// Set by Quit while windows close one by one.
     quitting: AtomicBool,
     /// The last closed project opted out of Welcome; macOS keeps its app in the Dock.
     #[cfg(target_os = "macos")]
     pub keep_alive: AtomicBool,
-    /// Windows asked to close whose guards have not finished. AppKit closes a whole tab group at
-    /// once, so its members ask together.
+    /// Windows asked to close whose close guards have not finished. AppKit closes a whole native
+    /// tab group at once (the red close button), so its members ask together.
     close_requests: Mutex<Vec<String>>,
     /// Project tabs closing one by one (Close Other Tabs and friends).
     pub tab_closes: Mutex<Option<crate::window_groups::TabCloses>>,
@@ -228,6 +270,7 @@ impl WindowsState {
         }
     }
 
+    /// `label`'s close guard finished without closing it (cancelled, or back to the welcome screen).
     pub fn close_settled(&self, label: &str) {
         self.close_requests.lock().retain(|l| l != label);
     }
@@ -251,6 +294,9 @@ impl WindowsState {
         let launch = launches.remove(label)?;
         if launch.project.is_some() || launch.remote.is_some() || !launch.files.is_empty() || launch.diff.is_some() {
             self.opening.lock().insert(label.to_owned(), launch.clone());
+        }
+        if let Some(project) = launch.project.clone() {
+            self.launched.lock().insert(label.to_owned(), project.into());
         }
         Some(launch)
     }
@@ -283,6 +329,30 @@ impl WindowsState {
         opening.get(label).or_else(|| launches.get(label)).cloned()
     }
 
+    /// The project `label` took a launch for and has not opened: still opening, failed, or cancelled.
+    pub(crate) fn launched(&self, label: &str) -> Option<PathBuf> {
+        self.launched.lock().get(label).cloned()
+    }
+
+    /// `label`'s frontend is done with the launch it took. A project it did not open stays
+    /// launched, so the window group saves it and the next launch retries it.
+    pub fn launch_settled(&self, label: &str, opened: bool) {
+        if opened {
+            self.forget_launch(label);
+        }
+    }
+
+    /// `label` explicitly closed its project: nothing to retry.
+    pub fn forget_launch(&self, label: &str) {
+        self.launched.lock().remove(label);
+    }
+
+    /// The project saved for window-group member `label`: the one it `holds`, else the one it is
+    /// launched with (pending, opening, or failed to open).
+    pub fn saved_project(&self, label: &str, holds: Option<PathBuf>) -> Option<PathBuf> {
+        holds.or_else(|| self.pending(label).and_then(|l| l.project).map(Into::into)).or_else(|| self.launched(label))
+    }
+
     pub fn focused(&self, label: &str) {
         *self.last_focused.lock() = Some(label.to_owned());
     }
@@ -295,10 +365,37 @@ impl WindowsState {
             launches.remove(label);
             opening.remove(label);
         }
+        self.forget_launch(label);
         let mut last = self.last_focused.lock();
         if last.as_deref() == Some(label) {
             *last = None;
         }
+    }
+
+    /// Whether `label` records the project reopened on the next launch.
+    pub fn owns_session(&self, label: &str) -> bool {
+        match &*self.session_owner.lock() {
+            SessionOwner::Main => label == MAIN,
+            SessionOwner::Window(owner) => owner == label,
+            SessionOwner::Nobody => false,
+        }
+    }
+
+    /// Once the window holding the session is gone, the first of `remaining` (project windows in
+    /// label order) takes it over; returns that window, or `None` while the holder is still open.
+    pub fn hand_over_session(&self, remaining: &[String]) -> Option<String> {
+        let mut owner = self.session_owner.lock();
+        let held = match &*owner {
+            SessionOwner::Main => Some(MAIN),
+            SessionOwner::Window(label) => Some(label.as_str()),
+            SessionOwner::Nobody => None,
+        };
+        if held.is_some_and(|held| remaining.iter().any(|l| l == held)) {
+            return None;
+        }
+        let heir = remaining.first().cloned();
+        *owner = heir.clone().map_or(SessionOwner::Nobody, SessionOwner::Window);
+        heir
     }
 
     pub fn last_focused(&self) -> Option<String> {
@@ -311,6 +408,8 @@ impl WindowsState {
             *self.tab_closes.lock() = None;
         } else {
             self.restart.store(false, Ordering::SeqCst);
+            // The window that vetoed the quit stays open; no close it asked for is pending anymore.
+            self.close_requests.lock().clear();
         }
     }
 
@@ -324,6 +423,32 @@ impl WindowsState {
 
     pub fn quitting(&self) -> bool {
         self.quitting.load(Ordering::SeqCst)
+    }
+}
+
+/// Who records the project reopened on the next launch: `main` while it is open (restored group
+/// members open theirs after it and must not replace it), then a window left when it closed.
+#[derive(Default)]
+enum SessionOwner {
+    #[default]
+    Main,
+    Window(String),
+    /// Every window closed; the next one opened takes over.
+    Nobody,
+}
+
+/// Hands the session to a remaining window once its holder closed (`closed`, which may still be
+/// listed while being destroyed). Not while quitting: windows close one by one, `main` first,
+/// and the project `main` held is the one to reopen.
+pub fn hand_over_session(app: &AppHandle, closed: Option<&str>) {
+    let state = app.state::<WindowsState>();
+    if state.quitting() {
+        return;
+    }
+    let remaining: Vec<_> =
+        project_window_labels(app).into_iter().filter(|label| Some(label.as_str()) != closed).collect();
+    if let Some(heir) = state.hand_over_session(&remaining) {
+        let _ = app.emit_to(&heir, SESSION_OWNER_EVENT, ());
     }
 }
 
@@ -398,18 +523,6 @@ pub fn settings_label(parent: &str) -> String {
 /// Held from choosing a project window's label until the window exists.
 static CREATING: Mutex<()> = Mutex::new(());
 
-/// Windows being built to join a window group, which takes their frame from the group.
-#[cfg(target_os = "macos")]
-static JOINING_GROUP: Mutex<Vec<String>> = Mutex::new(Vec::new());
-
-/// Whether the window-state plugin restores and tracks `label`'s geometry. A window joining a
-/// group takes the group's frame instead; restoring a fullscreen state its label kept from an
-/// earlier window would give it a fullscreen Space of its own.
-#[cfg(target_os = "macos")]
-pub fn keeps_window_state(label: &str) -> bool {
-    !JOINING_GROUP.lock().iter().any(|l| l == label)
-}
-
 /// The window state key: one geometry per auxiliary kind, else the label itself.
 pub fn state_key(label: &str) -> &str {
     auxiliary(label).map_or(label, |(kind, _)| kind.name())
@@ -450,6 +563,25 @@ fn order_key(label: &str) -> (u8, u64, String) {
     } else {
         (2, 0, label.to_owned())
     }
+}
+
+/// How many project windows `caller`'s close guard should count as open. Windows asking to close
+/// together (a native tab group) are one window closing: the first of them in label order is the
+/// last window left (it returns to the welcome screen); the others just close.
+pub fn close_window_count(all: &[String], pending: &[String], caller: &str) -> usize {
+    let closing = sorted_labels(pending.iter().map(String::as_str).filter(|l| all.iter().any(|a| a == l)));
+    match closing.first() {
+        Some(keeper) if closing.len() > 1 && keeper == caller => all.len() - closing.len() + 1,
+        _ => all.len(),
+    }
+}
+
+/// The window, other than `caller`, whose close guard is still running (its prompt may be waiting
+/// for the user): the first open one in label order.
+pub fn still_closing(all: &[String], pending: &[String], caller: &str) -> Option<String> {
+    sorted_labels(pending.iter().map(String::as_str).filter(|l| *l != caller && all.iter().any(|a| a == l)))
+        .into_iter()
+        .next()
 }
 
 pub fn sorted_labels<'a>(labels: impl IntoIterator<Item = &'a str>) -> Vec<String> {
@@ -573,8 +705,8 @@ pub fn continue_quit(app: &AppHandle, closed: Option<&str>) {
 pub fn find_project_window(app: &AppHandle, root: &Path) -> Option<WebviewWindow> {
     let state = app.try_state::<AppState>()?;
     app.webview_windows().into_iter().filter(|(label, _)| auxiliary_parent(label).is_none()).find_map(|(label, w)| {
-        let project = state.project(&label).ok()?;
-        (project.root == root && !project.light).then_some(w)
+        let project = state.opened_project(&label)?;
+        (project.root == root).then_some(w)
     })
 }
 
@@ -602,7 +734,7 @@ pub fn target_window(app: &AppHandle) -> Option<WebviewWindow> {
     sorted_labels(windows.keys().map(String::as_str)).first().and_then(|l| windows.get(l)).cloned()
 }
 
-fn window_config(app: &AppHandle) -> IdeResult<WindowConfig> {
+pub(crate) fn window_config(app: &AppHandle) -> IdeResult<WindowConfig> {
     app.config()
         .app
         .windows
@@ -624,6 +756,23 @@ pub fn frame_color(appearance: &AppearanceSettings, os_dark: bool) -> Color {
     builtin_frame(theme)
         .or_else(|| builtin_frame(if sync && os_dark { "dark" } else { "light" }))
         .unwrap_or(Color(0xe9, 0xea, 0xee, 0xff))
+}
+
+/// The appearance native chrome takes, mirroring `nativeAppearance` in theme.ts: the
+/// theme's light / dark base, or the OS one (`None`) under "Sync with OS".
+fn native_theme(appearance: &AppearanceSettings) -> Option<Theme> {
+    // On Linux tao turns any theme into GTK's "prefer dark" flag (None means light), which would
+    // override the user's GTK setting; leave it untouched there.
+    if cfg!(target_os = "linux") || appearance.sync_with_os || appearance.theme == "system" {
+        return None;
+    }
+    // Built-in dark themes (BUILTIN_THEMES in platform/themes.ts); anything else resolves light,
+    // as `resolveThemeId` does.
+    Some(if matches!(appearance.theme.as_str(), "dark" | "dark-hc" | "solarized-dark" | "one-dark") {
+        Theme::Dark
+    } else {
+        Theme::Light
+    })
 }
 
 /// A `#rgb` / `#rrggbb` / `#rrggbbaa` colour sent by the UI (Tauri's own parser).
@@ -650,6 +799,8 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
         config.background_color = Some(color);
     } else if let Some(a) = &appearance {
         config.background_color = Some(frame_color(a, false));
+        // Native chrome (macOS window tabs) takes the theme's base before the page applies it.
+        config.theme = native_theme(a);
     }
     #[cfg(target_os = "linux")]
     let show_after_build = crate::linux_window_state::prepare(app, &mut config);
@@ -736,12 +887,27 @@ fn initial_titlebar_height(a: &AppearanceSettings, opens_project: bool) -> f64 {
 
 /// The first window (`create: false` in tauri.conf.json so it can take the theme's colour).
 pub fn create_main_window(app: &AppHandle) -> IdeResult<WebviewWindow> {
-    build_project_window(app, window_config(app)?)
+    let window = build_project_window(app, window_config(app)?)?;
+    #[cfg(target_os = "macos")]
+    if main_was_fullscreen(app) {
+        let _ = window.set_fullscreen(true);
+    }
+    Ok(window)
 }
 
 /// Creates a new project window; `project` is opened by its frontend on load.
 pub fn create_window(app: &AppHandle, project: Option<PathBuf>) -> IdeResult<WebviewWindow> {
-    create_window_with(app, project, Vec::new(), false)
+    create_window_with(app, project, Vec::new(), Tabbing::Never)
+}
+
+/// Whether a new window becomes a project tab. Only the user's choice ("Open project in: New
+/// tab") groups it, on every platform; the macOS system tab preference does not.
+#[derive(Clone, Copy)]
+enum Tabbing<'a> {
+    /// A plain window (restoring a saved group sets membership itself).
+    Never,
+    /// A tab of this window's group.
+    Into(&'a str),
 }
 
 /// [`create_window`] that also opens `files` (without `project`: in LightEdit).
@@ -749,27 +915,37 @@ fn create_window_with(
     app: &AppHandle,
     project: Option<PathBuf>,
     files: Vec<PathBuf>,
-    restoring: bool,
+    tabbing: Tabbing,
 ) -> IdeResult<WebviewWindow> {
     let title = project.as_deref().or(files.first().map(PathBuf::as_path)).and_then(Path::file_name);
     let title = title.map(|n| n.to_string_lossy().into_owned());
     let files = files.into_iter().map(Into::into).collect();
-    create_window_for(app, title, Launch { project: project.map(Into::into), files, ..Default::default() }, restoring)
+    create_window_for(app, title, Launch { project: project.map(Into::into), files, ..Default::default() }, tabbing)
 }
 
 /// Restoring a saved group preserves its membership and selected tab.
 pub fn create_restored_window(app: &AppHandle, project: PathBuf) -> IdeResult<WebviewWindow> {
-    create_window_with(app, Some(project), Vec::new(), true)
+    create_window_with(app, Some(project), Vec::new(), Tabbing::Never)
+}
+
+/// The project window a "New tab" open from window `caller` joins: its own (an auxiliary window's
+/// parent), when it holds a local project (groups save local paths only); otherwise the project
+/// opens in a plain window.
+fn tab_anchor(app: &AppHandle, caller: &str) -> Option<WebviewWindow> {
+    let label = auxiliary_parent(caller).unwrap_or(caller);
+    app.state::<AppState>().opened_project(label).is_some().then(|| app.get_webview_window(label)).flatten()
 }
 
 fn create_window_for(
     app: &AppHandle,
     title: Option<String>,
     launch: Launch,
-    _restoring: bool,
+    tabbing: Tabbing,
 ) -> IdeResult<WebviewWindow> {
-    #[cfg(target_os = "macos")]
-    let tab_target = if _restoring { None } else { crate::macos::new_project_tab_target(app, &launch)? };
+    let tab_target = match tabbing {
+        Tabbing::Into(caller) => tab_anchor(app, caller),
+        Tabbing::Never => None,
+    };
     // The label is free only until the window exists, so concurrent opens take turns.
     let creating = CREATING.lock();
     let windows = app.webview_windows();
@@ -790,23 +966,10 @@ fn create_window_for(
         config.center = false;
     }
     app.state::<WindowsState>().set_launch(&label, launch);
-    #[cfg(target_os = "macos")]
-    if tab_target.is_some() {
-        JOINING_GROUP.lock().push(label.clone());
-        // Selecting it in the group shows it; shown before, a window opened over a fullscreen
-        // group lands on the desktop and takes the screen there.
-        config.visible = false;
-    }
-    let window = build_project_window(app, config);
+    let window = build_project_window(app, config)?;
     drop(creating);
-    // Plugins hear of the window from the main thread's queue; forget it after them.
-    #[cfg(target_os = "macos")]
-    if tab_target.is_some() {
-        let joined = label.clone();
-        let _ = app.run_on_main_thread(move || JOINING_GROUP.lock().retain(|l| *l != joined));
-    }
-    let window = window?;
-    #[cfg(target_os = "macos")]
+    // Opened after every window closed: it holds the session (its frontend asks on startup).
+    hand_over_session(app, None);
     if let Some(target) = tab_target {
         crate::window_groups::join(app, target.label(), window.label())?;
         return Ok(window);
@@ -829,11 +992,11 @@ fn spawn_window_with(app: &AppHandle, project: Option<PathBuf>, files: Vec<PathB
 
 fn open_launch_window(app: &AppHandle, title: Option<String>, launch: Launch, wait: bool) -> IdeResult<()> {
     if wait {
-        return create_window_for(app, title, launch, false).map(|_| ());
+        return create_window_for(app, title, launch, Tabbing::Never).map(|_| ());
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = create_window_for(&app, title, launch, false) {
+        if let Err(e) = create_window_for(&app, title, launch, Tabbing::Never) {
             tracing::warn!("cannot open window: {}", e.message);
         }
     });
@@ -852,20 +1015,33 @@ pub enum OpenOutcome {
     Current,
 }
 
+/// Where [`open_project_window`] puts a project that isn't open yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenIn<'a> {
+    /// The caller opens it in its own window.
+    Current,
+    NewWindow,
+    /// A new tab of window `caller`'s group (a plain window when `caller` has no project).
+    NewTab {
+        caller: &'a str,
+    },
+}
+
 /// Opens folder `path` as a project and then `files` in its editor; see [`OpenOutcome`]
 /// (`Current`: the caller opens both itself).
 pub fn open_project_window(
     app: &AppHandle,
     path: &Path,
-    new_window: bool,
+    open_in: OpenIn,
     files: Vec<PathBuf>,
 ) -> IdeResult<OpenOutcome> {
     // Before touching the share: a stat on `\\wsl.localhost` is what makes it slow.
     if let Some(remote) = wsl_launch(path) {
-        return open_remote_window(app, &remote.target, &remote.path, new_window);
+        // Remote projects open in a window of their own, never as a tab.
+        return open_remote_window(app, &remote.target, &remote.path, open_in != OpenIn::Current);
     }
     let root = dunce::canonicalize(path).map_err(|e| IdeError::not_found(format!("{}: {e}", path.display())))?;
-    tracing::info!("open_project_window {} new_window={new_window}", root.display());
+    tracing::info!("open_project_window {} {open_in:?}", root.display());
     if let Some(w) = find_project_window(app, &root) {
         if files.is_empty() {
             focus(&w);
@@ -874,10 +1050,12 @@ pub fn open_project_window(
         }
         return Ok(OpenOutcome::Focused { label: w.label().to_owned() });
     }
-    if !new_window {
-        return Ok(OpenOutcome::Current);
-    }
-    let window = create_window_with(app, Some(root), files, false)?;
+    let tabbing = match open_in {
+        OpenIn::Current => return Ok(OpenOutcome::Current),
+        OpenIn::NewWindow => Tabbing::Never,
+        OpenIn::NewTab { caller } => Tabbing::Into(caller),
+    };
+    let window = create_window_with(app, Some(root), files, tabbing)?;
     Ok(OpenOutcome::Opened { label: window.label().to_owned() })
 }
 
@@ -887,7 +1065,7 @@ pub fn open_project_window(
 /// detach an editor tab out of its window.
 pub fn open_file_in_new_window(app: &AppHandle, project: Option<PathBuf>, file: PathBuf) -> IdeResult<OpenOutcome> {
     tracing::info!("open_file_in_new_window {} project={:?}", file.display(), project);
-    let window = create_window_with(app, project, vec![file], false)?;
+    let window = create_window_with(app, project, vec![file], Tabbing::Never)?;
     Ok(OpenOutcome::Opened { label: window.label().to_owned() })
 }
 
@@ -919,7 +1097,7 @@ pub fn open_remote_window(
     }
     let title = path.trim_end_matches('/').rsplit('/').next().filter(|n| !n.is_empty() && *n != "~").map(str::to_owned);
     let remote = RemoteLaunch { target: target.clone(), path: path.to_owned() };
-    let window = create_window_for(app, title, Launch { remote: Some(remote), ..Default::default() }, false)?;
+    let window = create_window_for(app, title, Launch { remote: Some(remote), ..Default::default() }, Tabbing::Never)?;
     Ok(OpenOutcome::Opened { label: window.label().to_owned() })
 }
 
@@ -1251,6 +1429,7 @@ fn launch_for(path: PathBuf, is_dir: bool) -> Launch {
 
 /// Second instance launched: focus this one and open its path argument.
 pub fn on_second_instance(app: &AppHandle, args: Vec<String>, cwd: String) {
+    tracing::info!(?args, "another launch handed its arguments to this instance");
     if app.state::<WindowsState>().cli.lock().push(args, cwd) {
         drain_cli(app);
     }
@@ -1803,6 +1982,41 @@ mod tests {
         assert_eq!(frame_color(&a, true), Color(0x26, 0x28, 0x2c, 0xff));
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn native_theme_is_left_to_gtk_on_linux() {
+        let mut a = AppearanceSettings::default();
+        for id in ["light", "dark", "system"] {
+            a.theme = id.into();
+            assert_eq!(native_theme(&a), None, "{id}");
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn native_theme_pins_the_theme_base_unless_following_the_os() {
+        let mut a = AppearanceSettings::default();
+        for (id, expected) in [
+            ("light", Theme::Light),
+            ("solarized-light", Theme::Light),
+            ("one-light", Theme::Light),
+            ("dark", Theme::Dark),
+            ("dark-hc", Theme::Dark),
+            ("solarized-dark", Theme::Dark),
+            ("one-dark", Theme::Dark),
+            ("unknown-theme", Theme::Light),
+        ] {
+            a.theme = id.into();
+            assert_eq!(native_theme(&a), Some(expected), "{id}");
+        }
+        a.theme = "dark".into();
+        a.sync_with_os = true;
+        assert_eq!(native_theme(&a), None);
+        a.sync_with_os = false;
+        a.theme = "system".into();
+        assert_eq!(native_theme(&a), None);
+    }
+
     #[test]
     fn additional_palettes_keep_native_startup_and_os_preferences_in_sync() {
         for (id, color) in
@@ -1838,6 +2052,56 @@ mod tests {
             sorted_labels(["project-10", "project-2", "main", "x"]),
             s(&["main", "project-2", "project-10", "x"])
         );
+    }
+
+    // A tab group closing as a whole counts as one window: its first member (label order) is the
+    // last window left when nothing else is open, the others close; open windows outside it count.
+    #[test]
+    fn tab_group_closing_together_counts_as_one_window() {
+        let group = s(&["main", "project-2", "project-10"]);
+        assert_eq!(close_window_count(&group, &s(&["project-10", "main", "project-2"]), "main"), 1);
+        assert_eq!(close_window_count(&group, &group, "project-2"), 3);
+        assert_eq!(close_window_count(&group, &group, "project-10"), 3);
+
+        let with_standalone = s(&["main", "project-2", "project-10", "project-3"]);
+        assert_eq!(close_window_count(&with_standalone, &group, "main"), 2);
+        assert_eq!(close_window_count(&with_standalone, &group, "project-2"), 4);
+
+        // One window closing alone, or none recorded: every open project window counts.
+        assert_eq!(close_window_count(&s(&["main"]), &s(&["main"]), "main"), 1);
+        assert_eq!(close_window_count(&group, &s(&["project-2"]), "project-2"), 3);
+        assert_eq!(close_window_count(&group, &[], "main"), 3);
+        // Requests from windows already gone (or auxiliary ones) are ignored.
+        assert_eq!(close_window_count(&s(&["project-2"]), &s(&["main", "project-2"]), "project-2"), 1);
+    }
+
+    // After a group member settles (back to the welcome screen, or cancelled), a member whose close
+    // guard still runs is shown again; nothing is focused when no other close is pending.
+    #[test]
+    fn settled_member_hands_focus_to_a_member_still_closing() {
+        let all = s(&["main", "project-2", "project-10"]);
+        assert_eq!(still_closing(&all, &s(&["project-10", "main", "project-2"]), "main"), Some("project-2".into()));
+        assert_eq!(still_closing(&all, &s(&["project-10", "main"]), "main"), Some("project-10".into()));
+        assert_eq!(still_closing(&all, &s(&["main", "project-2"]), "project-2"), Some("main".into()));
+        // Only the caller, nothing, or windows already gone.
+        assert_eq!(still_closing(&all, &s(&["main"]), "main"), None);
+        assert_eq!(still_closing(&all, &[], "main"), None);
+        assert_eq!(still_closing(&s(&["main"]), &s(&["main", "project-2"]), "main"), None);
+    }
+
+    // A window that vetoed Quit stays open: its close request must not count when a later window closes.
+    #[test]
+    fn cancelled_quit_settles_close_requests() {
+        let st = WindowsState::default();
+        st.close_requested("project-2");
+        st.close_requested("project-2");
+        assert_eq!(st.pending_closes(), s(&["project-2"]));
+        st.set_quitting(true);
+        st.set_quitting(false);
+        assert!(st.pending_closes().is_empty());
+        st.close_requested("main");
+        st.forget("main");
+        assert!(st.pending_closes().is_empty());
     }
 
     #[test]
@@ -2281,6 +2545,47 @@ mod tests {
         st.set_launch("project-1", Launch { project: Some("/p".into()), ..Default::default() });
         assert_eq!(st.take_launch("project-1").and_then(|l| l.project), Some("/p".into()));
         assert_eq!(st.take_launch("project-1"), None);
+    }
+
+    // A taken project launch stays launched until the window opens a project: a failed or cancelled
+    // one is retried next launch with its window group.
+    #[test]
+    fn a_taken_project_launch_stays_until_opened() {
+        let st = WindowsState::default();
+        st.set_launch("project-1", Launch { project: Some("/p".into()), ..Default::default() });
+        st.set_launch("project-2", Launch { files: vec!["/x/a.txt".into()], ..Default::default() });
+        st.take_launch("project-1");
+        st.take_launch("project-2");
+        assert_eq!(st.launched("project-1"), Some(p("/p")));
+        assert_eq!(st.launched("project-2"), None);
+        st.launch_settled("project-1", false);
+        assert_eq!(st.launched("project-1"), Some(p("/p")));
+        assert_eq!(st.saved_project("project-1", None), Some(p("/p")));
+        assert_eq!(st.saved_project("project-1", Some(p("/q"))), Some(p("/q")));
+        st.launch_settled("project-1", true);
+        assert_eq!(st.launched("project-1"), None);
+        st.set_launch("project-3", Launch { project: Some("/q".into()), ..Default::default() });
+        assert_eq!(st.saved_project("project-3", None), Some(p("/q")));
+        st.take_launch("project-3");
+        st.forget("project-3");
+        assert_eq!(st.launched("project-3"), None);
+    }
+
+    // `main` holds the session while open; once it closes the first window left takes over, and
+    // once every window closed the next one opened does.
+    #[test]
+    fn the_session_passes_from_main_to_a_remaining_window() {
+        let st = WindowsState::default();
+        assert!(st.owns_session("main") && !st.owns_session("project-1"));
+        assert_eq!(st.hand_over_session(&s(&["main", "project-1"])), None);
+        assert_eq!(st.hand_over_session(&s(&["project-1", "project-2"])).as_deref(), Some("project-1"));
+        assert!(st.owns_session("project-1") && !st.owns_session("main"));
+        assert_eq!(st.hand_over_session(&s(&["project-1", "project-3"])), None);
+        assert_eq!(st.hand_over_session(&s(&["project-2"])).as_deref(), Some("project-2"));
+        assert_eq!(st.hand_over_session(&[]), None);
+        assert!(!st.owns_session("project-2"));
+        assert_eq!(st.hand_over_session(&s(&["project-4"])).as_deref(), Some("project-4"));
+        assert!(st.owns_session("project-4"));
     }
 
     #[test]

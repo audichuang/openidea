@@ -7,7 +7,8 @@ import type { DiffData } from "./diffInput";
 
 export function DiffEditorTab({ input }: { input: EditorInput }) {
   const maximized = useToolWindowLayout((state) => !!state.stashed && !Object.values(state.visible).some(Boolean));
-  if ((input.data as DiffData).embedded) return <DiffEditor input={input} />;
+  const data = input.data as DiffData;
+  if (data.embedded) return <DiffEditor input={input} onNeighbour={data.onNeighbour} />;
   return (
     <DiffEditor
       input={input}

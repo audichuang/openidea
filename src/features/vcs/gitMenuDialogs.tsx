@@ -117,7 +117,9 @@ function useBranches(repo: string | null): Branch[] {
 }
 
 const branchOptions = (list: readonly Branch[]): SelectOption[] =>
-  list.filter((b) => !b.name.endsWith("/HEAD")).map((b) => ({ value: b.name, label: b.name, icon: "branch" }));
+  list
+    .filter((b) => !b.name.endsWith("/HEAD"))
+    .map((b) => ({ value: b.name, label: b.name, literal: true, icon: "branch" }));
 
 /** Remote branches of `remote` without the remote prefix (`origin/main` → `main`). */
 export function remoteBranchesOf(branches: readonly Branch[], remote: string): string[] {
@@ -251,15 +253,16 @@ function PullDialog({ onClose }: { onClose: () => void }) {
             <Select
               aria-label="Remote"
               value={remote}
-              options={(remotes ?? []).map((r) => ({ value: r.name, label: r.name, detail: r.url }))}
+              options={(remotes ?? []).map((r) => ({ value: r.name, label: r.name, literal: true, detail: r.url }))}
               onChange={setRemote}
             />
             <Select
               aria-label="Remote branch"
+              searchable
               className={styles.grow}
               value={branch}
               placeholder="Branch"
-              options={remoteBranches.map((b) => ({ value: b, label: b, icon: "branch" }))}
+              options={remoteBranches.map((b) => ({ value: b, label: b, literal: true, icon: "branch" }))}
               onChange={setBranch}
             />
           </div>
@@ -326,6 +329,7 @@ function MergeDialog({ onClose }: { onClose: () => void }) {
         </div>
         <Select
           aria-label="Branch to merge"
+          searchable
           value={branch}
           placeholder="Select branch"
           options={options}
@@ -408,6 +412,7 @@ function RebaseDialog({ onClose }: { onClose: () => void }) {
         </div>
         <Select
           aria-label="Upstream"
+          searchable
           value={upstream}
           placeholder="Select branch"
           options={options}
@@ -415,7 +420,14 @@ function RebaseDialog({ onClose }: { onClose: () => void }) {
         />
         <Checkbox label="--onto" checked={useOnto} onChange={setUseOnto} />
         {useOnto && (
-          <Select aria-label="New base" value={onto} placeholder="New base" options={options} onChange={setOnto} />
+          <Select
+            aria-label="New base"
+            searchable
+            value={onto}
+            placeholder="New base"
+            options={options}
+            onChange={setOnto}
+          />
         )}
         <Checkbox label="--rebase-merges" checked={rebaseMerges} onChange={setRebaseMerges} />
         <Checkbox label="--keep-empty" checked={keepEmpty} onChange={setKeepEmpty} />
@@ -897,6 +909,7 @@ function NewWorktreeDialog({
         </div>
         <Select
           aria-label="Check out"
+          searchable
           value={source}
           placeholder="Select branch"
           options={options}

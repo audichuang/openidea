@@ -79,10 +79,29 @@ fn lazy_summaries_seek_and_index_survive_refresh_and_restart() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     git(dir, &["init", "-q"]);
-    let mut ids = Vec::new();
+    let mut stream = String::new();
     for i in 0..70 {
-        ids.push(commit(dir, "a", &format!("summary {i}\n\nneedle body {i}")));
+        let message = format!("summary {i}\n\nneedle body {i}");
+        stream.push_str(&format!(
+            "commit refs/heads/main\ncommitter Test <test@example.com> {} +0000\ndata {}\n{}\nM 100644 inline a\ndata {}\n{}\n\n",
+            1000 + i,
+            message.len(),
+            message,
+            message.len(),
+            message
+        ));
     }
+    let mut child = Command::new("git")
+        .current_dir(dir)
+        .args(["fast-import", "--quiet"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(stream.as_bytes()).unwrap();
+    assert!(child.wait().unwrap().success());
+    git(dir, &["reset", "--hard", "HEAD"]);
+    let ids: Vec<_> = git(dir, &["rev-list", "--reverse", "HEAD"]).lines().map(str::to_owned).collect();
     let cache = tempfile::tempdir().unwrap();
     let repo = Repo::discover(dir).unwrap().unwrap();
     repo.enable_log_index(cache.path());
@@ -388,6 +407,60 @@ fn metadata_and_path_cache_survive_restart_without_caching_refs_or_filters() {
 }
 
 #[test]
+fn followed_history_survives_reopen_and_fetch_without_hiding_new_commits() {
+    let (_tmp, dir) = history_repo();
+    let first = commit(&dir, "old.txt", "original");
+    git(&dir, &["mv", "old.txt", "new.txt"]);
+    git(&dir, &["commit", "-qm", "renamed"]);
+    let renamed = git(&dir, &["rev-parse", "HEAD"]);
+    let cache = tempfile::tempdir().unwrap();
+    let query = LogQuery { path: Some("new.txt".into()), follow: true, summary_only: true, ..Default::default() };
+    let read = || {
+        let repo = Repo::discover(&dir).unwrap().unwrap();
+        repo.enable_log_index(cache.path());
+        repo.log(&query).unwrap()
+    };
+    for _ in 0..2 {
+        let rows = read();
+        assert_eq!(rows.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), [renamed.as_str(), first.as_str()]);
+        assert_eq!(rows[1].history_path.as_deref(), Some("old.txt"));
+    }
+    let upstream = tempfile::tempdir().unwrap();
+    let remote = upstream.path().join("source");
+    git(&dir, &["clone", "-q", ".", remote.to_str().unwrap()]);
+    let fetched = commit(&remote, "new.txt", "remote edit");
+    git(&dir, &["fetch", "-q", remote.to_str().unwrap(), "HEAD:refs/remotes/test/main"]);
+    let rows = read();
+    assert_eq!(
+        rows.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+        [fetched.as_str(), renamed.as_str(), first.as_str()]
+    );
+    assert_eq!(rows[2].history_path.as_deref(), Some("old.txt"));
+}
+
+#[test]
+fn followed_history_rechecks_similarity_when_attributes_change() {
+    let (_tmp, dir) = history_repo();
+    git(&dir, &["config", "core.autocrlf", "false"]);
+    let old = (0..10).map(|i| format!("line {i} content\r\n")).collect::<String>();
+    let first = commit(&dir, "old.txt", &old);
+    git(&dir, &["mv", "old.txt", "new.txt"]);
+    let new = old.replace("\r\n", "\n").replace("line 9 content", "changed");
+    let tip = commit(&dir, "new.txt", &new);
+    let cache = tempfile::tempdir().unwrap();
+    let query = LogQuery { path: Some("new.txt".into()), follow: true, summary_only: true, ..Default::default() };
+    let read = || {
+        let repo = Repo::discover(&dir).unwrap().unwrap();
+        repo.set_execution_allowed(true);
+        repo.enable_log_index(cache.path());
+        repo.log(&query).unwrap().into_iter().map(|c| c.id).collect::<Vec<_>>()
+    };
+    assert_eq!(read(), [tip.clone(), first]);
+    std::fs::write(dir.join(".git/info/attributes"), "*.txt -diff\n").unwrap();
+    assert_eq!(read(), [tip]);
+}
+
+#[test]
 fn cancelled_query_does_not_publish_a_partial_page() {
     let tmp = tempfile::tempdir().unwrap();
     git(tmp.path(), &["init", "-q"]);
@@ -650,6 +723,71 @@ fn file_history_through_parallel_renames_names_the_path_of_each_revision() {
             ("Renamed on main", "renamed.txt"),
             ("Renamed on other", "renamed.txt"),
         ])
+    );
+}
+
+#[test]
+fn file_history_keeps_independent_creations_and_follows_each_rename() {
+    let (_tmp, dir) = history_repo();
+    commit(&dir, "base.txt", "Root");
+    git(&dir, &["switch", "-qc", "created"]);
+    commit(&dir, "shared.txt", "Created independently");
+    git(&dir, &["switch", "-q", "main"]);
+    let hash_name = "0123456789abcdef0123456789abcdef01234567";
+    commit(&dir, hash_name, "Created original");
+    git(&dir, &["mv", hash_name, "shared.txt"]);
+    git(&dir, &["commit", "-qm", "Renamed original"]);
+    git(&dir, &["switch", "-qc", "other", "main~2"]);
+    commit(&dir, "other.txt", "Created other");
+    git(&dir, &["mv", "other.txt", "shared.txt"]);
+    git(&dir, &["commit", "-qm", "Renamed other"]);
+
+    let repo = Repo::discover(&dir).unwrap().unwrap();
+    let history = |branches| {
+        let mut rows = repo
+            .log(&LogQuery {
+                path: Some("shared.txt".into()),
+                branches,
+                follow: true,
+                summary_only: true,
+                ..Default::default()
+            })
+            .unwrap()
+            .into_iter()
+            .map(|c| (c.summary, c.history_path.unwrap()))
+            .collect::<Vec<_>>();
+        rows.sort();
+        rows
+    };
+    assert_eq!(
+        history(vec![]),
+        pairs(&[
+            ("Created independently", "shared.txt"),
+            ("Created original", hash_name),
+            ("Created other", "other.txt"),
+            ("Renamed original", "shared.txt"),
+            ("Renamed other", "shared.txt"),
+        ])
+    );
+    assert_eq!(
+        history(vec!["main".into()]),
+        pairs(&[("Created original", hash_name), ("Renamed original", "shared.txt")])
+    );
+}
+
+#[test]
+fn file_history_follows_a_source_replaced_by_a_directory() {
+    let (_tmp, dir) = history_repo();
+    commit(&dir, "source.txt", "Created source");
+    git(&dir, &["mv", "source.txt", "destination.txt"]);
+    std::fs::create_dir(dir.join("source.txt")).unwrap();
+    std::fs::write(dir.join("source.txt/other.txt"), "Unrelated").unwrap();
+    git(&dir, &["add", "-A"]);
+    git(&dir, &["commit", "-qm", "Renamed and replaced"]);
+
+    assert_eq!(
+        file_history(&dir, "destination.txt"),
+        pairs(&[("Renamed and replaced", "destination.txt"), ("Created source", "source.txt")])
     );
 }
 

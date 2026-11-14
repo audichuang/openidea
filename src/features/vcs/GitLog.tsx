@@ -6,6 +6,8 @@ import { branchesByRepo, commitKey, commitRepo, graphCommit, type RepoCommit } f
 /** Git tool window: Log (graph, filters, commit details) and Console tabs. */
 import { IssueText } from "./issueLinks";
 import { BranchFilterPopup } from "./BranchFilterPopup";
+import { RepositoryFilterPopup } from "./RepositoryFilterPopup";
+import { RepoSwatch } from "./RepoSwatch";
 import {
   Fragment,
   memo,
@@ -86,7 +88,7 @@ import {
   PAGE,
 } from "./logStore";
 import { logOptions, refLabels, useLogOptions, type LogOptions } from "./logOptions";
-import { KIND_COLOR, baseName, dirName, fileCount, formatTime, relTo, type EffectiveKind } from "./model";
+import { KIND_COLOR, baseName, dirName, fileCount, formatTime, relTo, repoColor, type EffectiveKind } from "./model";
 import { clearConsole, useVcsConsole } from "./ops";
 import { currentRepo, currentRepoRoot, loadBranches, repoName, useVcs } from "./store";
 import { canDeleteBranch, loadFavoriteBranches, useFavoriteBranches } from "./branchOps";
@@ -230,8 +232,6 @@ export function LogView() {
   const shown = useGitLog((s) => s.shownLog);
   const active = !scope || scope === shown;
   const version = useVcs((s) => s.version);
-  const commits = useGitLog((s) => s.commits);
-  const selection = useGitLog((s) => s.selection);
   const root = useVcs((s) => s.root);
   const repo = useLogRepositories();
   const readOnly = useReadOnlyLog();
@@ -347,12 +347,18 @@ export function LogView() {
         <>
           <SplitHandle />
           <SplitPanel id="details" defaultSize="28%" minSize="15%">
-            <CommitDetails key={selection.join(" ") || "none"} commits={commits} />
+            <LogCommitDetails />
           </SplitPanel>
         </>
       )}
     </SplitGroup>
   );
+}
+
+function LogCommitDetails() {
+  const commits = useGitLog((s) => s.commits);
+  const selection = useGitLog((s) => s.selection);
+  return <CommitDetails key={selection.join(" ") || "none"} commits={commits} />;
 }
 
 // --- branches ---------------------------------------------------------------
@@ -376,6 +382,7 @@ export function BranchesPanel() {
   const logGeneration = useGitLog((s) => s.generation);
   const selectedBranches = useVcs((s) => s.branches);
   const repositories = useLogRepositories();
+  const workspaceRoots = useVcs((s) => s.roots);
   const readOnly = useReadOnlyLog();
   const version = useVcs((s) => s.version);
   const [allBranches, setAllBranches] = useState<Record<string, Branch[]>>({});
@@ -579,6 +586,11 @@ export function BranchesPanel() {
                     : "folder"
           }
           getDetail={branchDetail}
+          getSwatch={(n) =>
+            n.kind === "repository" && n.repo
+              ? repoColor(n.repo, workspaceRoots.includes(n.repo) ? workspaceRoots : repositories)
+              : null
+          }
           selected={selected}
           onSelectionChange={(sel) => setSelected(sel)}
           onActivate={(n) => {
@@ -752,6 +764,7 @@ function FilterBar() {
   const [text, setText] = useState(filters.text);
   const [branchAnchor, setBranchAnchor] = useState<HTMLElement | null>(null);
   const [menuBelow, dropdown] = useDropdownMenu();
+  const [repoAnchor, setRepoAnchor] = useState<HTMLElement | null>(null);
   // Filters that do not fit move behind a chevron, like a toolbar's overflow.
   const groupRef = useRef<HTMLSpanElement>(null);
   const [hiddenFrom, setHiddenFrom] = useState(Infinity);
@@ -885,15 +898,7 @@ function FilterBar() {
           {
             label: "Repository",
             value: filters.repositories?.map(repoName).join(", ") || null,
-            onOpen: (anchor: HTMLElement) =>
-              menuBelow(
-                anchor,
-                repositories.map((repo) => ({
-                  label: repoName(repo),
-                  checked: filters.repositories?.includes(repo) ?? false,
-                  run: () => setLogFilters({ repositories: toggleRepository(filters.repositories, repo) }),
-                })),
-              ),
+            onOpen: setRepoAnchor,
             onClear: () => setLogFilters({ repositories: [] }),
           },
         ]
@@ -980,6 +985,15 @@ function FilterBar() {
         />
       )}
       {dropdown}
+      {repoAnchor && (
+        <RepositoryFilterPopup
+          anchor={repoAnchor}
+          repositories={repositories}
+          selected={filters.repositories ?? []}
+          onClose={() => setRepoAnchor(null)}
+          onSelect={(repo) => setLogFilters({ repositories: toggleRepository(filters.repositories, repo) })}
+        />
+      )}
       {branchAnchor && (
         <BranchFilterPopup
           anchor={branchAnchor}
@@ -1170,6 +1184,8 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
   if (many) {
     return [
       { kind: "action", action: "vcs.log.copyRevision", arg: selection, label: "Copy Revision Numbers" },
+      { kind: "action", action: "clip.copyCommitFiles", arg: selection },
+      { kind: "action", action: "clip.copyCommits", arg: selection },
       { kind: "action", action: "vcs.log.createPatch", arg: selection },
       { kind: "action", action: "vcs.log.cherryPick", arg: selection },
       ...(selection.length === 2
@@ -1211,6 +1227,8 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
       run: () => toggleCommitBookmark(c),
     },
     { label: "Copy Commit Message", run: () => copyCommitMessage(c) },
+    { kind: "action", action: "clip.copyCommitFiles", arg: c },
+    { kind: "action", action: "clip.copyCommits", arg: c },
     { kind: "action", action: "vcs.log.createPatch", arg: c },
     { kind: "action", action: "vcs.log.cherryPick", arg: c },
     { kind: "separator" },
@@ -1563,7 +1581,10 @@ function CommitList() {
     if (c) {
       if (e.shiftKey) extendCommitSelection(commitKey(c), commits);
       else selectCommit(commitKey(c));
-      virtualizer.scrollToIndex(next, { align: "auto" });
+      // Fixed rows already in view do not need a scroll command or reconciliation.
+      const offset = virtualizer.getOffsetForIndex(next);
+      if (offset && offset[1] !== "auto" && offset[0] !== virtualizer.scrollOffset)
+        virtualizer.scrollToIndex(next, { align: "auto" });
     }
   };
 
@@ -2215,6 +2236,7 @@ function CommitRowView({
     >
       {opts.showRepository && commitRepo(c) && useVcs.getState().roots.length > 1 && (
         <span className={styles.colRepository} title={commitRepo(c)!}>
+          <RepoSwatch root={commitRepo(c)!} />
           {repoName(commitRepo(c)!)}
         </span>
       )}
@@ -2985,6 +3007,13 @@ export function changesMenu(changes: LogChange[]): MenuItem[] {
       action: "vcs.log.changes.jumpToSource",
       arg: changes,
       disabled: !changes.some((c) => c.after && !c.readOnly),
+    },
+    { kind: "separator" },
+    {
+      kind: "action",
+      action: "clip.copyLogChanges",
+      arg: { commits: selectedCommits(), changes },
+      label: "ClipCode: Copy Full Source",
     },
     { kind: "separator" },
     {

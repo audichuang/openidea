@@ -6,10 +6,13 @@ import { connectRemote, isRemoteWindow } from "@/platform/remote";
 import { ask } from "./messages";
 import { maybeEditorService } from "./contributions";
 
-/** "Open project in": `new` | `same` | `ask`. */
-export function openPolicy(): "ask" | "new" | "same" {
+/** Where a project opens; Attach is offered for one open and never remembered. */
+export type OpenMode = "new" | "tab" | "same" | "attach";
+
+/** "Open project in": `new` | `tab` | `same` | `ask`. */
+export function openPolicy(): "ask" | Exclude<OpenMode, "attach"> {
   const v = useProject.getState().settings?.general?.openProjectIn;
-  return v === "new" || v === "same" ? v : "ask";
+  return v === "new" || v === "tab" || v === "same" ? v : "ask";
 }
 
 /**
@@ -17,25 +20,29 @@ export function openPolicy(): "ask" | "new" | "same" {
  * per "Open project in", asking when set to (and remembering "Don't ask again").
  * `null`: cancelled.
  */
-export async function chooseProjectWindow(name: string, allowAttach = true): Promise<"new" | "same" | "attach" | null> {
+export async function chooseProjectWindow(name: string, allowAttach = true): Promise<OpenMode | null> {
   const { project, lightEdit } = useProject.getState();
   if (!project && !lightEdit) return "same";
+  // Attach and New Tab need a local project here and a local project to open: workspaces and
+  // saved tab groups hold local paths only.
   const canAttach = allowAttach && !!project && !isRemoteWindow();
-  const mode = openPolicy();
+  const policy = openPolicy();
+  const mode = policy === "tab" && !canAttach ? "ask" : policy;
   if (mode !== "ask") return mode;
   const r = await ask({
     title: t("app.window.askTitle"),
-    width: canAttach ? 640 : undefined,
+    width: canAttach ? 720 : undefined,
     body: t("app.window.askBody", { name }),
     buttons: [
       { id: "cancel", label: t("common.cancel") },
       ...(canAttach ? [{ id: "attach", label: t("app.window.askAttach") }] : []),
       { id: "new", label: t("app.window.askNew") },
+      ...(canAttach ? [{ id: "tab", label: t("app.window.askTab") }] : []),
       { id: "same", label: t("app.window.askThis"), primary: true },
     ],
     checkbox: t("app.window.askRemember"),
   });
-  if (r.button !== "same" && r.button !== "new" && r.button !== "attach") return null;
+  if (r.button !== "same" && r.button !== "new" && r.button !== "tab" && r.button !== "attach") return null;
   if (r.checked && r.button !== "attach") {
     try {
       useProject.setState({

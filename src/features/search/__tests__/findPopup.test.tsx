@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import type { FileMatches, SearchSummary } from "@/platform/ipc";
+import type { ProjectInfo } from "@/bindings";
 import type { ReplaceRequest } from "../find/replaceFlow";
 
 const replaced: ReplaceRequest[] = [];
@@ -76,8 +77,10 @@ const {
 
 const { formatBinding } = await import("@/platform/keymap");
 const { usePlatform } = await import("@/platform/platformInfo");
+// The browse button imports the dialog wrapper lazily; load it now so fake timers alone settle the click.
+await import("@/platform/dialog");
 
-const settle = () => act(() => new Promise((r) => setTimeout(r, 250)));
+const settle = () => act(() => vi.advanceTimersByTimeAsync(150));
 const selectedRows = () =>
   within(screen.getByRole("listbox", { name: "Matches" }))
     .getAllByRole("option")
@@ -85,6 +88,7 @@ const selectedRows = () =>
 const field = () => screen.getByLabelText("Text to find");
 
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   replaced.length = 0;
   confirms.length = 0;
   localStorage.clear();
@@ -109,6 +113,7 @@ beforeEach(() => {
 
 afterEach(() => {
   act(() => hideFindPopup());
+  vi.useRealTimers();
 });
 
 describe("Find in Files popup", () => {
@@ -204,7 +209,8 @@ describe("Find in Files popup", () => {
     act(() => void runFindPopupCommand("previousResult"));
     expect(selectedRows()[0]!.textContent).toContain("a.kt");
     act(() => void runFindPopupCommand("recentSearches"));
-    expect(await screen.findByText("older")).toBeInTheDocument();
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(screen.getByText("older")).toBeInTheDocument();
     act(() => hideFindPopup());
   });
 
@@ -227,6 +233,40 @@ describe("Find in Files popup", () => {
     fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
     expect(useFindPopup.getState().open).toBe(false);
     expect(findHistory("find")[0]).toBe("order");
+  });
+
+  it("shows workspace member folder names untranslated in zh", async () => {
+    const { _resetI18nForTests, setLocale, tx } = await import("@/platform/i18n");
+    const { useProject } = await import("@/platform/project");
+    await setLocale("zh");
+    // The zh catalog translates the words dev/test; folder names must stay literal.
+    expect(tx("dev")).not.toBe("dev");
+    useProject.setState({
+      project: {
+        root: "/ws",
+        name: "Workspace",
+        trusted: true,
+        isGit: false,
+        workspace: { version: 1, name: "Workspace", projects: ["/ws/dev", "/ws/test"] },
+      } as ProjectInfo,
+    });
+    useFindPopup.setState({ scopeTab: "module", module: "/ws/dev" });
+    try {
+      render(<FindInFilesOverlay />);
+      act(() => showFindPopup(false, { query: "order" }));
+      await settle();
+      const picker = screen.getByRole("button", { name: tx("Module") });
+      expect(picker).toHaveTextContent(/^dev$/);
+      fireEvent.click(picker);
+      expect(
+        within(screen.getByRole("listbox", { name: tx("Module") }))
+          .getAllByRole("option")
+          .map((o) => o.textContent),
+      ).toEqual(["dev/ws/dev", "test/ws/test"]);
+    } finally {
+      useProject.setState({ project: null });
+      _resetI18nForTests();
+    }
   });
 });
 

@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from "vitest";
 import type { GHActor, GHLabel, GHPRTimelineItem, GHPullRequestReviewThread, GHUser } from "../api/types";
 import {

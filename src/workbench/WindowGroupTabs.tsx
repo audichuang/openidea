@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
+import { usePlatform } from "@/platform/platformInfo";
 import { reorderedTabs, useWindowGroup } from "@/platform/windowGroups";
 import { IconButton, showContextMenu } from "@/ui";
 import { notifications } from "./contributions";
@@ -10,14 +11,25 @@ function run(work: Promise<unknown>) {
   void work.catch((e) => notifications().notify({ level: "error", title: "Window group", body: String(e) }));
 }
 
-export function WindowGroupTabs() {
+/**
+ * The window group's project tabs, below the toolbar. On macOS the group is an AppKit tab group
+ * whose own tab bar is hidden (`hide_system_tab_bars`), so the tabs stay below the toolbar in
+ * fullscreen too, as in IntelliJ. `hidePageTabs` (Distraction Free) hides them.
+ */
+export function WindowGroupTabs({ hidePageTabs = false }: { hidePageTabs?: boolean }) {
+  return hidePageTabs ? null : <PageTabs />;
+}
+
+function PageTabs() {
   const tabs = useWindowGroup((state) => state.tabs);
+  // macOS: IntelliJ's look there, equal tabs with the title centred and close on hover.
+  const mac = usePlatform((s) => s.os === "macos");
   const drag = useRef<{ label: string; x: number; moved: boolean } | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
   const tx = useTx();
   if (tabs.length < 2) return null;
   return (
-    <div className={styles.bar} data-window-group>
+    <div className={`${styles.bar} ${mac ? styles.mac : ""}`} data-window-group>
       <div className={styles.tabs} role="tablist" aria-label={tx("Project windows")}>
         {tabs.map((tab) => (
           <div
@@ -117,7 +129,7 @@ export function WindowGroupTabs() {
           </div>
         ))}
       </div>
-      <IconButton icon="external-link" title="Move Tab to New Window" action="window.detachTab" />
+      {!mac && <IconButton icon="external-link" title="Move Tab to New Window" action="window.detachTab" />}
     </div>
   );
 }

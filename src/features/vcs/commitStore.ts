@@ -2,7 +2,7 @@
 import { create } from "zustand";
 import { call, commands } from "@/platform/ipc";
 import type { Commit } from "@/bindings";
-import type { CheckState } from "./changes";
+import type { CheckState, GroupId } from "./changes";
 import type { CommitProblem } from "./commitChecks";
 import { currentRepo, useVcs } from "./store";
 
@@ -14,21 +14,30 @@ interface CommitState {
   author: string;
   /** Commit Options › Run Git hooks. */
   runHooks: boolean;
+  /** Group By › Directory of the change list tree. */
   groupByDir: boolean;
+  /** Group By › Directory of the staging area tree (on by default, as in IDEA). */
+  stagingGroupByDir: boolean;
   /** Group the changes into Staged / Unstaged instead of one "Changes" group. */
   groupByStaging: boolean;
+  /** With the staging area: unversioned files under Unstaged (VS Code) instead of their own group (IDEA). */
+  untrackedInUnstaged: boolean;
   /** Whether the Git window's Local Changes tab previews the selection's diff. */
   diffPreview: boolean;
   /** Whether the Commit tool window previews the selection's diff beside the changes (#1599). */
   commitDiffPreview: boolean;
   /** User overrides of the inclusion checkboxes (absolute path → state). */
   checks: Map<string, CheckState>;
+  /** With the staging area and several repositories: repositories unticked on their Staged node. */
+  stagingExcludedRoots: ReadonlySet<string>;
   /** Changed blocks left out of the commit (absolute path → `hunkKeys`) of `hunks` files. */
   excludedHunks: Map<string, Set<string>>;
   /** Absolute paths selected in the changes tree. */
   selection: string[];
   /** Keys of the selected tree nodes: which staging side of a partially staged file. */
   selectionKeys: string[];
+  /** The selected node when it is a single file node: its group picks the index side the preview shows. */
+  selectedFile: { path: string; group: GroupId } | null;
   /** Bumped to focus the message field. */
   focusTick: number;
   /** Bumped to open the commit message history popup. */
@@ -53,13 +62,17 @@ export const useCommit = create<CommitState>(() => ({
   author: "",
   runHooks: true,
   groupByDir: readBool("openidea.vcs.groupByDir", false),
+  stagingGroupByDir: readBool("openidea.vcs.stagingGroupByDir", true),
   groupByStaging: readBool("openidea.vcs.groupByStaging", false),
+  untrackedInUnstaged: readBool("openidea.vcs.untrackedInUnstaged", true),
   diffPreview: readBool("openidea.vcs.diffPreview", true),
   commitDiffPreview: readBool("openidea.vcs.commitDiffPreview", false),
   checks: new Map(),
+  stagingExcludedRoots: new Set(),
   excludedHunks: new Map(),
   selection: [],
   selectionKeys: [],
+  selectedFile: null,
   focusTick: 0,
   historyTick: 0,
   checkProblems: [],
@@ -86,10 +99,36 @@ function readBool(key: string, fallback: boolean): boolean {
   }
 }
 
+export function setUntrackedInUnstaged(v: boolean) {
+  useCommit.setState({ untrackedInUnstaged: v });
+  try {
+    localStorage.setItem("openidea.vcs.untrackedInUnstaged", String(v));
+  } catch {
+    // ignore
+  }
+}
+
 export function setGroupByDir(v: boolean) {
   useCommit.setState({ groupByDir: v });
   try {
     localStorage.setItem("openidea.vcs.groupByDir", String(v));
+  } catch {
+    // ignore
+  }
+}
+
+/** Ticks or unticks a repository's staged changes for the next commit (staging area, several repositories). */
+export function setStagingRootIncluded(root: string, included: boolean) {
+  const next = new Set(useCommit.getState().stagingExcludedRoots);
+  if (included) next.delete(root);
+  else next.add(root);
+  useCommit.setState({ stagingExcludedRoots: next });
+}
+
+export function setStagingGroupByDir(v: boolean) {
+  useCommit.setState({ stagingGroupByDir: v });
+  try {
+    localStorage.setItem("openidea.vcs.stagingGroupByDir", String(v));
   } catch {
     // ignore
   }
@@ -281,9 +320,11 @@ export function installPreparedMessage(): () => void {
         message: "",
         amend: false,
         checks: new Map(),
+        stagingExcludedRoots: new Set(),
         excludedHunks: new Map(),
         selection: [],
         selectionKeys: [],
+        selectedFile: null,
         tab: "changes",
         selectedList: null,
         selectedShelf: null,

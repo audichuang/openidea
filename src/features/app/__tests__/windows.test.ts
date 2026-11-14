@@ -1,16 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const projectTrustStatus = vi.fn();
-vi.mock("@/platform/projectTrust", () => ({ confirmProjectTrust: vi.fn(async () => {}) }));
+vi.mock("@/platform/projectTrust", () => ({
+  confirmProjectTrust: vi.fn(async () => {}),
+  provideProjectTrustPrompt: vi.fn(() => () => {}),
+}));
 vi.mock("@/workbench/messages", () => ({ ask: vi.fn() }));
 const workspaceAttach = vi.fn();
 const workspaceUpdate = vi.fn();
 const projectCurrent = vi.fn();
 const windowOpenProject = vi.fn();
+const windowOpenProjectTab = vi.fn();
 const windowOpenFiles = vi.fn();
 const windowTakeLaunch = vi.fn();
 const windowCompleteLaunch = vi.fn();
 const wslResolve = vi.fn();
+const windowLaunchSettled = vi.fn(async () => null);
 const cancelClose = vi.fn();
 const notify = vi.fn();
 const listen = vi.fn();
@@ -43,10 +48,12 @@ vi.mock("@/platform/ipc", async (orig) => {
       workspaceUpdate: (...a: unknown[]) => workspaceUpdate(...a),
       projectCurrent: () => projectCurrent(),
       windowOpenProject: (...a: unknown[]) => windowOpenProject(...a),
+      windowOpenProjectTab: (...a: unknown[]) => windowOpenProjectTab(...a),
       windowOpenFiles: (...a: unknown[]) => windowOpenFiles(...a),
       windowTakeLaunch: () => windowTakeLaunch(),
       windowCompleteLaunch: () => windowCompleteLaunch(),
       wslResolve: (p: string) => wslResolve(p),
+      windowLaunchSettled: () => windowLaunchSettled(),
       lightEditOpen: (p: string) => lightEditOpen(p),
       fsReadDir: (p: string) => fsReadDir(p),
     },
@@ -111,12 +118,13 @@ beforeEach(() => {
   workspaceAttach.mockReset();
   workspaceUpdate.mockReset();
   projectCurrent.mockReset();
-  for (const f of [windowOpenProject, windowOpenFiles, windowTakeLaunch, wslResolve]) f.mockReset();
+  for (const f of [windowOpenProject, windowOpenProjectTab, windowOpenFiles, windowTakeLaunch, wslResolve])
+    f.mockReset();
   windowTakeLaunch.mockResolvedValue(null);
   windowCompleteLaunch.mockReset().mockResolvedValue(ok(null));
   wslResolve.mockResolvedValue(null);
   vi.mocked(connectRemote).mockClear();
-  for (const f of [lightEditOpen, fsReadDir, openProject]) f.mockClear();
+  for (const f of [lightEditOpen, fsReadDir, openProject, windowLaunchSettled]) f.mockClear();
   cancelClose.mockClear();
   vi.mocked(confirmLeaveProject).mockClear();
   notify.mockClear();
@@ -200,6 +208,43 @@ describe("replacing a project in this window", () => {
     await openProjectWithPolicy("/same");
     expect(windowOpenProject).toHaveBeenCalledWith("/same", false, []);
     expect(openProject).toHaveBeenCalledWith("/same");
+  });
+
+  it("opens the project in a new tab of this window when set to 'tab'", async () => {
+    useProject.setState({ ...projectState("/a"), settings: { general: { openProjectIn: "tab" } } } as never);
+    windowOpenProjectTab.mockResolvedValue(ok({ kind: "opened", label: "project-1" }));
+    await openProjectWithPolicy("/b", ["/b/x.ts"]);
+    expect(windowOpenProjectTab).toHaveBeenCalledWith("/b", ["/b/x.ts"]);
+    expect(windowOpenProject).not.toHaveBeenCalled();
+    expect(openProject).not.toHaveBeenCalled();
+    expect(useProject.getState().project?.root).toBe("/a");
+  });
+
+  it("asks about trust here before a new tab or window exists, and opens neither when declined", async () => {
+    const asked: string[] = [];
+    let answer = false;
+    vi.mocked(confirmProjectTrust).mockImplementation(async (path) => {
+      asked.push(path);
+      if (!answer) throw new IpcError({ kind: "cancelled", message: "Project opening cancelled" });
+    });
+    try {
+      windowOpenProjectTab.mockResolvedValue(ok({ kind: "opened", label: "project-1" }));
+      windowOpenProject.mockResolvedValue(ok({ kind: "opened", label: "project-2" }));
+      useProject.setState({ ...projectState("/a"), settings: { general: { openProjectIn: "tab" } } } as never);
+      await openProjectWithPolicy("/b");
+      useProject.setState({ settings: { general: { openProjectIn: "new" } } } as never);
+      await openProjectWithPolicy("/c");
+      expect(asked).toEqual(["/b", "/c"]);
+      expect(windowOpenProjectTab).not.toHaveBeenCalled();
+      expect(windowOpenProject).not.toHaveBeenCalled();
+      expect(notify).not.toHaveBeenCalled();
+
+      answer = true;
+      await openProjectWithPolicy("/c");
+      expect(windowOpenProject).toHaveBeenCalledWith("/c", true, []);
+    } finally {
+      vi.mocked(confirmProjectTrust).mockReset().mockResolvedValue();
+    }
   });
 });
 
@@ -461,6 +506,22 @@ describe("launch", () => {
     expect(openProject).toHaveBeenCalledTimes(1);
     expect(openProject).toHaveBeenCalledWith("/p/launch");
     expect(windowCompleteLaunch).toHaveBeenCalledOnce();
+    expect(windowLaunchSettled).toHaveBeenCalledTimes(1);
+  });
+
+  // Its window group stops saving the project for it, so the failed tab leaves the saved group.
+  it("settles a launched project that fails to open or is cancelled", async () => {
+    openProject.mockRejectedValueOnce(new IpcError({ kind: "cancelled", message: "Project opening cancelled" }));
+    windowTakeLaunch.mockResolvedValueOnce({ project: "/p/untrusted", files: ["/p/untrusted/a.txt"] });
+    await consumeLaunch();
+    expect(windowLaunchSettled).toHaveBeenCalledTimes(1);
+    expect(opened).toEqual([]);
+  });
+
+  it("does not settle a launch without a project", async () => {
+    windowTakeLaunch.mockResolvedValueOnce({ project: null, files: ["/x/a.txt"] });
+    await consumeLaunch();
+    expect(windowLaunchSettled).not.toHaveBeenCalled();
   });
 
   it("opens launched files in LightEdit without a project", async () => {

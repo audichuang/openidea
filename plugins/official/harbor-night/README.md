@@ -34,11 +34,11 @@ in the OpenIDEA repository generates a package in this layout.
 ## Package and install
 
 The folder is the package. To share it, publish the folder as a Git repository
-or a zip that users extract.
+or a zip; OpenIDEA installs the zip directly.
 
 1. In OpenIDEA open **Settings › Plugins**, click the gear menu and choose
    **Install Plugin from Disk…** (or run the _Install Plugin from Disk…_
-   action), then pick the folder that contains `plugin.toml`.
+   action), then pick the package's `plugin.toml`, or a `.zip` of the folder.
 2. Select the plugin in the _Installed_ tab and press **Apply** next to the theme.
 3. **Use Default Theme** in the same place goes back to the built-in theme.
 

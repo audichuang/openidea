@@ -12,6 +12,7 @@ import { showInFileManagerLabel } from "@/platform/fileManager";
 import { Button, Icon, Input, type SelectOption, T } from "@/ui";
 import { Row, SettingSelect } from "../components/Form";
 import { useSetting } from "../components/context";
+import { CLIPCODE_PAGE } from "./clipcode";
 import type { PageSpec } from "./spec";
 import { BoundToggle, Grid, Indented, RadioRow, TableEditor, ToggleNumber } from "./workflowControls";
 import styles from "./Workflow.module.css";
@@ -200,6 +201,19 @@ function LargeFilesRow() {
       label="Warn when committing files larger than"
       unit="MB"
       {...L.largeFileMb}
+    />
+  );
+}
+
+function AutoFetchRow() {
+  return (
+    <ToggleNumber
+      toggleKey="vcs.git.autoFetch"
+      numberKey="vcs.git.autoFetchMinutes"
+      label="Fetch remotes automatically every"
+      unit="min"
+      {...L.autoFetchMinutes}
+      hint="All repositories of the project, quietly in the background."
     />
   );
 }
@@ -504,6 +518,12 @@ export const VCS_PAGES: PageSpec[] = [
       {
         title: "Commit",
         options: [
+          {
+            kind: "toggle",
+            key: "vcs.git.stagingArea",
+            label: "Enable staging area",
+            hint: "The Commit tool window shows Staged and Unstaged changes and commits what is staged. Changelists are not available. Needs the non-modal commit interface.",
+          },
           { kind: "toggle", key: "vcs.git.warnCrlf", label: "Warn if CRLF line separators are about to be committed" },
           {
             kind: "toggle",
@@ -577,6 +597,12 @@ export const VCS_PAGES: PageSpec[] = [
               />
             ),
           },
+          {
+            kind: "custom",
+            label: "Fetch remotes automatically every",
+            keywords: ["auto fetch", "periodic", "interval", "minutes"],
+            component: AutoFetchRow,
+          },
         ],
       },
       {
@@ -636,4 +662,5 @@ export const VCS_PAGES: PageSpec[] = [
       },
     ],
   },
+  CLIPCODE_PAGE,
 ];

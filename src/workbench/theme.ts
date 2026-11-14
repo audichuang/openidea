@@ -3,6 +3,7 @@ import { useEffect, useSyncExternalStore } from "react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { create } from "zustand";
 import { call, commands, isTauri } from "@/platform/ipc";
+import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
 import {
   baseTheme,
@@ -80,6 +81,11 @@ export function resolveTheme(setting: string | undefined, systemLight: boolean):
   return themeKind(resolveThemeId({ theme: setting }, systemLight));
 }
 
+/** Whether "Sync with OS" (or the session override `system`) picks the theme. */
+function followsOsTheme(override: ThemeSetting | null, a: AppearanceLike | undefined): boolean {
+  return override ? override === "system" : !!(a?.syncWithOs || a?.theme === "system");
+}
+
 const ACCENT_RE = /^#[0-9a-f]{3,8}$/i;
 
 export function useApplyTheme() {
@@ -92,6 +98,8 @@ export function useApplyTheme() {
     ? resolveThemeId({ theme: override }, systemLight)
     : resolveThemeId(appearance as AppearanceLike | undefined, systemLight);
   const accent = appearance?.accent;
+  // Native chrome follows the OS or is pinned (nativeAppearance), which can change while `id` stays put.
+  const followsOs = followsOsTheme(override, appearance as AppearanceLike | undefined);
 
   // Until settings arrive, keep the theme public/boot.js restored rather than the light default.
   const pending = !override && !appearance;
@@ -104,7 +112,7 @@ export function useApplyTheme() {
     if (custom) root.style.setProperty("--accent", accent);
     else root.style.removeProperty("--accent");
     syncWindowBackground();
-  }, [pending, id, accent]);
+  }, [pending, id, accent, followsOs]);
 }
 
 /**
@@ -185,11 +193,30 @@ export function rememberStartupTheme(root: HTMLElement = document.documentElemen
 export function syncWindowBackground() {
   if (!previewing) rememberStartupTheme();
   if (!isTauri()) return;
+  const win = getCurrentWebviewWindow();
+  // Native chrome (macOS window tabs, title bar, menus) follows the app appearance, the OS one
+  // unless set: a light IDE theme under a dark OS got a dark tab strip. Not on Linux: tao maps
+  // SetTheme(None) to "GTK prefer dark = false", which would force light over a dark desktop and
+  // never restore the user's GTK setting; the frameless title bar is drawn by the page anyway.
+  if (usePlatform.getState().os !== "linux") win.setTheme(nativeAppearance()).catch(() => {});
   const color = windowBackgroundColor();
   if (!color) return;
-  getCurrentWebviewWindow()
-    .setBackgroundColor(color)
-    .catch(() => {});
+  win.setBackgroundColor(color).catch(() => {});
+}
+
+/**
+ * The appearance native chrome should take: the page's light / dark base, or null (follow the OS)
+ * under "Sync with OS", where they agree anyway. Forcing it there would flip
+ * `prefers-color-scheme`, which that mode reads to pick the theme. A plugin theme wins either way.
+ */
+export function nativeAppearance(root: HTMLElement = document.documentElement): "light" | "dark" | null {
+  const pluginKind = root.dataset.pluginThemeKind;
+  if (pluginKind === "light" || pluginKind === "dark") return pluginKind;
+  const override = useThemeOverride.getState().theme;
+  const appearance = useProject.getState().settings?.appearance as AppearanceLike | undefined;
+  if (followsOsTheme(override, appearance)) return null;
+  const base = root.dataset.theme;
+  return base === "light" || base === "dark" ? base : null;
 }
 
 export function currentTheme(): "dark" | "light" {

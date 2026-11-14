@@ -119,7 +119,7 @@ beforeEach(() => {
   prepare = ok(null);
   expression = false;
   candidates = [];
-  onApply = null;
+  onApply = () => view!.dispatch({ changes: { from: view!.state.doc.length, insert: " // applied" } });
 });
 afterEach(() => {
   view?.destroy();
@@ -210,11 +210,14 @@ describe("Refactor This", () => {
     query = answer([action("Inline variable", "refactor.inline")]);
     const rename = vi.fn();
     const v = editor();
+    const from = v.state.doc.toString().indexOf("price");
+    onApply = () => v.dispatch({ changes: { from, to: from + 9, insert: "42" } });
     await refactorThis(v, rename);
     const items = (useLspPopup.getState().popup as { items: { label: string; run: () => void }[] }).items;
     items.find((i) => i.label === "Inline…")!.run();
     await new Promise((r) => setTimeout(r, 0));
     expect(lspExecuteCodeAction).toHaveBeenCalledOnce();
+    expect(v.state.doc.toString()).toBe("fn main() { let total = 42; }");
     items.find((i) => i.label === "Rename…")!.run();
     expect(rename).toHaveBeenCalledWith(v);
     items.find((i) => i.label === "Safe Delete…")!.run();
@@ -270,6 +273,7 @@ describe("Refactor menu actions", () => {
     query = answer([action("Move to a new file", "refactor.move.newFile")]);
     await runRefactoring(editor(), "move");
     expect(lspExecuteCodeAction).toHaveBeenCalledOnce();
+    expect(view!.state.doc.toString()).toBe("fn main() { let total = price * 2; } // applied");
     expect(lspCodeActionQuery.mock.calls[0]![3]).toEqual(["refactor.move"]);
 
     closePopup();

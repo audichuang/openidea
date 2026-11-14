@@ -20,6 +20,8 @@ pub struct VcsSettings {
     pub shelf: ShelfSettings,
     /// Issue Navigation: commit-message patterns turned into links.
     pub issue_navigation: Vec<IssueLink>,
+    /// ClipCode clipboard copies (the ClipCode plugins' settings).
+    pub clip_code: ClipCodeSettings,
 }
 
 impl Default for VcsSettings {
@@ -34,6 +36,7 @@ impl Default for VcsSettings {
             confirmation: VcsConfirmationSettings::default(),
             shelf: ShelfSettings::default(),
             issue_navigation: Vec::new(),
+            clip_code: ClipCodeSettings::default(),
         }
     }
 }
@@ -44,6 +47,8 @@ pub struct GitSettings {
     /// Show blame after the current editor line.
     pub inline_blame: bool,
     pub show_branch_in_project_view: bool,
+    /// Annotate gutter background colours: `order` (by commit age) | `author` | `none`.
+    pub annotate_colors: String,
     /// Path to the git executable; empty = auto-detect.
     pub executable: String,
     /// Default of Update Project: `merge` | `rebase`.
@@ -54,6 +59,9 @@ pub struct GitSettings {
     pub warn_detached_head: bool,
     /// Background check for incoming commits: `auto` | `always` | `never`.
     pub incoming_check: String,
+    /// Fetch every repository of the project in the background every `auto_fetch_minutes`.
+    pub auto_fetch: bool,
+    pub auto_fetch_minutes: u32,
     /// Branch name globs, `;`/`,`-separated; force push to them is prohibited.
     pub protected_branches: String,
     /// Initial state of Commit Options › Sign-off Commit.
@@ -69,6 +77,9 @@ pub struct GitSettings {
     pub push_dialog_only_protected: bool,
     /// Stashes and shelves share one tab.
     pub combine_stash_and_shelf: bool,
+    /// IDEA's "Enable staging area": the Commit tool window shows the index (Staged /
+    /// Unstaged) instead of change lists, and Commit commits exactly what is staged.
+    pub staging_area: bool,
 }
 
 impl Default for GitSettings {
@@ -76,12 +87,15 @@ impl Default for GitSettings {
         Self {
             inline_blame: false,
             show_branch_in_project_view: false,
+            annotate_colors: "order".into(),
             executable: String::new(),
             update_method: "merge".into(),
             auto_update_on_push_rejected: false,
             warn_crlf: true,
             warn_detached_head: true,
             incoming_check: "auto".into(),
+            auto_fetch: false,
+            auto_fetch_minutes: 30,
             protected_branches: "master; main".into(),
             sign_off: false,
             warn_large_files: true,
@@ -90,6 +104,7 @@ impl Default for GitSettings {
             show_push_dialog: true,
             push_dialog_only_protected: false,
             combine_stash_and_shelf: false,
+            staging_area: false,
         }
     }
 }
@@ -173,6 +188,67 @@ impl Default for VcsConfirmationSettings {
             on_patch_created: "ask".into(),
         }
     }
+}
+
+/// Version Control › ClipCode: what a ClipCode copy puts on the clipboard. The keys and
+/// defaults are the ClipCode plugins' (IntelliJ `CopyFileContentSettings`, VS Code
+/// `clipcode.*`), so the same payload comes out of either.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ClipCodeSettings {
+    /// `$FILE_PATH` is replaced with the file's path.
+    pub header_format: String,
+    pub pre_text: String,
+    /// Non-empty: written after a `// clipcode-end` line.
+    pub post_text: String,
+    pub add_extra_line_between_files: bool,
+    pub set_max_file_count: bool,
+    pub file_count_limit: u32,
+    /// Larger files are copied as a "size exceeds limit" placeholder.
+    #[serde(rename = "maxFileSizeKB")]
+    pub max_file_size_kb: u32,
+    /// Non-text files (images, archives, Big5 or UTF-16 text) larger than this are not copied.
+    #[serde(rename = "maxNonTextFileSizeKB")]
+    pub max_non_text_file_size_kb: u32,
+    pub show_copy_notification: bool,
+    pub use_filters: bool,
+    pub use_include_filters: bool,
+    pub use_exclude_filters: bool,
+    pub filter_rules: Vec<ClipFilterRule>,
+}
+
+impl Default for ClipCodeSettings {
+    fn default() -> Self {
+        Self {
+            header_format: "// file: $FILE_PATH".into(),
+            pre_text: String::new(),
+            post_text: String::new(),
+            add_extra_line_between_files: true,
+            set_max_file_count: true,
+            file_count_limit: 30,
+            max_file_size_kb: 500,
+            max_non_text_file_size_kb: 2048,
+            show_copy_notification: true,
+            use_filters: false,
+            use_include_filters: true,
+            use_exclude_filters: true,
+            filter_rules: Vec::new(),
+        }
+    }
+}
+
+/// A ClipCode filter rule: `PATH` matches the path or a parent of it, `PATTERN` the file
+/// name (`*` / `?` wildcards, else a regular expression).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default)]
+pub struct ClipFilterRule {
+    /// `PATH` | `PATTERN`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// `INCLUDE` | `EXCLUDE`.
+    pub action: String,
+    pub value: String,
+    pub enabled: bool,
 }
 
 /// Version Control › Shelf.

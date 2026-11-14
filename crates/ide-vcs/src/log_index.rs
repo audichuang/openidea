@@ -1,22 +1,26 @@
-//! Immutable commit metadata, persisted by object id. Ref decorations and graph
-//! projections are deliberately never cached as commit metadata.
+//! Immutable commit metadata, persisted by object id, and bounded file history
+//! results keyed by the inputs to their Git queries.
 
 use crate::Commit;
 use crate::repo::{gx, to_string};
 use gix::ObjectId;
 use gix::bstr::ByteSlice;
 use ide_core::IdeResult;
-use redb::{Database, ReadOnlyTable, ReadableDatabase, TableDefinition};
-use std::collections::{HashMap, HashSet};
+use redb::{Database, ReadOnlyTable, ReadableDatabase, ReadableTable, TableDefinition};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::SystemTime;
 
 pub(crate) const COMMITS: TableDefinition<&str, &[u8]> = TableDefinition::new("summaries-v2");
 const MESSAGES: TableDefinition<&str, &str> = TableDefinition::new("messages-v1");
+const FILE_HISTORY: TableDefinition<&str, (u64, &[u8])> = TableDefinition::new("file-history-v1");
 const MAX_MEMORY_COMMITS: usize = 4096;
 const MAX_MEMORY_MESSAGES: usize = 1024;
 const MAX_DIRTY_BATCH: usize = 16_384;
+const MAX_FILE_HISTORY_ENTRIES: usize = 128;
+const MAX_FILE_HISTORY_BYTES: usize = 256 * 1024;
+const MAX_FILE_HISTORY_KEY_BYTES: usize = 128;
 
 pub(crate) struct IndexedRow {
     pub id: ObjectId,
@@ -46,6 +50,7 @@ pub(crate) struct LogIndex {
     messages: HashMap<ObjectId, String>,
     dirty: Vec<Arc<Commit>>,
     dirty_messages: Vec<(String, String)>,
+    dirty_file_history: VecDeque<(String, Vec<u8>)>,
     pub head: Option<(ObjectId, Option<SystemTime>)>,
     pub reachable: HashSet<ObjectId>,
     pub views: HashMap<String, Arc<IndexedView>>,
@@ -376,24 +381,77 @@ impl LogIndex {
         Ok(message)
     }
 
+    pub fn cached_file_history<T: serde::de::DeserializeOwned>(&self, key: &str) -> Option<T> {
+        if let Some((_, value)) = self.dirty_file_history.iter().rev().find(|(entry, _)| entry == key) {
+            return serde_json::from_slice(value).ok();
+        }
+        let txn = self.db.as_ref()?.begin_read().ok()?;
+        let table = txn.open_table(FILE_HISTORY).ok()?;
+        let value = table.get(key).ok()??;
+        serde_json::from_slice(value.value().1).ok()
+    }
+
+    pub fn cache_file_history<T: serde::Serialize + ?Sized>(&mut self, key: &str, value: &T) {
+        if self.db.is_none() || key.len() > MAX_FILE_HISTORY_KEY_BYTES {
+            return;
+        }
+        let Ok(value) = serde_json::to_vec(value) else { return };
+        if value.len() > MAX_FILE_HISTORY_BYTES {
+            return;
+        }
+        if let Some(pos) = self.dirty_file_history.iter().position(|(entry, _)| entry == key) {
+            self.dirty_file_history.remove(pos);
+        }
+        if self.dirty_file_history.len() == MAX_FILE_HISTORY_ENTRIES {
+            self.dirty_file_history.pop_front();
+        }
+        self.dirty_file_history.push_back((key.to_owned(), value));
+    }
+
     pub fn flush(&mut self) {
-        if !self.dirty.is_empty() || !self.dirty_messages.is_empty() {
+        if !self.dirty.is_empty() || !self.dirty_messages.is_empty() || !self.dirty_file_history.is_empty() {
             let result = (|| -> Result<(), Box<dyn std::error::Error>> {
                 let Some(db) = &self.db else {
                     return Ok(());
                 };
                 let txn = db.begin_write()?;
-                {
+                if !self.dirty.is_empty() {
                     let mut table = txn.open_table(COMMITS)?;
                     for commit in &self.dirty {
                         let bytes = serde_json::to_vec(commit.as_ref())?;
                         table.insert(commit.id.as_str(), bytes.as_slice())?;
                     }
                 }
-                {
+                if !self.dirty_messages.is_empty() {
                     let mut table = txn.open_table(MESSAGES)?;
                     for (id, message) in &self.dirty_messages {
                         table.insert(id.as_str(), message.as_str())?;
+                    }
+                }
+                if !self.dirty_file_history.is_empty() {
+                    let mut table = txn.open_table(FILE_HISTORY)?;
+                    // Allocate sequence numbers inside the write transaction so
+                    // windows agree on which snapshots were written most recently.
+                    let mut entries = table
+                        .iter()?
+                        .map(|entry| {
+                            let (key, value) = entry?;
+                            Ok((value.value().0, key.value().to_owned()))
+                        })
+                        .collect::<Result<Vec<_>, redb::StorageError>>()?;
+                    let latest = entries.iter().map(|(sequence, _)| *sequence).max().unwrap_or(0);
+                    let pending: HashSet<_> = self.dirty_file_history.iter().map(|(key, _)| key.as_str()).collect();
+                    entries.retain(|(_, key)| !pending.contains(key.as_str()));
+                    let excess =
+                        (entries.len() + self.dirty_file_history.len()).saturating_sub(MAX_FILE_HISTORY_ENTRIES);
+                    if excess > 0 {
+                        entries.sort_unstable();
+                        for (_, key) in entries.into_iter().take(excess) {
+                            table.remove(key.as_str())?;
+                        }
+                    }
+                    for (i, (key, value)) in self.dirty_file_history.iter().enumerate() {
+                        table.insert(key.as_str(), (latest + i as u64 + 1, value.as_slice()))?;
                     }
                 }
                 txn.commit()?;
@@ -404,6 +462,7 @@ impl LogIndex {
             }
             self.dirty_messages.clear();
             self.dirty.clear();
+            self.dirty_file_history.clear();
         }
         if self.memory.len() > MAX_MEMORY_COMMITS {
             self.memory.clear();
@@ -428,6 +487,7 @@ pub(crate) fn matches_user(query: &str, name: &str, email: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use redb::ReadableTableMetadata;
     use std::process::Command;
 
     fn git(dir: &Path, args: &[&str]) -> String {
@@ -455,6 +515,50 @@ mod tests {
         git(dir, &["add", "-A"]);
         git(dir, &["commit", "-qm", msg]);
         ObjectId::from_hex(git(dir, &["rev-parse", "HEAD"]).as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn file_history_cache_reads_pending_entries_and_survives_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut index = LogIndex::default();
+        index.open(dir.path());
+        let key = "rename:a.txt";
+        index.cache_file_history(key, &Some("before.txt"));
+        assert_eq!(index.cached_file_history::<Option<String>>(key), Some(Some("before.txt".into())));
+        index.cache_file_history(key, &None::<String>);
+        assert_eq!(index.cached_file_history::<Option<String>>(key), Some(None));
+        index.flush();
+        drop(index);
+
+        let mut reopened = LogIndex::default();
+        reopened.open(dir.path());
+        assert_eq!(reopened.cached_file_history::<Option<String>>(key), Some(None));
+        assert_eq!(reopened.cached_file_history::<Option<String>>("rename:other.txt"), None);
+    }
+
+    #[test]
+    fn file_history_cache_bounds_pending_and_persisted_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut index = LogIndex::default();
+        index.open(dir.path());
+        for i in 0..=MAX_FILE_HISTORY_ENTRIES {
+            index.cache_file_history(&format!("walk:{i}"), &i);
+        }
+        assert_eq!(index.dirty_file_history.len(), MAX_FILE_HISTORY_ENTRIES);
+        assert_eq!(index.cached_file_history::<usize>("walk:0"), None);
+        index.flush();
+        index.cache_file_history("new", &true);
+        index.cache_file_history("large", &"a".repeat(MAX_FILE_HISTORY_BYTES));
+        index.cache_file_history(&"a".repeat(MAX_FILE_HISTORY_KEY_BYTES + 1), &true);
+        assert_eq!(index.dirty_file_history.len(), 1);
+        index.flush();
+
+        assert_eq!(index.cached_file_history::<usize>("walk:1"), None);
+        assert_eq!(index.cached_file_history::<usize>("walk:2"), Some(2));
+        assert_eq!(index.cached_file_history::<bool>("new"), Some(true));
+        assert_eq!(index.cached_file_history::<String>("large"), None);
+        let txn = index.db().unwrap().begin_read().unwrap();
+        assert_eq!(txn.open_table(FILE_HISTORY).unwrap().len().unwrap(), MAX_FILE_HISTORY_ENTRIES as u64);
     }
 
     #[test]

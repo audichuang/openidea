@@ -63,6 +63,181 @@ pub fn agent_in_args<'a>(args: impl IntoIterator<Item = &'a str>) -> Option<Path
     })
 }
 
+/// A Lombok `-javaagent:` a jdtls launcher wrapper passes itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScriptAgent {
+    /// The jar path as written in the script.
+    pub agent: String,
+    /// Passed only when a condition holds at run time (`${LOMBOK:+…}`, inside an `if`):
+    /// the launch may get no agent from the wrapper at all.
+    pub conditional: bool,
+}
+
+/// The Lombok `-javaagent:` a jdtls launcher wrapper (a shell or batch script) passes
+/// itself: a literal jar path whose filename contains Lombok. Comment lines and
+/// agent values without a jar suffix do not count.
+pub fn agent_in_script(text: &str) -> Option<ScriptAgent> {
+    let lines = script_lines(text);
+    let jumps = lines.iter().any(|(line, _)| jumps_over_lines(line));
+    lines.iter().find_map(|(line, conditional_line)| {
+        let line = line.as_str();
+        line.match_indices("-javaagent:").find_map(|(at, flag)| {
+            let tail = line[at + flag.len()..].trim_start_matches(['\'', '"']);
+            let end =
+                tail.to_ascii_lowercase().match_indices(".jar").map(|(at, suffix)| at + suffix.len()).find(|&end| {
+                    tail[end..]
+                        .chars()
+                        .next()
+                        .is_none_or(|c| c.is_whitespace() || matches!(c, '"' | '\'' | ';' | ',' | ')' | '='))
+                })?;
+            let agent = &tail[..end];
+            let lombok = agent.rsplit(['/', '\\']).next()?.to_ascii_lowercase().contains("lombok");
+            let prefix = &line[..at];
+            // Another launch without the agent: the script chooses between them.
+            let other_launch =
+                is_launch_line(line) && lines.iter().any(|(l, _)| is_launch_line(l) && !l.contains("-javaagent:"));
+            let conditional = *conditional_line
+                || jumps
+                || other_launch
+                || prefix.contains("&&")
+                || prefix.contains("||")
+                || in_alternate_expansion(prefix);
+            lombok.then(|| ScriptAgent { agent: agent.to_owned(), conditional })
+        })
+    })
+}
+
+/// The lines of a script that aren't comments, each with whether it runs only on a
+/// condition: an `if` line, or one inside an sh `if … fi` / `case … esac` or a batch
+/// `if … ( … )` block.
+fn script_lines(text: &str) -> Vec<(String, bool)> {
+    let mut depth = 0usize;
+    let mut lines = Vec::new();
+    for joined in logical_lines(text).iter().filter(|l| !l.is_empty() && !is_script_comment(l)) {
+        let line = joined.as_str();
+        let lower = line.to_ascii_lowercase();
+        let words: Vec<&str> = lower.split_whitespace().collect();
+        let first = words.first().map_or("", |w| w.trim_end_matches(';'));
+        let last = words.last().copied().unwrap_or("");
+        let is_if = matches!(first, "if" | "@if" | "elif");
+        let closes = matches!(first, "fi" | "esac") || first.starts_with(')');
+        if closes {
+            depth = depth.saturating_sub(1);
+        }
+        lines.push((line.to_owned(), depth > 0 || is_if));
+        let sh_then = words.iter().any(|w| *w == "then" || w.ends_with(";then"));
+        let opens = (is_if && first != "elif" && last != "fi" && (sh_then || last.ends_with('(')))
+            || (first == "then" && words.len() == 1)
+            || (first == "case" && last != "esac")
+            || (closes && last.ends_with('('));
+        if opens {
+            depth += 1;
+        }
+    }
+    lines
+}
+
+/// The trimmed lines of `text`, a line ending in `\` (sh) or `^` (batch) joined with the
+/// next: `[ -f "$JAR" ] && \` and the command it guards are one line.
+fn logical_lines(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut pending = String::new();
+    for line in text.lines().map(str::trim) {
+        if is_script_comment(line) {
+            // A comment runs to the end of the logical line: it ends a pending command.
+            if !pending.is_empty() {
+                out.push(pending.trim_end().to_owned());
+                pending.clear();
+            }
+            out.push(line.to_owned());
+            continue;
+        }
+        match line.strip_suffix('\\').or_else(|| line.strip_suffix('^')) {
+            Some(head) => {
+                pending.push_str(head.trim_end());
+                pending.push(' ');
+            }
+            None => {
+                pending.push_str(line);
+                out.push(std::mem::take(&mut pending));
+            }
+        }
+    }
+    if !pending.is_empty() {
+        out.push(pending.trim_end().to_owned());
+    }
+    out
+}
+
+/// A batch `goto` (but `goto :eof`, which only ends the script): the lines after a jump
+/// may be skipped, so a launch among them is not certain.
+fn jumps_over_lines(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    let mut words = lower.split_whitespace();
+    words.any(|w| w == "goto") && !matches!(words.next(), Some(":eof" | "eof"))
+}
+
+/// A line that starts jdtls: it names a script `jdtls`, `jdtls.py`, `jdtls.bat` ….
+fn is_launch_line(line: &str) -> bool {
+    line.to_ascii_lowercase().split_whitespace().map(|w| w.trim_matches(|c| matches!(c, '"' | '\''))).any(|w| {
+        let name = w.rsplit(['/', '\\']).next().unwrap_or(w);
+        !w.contains('=')
+            && name.strip_prefix("jdtls").is_some_and(|ext| matches!(ext, "" | ".py" | ".bat" | ".cmd" | ".exe"))
+    })
+}
+
+/// Whether `prefix`, a line up to an argument, leaves the argument inside `${NAME:+…}` or
+/// `${NAME+…}`, which expands to nothing when NAME is unset or empty.
+fn in_alternate_expansion(prefix: &str) -> bool {
+    prefix.match_indices("${").any(|(at, open)| {
+        let after = prefix[at + open.len()..].trim_start_matches(|c: char| c.is_ascii_alphanumeric() || c == '_');
+        (after.starts_with(":+") || after.starts_with('+')) && !after.contains('}')
+    })
+}
+
+fn is_script_comment(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    line.starts_with('#')
+        || line.starts_with("::")
+        || lower == "rem"
+        || lower.starts_with("rem ")
+        || lower.starts_with("@rem")
+}
+
+/// A Lombok distribution version from an agent's jar name, including an OpenIDEA revision.
+pub fn agent_version(agent: &str) -> Option<String> {
+    let name = agent.rsplit(['/', '\\']).next()?.to_ascii_lowercase();
+    let version = name.strip_prefix("lombok-")?.strip_suffix(".jar")?;
+    let release = if let Some((release, revision)) = version.split_once("-openidea.") {
+        if revision.is_empty() || !revision.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        release
+    } else {
+        version
+    };
+    parse_version(release).is_some().then(|| version.to_owned())
+}
+
+/// Two Lombok agents would run in jdtls: `wrapper`'s (the one the launcher script at
+/// `launcher` passes) and `app`, the jar the app attaches. `None` when they are the same jar
+/// or both names show the same distribution version; a version the wrapper picks at run time may differ.
+/// A wrapper that passes its agent only on a condition "may" attach it.
+pub fn duplicate_agents_problem(launcher: &Path, wrapper: &ScriptAgent, app: &Path) -> Option<String> {
+    let app = app.to_string_lossy();
+    let agent = wrapper.agent.as_str();
+    let same_version = agent_version(agent).is_some_and(|v| agent_version(&app) == Some(v));
+    if Path::new(agent) == Path::new(&*app) || same_version {
+        return None;
+    }
+    let launcher = launcher.to_string_lossy();
+    let verb = if wrapper.conditional { "may also attach" } else { "attaches" };
+    Some(format!(
+        "The jdtls launcher {launcher} {verb} its own Lombok agent ({agent}) and the app attaches {app}. Two Lombok \
+         versions can generate different members: keep one of them."
+    ))
+}
+
 /// The Lombok agent for the project at `root`: the user's own (`own`, from the JVM
 /// options) wins, then `managed` (the app-provided jar, always attached: it is inert
 /// without Lombok on the classpath), then, for a project using Lombok, the build caches
@@ -548,5 +723,350 @@ mod tests {
         assert!(agent.outdated(), "its version is read from the file name");
         let plain = lombok_agent(tmp.path(), agent_in_args(["-javaagent:/opt/lombok.jar"]), None, None);
         assert_eq!(plain.problem(), None, "a user agent is never reported missing");
+    }
+
+    /// The measured setup: `~/.local/bin/jdtls` picks the newest Lombok from `~/.m2` and
+    /// passes it on to Homebrew's launcher.
+    const SH_WRAPPER: &str = r#"#!/bin/sh
+# Injects the lombok javaagent: -javaagent:/commented/out/lombok.jar
+JAVA_HOME="${JAVA_HOME:-$HOME/.local/share/mise/installs/java/zulu-25}"
+export JAVA_HOME
+LOMBOK=$(ls -t "$HOME"/.m2/repository/org/projectlombok/lombok/*/lombok-*.jar 2>/dev/null \
+  | grep -vE '\-(sources|javadoc)\.jar$' | head -1)
+exec /opt/homebrew/opt/jdtls/libexec/bin/jdtls \
+  ${LOMBOK:+--jvm-arg=-javaagent:$LOMBOK} \
+  "$@"
+"#;
+
+    #[test]
+    fn finds_the_lombok_agent_a_wrapper_script_passes() {
+        let always = |agent: &str| Some(ScriptAgent { agent: agent.to_owned(), conditional: false });
+        let maybe = |agent: &str| Some(ScriptAgent { agent: agent.to_owned(), conditional: true });
+        let literal = "#!/bin/sh\nexec /opt/jdtls/bin/jdtls --jvm-arg=\"-javaagent:/m2/lombok-1.18.46.jar\" \"$@\"\n";
+        assert_eq!(agent_in_script(literal), always("/m2/lombok-1.18.46.jar"));
+        let variable = "AGENT=/opt/agents/lombok.jar\nexec jdtls --jvm-arg=-javaagent:${AGENT} \"$@\"\n";
+        assert_eq!(agent_in_script(variable), None, "a variable without a jar suffix is not resolved");
+        let batch = "@echo off\r\nset \"AGENT=C:\\tools\\lombok.jar\"\r\n\
+                     python C:\\jdtls\\bin\\jdtls.py --jvm-arg=-javaagent:%AGENT% %*\r\n";
+        assert_eq!(agent_in_script(batch), None, "a variable without a jar suffix is not resolved");
+        let after_block = "if [ -z \"$JAVA_HOME\" ]; then\n  JAVA_HOME=/opt/jdk\nfi\n\
+                           exec jdtls --jvm-arg=-javaagent:/m2/lombok.jar \"$@\"\n";
+        assert_eq!(agent_in_script(after_block), always("/m2/lombok.jar"));
+
+        // Dynamic agent variables have no literal jar suffix to inspect.
+        assert_eq!(agent_in_script(SH_WRAPPER), None);
+        let sh_if = "LOMBOK=$(ls ~/.m2/repository/org/projectlombok/lombok/*/lombok-*.jar | head -1)\n\
+                     if [ -n \"$LOMBOK\" ]; then\n  set -- --jvm-arg=-javaagent:/m2/lombok.jar \"$@\"\nfi\nexec jdtls \"$@\"\n";
+        assert_eq!(agent_in_script(sh_if), maybe("/m2/lombok.jar"));
+        let sh_and =
+            "[ -f /m2/lombok.jar ] && exec jdtls --jvm-arg=-javaagent:/m2/lombok.jar \"$@\"\nexec jdtls \"$@\"\n";
+        assert_eq!(agent_in_script(sh_and), maybe("/m2/lombok.jar"));
+        let batch_if = "@echo off\r\nif exist C:\\tools\\lombok.jar (\r\n\
+                        python jdtls.py --jvm-arg=-javaagent:C:\\tools\\lombok.jar %*\r\n) else (\r\n\
+                        python jdtls.py %*\r\n)\r\n";
+        assert_eq!(agent_in_script(batch_if), maybe(r"C:\tools\lombok.jar"));
+        let batch_one_line = "@echo off\r\nif defined LOMBOK python jdtls.py --jvm-arg=-javaagent:%LOMBOK% %*\r\n";
+        assert_eq!(agent_in_script(batch_one_line), None);
+        let batch_one_line = batch_one_line.replace("%LOMBOK%", r"C:\tools\lombok.jar");
+        assert_eq!(agent_in_script(&batch_one_line), maybe(r"C:\tools\lombok.jar"));
+        // A guard on the line before, a skip, or another launch without the agent.
+        let continued =
+            "[ -f /m2/lombok.jar ] && \\\n  exec jdtls --jvm-arg=-javaagent:/m2/lombok.jar \"$@\"\nexec jdtls \"$@\"\n";
+        assert_eq!(agent_in_script(continued), maybe("/m2/lombok.jar"));
+        let batch_continued =
+            "@echo off\r\nif exist C:\\lombok.jar ^\r\n python jdtls.py --jvm-arg=-javaagent:C:\\lombok.jar %*\r\n";
+        assert_eq!(agent_in_script(batch_continued), maybe(r"C:\lombok.jar"));
+        let batch_goto = "@echo off\r\nif not exist C:\\lombok.jar goto plain\r\n\
+                          python jdtls.py --jvm-arg=-javaagent:C:\\lombok.jar %*\r\ngoto :eof\r\n\
+                          :plain\r\npython jdtls.py %*\r\n";
+        assert_eq!(agent_in_script(batch_goto), maybe(r"C:\lombok.jar"));
+        let sh_two = "[ \"$1\" = plain ] || true\nexec jdtls --jvm-arg=-javaagent:/m2/lombok.jar \"$@\"\n";
+        assert_eq!(agent_in_script(sh_two), always("/m2/lombok.jar"));
+        let launches =
+            "[ \"$1\" = plain ] && exec jdtls \"$@\"\nexec jdtls --jvm-arg=-javaagent:/m2/lombok.jar \"$@\"\n";
+        assert_eq!(agent_in_script(launches), maybe("/m2/lombok.jar"));
+
+        for none in [
+            // Only in comments.
+            "#!/bin/sh\n# --jvm-arg=-javaagent:/m2/lombok.jar\nexec jdtls \"$@\"\n",
+            "@echo off\r\nREM --jvm-arg=-javaagent:C:\\lombok.jar\r\n:: -javaagent:C:\\lombok.jar\r\njdtls %*\r\n",
+            // A comment line after a continuation ends the command; it never joins it.
+            "exec jdtls \"$@\" \\\n# --jvm-arg=-javaagent:/m2/lombok.jar\n",
+            "@echo off\r\njdtls %* ^\r\nREM -javaagent:C:\\lombok.jar\r\n",
+            // Another agent, through a variable set to something else.
+            "AGENT=/opt/jacoco.jar\nexec jdtls --jvm-arg=-javaagent:$AGENT \"$@\"\n",
+            "exec jdtls --jvm-arg=-javaagent:/opt/jacoco/agent.jar \"$@\"\n",
+            // Homebrew's own script.
+            "#!/bin/sh\nexec \"/opt/homebrew/Cellar/jdtls/1.63.0/libexec/bin/jdtls\" \"$@\"\n",
+        ] {
+            assert_eq!(agent_in_script(none), None, "{none}");
+        }
+    }
+
+    #[test]
+    fn quoted_wrapper_agent_paths_are_preserved_and_reported() {
+        for path in [
+            r"C:\Program Files\Lombok\lombok.jar",
+            "/opt/Java Tools/lombok.jar",
+            "/opt/Java - Tools/lombok.jar",
+            "/使用者/Java 工具/lombok.jar",
+        ] {
+            for quote in ['"', '\''] {
+                for argument in [
+                    format!("{quote}--jvm-arg=-javaagent:{path}{quote}"),
+                    format!("--jvm-arg={quote}-javaagent:{path}{quote}"),
+                    format!("--jvm-arg=-javaagent:{quote}{path}{quote}"),
+                ] {
+                    let script = format!("exec jdtls {argument} --jvm-arg=-Xmx2g \"$@\"");
+                    let wrapper = agent_in_script(&script);
+                    assert_eq!(wrapper, Some(script_agent(path, false)), "{script}");
+                    let problem = duplicate_agents_problem(
+                        Path::new("/bin/jdtls"),
+                        &wrapper.unwrap(),
+                        Path::new("/managed/lombok.jar"),
+                    )
+                    .expect("a different wrapper agent must be reported");
+                    assert!(problem.contains(path), "{problem}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn batch_wrapper_apostrophes_are_literal_inside_paths() {
+        let path = r"C:\Users\O'Connor\lombok-1.18.48.jar";
+        let script = format!("python jdtls.py --jvm-arg=-javaagent:{path} %*");
+        let wrapper = agent_in_script(&script).expect("the wrapper passes Lombok");
+        assert_eq!(wrapper, script_agent(path, false));
+        assert_eq!(
+            duplicate_agents_problem(Path::new("/bin/jdtls"), &wrapper, Path::new("/managed/lombok-1.18.48.jar"),),
+            None,
+            "the same version must not warn"
+        );
+        assert_eq!(
+            agent_in_script(
+                r"python C:\Users\O'Brien\jdtls.py --jvm-arg=-javaagent:C:\agents\jacoco.jar --configuration C:\lombok"
+            ),
+            None,
+            "an apostrophe in the launcher path must not absorb later arguments"
+        );
+    }
+
+    fn script_agent(agent: &str, conditional: bool) -> ScriptAgent {
+        ScriptAgent { agent: agent.to_owned(), conditional }
+    }
+
+    fn assert_wrapper_version(script: &str, path: &str) {
+        let wrapper = agent_in_script(script).expect("the script contains a literal Lombok jar");
+        assert_eq!(wrapper, script_agent(path, false), "{script}");
+        assert_eq!(agent_version(&wrapper.agent).as_deref(), Some("1.18.48"), "{script}");
+        assert_eq!(
+            duplicate_agents_problem(Path::new("/bin/jdtls"), &wrapper, Path::new("/managed/lombok-1.18.48.jar")),
+            None,
+            "the same version must not warn: {script}"
+        );
+    }
+
+    #[test]
+    fn batch_argument_assignment_does_not_absorb_lombok_configuration_path() {
+        let script = r#"set "ARGS=--jvm-arg=-javaagent:C:\agents\jacoco.jar --configuration C:\lombok-config""#;
+        assert_eq!(agent_in_script(script), None);
+    }
+
+    #[test]
+    fn shell_argument_assignment_does_not_absorb_lombok_configuration_path() {
+        let script = r#"ARGS="--jvm-arg=-javaagent:/opt/jacoco.jar --configuration /opt/lombok-config""#;
+        assert_eq!(agent_in_script(script), None);
+    }
+
+    #[test]
+    fn shell_argument_assignment_preserves_lombok_jar_version_and_suppression() {
+        let script = r#"JDTLS_ARGS="--jvm-arg=-javaagent:/opt/lombok-1.18.48.jar --jvm-arg=-Xmx2g""#;
+        assert_wrapper_version(script, "/opt/lombok-1.18.48.jar");
+    }
+
+    #[test]
+    fn batch_argument_assignment_preserves_lombok_jar_version_and_suppression() {
+        let script = r#"set "JDTLS_ARGS=--jvm-arg=-javaagent:C:\agents\lombok-1.18.48.jar --jvm-arg=-Xmx2g""#;
+        assert_wrapper_version(script, r"C:\agents\lombok-1.18.48.jar");
+    }
+
+    #[test]
+    fn escaped_shell_quotes_do_not_absorb_lombok_configuration_paths() {
+        let script = r#"exec jdtls --jvm-arg=-Dmessage=a\"b --jvm-arg=-javaagent:/opt/jacoco.jar --configuration /opt/lombok "$@""#;
+        assert_eq!(agent_in_script(script), None);
+    }
+
+    #[test]
+    fn prefixed_argument_assignments_do_not_absorb_lombok_configuration_paths() {
+        for script in [
+            r#"export ARGS="--jvm-arg=-javaagent:/opt/jacoco.jar --configuration /opt/lombok-config"
+exec jdtls $ARGS "$@""#,
+            r#"set ARGS="--jvm-arg=-javaagent:C:\agents\jacoco.jar --configuration C:\lombok-config""#,
+        ] {
+            assert_eq!(agent_in_script(script), None, "{script}");
+        }
+    }
+
+    #[test]
+    fn prefixed_argument_assignments_preserve_lombok_jar_version_and_suppression() {
+        for (script, path) in [
+            (
+                r#"export JDTLS_ARGS="--jvm-arg=-javaagent:/opt/lombok-1.18.48.jar --jvm-arg=-Xmx2g"
+exec jdtls $JDTLS_ARGS "$@""#,
+                "/opt/lombok-1.18.48.jar",
+            ),
+            (
+                r#"set JDTLS_ARGS="--jvm-arg=-javaagent:C:\agents\lombok-1.18.48.jar --jvm-arg=-Xmx2g""#,
+                r"C:\agents\lombok-1.18.48.jar",
+            ),
+        ] {
+            assert_wrapper_version(script, path);
+        }
+    }
+
+    #[test]
+    fn argument_assignment_preserves_a_quoted_jar_path_containing_a_dash() {
+        let script = r#"ARG="--jvm-arg=-javaagent:/opt/Java - Tools/lombok.jar"
+exec jdtls "$ARG""#;
+        assert_eq!(agent_in_script(script), Some(script_agent("/opt/Java - Tools/lombok.jar", false)));
+    }
+
+    #[test]
+    fn argument_assignment_preserves_a_home_relative_jar_path_containing_a_dash() {
+        for path in ["$HOME/Java - Tools/lombok.jar", "$HOME/Java - Tools/lombok-1.18.48.jar"] {
+            let script = format!("ARG=\"--jvm-arg=-javaagent:{path}\"\nexec jdtls \"$ARG\"");
+            let wrapper = agent_in_script(&script).expect("the assignment contains a literal jar path");
+            assert_eq!(wrapper, script_agent(path, false));
+            if path.ends_with("lombok-1.18.48.jar") {
+                assert_wrapper_version(&script, path);
+            }
+        }
+    }
+
+    #[test]
+    fn silent_batch_argument_assignment_does_not_absorb_lombok_configuration_path() {
+        let script = r#"@set "ARGS=--jvm-arg=-javaagent:C:\agents\jacoco.jar --configuration C:\lombok-config""#;
+        assert_eq!(agent_in_script(script), None);
+    }
+
+    #[test]
+    fn wrapper_agent_requires_lombok_in_the_jar_filename() {
+        for script in [
+            "exec jdtls --jvm-arg=-javaagent:/opt/lombok/jacoco.jar",
+            r"python jdtls.py --jvm-arg=-javaagent:C:\lombok\jacoco.jar",
+        ] {
+            assert_eq!(agent_in_script(script), None, "{script}");
+        }
+    }
+
+    #[test]
+    fn windows_wrapper_agent_preserves_a_jar_prefix_in_a_directory_name() {
+        let path = r"C:\Users\john.jarvis\tools\lombok-1.18.46.jar";
+        let script = format!("jdtls \"--jvm-arg=-javaagent:{path}\"");
+        let wrapper = agent_in_script(&script).unwrap();
+        assert_eq!(wrapper, script_agent(path, false));
+        assert_eq!(agent_version(&wrapper.agent).as_deref(), Some("1.18.46"));
+    }
+
+    #[test]
+    fn linux_wrapper_agent_preserves_a_jar_prefix_in_a_directory_name() {
+        let path = "/home/dev/.jars/lombok-1.18.46.jar";
+        let wrapper = agent_in_script(&format!("jdtls --jvm-arg=-javaagent:{path}")).unwrap();
+        assert_eq!(wrapper, script_agent(path, false));
+        assert_eq!(agent_version(&wrapper.agent).as_deref(), Some("1.18.46"));
+    }
+
+    #[test]
+    fn wrapper_agent_does_not_treat_a_jar_directory_as_the_agent_filename() {
+        assert_eq!(agent_in_script("jdtls --jvm-arg=-javaagent:/opt/lombok.jar/jacoco.jar"), None);
+    }
+
+    #[test]
+    fn wrapper_agent_stops_before_java_agent_options() {
+        let wrapper = agent_in_script("jdtls --jvm-arg=-javaagent:/opt/lombok-1.18.46.jar=ECJ").unwrap();
+        assert_eq!(wrapper, script_agent("/opt/lombok-1.18.46.jar", false));
+        assert_eq!(agent_version(&wrapper.agent).as_deref(), Some("1.18.46"));
+    }
+
+    #[test]
+    fn wrapper_agent_accepts_an_uppercase_jar_suffix() {
+        let path = "/opt/lombok.JAR";
+        assert_eq!(
+            agent_in_script(&format!("exec jdtls --jvm-arg=-javaagent:{path}")),
+            Some(script_agent(path, false))
+        );
+    }
+
+    #[test]
+    fn uppercase_wrapper_agent_preserves_jar_version_and_suppression() {
+        for path in ["/opt/lombok-1.18.48.JAR", "/opt/LOMBOK-1.18.48.JAR"] {
+            assert_wrapper_version(&format!("exec jdtls --jvm-arg=-javaagent:{path}"), path);
+        }
+    }
+
+    #[test]
+    fn wrapper_agent_without_a_jar_suffix_is_ignored() {
+        for value in ["/opt/lombok", "$LOMBOK", "${AGENT}", "%LOMBOK%"] {
+            assert_eq!(agent_in_script(&format!("exec jdtls --jvm-arg=-javaagent:{value}")), None, "{value}");
+        }
+    }
+
+    #[test]
+    fn wrapper_agent_finds_lombok_after_another_javaagent() {
+        let script = "exec jdtls --jvm-arg=-javaagent:/opt/jacoco.jar --jvm-arg=-javaagent:/opt/lombok-1.18.48.jar";
+        assert_eq!(agent_in_script(script), Some(script_agent("/opt/lombok-1.18.48.jar", false)));
+    }
+
+    #[test]
+    fn identical_patched_lombok_distributions_are_not_reported() {
+        let launcher = Path::new("/wrapper/jdtls");
+        for (wrapper, app) in [
+            ("/wrapper/lombok-1.18.48-openidea.2.jar", "/managed/lombok-1.18.48-openidea.2.jar"),
+            (r"C:\wrapper\lombok-1.18.48-openidea.2.jar", r"C:\managed\lombok-1.18.48-openidea.2.jar"),
+        ] {
+            assert_eq!(duplicate_agents_problem(launcher, &script_agent(wrapper, false), Path::new(app)), None);
+        }
+    }
+
+    #[test]
+    fn different_or_unknown_lombok_distributions_are_reported() {
+        let launcher = Path::new("/wrapper/jdtls");
+        let app = Path::new("/managed/lombok-1.18.48-openidea.2.jar");
+        for wrapper in [
+            "/wrapper/lombok-1.18.48.jar",
+            "/wrapper/lombok-1.18.48-openidea.1.jar",
+            "/wrapper/lombok-1.18.48-unknown.jar",
+            "/wrapper/lombok-1.18.48-openidea..jar",
+            "/wrapper/lombok-1.18.48-openidea.two.jar",
+            "/wrapper/lombok-1.18.48-openidea.2-extra.jar",
+            "/wrapper/lombok.jar",
+            "$LOMBOK",
+        ] {
+            assert!(duplicate_agents_problem(launcher, &script_agent(wrapper, false), app).is_some(), "{wrapper}");
+        }
+    }
+
+    #[test]
+    fn two_different_lombok_agents_are_reported() {
+        let launcher = Path::new("/home/me/.local/bin/jdtls");
+        let app = Path::new("/opt/lombok-1.18.48.jar");
+        assert!(duplicate_agents_problem(launcher, &script_agent("$LOMBOK", false), app).is_some());
+        let problem = duplicate_agents_problem(launcher, &script_agent("/m2/lombok-1.18.46.jar", false), app).unwrap();
+        assert!(problem.contains("/home/me/.local/bin/jdtls") && problem.contains("1.18.46"), "{problem}");
+        assert!(problem.contains("attaches its own") && problem.contains(&*app.to_string_lossy()), "{problem}");
+        let maybe = duplicate_agents_problem(launcher, &script_agent("$LOMBOK", true), app).unwrap();
+        assert!(maybe.contains("may also attach"), "{maybe}");
+        let same = Path::new("/m2/lombok.jar");
+        assert_eq!(duplicate_agents_problem(launcher, &script_agent("/m2/lombok.jar", false), same), None);
+        assert_eq!(
+            duplicate_agents_problem(launcher, &script_agent("/m2/lombok-1.18.48.jar", false), app),
+            None,
+            "the same version"
+        );
+        assert_eq!(agent_version("/m2/lombok-1.18.46.jar").as_deref(), Some("1.18.46"));
+        assert_eq!(agent_version(r"C:\tools\lombok-1.18.40.jar").as_deref(), Some("1.18.40"));
+        assert_eq!(agent_version("/managed/lombok-1.18.48-openidea.2.jar").as_deref(), Some("1.18.48-openidea.2"));
+        assert_eq!(agent_version("$LOMBOK"), None);
     }
 }

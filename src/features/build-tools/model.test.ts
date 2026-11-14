@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from "vitest";
 import type { GradleModel, MavenModel, MavenProject, RunConfig } from "@/platform/ipc";
 import {

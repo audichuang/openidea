@@ -9,6 +9,9 @@ mod commands;
 #[cfg(debug_assertions)]
 mod dev;
 mod events;
+#[cfg(windows)]
+mod fork_update_install;
+mod fork_updater;
 mod jump_list;
 #[cfg(any(target_os = "linux", test))]
 mod linux_webkit;
@@ -32,6 +35,8 @@ mod theme_frame;
 #[cfg(target_os = "macos")]
 mod titlebar;
 mod updates;
+#[cfg(any(target_os = "macos", test))]
+mod window_frames;
 mod window_groups;
 #[cfg(any(windows, test))]
 mod window_work_area;
@@ -90,6 +95,13 @@ pub fn run() {
     // Before the first window: one taskbar identity for every launch path.
     jump_list::set_app_id(&context.config().identifier);
     logging::init(&context.config().identifier);
+    // Shows whether an installer or another launch actually started a process (#246).
+    tracing::info!(
+        version = %context.package_info().version,
+        pid = std::process::id(),
+        args = ?std::env::args_os().skip(1).collect::<Vec<_>>(),
+        "OpenIDEA starting"
+    );
     #[cfg(target_os = "linux")]
     linux_webkit::configure();
 
@@ -136,10 +148,11 @@ pub fn run() {
         Ok(dir) => window_state.with_filename(dir.join(tauri_plugin_window_state::DEFAULT_FILENAME).to_string_lossy()),
         Err(_) => window_state,
     };
-    #[cfg(target_os = "macos")]
-    let window_state = window_state.with_filter(windows::keeps_window_state);
     #[cfg(not(target_os = "linux"))]
     let app = app.plugin(window_state.build());
+    // After window-state, so it rewrites the sizes window-state saved at exit.
+    #[cfg(target_os = "macos")]
+    let app = app.plugin(window_frames::plugin());
     let app = app
         // Inert until an endpoint is configured (see `commands::window::app_check_update`).
         .plugin(tauri_plugin_updater::Builder::new().build());
@@ -176,6 +189,11 @@ pub fn run() {
     })
     .setup(move |app| {
         builder.mount_events(app);
+        #[cfg(target_os = "macos")]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            macos::init_window_tabbing(mtm);
+            macos::observe_fullscreen_transitions(mtm);
+        }
         #[cfg(windows)]
         tauri::async_runtime::spawn_blocking(|| {
             if let Ok(exe) = tauri::utils::platform::current_exe() {
@@ -223,10 +241,6 @@ pub fn run() {
         #[cfg(target_os = "macos")]
         macos::intercept_system_quit(app.handle());
         #[cfg(target_os = "macos")]
-        if let Some(mtm) = objc2::MainThreadMarker::new() {
-            macos::prepare_window_tabbing(mtm);
-        }
-        #[cfg(target_os = "macos")]
         application_focus::observe(app.handle());
         app.manage(menu_state);
         cli::serve(app.handle(), &app.config().identifier);
@@ -243,6 +257,11 @@ pub fn run() {
         tauri::WindowEvent::CloseRequested { .. } => {
             #[cfg(target_os = "linux")]
             linux_window_state::save_before_close(window.app_handle());
+            // While quitting, `app_quit` recorded it before closing any window.
+            #[cfg(target_os = "macos")]
+            if window.label() == "main" && window.try_state::<WindowsState>().is_some_and(|w| !w.quitting()) {
+                windows::save_main_fullscreen(window.app_handle());
+            }
             if let Some(w) = window.try_state::<WindowsState>() {
                 w.close_requested(window.label());
             }
@@ -252,18 +271,21 @@ pub fn run() {
             if let Some(w) = window.try_state::<WindowsState>() {
                 w.focused(window.label());
             }
+            // AppKit (⌃Tab, Window menu) selects tabs without the app.
+            #[cfg(target_os = "macos")]
+            window_groups::sync(window.app_handle());
         }
         tauri::WindowEvent::Focused(false) => application_focus::changed(window.app_handle(), false),
+        #[cfg(target_os = "macos")]
+        tauri::WindowEvent::Resized(_) => window_groups::resized(window.app_handle(), window.label()),
+        #[cfg(not(target_os = "macos"))]
         tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
             window_groups::frame_changed(window.app_handle(), window.label());
         }
         tauri::WindowEvent::Destroyed => {
             window_zoom::forget(window.label());
             #[cfg(target_os = "macos")]
-            {
-                page_swipe::forget(window.label());
-                titlebar::forget(window);
-            }
+            page_swipe::forget(window.label());
             if windows::auxiliary_parent(window.label()).is_none() {
                 window_groups::destroyed(window.app_handle(), window.label());
                 windows::close_auxiliary_windows(window.app_handle(), window.label());
@@ -282,6 +304,7 @@ pub fn run() {
                 w.forget(window.label());
             }
             if windows::auxiliary_parent(window.label()).is_none() {
+                windows::hand_over_session(window.app_handle(), Some(window.label()));
                 windows::continue_quit(window.app_handle(), Some(window.label()));
             }
         }
@@ -317,6 +340,12 @@ pub fn run() {
         #[cfg(not(target_os = "macos"))]
         let _ = &early_opens;
         if let tauri::RunEvent::Exit = event {
+            // Quitting from the Dock or the system terminates without `app_quit`, which otherwise
+            // saved these before closing any window.
+            #[cfg(target_os = "macos")]
+            if app.try_state::<WindowsState>().is_some_and(|w| !w.quitting()) {
+                window_groups::save_before_quit(app);
+            }
             if let Some(state) = app.try_state::<AppState>() {
                 state.host.stop_processes_on_exit();
                 commands::mcp::stop(&state);
@@ -325,6 +354,9 @@ pub fn run() {
             }
             // Cleanup must finish before update/restart replaces this process.
             if app.try_state::<WindowsState>().is_some_and(|w| w.restart_requested()) {
+                // A downloaded Windows update installs here, after the cleanup above.
+                #[cfg(windows)]
+                fork_update_install::install_staged();
                 #[cfg(target_os = "macos")]
                 relaunch::restart(&app.env());
                 #[cfg(not(target_os = "macos"))]
@@ -345,7 +377,9 @@ fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED | StateFlags::FULLSCREEN
+        let flags = StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED;
+        // macOS: `windows::save_main_fullscreen` instead.
+        if cfg!(target_os = "macos") { flags } else { flags | StateFlags::FULLSCREEN }
     }
 }
 

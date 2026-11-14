@@ -8,6 +8,8 @@ import { DEFAULT_REMOTE, validateRemote, type RemoteSettings } from "./remoteSet
 
 export type UpdateMethod = "merge" | "rebase";
 export type IncomingCheck = "auto" | "always" | "never";
+/** Annotate gutter colours, IDEA's ColorMode (Order / Author / Hide). */
+export type AnnotateColors = "order" | "author" | "none";
 export type VcsConfirm = "ask" | "silently" | "never";
 export type PatchCreated = "ask" | "no" | "reveal";
 export type CursorShape = "block" | "underline" | "bar";
@@ -20,12 +22,15 @@ export interface IssueLinkValid {
 export interface GitSettingsValid {
   inlineBlame: boolean;
   showBranchInProjectView: boolean;
+  annotateColors: AnnotateColors;
   executable: string;
   updateMethod: UpdateMethod;
   autoUpdateOnPushRejected: boolean;
   warnCrlf: boolean;
   warnDetachedHead: boolean;
   incomingCheck: IncomingCheck;
+  autoFetch: boolean;
+  autoFetchMinutes: number;
   protectedBranches: string;
   signOff: boolean;
   warnLargeFiles: boolean;
@@ -34,6 +39,7 @@ export interface GitSettingsValid {
   showPushDialog: boolean;
   pushDialogOnlyProtected: boolean;
   combineStashAndShelf: boolean;
+  stagingArea: boolean;
 }
 
 export interface CommitSettingsValid {
@@ -57,6 +63,30 @@ export interface CommitSettingsValid {
   doubleClickOpensDiff: boolean | null;
 }
 
+export interface ClipFilterRuleValid {
+  type: "PATH" | "PATTERN";
+  action: "INCLUDE" | "EXCLUDE";
+  value: string;
+  enabled: boolean;
+}
+
+/** Version Control › ClipCode (the ClipCode plugins' settings, same keys and defaults). */
+export interface ClipCodeSettingsValid {
+  headerFormat: string;
+  preText: string;
+  postText: string;
+  addExtraLineBetweenFiles: boolean;
+  setMaxFileCount: boolean;
+  fileCountLimit: number;
+  maxFileSizeKB: number;
+  maxNonTextFileSizeKB: number;
+  showCopyNotification: boolean;
+  useFilters: boolean;
+  useIncludeFilters: boolean;
+  useExcludeFilters: boolean;
+  filterRules: ClipFilterRuleValid[];
+}
+
 export interface VcsSettingsValid {
   showDirtyDirectories: boolean;
   limitHistory: boolean;
@@ -72,6 +102,7 @@ export interface VcsSettingsValid {
   };
   shelf: { removeApplied: boolean };
   issueNavigation: IssueLinkValid[];
+  clipCode: ClipCodeSettingsValid;
 }
 
 /** Mirrors `ide-core::workflow_settings::LogLevelColors` defaults. */
@@ -190,6 +221,7 @@ export const WORKFLOW_LIMITS = {
   historyLimit: { min: 10, max: 100_000 },
   messageLimit: { min: 20, max: 500 },
   largeFileMb: { min: 1, max: 100_000 },
+  autoFetchMinutes: { min: 1, max: 1440 },
   bufferKb: { min: 16, max: 1_048_576 },
   tooltipDelay: { min: 0, max: 10_000 },
   terminationTimeoutMs: { min: 0, max: 600_000 },
@@ -198,7 +230,38 @@ export const WORKFLOW_LIMITS = {
   terminalFontSize: { min: 6, max: 72 },
   terminalLineHeight: { min: 0.5, max: 3 },
   terminalColumnWidth: { min: 0.5, max: 2 },
+  clipFileCount: { min: 1, max: 100_000 },
+  clipFileSizeKb: { min: 1, max: 32_768 },
 } as const;
+
+function clipCode(c: Record<string, unknown>, d: ClipCodeSettingsValid): ClipCodeSettingsValid {
+  const L = WORKFLOW_LIMITS;
+  return {
+    headerFormat: text(c.headerFormat, d.headerFormat),
+    preText: text(c.preText, d.preText),
+    postText: text(c.postText, d.postText),
+    addExtraLineBetweenFiles: bool(c.addExtraLineBetweenFiles, d.addExtraLineBetweenFiles),
+    setMaxFileCount: bool(c.setMaxFileCount, d.setMaxFileCount),
+    fileCountLimit: num(c.fileCountLimit, d.fileCountLimit, L.clipFileCount, true),
+    maxFileSizeKB: num(c.maxFileSizeKB, d.maxFileSizeKB, L.clipFileSizeKb, true),
+    maxNonTextFileSizeKB: num(c.maxNonTextFileSizeKB, d.maxNonTextFileSizeKB, L.clipFileSizeKb, true),
+    showCopyNotification: bool(c.showCopyNotification, d.showCopyNotification),
+    useFilters: bool(c.useFilters, d.useFilters),
+    useIncludeFilters: bool(c.useIncludeFilters, d.useIncludeFilters),
+    useExcludeFilters: bool(c.useExcludeFilters, d.useExcludeFilters),
+    filterRules: Array.isArray(c.filterRules)
+      ? c.filterRules
+          .map((x) => obj(x))
+          .map((x) => ({
+            type: oneOf(x.type, ["PATH", "PATTERN"] as const, "PATH"),
+            action: oneOf(x.action, ["INCLUDE", "EXCLUDE"] as const, "EXCLUDE"),
+            value: text(x.value, ""),
+            enabled: bool(x.enabled, true),
+          }))
+          .filter((x) => x.value.trim())
+      : [],
+  };
+}
 
 export const DEFAULT_EXTERNAL_TOOL: ExternalToolValid = {
   id: "",
@@ -222,12 +285,15 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     git: {
       inlineBlame: false,
       showBranchInProjectView: false,
+      annotateColors: "order",
       executable: "",
       updateMethod: "merge",
       autoUpdateOnPushRejected: false,
       warnCrlf: true,
       warnDetachedHead: true,
       incomingCheck: "auto",
+      autoFetch: false,
+      autoFetchMinutes: 30,
       protectedBranches: "master; main",
       signOff: false,
       warnLargeFiles: true,
@@ -236,6 +302,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       showPushDialog: true,
       pushDialogOnlyProtected: false,
       combineStashAndShelf: false,
+      stagingArea: false,
     },
     commit: {
       nonModal: true,
@@ -263,6 +330,21 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       onPatchCreated: "ask",
     },
     shelf: { removeApplied: false },
+    clipCode: {
+      headerFormat: "// file: $FILE_PATH",
+      preText: "",
+      postText: "",
+      addExtraLineBetweenFiles: true,
+      setMaxFileCount: true,
+      fileCountLimit: 30,
+      maxFileSizeKB: 500,
+      maxNonTextFileSizeKB: 2048,
+      showCopyNotification: true,
+      useFilters: false,
+      useIncludeFilters: true,
+      useExcludeFilters: true,
+      filterRules: [],
+    },
     issueNavigation: [],
   },
   console: {
@@ -369,12 +451,15 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
     git: {
       inlineBlame: bool(g.inlineBlame, d.git.inlineBlame),
       showBranchInProjectView: bool(g.showBranchInProjectView, d.git.showBranchInProjectView),
+      annotateColors: oneOf(g.annotateColors, ["order", "author", "none"] as const, d.git.annotateColors),
       executable: text(g.executable, d.git.executable).trim(),
       updateMethod: oneOf(g.updateMethod, ["merge", "rebase"] as const, d.git.updateMethod),
       autoUpdateOnPushRejected: bool(g.autoUpdateOnPushRejected, d.git.autoUpdateOnPushRejected),
       warnCrlf: bool(g.warnCrlf, d.git.warnCrlf),
       warnDetachedHead: bool(g.warnDetachedHead, d.git.warnDetachedHead),
       incomingCheck: oneOf(g.incomingCheck, ["auto", "always", "never"] as const, d.git.incomingCheck),
+      autoFetch: bool(g.autoFetch, d.git.autoFetch),
+      autoFetchMinutes: num(g.autoFetchMinutes, d.git.autoFetchMinutes, L.autoFetchMinutes, true),
       protectedBranches: text(g.protectedBranches, d.git.protectedBranches),
       signOff: bool(g.signOff, d.git.signOff),
       warnLargeFiles: bool(g.warnLargeFiles, d.git.warnLargeFiles),
@@ -383,6 +468,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       showPushDialog: bool(g.showPushDialog, d.git.showPushDialog),
       pushDialogOnlyProtected: bool(g.pushDialogOnlyProtected, d.git.pushDialogOnlyProtected),
       combineStashAndShelf: bool(g.combineStashAndShelf, d.git.combineStashAndShelf),
+      stagingArea: bool(g.stagingArea, d.git.stagingArea),
     },
     commit: {
       nonModal: bool(c.nonModal, d.commit.nonModal),
@@ -416,6 +502,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
           .map((x) => ({ pattern: text(x.pattern, ""), link: text(x.link, "") }))
           .filter((x) => x.pattern.trim())
       : [],
+    clipCode: clipCode(obj(v.clipCode), d.clipCode),
   };
 }
 

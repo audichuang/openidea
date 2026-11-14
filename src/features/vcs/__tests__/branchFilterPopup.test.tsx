@@ -93,4 +93,30 @@ describe("branch filter popup", () => {
     fireEvent.change(input, { target: { value: "missing" } });
     expect(screen.getByText("No matching branches")).toBeTruthy();
   });
+
+  it("ignores the keyCode-229 Enter that confirms an IME candidate", () => {
+    const { input, onSelect } = renderPopup();
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 229 });
+    expect(onSelect).not.toHaveBeenCalled();
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 13 });
+    expect(onSelect).toHaveBeenCalled();
+  });
+
+  it("lists favorite branches after the current one, before the rest", () => {
+    render(
+      <BranchFilterPopup
+        anchor={document.body}
+        branches={[branch("alpha"), branch("main"), branch("zeta"), branch("origin/beta", { remote: true })]}
+        selected={[]}
+        favorites={["zeta"]}
+        onSelect={vi.fn()}
+        onSelectMany={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    // The favorites passed in (another repository's) replace the stored ones; `main` is not one of them.
+    expect(rowTexts()).toEqual(["HEAD (Current Branch)", "zeta", "Local", "Remote"]);
+    fireEvent.click(screen.getByText("Local"));
+    expect(rowTexts()).toEqual(["HEAD (Current Branch)", "zeta", "Local", "zeta", "alpha", "main", "Remote"]);
+  });
 });

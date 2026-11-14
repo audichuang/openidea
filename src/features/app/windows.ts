@@ -146,6 +146,23 @@ export async function openProjectInWindow(path: string, newWindow: boolean, file
 }
 
 /**
+ * Asks whether to trust `path` in this window, before a window or tab is created for it: asked in the
+ * new window, the question waits under its start-up splash, then over the Welcome screen. False when
+ * the user chose not to open it.
+ */
+async function trustBeforeNewWindow(path: string): Promise<boolean> {
+  // The new window decides these itself: a remote path, or a WSL folder (opened there, not trusted here).
+  if (isRemoteWindow() || (await commands.wslResolve(path).catch(() => null))) return true;
+  try {
+    await confirmProjectTrust(path, "local");
+    return true;
+  } catch (e) {
+    if (isCancelled(e)) return false;
+    throw e;
+  }
+}
+
+/**
  * Opens `path` following "Open project in" when this window already has a
  * project or LightEdit session, then `files` in its editor.
  */
@@ -160,7 +177,23 @@ export async function openProjectWithPolicy(path: string, files: readonly string
   }
   const mode = await chooseProjectWindow(basename(path));
   if (!mode) return;
+  if (mode === "new" || mode === "tab") {
+    try {
+      if (!(await trustBeforeNewWindow(path))) return;
+    } catch (e) {
+      openFailed(path, e);
+      return;
+    }
+  }
   if (mode === "new") return openProjectInWindow(path, true, files);
+  if (mode === "tab") {
+    try {
+      await call(commands.windowOpenProjectTab(path, [...files]));
+    } catch (e) {
+      openFailed(path, e);
+    }
+    return;
+  }
   if (mode === "attach") {
     await attachProject(path, files);
     return;
@@ -246,7 +279,16 @@ async function consumePendingLaunch(): Promise<void> {
     }
     const files = launch.files ?? [];
     const positions = launch.positions ?? [];
-    if (launch.project && !(await openHere(launch.project))) return;
+    if (launch.project) {
+      let opened = false;
+      try {
+        opened = await openHere(launch.project);
+      } finally {
+        // Opened, the window holds it; otherwise its window group keeps saving it, retried next launch.
+        await commands.windowLaunchSettled().catch(() => {});
+      }
+      if (!opened) return;
+    }
     if (launch.diff && launch.diffBeforeFiles) {
       const diff = launch.diff;
       await openCliDiff(diff).catch((e) => openFailed(diff.right, e));
@@ -385,7 +427,13 @@ export function windowActions(): Action[] {
       category: t("app.category.window"),
       when: "projectOpen",
       run: async () => {
-        if (!desktopOnly()) await call(commands.windowGroupMerge());
+        if (desktopOnly()) return;
+        try {
+          await call(commands.windowGroupMerge());
+        } catch (e) {
+          // E.g. macOS refuses while another window is in its own fullscreen space.
+          notifications().notify({ level: "warning", title: "Merge All Project Windows", body: errorText(e) });
+        }
       },
     },
     {

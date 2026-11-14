@@ -1,6 +1,7 @@
 //! Move / rename of files and folders as one undoable refactoring: the
 //! reference updates (a [`WorkspaceEdit`] from the language servers), then the
-//! file system operation. Undo moves the files back and reverts the edits.
+//! file system operation, with git's index entries following the files (as
+//! `git mv` does). Undo moves the files back and reverts the edits.
 
 use crate::documents::Documents;
 use crate::history::LocalHistory;
@@ -106,8 +107,12 @@ impl FileMoves {
 
     /// Applies `edit` (paths as before the move, as `workspace/willRenameFiles`
     /// returns them), then performs `moves`. Edited files are snapshotted in
-    /// Local History first. On failure everything done so far is rolled back.
+    /// Local History first. `apply_edit` must be transactional: on error it must
+    /// leave none of its own changes behind. A failed file move rolls back the
+    /// successfully applied edits; a rejected edit preserves external changes.
+    /// `sync_git_index` is false for untrusted projects: no git command runs then.
     /// Returns the id for [`undo`](Self::undo).
+    #[allow(clippy::too_many_arguments)]
     pub fn perform(
         &self,
         documents: &Documents,
@@ -115,6 +120,7 @@ impl FileMoves {
         moves: &[FileMove],
         edit: &WorkspaceEdit,
         label: &str,
+        sync_git_index: bool,
         apply_edit: &dyn Fn(&WorkspaceEdit) -> IdeResult<()>,
     ) -> IdeResult<u32> {
         if moves.is_empty() {
@@ -130,6 +136,8 @@ impl FileMoves {
                 return Err(IdeError::invalid(format!("cannot move {} into itself", m.from.display())));
             }
         }
+        let _history_operation = history.map(LocalHistory::file_move_guard);
+        let index = if sync_git_index { crate::git_index::plan(moves) } else { Vec::new() };
         let paths = edited_paths(edit);
         let mut before = Vec::with_capacity(paths.len());
         for p in &paths {
@@ -141,16 +149,19 @@ impl FileMoves {
             }
             before.push(text);
         }
-        if !paths.is_empty()
-            && let Err(e) = apply_edit(edit)
-        {
-            restore(documents, &paths, &before);
-            return Err(e);
+        if !paths.is_empty() {
+            apply_edit(edit)?;
         }
         if let Err(e) = crate::file_ops::move_files(moves) {
             restore(documents, &paths, &before);
             return Err(e);
         }
+        if let Some(h) = history
+            && let Err(e) = h.follow_moves(moves)
+        {
+            tracing::warn!("local history: {e}");
+        }
+        crate::git_index::apply(&index);
         let mut edited = Vec::with_capacity(paths.len());
         for (p, before) in paths.iter().zip(before) {
             let path = moved_path(p, moves);
@@ -182,7 +193,16 @@ impl FileMoves {
 
     /// Moves the files back and restores the edited files' text. Files changed
     /// since the refactoring keep their content and are reported as conflicts.
-    pub fn undo(&self, documents: &Documents, id: u32) -> IdeResult<UndoOutcome> {
+    /// `history` and (when `sync_git_index`) git's index follow the moved-back
+    /// files; the moves are all-or-nothing. `sync_git_index` is false for
+    /// untrusted projects: no git command runs then.
+    pub fn undo(
+        &self,
+        documents: &Documents,
+        history: Option<&LocalHistory>,
+        sync_git_index: bool,
+        id: u32,
+    ) -> IdeResult<UndoOutcome> {
         let record = {
             let mut records = self.records.lock();
             let i = records
@@ -191,12 +211,20 @@ impl FileMoves {
                 .ok_or_else(|| IdeError::not_found("the refactoring can no longer be undone"))?;
             records.remove(i)
         };
+        let _history_operation = history.map(LocalHistory::file_move_guard);
         let back: Vec<_> =
             record.moves.iter().rev().map(|m| FileMove { from: m.to.clone(), to: m.from.clone() }).collect();
+        let index = if sync_git_index { crate::git_index::plan(&back) } else { Vec::new() };
         if let Err(e) = crate::file_ops::move_files(&back) {
             self.records.lock().push(record);
             return Err(e);
         }
+        if let Some(h) = history
+            && let Err(e) = h.follow_moves(&back)
+        {
+            tracing::warn!("local history: {e}");
+        }
+        crate::git_index::apply(&index);
         let mut outcome = UndoOutcome { moves: back.clone(), conflicts: Vec::new() };
         for f in &record.edited {
             let path = moved_path(&f.path, &back);
@@ -256,20 +284,55 @@ mod tests {
             }],
             ..Default::default()
         };
-        let id = moves.perform(&docs, Some(&history), &mv, &edit, "Move", &apply(&docs)).unwrap();
+        history.record(&root.join("a/util.ts"), "export const x = 1;\n", "Saved").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let id = moves.perform(&docs, Some(&history), &mv, &edit, "Move", true, &apply(&docs)).unwrap();
         assert!(root.join("b/util.ts").exists() && !root.join("a").exists());
         assert_eq!(fs::read_to_string(root.join("main.ts")).unwrap(), "import { x } from './b/util';\n");
         let snaps = history.list(&root.join("main.ts")).unwrap();
         assert_eq!(snaps[0].label, "Before refactoring: Move");
+        // The moved file's history follows it.
+        let moved: Vec<String> = history.list(&root.join("b/util.ts")).unwrap().into_iter().map(|e| e.label).collect();
+        assert_eq!(moved, vec!["Renaming a to b", "Saved"]);
+        assert!(history.list(&root.join("a/util.ts")).unwrap().is_empty());
         assert_eq!(moves.last(), Some(id));
 
-        let undone = moves.undo(&docs, id).unwrap();
+        let undone = moves.undo(&docs, None, true, id).unwrap();
         assert!(undone.conflicts.is_empty());
         assert_eq!(undone.moves, vec![FileMove { from: root.join("b").into(), to: root.join("a").into() }]);
         assert!(root.join("a/util.ts").exists() && !root.join("b").exists());
         assert_eq!(fs::read_to_string(root.join("main.ts")).unwrap(), "import { x } from './a/util';\n");
         assert!(!moves.can_undo(id));
-        assert!(moves.undo(&docs, id).is_err());
+        assert!(moves.undo(&docs, None, true, id).is_err());
+    }
+
+    #[test]
+    fn failed_undo_leaves_files_and_history_where_they_are() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::write(root.join("sub/A.txt"), "a").unwrap();
+        fs::write(root.join("B.txt"), "b").unwrap();
+        let docs = documents();
+        let history = LocalHistory::open(&root.join(".history"), root).unwrap();
+        history.record(&root.join("sub/A.txt"), "a", "Saved").unwrap();
+        history.record(&root.join("B.txt"), "b", "Saved").unwrap();
+        let moves = FileMoves::new();
+        let mv = vec![
+            FileMove { from: root.join("sub/A.txt").into(), to: root.join("A2.txt").into() },
+            FileMove { from: root.join("B.txt").into(), to: root.join("B2.txt").into() },
+        ];
+        let id =
+            moves.perform(&docs, Some(&history), &mv, &WorkspaceEdit::default(), "Move", true, &apply(&docs)).unwrap();
+        // Undo cannot move A2 back because `sub` is now a file: nothing moves back,
+        // so the history stays with the moved files and the undo stays available.
+        fs::remove_dir_all(root.join("sub")).unwrap();
+        fs::write(root.join("sub"), "x").unwrap();
+        assert!(moves.undo(&docs, Some(&history), true, id).is_err());
+        assert!(root.join("B2.txt").exists() && root.join("A2.txt").exists() && !root.join("B.txt").exists());
+        assert!(!history.list(&root.join("B2.txt")).unwrap().is_empty());
+        assert!(history.list(&root.join("B.txt")).unwrap().is_empty());
+        assert!(moves.can_undo(id));
     }
 
     #[test]
@@ -296,17 +359,17 @@ mod tests {
             ..Default::default()
         };
         let mv = vec![FileMove { from: root.join("Foo.java").into(), to: root.join("Bar.java").into() }];
-        let id = moves.perform(&docs, None, &mv, &edit, "Rename", &apply(&docs)).unwrap();
+        let id = moves.perform(&docs, None, &mv, &edit, "Rename", true, &apply(&docs)).unwrap();
         assert_eq!(fs::read_to_string(root.join("Bar.java")).unwrap(), "class Bar {}\n");
         fs::write(root.join("Use.java"), "Bar f; // edited\n").unwrap();
-        let undone = moves.undo(&docs, id).unwrap();
+        let undone = moves.undo(&docs, None, true, id).unwrap();
         assert_eq!(fs::read_to_string(root.join("Foo.java")).unwrap(), "class Foo {}\n");
         assert_eq!(undone.conflicts, vec![root.join("Use.java")]);
         assert_eq!(fs::read_to_string(root.join("Use.java")).unwrap(), "Bar f; // edited\n");
 
         // The target exists: the edit is rolled back and nothing moves.
         fs::write(root.join("Bar.java"), "taken").unwrap();
-        let err = moves.perform(&docs, None, &mv, &edit, "Rename", &apply(&docs)).unwrap_err();
+        let err = moves.perform(&docs, None, &mv, &edit, "Rename", true, &apply(&docs)).unwrap_err();
         assert_eq!(err.kind, ide_core::error::ErrorKind::AlreadyExists);
         assert_eq!(fs::read_to_string(root.join("Foo.java")).unwrap(), "class Foo {}\n");
         assert_eq!(fs::read_to_string(root.join("Use.java")).unwrap(), "Bar f; // edited\n");
@@ -318,5 +381,490 @@ mod tests {
         assert_eq!(moved_path(Path::new("/p/a"), &mv), PathBuf::from("/p/b/a"));
         assert_eq!(moved_path(Path::new("/p/a/x.rs"), &mv), PathBuf::from("/p/b/a/x.rs"));
         assert_eq!(moved_path(Path::new("/p/ab"), &mv), PathBuf::from("/p/ab"));
+    }
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8(out.stdout).unwrap()
+    }
+
+    fn repo() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        git(tmp.path(), &["init", "-q"]);
+        tmp
+    }
+
+    fn rename(root: &Path, from: &str, to: &str) -> (FileMoves, u32) {
+        let moves = FileMoves::new();
+        let mv = vec![FileMove { from: root.join(from).into(), to: root.join(to).into() }];
+        let docs = documents();
+        let id = moves.perform(&docs, None, &mv, &WorkspaceEdit::default(), "Rename", true, &apply(&docs)).unwrap();
+        (moves, id)
+    }
+
+    #[test]
+    fn renaming_a_staged_file_moves_its_index_entry() {
+        let tmp = repo();
+        let root = tmp.path();
+        fs::write(root.join("new.txt"), "new\n").unwrap();
+        git(root, &["add", "new.txt"]);
+        rename(root, "new.txt", "renamed.txt");
+        assert_eq!(git(root, &["status", "--porcelain"]), "A  renamed.txt\n");
+        assert_eq!(git(root, &["ls-files"]), "renamed.txt\n");
+    }
+
+    #[test]
+    fn moving_a_modified_file_keeps_the_staged_blob_and_unstaged_edits() {
+        let tmp = repo();
+        let root = tmp.path();
+        fs::write(root.join("t.txt"), "one\n").unwrap();
+        git(root, &["add", "t.txt"]);
+        git(root, &["commit", "-q", "-m", "init"]);
+        let blob = git(root, &["rev-parse", "HEAD:t.txt"]);
+        fs::write(root.join("t.txt"), "one\nedit\n").unwrap();
+        fs::create_dir(root.join("d")).unwrap();
+        let (moves, id) = rename(root, "t.txt", "d/t.txt");
+        assert_eq!(git(root, &["ls-files"]), "d/t.txt\n");
+        assert_eq!(git(root, &["rev-parse", ":d/t.txt"]), blob);
+        assert_eq!(fs::read_to_string(root.join("d/t.txt")).unwrap(), "one\nedit\n");
+        assert_eq!(git(root, &["diff", "--name-only"]), "d/t.txt\n");
+
+        moves.undo(&documents(), None, true, id).unwrap();
+        assert_eq!(git(root, &["ls-files"]), "t.txt\n");
+        assert_eq!(git(root, &["status", "--porcelain"]), " M t.txt\n");
+    }
+
+    #[test]
+    fn moving_into_a_folder_that_does_not_exist_yet_moves_the_index_entry() {
+        let tmp = repo();
+        let root = tmp.path();
+        fs::write(root.join("t.txt"), "t\n").unwrap();
+        git(root, &["add", "t.txt"]);
+        git(root, &["commit", "-q", "-m", "init"]);
+        assert!(!root.join("d").exists());
+        let (moves, id) = rename(root, "t.txt", "d/e/t.txt");
+        assert_eq!(git(root, &["ls-files"]), "d/e/t.txt\n");
+        assert_eq!(git(root, &["ls-files", "--others", "--exclude-standard"]), "");
+        assert_eq!(git(root, &["diff", "--name-only"]), "");
+
+        moves.undo(&documents(), None, true, id).unwrap();
+        assert_eq!(git(root, &["ls-files"]), "t.txt\n");
+        assert_eq!(git(root, &["status", "--porcelain"]), "");
+    }
+
+    #[test]
+    fn moving_a_folder_moves_the_entries_under_it_only() {
+        let tmp = repo();
+        let root = tmp.path();
+        fs::create_dir(root.join("a")).unwrap();
+        fs::write(root.join("a/x.txt"), "x\n").unwrap();
+        fs::write(root.join("a/y.txt"), "y\n").unwrap();
+        fs::write(root.join("a/u.txt"), "untracked\n").unwrap();
+        fs::write(root.join("ab.txt"), "sibling\n").unwrap();
+        git(root, &["add", "a/x.txt", "ab.txt"]);
+        git(root, &["commit", "-q", "-m", "init"]);
+        git(root, &["add", "a/y.txt"]);
+        rename(root, "a", "b");
+        assert_eq!(git(root, &["ls-files"]), "ab.txt\nb/x.txt\nb/y.txt\n");
+        assert_eq!(git(root, &["ls-files", "--others", "--exclude-standard"]), "b/u.txt\n");
+    }
+
+    #[test]
+    fn renaming_an_intent_to_add_file_keeps_it_intent_to_add() {
+        let tmp = repo();
+        let root = tmp.path();
+        fs::write(root.join("k.txt"), "k\n").unwrap();
+        git(root, &["add", "k.txt"]);
+        git(root, &["commit", "-q", "-m", "init"]);
+        fs::write(root.join("m.txt"), "content\n").unwrap();
+        git(root, &["add", "-N", "m.txt"]);
+        rename(root, "m.txt", "n.txt");
+        assert_eq!(git(root, &["status", "--porcelain"]), " A n.txt\n");
+        git(root, &["add", "n.txt"]);
+        git(root, &["commit", "-q", "-m", "n"]);
+        assert_eq!(git(root, &["cat-file", "-s", "HEAD:n.txt"]).trim(), "8");
+    }
+
+    #[test]
+    fn undoing_an_intent_to_add_rename_restores_intent_to_add() {
+        let tmp = repo();
+        let root = tmp.path();
+        fs::write(root.join("k.txt"), "k\n").unwrap();
+        git(root, &["add", "k.txt"]);
+        git(root, &["commit", "-q", "-m", "init"]);
+        fs::write(root.join("m.txt"), "content\n").unwrap();
+        git(root, &["add", "-N", "m.txt"]);
+        let (moves, id) = rename(root, "m.txt", "n.txt");
+        moves.undo(&documents(), None, true, id).unwrap();
+        assert_eq!(git(root, &["status", "--porcelain"]), " A m.txt\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn renaming_does_not_run_a_clean_filter_of_the_project() {
+        let tmp = repo();
+        let root = tmp.path();
+        fs::write(root.join("k.txt"), "k\n").unwrap();
+        fs::write(root.join("b.txt"), "b\n").unwrap();
+        git(root, &["add", "k.txt", "b.txt"]);
+        git(root, &["commit", "-q", "-m", "init"]);
+        let marker = root.join("MARKER");
+        fs::write(root.join(".gitattributes"), "*.txt filter=probe\n").unwrap();
+        git(root, &["config", "filter.probe.clean", &format!("touch {}; cat", marker.display())]);
+        // Git re-hashes racily clean entries (through clean filters) on any index write,
+        // so let the entries age out first; then touch b.txt so only a diff would hash it.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        git(root, &["update-index", "--refresh"]);
+        fs::write(root.join("b.txt"), "b\n").unwrap();
+        let _ = fs::remove_file(&marker);
+        rename(root, "b.txt", "c.txt");
+        assert!(!marker.exists(), "the project's clean filter ran");
+        assert_eq!(git(root, &["ls-files"]), "c.txt\nk.txt\n");
+    }
+
+    #[test]
+    fn moving_a_folder_with_a_skip_worktree_entry_leaves_the_index_alone() {
+        let tmp = repo();
+        let root = tmp.path();
+        fs::create_dir(root.join("dir")).unwrap();
+        fs::write(root.join("dir/a.txt"), "a\n").unwrap();
+        fs::write(root.join("dir/hidden"), "h\n").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-q", "-m", "init"]);
+        git(root, &["sparse-checkout", "set", "--no-cone", "/*", "!/dir/hidden"]);
+        assert!(!root.join("dir/hidden").exists());
+        let before = git(root, &["ls-files", "--stage", "-t"]);
+        assert!(before.contains("S dir/hidden") || before.contains("S 100644"), "{before}");
+        let (moves, id) = rename(root, "dir", "new");
+        assert_eq!(git(root, &["ls-files", "--stage", "-t"]), before);
+        assert!(!git(root, &["status", "--porcelain"]).contains("hidden"));
+        moves.undo(&documents(), None, true, id).unwrap();
+        assert_eq!(git(root, &["ls-files", "--stage", "-t"]), before);
+        assert!(!git(root, &["status", "--porcelain"]).contains("hidden"));
+    }
+
+    #[test]
+    fn moving_an_assume_unchanged_file_leaves_the_index_alone() {
+        let tmp = repo();
+        let root = tmp.path();
+        fs::write(root.join("a.txt"), "a\n").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-q", "-m", "init"]);
+        git(root, &["update-index", "--assume-unchanged", "a.txt"]);
+        let before = git(root, &["ls-files", "--stage", "-t"]);
+        rename(root, "a.txt", "b.txt");
+        assert_eq!(git(root, &["ls-files", "--stage", "-t"]), before);
+    }
+
+    #[test]
+    fn renaming_an_intent_to_add_file_onto_an_ignored_path_keeps_it_tracked() {
+        let tmp = repo();
+        let root = tmp.path();
+        fs::write(root.join(".gitignore"), "ignored.txt\n").unwrap();
+        git(root, &["add", ".gitignore"]);
+        git(root, &["commit", "-q", "-m", "init"]);
+        fs::write(root.join("a.txt"), "content\n").unwrap();
+        git(root, &["add", "-N", "a.txt"]);
+        let (moves, id) = rename(root, "a.txt", "ignored.txt");
+        assert_eq!(git(root, &["ls-files"]), ".gitignore\nignored.txt\n");
+        assert_eq!(git(root, &["status", "--porcelain"]), " A ignored.txt\n");
+        moves.undo(&documents(), None, true, id).unwrap();
+        assert_eq!(git(root, &["status", "--porcelain"]), " A a.txt\n");
+    }
+
+    #[test]
+    fn untracked_and_cross_repository_moves_leave_the_index_alone() {
+        let tmp = repo();
+        let root = tmp.path();
+        fs::write(root.join("u.txt"), "u\n").unwrap();
+        rename(root, "u.txt", "v.txt");
+        assert_eq!(git(root, &["ls-files"]), "");
+
+        fs::write(root.join("t.txt"), "t\n").unwrap();
+        git(root, &["add", "t.txt"]);
+        let other = repo();
+        let docs = documents();
+        let mv = vec![FileMove { from: root.join("t.txt").into(), to: other.path().join("t.txt").into() }];
+        FileMoves::new().perform(&docs, None, &mv, &WorkspaceEdit::default(), "Move", true, &apply(&docs)).unwrap();
+        assert_eq!(git(root, &["ls-files"]), "t.txt\n");
+        assert_eq!(git(other.path(), &["ls-files"]), "");
+    }
+
+    #[test]
+    fn untrusted_projects_run_no_git_command_and_leave_the_index_alone() {
+        let tmp = repo();
+        let root = tmp.path();
+        fs::write(root.join("t.txt"), "t\n").unwrap();
+        git(root, &["add", "t.txt"]);
+        git(root, &["commit", "-q", "-m", "init"]);
+        let index = || std::fs::read(root.join(".git/index")).unwrap();
+        let before = index();
+        let docs = documents();
+        let moves = FileMoves::new();
+        let mv = vec![FileMove { from: root.join("t.txt").into(), to: root.join("u.txt").into() }];
+        let id = moves.perform(&docs, None, &mv, &WorkspaceEdit::default(), "Rename", false, &apply(&docs)).unwrap();
+        assert_eq!(index(), before);
+        assert_eq!(git(root, &["ls-files"]), "t.txt\n");
+        moves.undo(&docs, None, false, id).unwrap();
+        assert_eq!(index(), before);
+        assert_eq!(git(root, &["ls-files"]), "t.txt\n");
+    }
+
+    #[test]
+    fn move_history_waits_for_reference_edits_before_watcher_reads() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let from = root.join("a.txt");
+        let to = root.join("b.txt");
+        fs::write(&from, "before").unwrap();
+        let docs = documents();
+        let history = Arc::new(LocalHistory::open(&root.join(".history"), root).unwrap());
+        history.record(&from, "before", "Saved").unwrap();
+        let edit = WorkspaceEdit {
+            files: vec![FileEdit::Edit {
+                path: from.as_path().into(),
+                version: None,
+                edits: vec![TextEdit { range: Range::new(Pos::new(0, 0), Pos::new(0, 6)), new_text: "after".into() }],
+            }],
+            ..Default::default()
+        };
+        let (start, ready) = mpsc::channel();
+        let (entered, entering) = mpsc::channel();
+        let (done, finished) = mpsc::channel();
+        let watcher_history = history.clone();
+        let watcher_from = from.clone();
+        let watcher = std::thread::spawn(move || {
+            ready.recv().unwrap();
+            entered.send(()).unwrap();
+            watcher_history.record_external_changes(&[watcher_from], &[], 500);
+            done.send(()).unwrap();
+        });
+        let moves = FileMoves::new();
+        moves
+            .perform(
+                &docs,
+                Some(&history),
+                &[FileMove { from: from.as_path().into(), to: to.as_path().into() }],
+                &edit,
+                "Rename",
+                false,
+                &|edit| {
+                    docs.apply_file_move_edits(edit)?;
+                    start.send(()).unwrap();
+                    entering.recv().unwrap();
+                    // The watcher has begun processing the edit, while the move
+                    // deliberately stays in its intermediate state.
+                    let _ = finished.recv_timeout(Duration::from_millis(250));
+                    Ok(())
+                },
+            )
+            .unwrap();
+        watcher.join().unwrap();
+        assert!(history.list(&from).unwrap().is_empty());
+        let labels: Vec<_> = history.list(&to).unwrap().into_iter().map(|entry| entry.label).collect();
+        println!("watcher during perform edits: {labels:?}");
+        assert_eq!(fs::read_to_string(&to).unwrap(), "after");
+        assert!(!labels.iter().any(|label| label == "Deleted" || label == "External change"));
+    }
+
+    #[test]
+    fn native_watcher_waits_for_move_history_before_snapshotting() {
+        use ide_vfs::Watcher;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        fs::create_dir(&root).unwrap();
+        let root = dunce::canonicalize(&root).unwrap();
+        let history = Arc::new(LocalHistory::open(&tmp.path().join("history"), &root).unwrap());
+        let from = root.join("a.txt");
+        let to = root.join("b.txt");
+        fs::write(&from, "content").unwrap();
+        history.record(&from, "content", "Saved").unwrap();
+        let (entered, entering) = mpsc::channel();
+        let (done, finished) = mpsc::channel();
+        let callback_history = history.clone();
+        let callback_from = from.clone();
+        let watcher = Watcher::start(
+            &root,
+            Vec::new(),
+            Arc::new(|_| {}),
+            Box::new(move |batch| {
+                let changed: Vec<_> = batch.created.iter().chain(&batch.modified).cloned().collect();
+                let moved = batch.removed.contains(&callback_from);
+                if moved {
+                    entered.send(()).unwrap();
+                }
+                callback_history.record_external_changes(&changed, &batch.removed, 500);
+                if moved {
+                    done.send(()).unwrap();
+                }
+            }),
+        )
+        .unwrap();
+        assert!(watcher.polling().is_none(), "requires real native watcher");
+        let moving = history.file_move_guard();
+        fs::rename(&from, &to).unwrap();
+        entering.recv_timeout(Duration::from_secs(5)).unwrap();
+        let completed = finished.recv_timeout(Duration::from_millis(250)).is_ok();
+        history.follow_moves(&[FileMove { from: from.as_path().into(), to: to.as_path().into() }]).unwrap();
+        drop(moving);
+        if !completed {
+            finished.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+        drop(watcher);
+        assert!(history.list(&from).unwrap().is_empty());
+        let labels: Vec<_> = history.list(&to).unwrap().into_iter().map(|entry| entry.label).collect();
+        println!("native watcher during move: {labels:?}");
+        assert_eq!(labels, vec!["Renaming a.txt to b.txt", "Saved"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn index_planning_precedes_snapshots_and_preserves_external_edits() {
+        use std::cell::Cell;
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
+
+        const MODE: &str = "OPENIDEA_TEST_INDEX_SNAPSHOT_MODE";
+        let Ok(mode) = std::env::var(MODE) else {
+            // Keep OPENIDEA_GIT local to each child: other tests can run in parallel.
+            let tmp = tempfile::tempdir().unwrap();
+            let shim = tmp.path().join("git-shim");
+            fs::write(
+                &shim,
+                r##"#!/bin/sh
+for arg in "$@"; do
+    if [ "$arg" = "ls-files" ] && [ -f MUTATE_REFERENCE ]; then
+        if [ "$OPENIDEA_TEST_INDEX_SNAPSHOT_MODE" = "remove" ]; then
+            rm main.ts
+        else
+            printf 'external edit\n' > main.ts
+        fi
+        rm MUTATE_REFERENCE
+    fi
+done
+exec git "$@"
+"##,
+            )
+            .unwrap();
+            fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+            let test = format!(
+                "{}::index_planning_precedes_snapshots_and_preserves_external_edits",
+                module_path!().split_once("::").unwrap().1
+            );
+            for mode in ["write", "remove"] {
+                let output = Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", &test, "--nocapture"])
+                    .env(MODE, mode)
+                    .env("OPENIDEA_GIT", &shim)
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{mode}: {}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            }
+            return;
+        };
+        let tmp = repo();
+        let root = tmp.path();
+        fs::write(root.join("source.ts"), "source\n").unwrap();
+        fs::write(root.join("main.ts"), "old\n").unwrap();
+        git(root, &["add", "source.ts", "main.ts"]);
+        let index_before = fs::read(root.join(".git/index")).unwrap();
+        let docs = documents();
+        let mut edit = WorkspaceEdit {
+            files: vec![FileEdit::Edit {
+                path: root.join("main.ts").into(),
+                version: None,
+                edits: vec![TextEdit { range: Range::new(Pos::new(0, 0), Pos::new(0, 3)), new_text: "updated".into() }],
+            }],
+            ..Default::default()
+        };
+        docs.prepare_workspace_edit(&mut edit).unwrap();
+        fs::write(root.join("MUTATE_REFERENCE"), "").unwrap();
+        let called = Cell::new(false);
+        let apply_edit = |edit: &WorkspaceEdit| {
+            called.set(true);
+            let result = docs.apply_file_move_edits(edit);
+            assert_eq!(result.as_ref().unwrap_err().kind, ide_core::error::ErrorKind::OutOfSync);
+            if mode == "write" {
+                assert_eq!(fs::read_to_string(root.join("main.ts")).unwrap(), "external edit\n");
+            }
+            result
+        };
+        let moves = FileMoves::new();
+        let mv = vec![FileMove { from: root.join("source.ts").into(), to: root.join("renamed.ts").into() }];
+        let error = moves.perform(&docs, None, &mv, &edit, "Move", true, &apply_edit).unwrap_err();
+        if mode == "write" {
+            assert!(called.get());
+            assert_eq!(error.kind, ide_core::error::ErrorKind::OutOfSync);
+            assert_eq!(fs::read_to_string(root.join("main.ts")).unwrap(), "external edit\n");
+        } else {
+            assert!(!called.get(), "snapshot must observe the removal before invoking the edit callback");
+            assert_eq!(error.kind, ide_core::error::ErrorKind::NotFound);
+            assert!(!root.join("main.ts").exists());
+        }
+        assert!(!root.join("MUTATE_REFERENCE").exists(), "index planning must trigger the external change");
+        assert_eq!(fs::read_to_string(root.join("source.ts")).unwrap(), "source\n");
+        assert!(!root.join("renamed.ts").exists());
+        assert_eq!(fs::read(root.join(".git/index")).unwrap(), index_before);
+        assert_eq!(moves.last(), None);
+    }
+
+    #[test]
+    fn rejected_reference_edits_preserve_changes_after_the_snapshot() {
+        use std::cell::Cell;
+
+        let tmp = repo();
+        let root = tmp.path();
+        fs::write(root.join("source.ts"), "source\n").unwrap();
+        fs::write(root.join("main.ts"), "old\n").unwrap();
+        git(root, &["add", "source.ts", "main.ts"]);
+        let index_before = fs::read(root.join(".git/index")).unwrap();
+        let docs = documents();
+        let mut edit = WorkspaceEdit {
+            files: vec![FileEdit::Edit {
+                path: root.join("main.ts").into(),
+                version: None,
+                edits: vec![TextEdit { range: Range::new(Pos::new(0, 0), Pos::new(0, 3)), new_text: "updated".into() }],
+            }],
+            ..Default::default()
+        };
+        docs.prepare_workspace_edit(&mut edit).unwrap();
+        let called = Cell::new(false);
+        let apply_edit = |edit: &WorkspaceEdit| {
+            called.set(true);
+            // Model an external writer after perform has captured its rollback text.
+            fs::write(root.join("main.ts"), "external edit after snapshot\n").unwrap();
+            let result = docs.apply_file_move_edits(edit);
+            assert_eq!(result.as_ref().unwrap_err().kind, ide_core::error::ErrorKind::OutOfSync);
+            assert_eq!(fs::read_to_string(root.join("main.ts")).unwrap(), "external edit after snapshot\n");
+            result
+        };
+        let moves = FileMoves::new();
+        let mv = vec![FileMove { from: root.join("source.ts").into(), to: root.join("renamed.ts").into() }];
+        let error = moves.perform(&docs, None, &mv, &edit, "Move", true, &apply_edit).unwrap_err();
+        assert!(called.get());
+        assert_eq!(error.kind, ide_core::error::ErrorKind::OutOfSync);
+        assert_eq!(fs::read_to_string(root.join("main.ts")).unwrap(), "external edit after snapshot\n");
+        assert_eq!(fs::read_to_string(root.join("source.ts")).unwrap(), "source\n");
+        assert!(!root.join("renamed.ts").exists());
+        assert_eq!(fs::read(root.join(".git/index")).unwrap(), index_before);
+        assert_eq!(moves.last(), None);
     }
 }

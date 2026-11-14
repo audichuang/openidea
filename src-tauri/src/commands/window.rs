@@ -2,7 +2,7 @@
 
 use crate::menu::{self, MenuConfig, MenuState};
 use crate::state::AppState;
-use crate::windows::{self, Launch, OpenOutcome, WindowsState};
+use crate::windows::{self, Launch, OpenIn, OpenOutcome, WindowsState};
 use ide_core::{IdeError, IdeResult, RequestId};
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -22,7 +22,22 @@ pub async fn window_open_project(
     new_window: bool,
     files: Vec<PathBuf>,
 ) -> IdeResult<OpenOutcome> {
-    windows::open_project_window(&app, &path, new_window, files)
+    let open_in = if new_window { OpenIn::NewWindow } else { OpenIn::Current };
+    windows::open_project_window(&app, &path, open_in, files)
+}
+
+/// [`window_open_project`] into a new tab of this window's group ("Open project in: New tab");
+/// a plain new window when this window has no local project. Remote projects don't join tab
+/// groups: a group saves and restores local project paths only.
+#[tauri::command]
+#[specta::specta]
+pub async fn window_open_project_tab(
+    app: AppHandle,
+    window: WebviewWindow,
+    path: PathBuf,
+    files: Vec<PathBuf>,
+) -> IdeResult<OpenOutcome> {
+    windows::open_project_window(&app, &path, OpenIn::NewTab { caller: window.label() }, files)
 }
 
 /// Loose `files` opened from a window without a local project: a file inside a local project
@@ -137,7 +152,9 @@ pub fn window_cycle(app: AppHandle, window: WebviewWindow, forward: bool) {
 #[tauri::command]
 #[specta::specta]
 pub fn window_toggle_fullscreen(window: WebviewWindow) -> IdeResult<bool> {
-    crate::window_groups::toggle_fullscreen(&window)
+    let on = !window.is_fullscreen().map_err(|e| IdeError::internal(e.to_string()))?;
+    window.set_fullscreen(on).map_err(|e| IdeError::internal(e.to_string()))?;
+    Ok(on)
 }
 
 /// Fills the work area without the platform zoom animation. Returns whether it is filled now.
@@ -191,6 +208,21 @@ pub fn window_complete_launch(window: WebviewWindow, windows: State<'_, WindowsS
     Ok(())
 }
 
+/// Whether this window records the project reopened on the next launch: `main` while it is
+/// open, then a window left when it closed (told by `openidea://session-owner`).
+#[tauri::command]
+#[specta::specta]
+pub fn window_owns_session(window: WebviewWindow, windows: State<'_, WindowsState>) -> bool {
+    windows.owns_session(window.label())
+}
+
+/// This window is done with the launch it took: its project opened, failed to, or was cancelled.
+#[tauri::command]
+#[specta::specta]
+pub fn window_launch_settled(window: WebviewWindow, windows: State<'_, WindowsState>, state: State<'_, AppState>) {
+    windows.launch_settled(window.label(), state.opened_project(window.label()).is_some());
+}
+
 #[derive(Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenProject {
@@ -211,7 +243,7 @@ pub fn window_open_projects(
     Ok(windows::project_window_labels(&app)
         .into_iter()
         .filter_map(|label| {
-            let project = state.project(&label).ok().filter(|p| !p.light)?;
+            let project = state.opened_project(&label)?;
             Some(OpenProject {
                 name: project.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                 root: project.root.clone(),
@@ -219,13 +251,6 @@ pub fn window_open_projects(
             })
         })
         .collect())
-}
-
-/// Whether this window is in native full screen (on macOS, also a tab of a fullscreen group).
-#[tauri::command]
-#[specta::specta]
-pub fn window_is_fullscreen(window: WebviewWindow) -> bool {
-    window.is_fullscreen().unwrap_or(false)
 }
 
 #[derive(Serialize, Deserialize, Type)]
@@ -241,15 +266,7 @@ pub struct CloseContext {
 #[specta::specta]
 pub fn window_close_context(app: AppHandle, window: Window, windows: State<'_, WindowsState>) -> CloseContext {
     let all = windows::project_window_labels(&app);
-    let pending: Vec<String> = windows::sorted_labels(
-        windows.pending_closes().iter().map(String::as_str).filter(|l| all.iter().any(|a| a == l)),
-    );
-    // Members of a tab group asking to close together are one window closing: the first of them
-    // is the last window left (the frontend may return it to the welcome screen); the others just close.
-    let count = match pending.first() {
-        Some(keeper) if pending.len() > 1 && keeper == window.label() => all.len() - pending.len() + 1,
-        _ => all.len(),
-    };
+    let count = windows::close_window_count(&all, &windows.pending_closes(), window.label());
     CloseContext { quitting: windows.quitting(), windows: count as u32 }
 }
 
@@ -260,6 +277,9 @@ pub fn app_quit(app: AppHandle, windows: State<'_, WindowsState>) {
     if windows.quitting() {
         return;
     }
+    // Before any window closes; once quitting, nothing is saved.
+    #[cfg(target_os = "macos")]
+    crate::window_groups::save_before_quit(&app);
     windows.set_quitting(true);
     windows::continue_quit(&app, None);
 }
@@ -269,6 +289,8 @@ pub fn app_quit(app: AppHandle, windows: State<'_, WindowsState>) {
 #[specta::specta]
 pub fn app_cancel_quit(app: AppHandle, windows: State<'_, WindowsState>) {
     windows.set_quitting(false);
+    // The windows closed before the veto, `main` among them, handed nothing over.
+    windows::hand_over_session(&app, None);
     tauri::async_runtime::spawn(async move {
         let _ = crate::window_groups::persist(&app).await;
     });
@@ -394,7 +416,8 @@ pub struct BuildInfo {
 #[specta::specta]
 pub fn app_build_info(app: AppHandle) -> BuildInfo {
     BuildInfo {
-        version: env!("CARGO_PKG_VERSION").into(),
+        // The bundle's version: a fork release overrides it, the crate version stays upstream's.
+        version: app.package_info().version.to_string(),
         build: option_env!("OPENIDEA_BUILD").unwrap_or("dev").into(),
         profile: if cfg!(debug_assertions) { "debug" } else { "release" }.into(),
         os: std::env::consts::OS.into(),
@@ -407,64 +430,30 @@ pub fn app_build_info(app: AppHandle) -> BuildInfo {
 use ide_core::updates::UpdateInfo;
 pub use ide_core::updates::{UpdateCheck, UpdateSource, UpdateStatus};
 
+/// `OPENIDEA_UPDATE_ENDPOINT`: a debug build checks for updates in the background only with it set.
 pub(crate) fn update_endpoint_env() -> Option<String> {
     std::env::var("OPENIDEA_UPDATE_ENDPOINT").ok().filter(|s| !s.trim().is_empty())
 }
 
-/// Whether an update endpoint is configured: `plugins.updater.endpoints` in
-/// tauri.conf.json, or the `OPENIDEA_UPDATE_ENDPOINT` environment variable. Empty by
-/// default, and "Check for Updates…" is hidden then.
-pub fn updates_configured<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
-    !config_endpoints(app).is_empty() || update_endpoint_env().is_some()
+/// Whether a fork update endpoint is configured.
+pub(crate) fn updates_configured<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
+    !crate::fork_updater::UpdateEndpoints::configured(app.config()).urls.is_empty()
 }
 
-const CNB_ENDPOINT: &str = "https://cnb.cool/l0ng-ai/openidea/-/releases/latest/download/latest.json";
+/// How long the automatic proxy configuration (PAC download, WPAD) may hold up an update check.
+const AUTO_PROXY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-fn config_endpoints<R: tauri::Runtime>(app: &AppHandle<R>) -> Vec<String> {
-    app.config()
-        .plugins
-        .0
-        .get("updater")
-        .and_then(|u| u.get("endpoints"))
-        .and_then(|e| e.as_array())
-        .map(|e| e.iter().filter_map(|u| u.as_str().map(String::from)).collect())
-        .unwrap_or_default()
-}
-
-/// The endpoints tried in order: `source` first, the other source when it fails or has
-/// no manifest. Bundles are signed, so either source's manifest and downloads verify.
-/// No official endpoint (a build without updates) means no mirror either. Nightly builds
-/// aren't mirrored: the mirror's manifest would move them to the stable version.
-fn source_endpoints(official: Vec<String>, source: UpdateSource, nightly: bool) -> Vec<String> {
-    if official.is_empty() || nightly {
-        return official;
-    }
-    let mirror = vec![CNB_ENDPOINT.to_string()];
-    match source {
-        UpdateSource::Github => [official, mirror].concat(),
-        UpdateSource::Cnb => [mirror, official].concat(),
-    }
-}
-
-fn is_nightly(version: &str) -> bool {
-    version.contains("-nightly.")
-}
-
-fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option<tauri_plugin_updater::Updater>> {
+async fn updater(app: &AppHandle) -> IdeResult<Option<tauri_plugin_updater::Updater>> {
+    use ide_core::proxy_settings::ProxyMode;
+    use ide_http::system_proxy::{AutoProxy, auto_proxy_for};
     use tauri_plugin_updater::UpdaterExt;
-    if !updates_configured(app) {
+    let endpoints = crate::fork_updater::UpdateEndpoints::configured(app.config());
+    if endpoints.urls.is_empty() {
         return Ok(None);
     }
-    let endpoints = match update_endpoint_env() {
-        Some(url) => vec![url],
-        None => source_endpoints(config_endpoints(app), source, is_nightly(&app.package_info().version.to_string())),
-    };
-    let endpoints = endpoints
-        .iter()
-        .map(|u| u.parse().map_err(|e| IdeError::invalid(format!("update endpoint {u}: {e}"))))
-        .collect::<IdeResult<Vec<_>>>()?;
     let proxy = ide_core::proxy_settings::proxy();
-    let mut builder = app.updater_builder();
+    let auto = proxy.mode == ProxyMode::Auto;
+    let mut builder = app.updater_builder().configure_client(move |b| ide_http::client::with_proxy(b, &proxy));
     if let Some(target) = crate::updates::portable_target(
         std::env::consts::OS,
         std::env::consts::ARCH,
@@ -472,13 +461,30 @@ fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option<tauri_plug
     ) {
         builder = builder.target(target);
     }
-    builder
-        .configure_client(move |b| ide_http::client::with_proxy(b, &proxy))
-        .endpoints(endpoints)
-        .map_err(|e| IdeError::invalid(e.to_string()))?
-        .build()
-        .map(Some)
-        .map_err(|e| IdeError::unavailable(e.to_string()))
+    let urls = endpoints
+        .urls
+        .iter()
+        .map(|url| url.parse().map_err(|e| IdeError::invalid(format!("update endpoint: {e}"))))
+        .collect::<IdeResult<Vec<_>>>()?;
+    builder = builder.endpoints(urls).map_err(|e| IdeError::invalid(e.to_string()))?;
+    // reqwest's system proxy misses PAC scripts and WPAD. The updater builder reuses one
+    // decision for all endpoints and the artifact download, so only resolve a single endpoint.
+    if let Some(endpoint) = endpoints.auto_proxy_target().filter(|_| auto) {
+        match tokio::time::timeout(AUTO_PROXY_TIMEOUT, auto_proxy_for(endpoint)).await {
+            Ok(Some(AutoProxy::Via(via))) => {
+                tracing::info!("updates: proxy {via} from the automatic proxy configuration");
+                let via = via.parse().map_err(|e| IdeError::invalid(format!("proxy {via}: {e}")))?;
+                builder = builder.proxy(via);
+            }
+            Ok(Some(AutoProxy::Direct)) => {
+                tracing::info!("updates: direct, as the automatic proxy configuration says");
+                builder = builder.no_proxy();
+            }
+            Ok(None) => {}
+            Err(_) => tracing::warn!("updates: automatic proxy configuration timed out; using the system proxy"),
+        }
+    }
+    builder.build().map(Some).map_err(|e| IdeError::unavailable(e.to_string()))
 }
 
 #[tauri::command]
@@ -488,7 +494,8 @@ pub async fn app_check_update(app: AppHandle, source: UpdateSource) -> IdeResult
 }
 
 pub(crate) async fn check_update(app: &AppHandle, source: UpdateSource) -> IdeResult<UpdateCheck> {
-    let Some(updater) = updater(app, source)? else {
+    let _ = source; // fork_updater owns the endpoint list
+    let Some(updater) = updater(app).await? else {
         return Ok(UpdateCheck { enabled: false, update: None });
     };
     let update = tokio::time::timeout(std::time::Duration::from_secs(60), updater.check())
@@ -582,6 +589,20 @@ impl Drop for InstallingGuard {
     }
 }
 
+async fn prepare_update(
+    initializer: impl std::future::Future<Output = IdeResult<Option<tauri_plugin_updater::Updater>>>,
+    token: &ide_core::CancellationToken,
+) -> IdeResult<tauri_plugin_updater::Update> {
+    tokio::select! {
+        result = async {
+            let updater = initializer.await?.ok_or_else(|| IdeError::unavailable("updates are not configured"))?;
+            updater.check().await.map_err(|e| IdeError::unavailable(e.to_string()))?
+                .ok_or_else(|| IdeError::not_found("no update available"))
+        } => result,
+        _ = token.cancelled() => Err(IdeError::cancelled()),
+    }
+}
+
 /// Downloads and installs the available update, streaming progress to `on_progress`.
 /// Cancellable through `request` until the download completes; the UI then restarts
 /// with `app_restart`. One install runs at a time.
@@ -594,16 +615,12 @@ pub async fn app_install_update(
     request: RequestId,
     on_progress: Channel<UpdateProgress>,
 ) -> IdeResult<()> {
+    let _ = source; // fork_updater owns the endpoint list
     let _guard =
         InstallingGuard::acquire().ok_or_else(|| IdeError::unavailable("an update is already being installed"))?;
     let token = state.host.begin_request(request);
     let result = async {
-        let updater = updater(&app, source)?.ok_or_else(|| IdeError::unavailable("updates are not configured"))?;
-        let update = tokio::select! {
-            r = updater.check() => r.map_err(|e| IdeError::unavailable(e.to_string()))?,
-            _ = token.cancelled() => return Err(IdeError::cancelled()),
-        }
-        .ok_or_else(|| IdeError::not_found("no update available"))?;
+        let update = prepare_update(updater(&app), &token).await?;
         let mut throttle = ProgressThrottle::default();
         let progress = on_progress.clone();
         let download = update.download(
@@ -619,20 +636,35 @@ pub async fn app_install_update(
             _ = token.cancelled() => return Err(IdeError::cancelled()),
         };
         let _ = on_progress.send(UpdateProgress::Installing);
-        tauri::async_runtime::spawn_blocking(move || {
-            #[cfg(windows)]
-            if update.target.ends_with("-portable") {
-                let exe = tauri::utils::platform::current_exe()?;
-                return ide_tools::portable_update::install(&exe, &bytes);
-            }
-            update.install(bytes).map_err(|e| IdeError::internal(e.to_string()))
-        })
-        .await
-        .map_err(|e| IdeError::internal(e.to_string()))?
+        install(update, bytes).await
     }
     .await;
     state.host.end_request(request);
     result
+}
+
+#[cfg(not(windows))]
+async fn install(update: tauri_plugin_updater::Update, bytes: Vec<u8>) -> IdeResult<()> {
+    tauri::async_runtime::spawn_blocking(move || update.install(bytes))
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
+        .map_err(|e| IdeError::internal(e.to_string()))
+}
+
+/// Installing on Windows ends the process at once, so it waits for the restart's quit flow. A
+/// portable build replaces its files in place without exiting, as upstream does.
+#[cfg(windows)]
+async fn install(update: tauri_plugin_updater::Update, bytes: Vec<u8>) -> IdeResult<()> {
+    if update.target.ends_with("-portable") {
+        return tauri::async_runtime::spawn_blocking(move || {
+            let exe = tauri::utils::platform::current_exe()?;
+            ide_tools::portable_update::install(&exe, &bytes)
+        })
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?;
+    }
+    crate::fork_update_install::stage(update, bytes);
+    Ok(())
 }
 
 /// Release notes of `version` from the update manifest (`latest.json`), read
@@ -642,10 +674,8 @@ pub async fn app_install_update(
 #[tauri::command]
 #[specta::specta]
 pub async fn app_release_notes(app: AppHandle, version: String, source: UpdateSource) -> IdeResult<Option<String>> {
-    let endpoints = match update_endpoint_env() {
-        Some(url) => vec![url],
-        None => source_endpoints(config_endpoints(&app), source, is_nightly(&app.package_info().version.to_string())),
-    };
+    let _ = source; // fork_updater owns the endpoint list
+    let endpoints = crate::fork_updater::UpdateEndpoints::configured(app.config()).urls;
     let client = ide_http::client::shared()?;
     for endpoint in endpoints {
         // A hanging endpoint must not leave the page on "Fetching release notes…".
@@ -740,25 +770,24 @@ mod tests {
         assert!(ProgressThrottle::default().chunk(1, Some(0)).is_some());
     }
 
-    #[test]
-    fn chosen_source_is_tried_first_and_the_other_after_it() {
-        let github = "https://github.com/l0ng-ai/openidea/releases/latest/download/latest.json".to_string();
-        assert_eq!(
-            source_endpoints(vec![github.clone()], UpdateSource::Github, false),
-            [github.clone(), CNB_ENDPOINT.into()]
-        );
-        assert_eq!(source_endpoints(vec![github.clone()], UpdateSource::Cnb, false), [CNB_ENDPOINT.into(), github]);
-        // A build without an update endpoint stays without one.
-        assert!(source_endpoints(Vec::new(), UpdateSource::Cnb, false).is_empty());
-    }
-
-    #[test]
-    fn nightly_builds_update_from_their_own_manifest_whatever_the_source() {
-        let nightly = "https://github.com/l0ng-ai/openidea/releases/download/nightly/latest.json".to_string();
-        assert_eq!(source_endpoints(vec![nightly.clone()], UpdateSource::Cnb, true), vec![nightly.clone()]);
-        assert_eq!(source_endpoints(vec![nightly.clone()], UpdateSource::Github, true), [nightly]);
-        assert!(is_nightly("0.1.40-nightly.202611081417"));
-        assert!(!is_nightly("0.1.40"));
+    #[tokio::test]
+    async fn cancel_update_while_initializing() {
+        let token = ide_core::CancellationToken::new();
+        let (started, initialized) = tokio::sync::oneshot::channel();
+        let initializer = async {
+            started.send(()).unwrap();
+            std::future::pending::<IdeResult<Option<tauri_plugin_updater::Updater>>>().await
+        };
+        let cancel = async {
+            initialized.await.unwrap();
+            token.cancel();
+        };
+        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            tokio::join!(prepare_update(initializer, &token), cancel)
+        })
+        .await
+        .expect("cancelling an update must interrupt initialization");
+        assert!(matches!(result, Err(error) if error.kind == ide_core::error::ErrorKind::Cancelled));
     }
 
     #[test]

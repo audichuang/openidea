@@ -1,0 +1,263 @@
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 240px;
+  max-height: 60vh;
+}
+.destination {
+  color: var(--fg-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.list {
+  flex: 1;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  padding: 4px 8px;
+}
+
+.file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
+}
+.file {
+  padding-left: 16px;
+}
+.file > .note {
+  flex: none;
+  white-space: nowrap;
+}
+.commit + .commit {
+  margin-top: 8px;
+}
+.subject {
+  font-weight: 600;
+  color: var(--fg-strong);
+}
+.meta,
+.note {
+  color: var(--fg-subtle);
+}
+.path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.badge {
+  flex: none;
+  padding: 0 4px;
+  border-radius: var(--radius-small);
+  font-size: var(--fs-tiny);
+  line-height: 14px;
+  background: color-mix(in srgb, var(--vcs-modified) 14%, transparent);
+  color: var(--vcs-modified);
+}
+.badge[data-action="create"],
+.badge[data-change="ADDED"] {
+  background: color-mix(in srgb, var(--vcs-added) 14%, transparent);
+  color: var(--vcs-added);
+}
+.badge[data-action="delete"],
+.badge[data-change="DELETED"] {
+  background: color-mix(in srgb, var(--vcs-deleted) 14%, transparent);
+  color: var(--vcs-deleted);
+}
+.badge[data-action="corrupt"] {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+.badge[data-action="skip"],
+.badge[data-action="unchanged"] {
+  background: none;
+  color: var(--fg-subtle);
+}
+.refused {
+  margin-left: 8px;
+  color: var(--error, #d64545);
+  font-weight: normal;
+}
+/* Files mode: the folder tree beside the selected file's content. */
+.split {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(220px, 34%) 1fr;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  overflow: hidden;
+}
+.bodyTall {
+  height: 60vh;
+}
+.treePane {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  border-right: 1px solid var(--border);
+}
+.treePane > * {
+  flex: 1;
+}
+/*
+ * A badge or a size note shows whole or not at all. The row wraps and clips its second line: the check mark
+ * and name (`.nodeMain`, always the first item, so it shrinks and elides) come first, then the badge, then
+ * the note; an item that does not fit whole wraps to the hidden second line instead of being squeezed.
+ */
+.nodeRow {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  align-items: center;
+  column-gap: 6px;
+  row-gap: 40px;
+  height: 22px;
+  overflow: hidden;
+}
+.nodeMain {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.nodeName {
+  /*
+   * The file name has priority: the note, then the badge, shrink first (their shrink factors are far larger,
+   * so the name loses nothing until they are gone), and a long name elides in its middle.
+   */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nodeNote {
+  flex: none;
+  white-space: nowrap;
+  color: var(--fg-subtle);
+}
+/*
+ * Text shortened in JS (see PathText.tsx): the box asks for the full text's width through its hidden
+ * `::after`, the flex rules decide how much it gets, and what is drawn is cut on whole characters. The
+ * folders-before-name priority lives in `fitPath`.
+ */
+.fit {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.fit::after {
+  content: attr(data-full);
+  display: block;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+}
+.nonTextPath {
+  flex: 1 1 auto;
+}
+.nodeRow > .badge {
+  margin-left: auto;
+  /* Whole or wrapped away (see .nodeRow); the note is the first thing to go. */
+  flex: none;
+  white-space: nowrap;
+}
+.nodeRow > .count {
+  margin-left: auto;
+}
+.nodeName[data-action="skip"] {
+  color: var(--fg-subtle);
+}
+.count {
+  flex: none;
+  color: var(--fg-subtle);
+  font-size: var(--fs-tiny);
+}
+.check {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  background: var(--bg-checkbox, var(--bg-input));
+  box-shadow: inset 0 0 0 1px var(--control-off);
+  color: var(--fg-on-accent);
+  --icon-color: currentColor;
+}
+.checkOn {
+  background: var(--accent);
+  box-shadow: none;
+}
+.check[aria-disabled="true"] {
+  opacity: 0.4;
+}
+.pane {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.paneHeader {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.paneEditor {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.paneEditor :global(.cm-editor) {
+  height: 100%;
+}
+.paneEmpty {
+  flex: 1;
+  padding: 12px;
+  color: var(--fg-subtle);
+}
+
+.nonText {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 var(--space-2);
+}
+.nonTextList {
+  margin: 0;
+  padding: 4px 8px;
+  list-style: none;
+  max-height: 40vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+}
+.nonTextRow > .note {
+  flex: none;
+  white-space: nowrap;
+}
+.nonTextRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 22px;
+}
+.warn {
+  color: var(--warning);
+}

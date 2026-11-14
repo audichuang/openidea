@@ -1,3 +1,42 @@
+# Agent notes (fork)
+
+This is a personal fork. Read `FORK.md` before changing a fork feature or anything ClipCode touches (platform
+scope: macOS, Windows and Linux; a ClipCode format change goes to the user), and before rebasing, merging into
+`develop`, or releasing.
+
+This overrides the upstream guidance below (Issues & PRs, Parallel worktrees) and the `issue-fix` skill:
+
+- Cut work branches from `fork/develop`, not `origin/main`, and not with the `rebase/` or `ci-base/` prefix.
+  After a rebase moved `develop`, update a branch with `git rebase --onto` as `FORK.md` describes.
+- Pass `-R audichuang/openidea` to every `gh issue` and `gh pr` command. Upstream `l0ng-ai/openidea` is read
+  only: `gh issue view <n> -R l0ng-ai/openidea` is fine, opening issues or PRs there is not. Refer to an upstream
+  issue as `l0ng-ai/openidea#<n>` with no closing keyword; `Closes #<n>` would close the fork's own #<n>.
+- Open a fork issue for each change (`gh issue create -R audichuang/openidea`), docs, CI and refactors included
+  (unlike `CONTRIBUTING.md`), and link it from the PR with `Closes #<n>`, so every change leaves a trail.
+- PRs go into `develop`. Merge only when the user said to merge that work, after Fork CI is green; otherwise leave
+  the PR open (`FORK.md` Red lines; auto-merge is off).
+- The fork has no `planned` or `needs-decision` labels: ask the user about an unclear product call instead.
+
+Where the machine's own agent rules say where to run Cargo or how to handle its build output, follow them
+instead of any Cargo advice below or in a skill. On the Mac mini, Cargo checks, clippy and tests go to the
+ubuntu host through `rust-remote`; nextest runs as `rust-remote nextest run --workspace --profile ubuntu-remote`
+(`rust-remote` also sends the files its `.gitignore` filter skips, such as the plugin wasm; `FORK.md` Merge gate), and `pnpm gen:bindings` becomes
+`rust-remote --pull src/bindings.ts test -p openidea --test export_bindings`. `cargo fmt --all` rewrites files
+and `rust-remote` brings back only `Cargo.lock` and `--pull` paths, so run it locally (`PATH="$HOME/.cargo/bin:$PATH" cargo fmt --all`); only `fmt --all --check` goes remote.
+The macOS app itself builds locally (`pnpm dev:app`), only when a UI test needs it.
+macOS-only code (`cfg(target_os = "macos")`) is invisible to a plain remote check. Crates without Objective-C
+build scripts check remotely with `--target aarch64-apple-darwin` (`ide-clip` does); `openidea` does not
+(`objc2-exception-helper` needs Apple's `cc`), so `src-tauri`'s macOS code first compiles in Fork CI's macOS job
+or `pnpm dev:app`. A local `cargo check -p openidea` at every macOS stop of a rebase needs the user's OK.
+If `PATH="$HOME/.cargo/bin:$PATH" cargo -V` mentions `huacnlee`, never run `cargo clean`: that cargo deletes the
+build directory every worktree of this repo shares, without a lock, and breaks builds running in other
+worktrees. Delete only `./target` instead.
+
+Prove runtime behaviour with the `fork-verify` skill wherever this file or a skill says `verify` or `/verify`;
+it loads upstream `verify` as its base. A Tauri MCP event is not proof for ⌘V or other native-menu shortcuts,
+native menus, real clicks, hover, drags or AppKit chrome: those need the real OS input fork-verify describes
+(osascript/cliclick on the dev process), which replaces the Computer Use fallback in the GUI-verification rule below.
+
 # OpenIDEA — contributor guide
 
 Rust + Tauri 2 desktop IDE with full-featured, multi-language code intelligence.
@@ -42,8 +81,9 @@ Visual style: dark, low-contrast greys, one cool accent
   shortcuts live in `src/platform/keymaps/`.
 - Styling: CSS Modules + tokens only (no hex literals in components). Inline SVG
   icons from `src/ui/icons.tsx`, never emoji. Real `<button>`/`<input>`; `aria-label` on icon buttons.
-- User-visible text goes through the text catalog: add every new string to both
-  `src/platform/locales/text/en.json` and `zh.json` (`textCatalog.test.ts` enforces it).
+- User-visible text goes through the text catalog: English text at a call site (`tx`, `useTx`, UI
+  primitives) is its own key, so add its translation to `src/platform/locales/text/zh.json`
+  (`textCatalog.test.ts` enforces it); keyed messages go in `locales/en.json` and `locales/zh.json`.
   Other locales may lack entries; their UI shows the English text until a translator adds it.
 - Keep comments sparse and purposeful; match surrounding style.
 - For GUI verification, prefer Tauri MCP; use Computer Use only when Tauri MCP is

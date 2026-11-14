@@ -7,7 +7,7 @@ import { newMenuItems } from "./contextMenu";
 import { folderKind } from "./folderKind";
 import { MemoryFs, setProjectFsForTests } from "./fs";
 import { beginNewPackage, checkEditingName, commitEditing } from "./operations";
-import { packageKindAt } from "./packages";
+import { packageKindAt } from "@/platform/packageKind";
 import { packageSegments } from "./paths";
 import { initProjectTree, loadDir, selectModel, useProjectTree } from "./store";
 
@@ -50,6 +50,39 @@ describe("New › Package", () => {
     expect(packageKindAt("web", py)).toBeNull();
     // An unmarked Python root still leaves the module a Python module.
     expect(packageKindAt("py/src", [], py)).toBe("python");
+  });
+
+  it("keeps a nested non-Python module out of a root-level Python project", () => {
+    const mixed = [root("src", "source", "pyproject.toml"), root("frontend/src", "source", "frontend/package.json")];
+    expect(packageKindAt("frontend/src/components", mixed)).toBeNull();
+    expect(packageKindAt("frontend", mixed)).toBeNull();
+    expect(packageKindAt("src/app", mixed)).toBe("python");
+    expect(packageKindAt("scripts", mixed)).toBe("python");
+  });
+
+  it("classifies Gradle-synced roots like their static detection", () => {
+    const gen = (from: string) => [root("src/gen", "source", from)];
+    expect(packageKindAt("src/gen/com/x", gen("Gradle"))).toBe("jvm");
+    expect(packageKindAt("src/gen/com/x", gen("build.gradle"))).toBe("jvm");
+  });
+
+  it("preserves nested Gradle ownership in a Python project", () => {
+    const mixed = [
+      root("src", "source", "pyproject.toml"),
+      root("app/custom/code", "source", "app/Gradle"),
+      root("app/generated/resources", "resources", "app/Gradle"),
+      root("app/tools/src", "source", "app/tools/pyproject.toml"),
+    ];
+    expect(packageKindAt("app", mixed)).toBeNull();
+    expect(packageKindAt("app/docs", mixed)).toBeNull();
+    expect(packageKindAt("app/generated/resources", mixed)).toBeNull();
+    expect(packageKindAt("app/custom/code/com", mixed)).toBe("jvm");
+    expect(packageKindAt("scripts", mixed)).toBe("python");
+    expect(packageKindAt("app/tools/scripts", mixed)).toBe("python");
+    expect(packageKindAt("app/docs", [], mixed)).toBeNull();
+    expect(packageKindAt("docs", [root("code", "source", "Gradle"), root("py", "source", "pyproject.toml")])).toBe(
+      "python",
+    );
   });
 
   it("validates dotted package names", () => {

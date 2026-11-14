@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * IntelliJ's own comparison tests (LineComparisonUtilTest,
  * WordComparisonUtilTest, SplitComparisonUtilTest; Apache-2.0, Copyright
