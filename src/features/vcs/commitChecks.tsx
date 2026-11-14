@@ -27,7 +27,7 @@ import { addedThenDeleted, renamedFromPath } from "./changes";
 import { workingText } from "./commitContents";
 import { analyzeCommit, problemCounts } from "./commitAnalysis";
 import { baseName, effectiveKind, relTo, repoLabel, rootOf, stripSlash } from "./model";
-import { logConsole } from "./ops";
+import { logConsole, saveOpenedDocument } from "./ops";
 import { useVcs } from "./store";
 import { commitTodoRules, todoCheckResult, todosForCommit } from "./commitTodo";
 import { commitTestSelection, runCommitTests } from "./commitTests";
@@ -303,10 +303,10 @@ async function modifyFile(
           }),
         );
         if (staged === undefined) return;
-        await call(commands.docSave(info.id));
+        await saveOpenedDocument(info.id, path);
         await call(commands.vcsStageFormattedText(path, staged, result.formatted));
       });
-    if (!index) await call(commands.docSave(info.id));
+    if (!index) await step("Save", () => saveOpenedDocument(info.id, path));
   } finally {
     void commands.docClose(info.id);
   }
