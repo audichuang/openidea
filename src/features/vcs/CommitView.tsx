@@ -59,7 +59,6 @@ import {
   checkOf,
   filesOf,
   groupOf,
-  stagingSide,
   ignoreTargets,
   isPartiallyStaged,
   planCommit,
@@ -384,11 +383,7 @@ export function nodeMenu(
     {
       kind: "action",
       action: "vcs.showDiffInNewWindow",
-      arg: first?.path
-        ? opts?.roots
-          ? nodeChainDiffData(opts.roots, first, isStagingArea())
-          : nodeDiffData(first, isStagingArea())
-        : undefined,
+      arg: first?.path ? (opts?.roots ? changeNodeDiffData(opts.roots, first) : changeNodeDiff(first)) : undefined,
       disabled: !first?.path,
     },
     {
