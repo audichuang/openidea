@@ -22,7 +22,7 @@ pub(crate) fn block_history(
     cancel: &CancellationToken,
 ) -> IdeResult<BlockHistory> {
     let rel = r.rel_path(path)?;
-    let Some(anchor) = anchor(r, &rel, current_text, lines, encoding, cancel)? else {
+    let Some((anchor, _)) = anchor(r, &rel, current_text, lines, encoding, cancel)? else {
         return Ok(BlockHistory { head_lines: None, revisions: Vec::new() });
     };
     let out = run(r, &rel, &anchor, &[], cancel)?;
@@ -36,7 +36,7 @@ fn anchor(
     lines: (u32, u32),
     encoding: TextEncoding,
     cancel: &CancellationToken,
-) -> IdeResult<Option<BlockHistoryAnchor>> {
+) -> IdeResult<Option<(BlockHistoryAnchor, String)>> {
     if cancel.is_cancelled() {
         return Err(IdeError::cancelled());
     }
@@ -50,7 +50,16 @@ fn anchor(
         None => decode(&std::fs::read(r.abs_path(rel))?, encoding).into_owned().into(),
     };
     let hunks = if head == current { Vec::new() } else { crate::diff::line_hunks(&head, &current) };
-    Ok(head_range(&hunks, lines).map(|lines| BlockHistoryAnchor { commit, lines }))
+    Ok(head_range(&hunks, lines).map(|lines| {
+        // HEAD's block, written the way parsed diffs write theirs, with the
+        // editor's line endings (`line_hunks` counted lines the same way).
+        let head = crate::diff::normalize_eol(&head);
+        let mut block = String::new();
+        for line in head.lines().skip(lines.0 as usize).take((lines.1 - lines.0) as usize + 1) {
+            push_line(&mut block, line);
+        }
+        (BlockHistoryAnchor { commit, lines }, block)
+    }))
 }
 
 fn run(
@@ -77,8 +86,8 @@ pub(crate) fn summary(
     cancel: &CancellationToken,
 ) -> IdeResult<BlockHistorySummary> {
     let rel = r.rel_path(path)?;
-    let Some(anchor) = anchor(r, &rel, current_text, lines, encoding, cancel)? else {
-        return Ok(BlockHistorySummary { anchor: None, revisions: Vec::new(), diffs: Vec::new() });
+    let Some((anchor, head)) = anchor(r, &rel, current_text, lines, encoding, cancel)? else {
+        return Ok(BlockHistorySummary { anchor: None, head: None, revisions: Vec::new(), diffs: Vec::new() });
     };
     // Git can emit the list without patches while another process prepares
     // the first few diffs. Neither query depends on the other's output.
@@ -96,7 +105,7 @@ pub(crate) fn summary(
     let revisions: Vec<_> = records(&out.stdout).filter_map(|record| parse_summary(split_header(record).0)).collect();
     let diffs = parse_log(&patches.stdout, encoding);
     check_diffs(&diffs, revisions.iter().take(DIFF_BATCH).map(|row| row.id.as_str()))?;
-    Ok(BlockHistorySummary { anchor: Some(anchor), revisions, diffs })
+    Ok(BlockHistorySummary { anchor: Some(anchor), head: Some(head), revisions, diffs })
 }
 
 pub(crate) fn revisions(
