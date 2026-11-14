@@ -129,6 +129,12 @@ fn revision_args(
     stdin
 }
 
+/// The log index, locked only around reads and writes: Git runs without it, so commit
+/// details and one-commit queries need not wait for a long history walk.
+fn lock(index: &std::sync::Mutex<LogIndex>) -> std::sync::MutexGuard<'_, LogIndex> {
+    index.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 fn run_log(
     r: &Repo,
     args: Vec<String>,
@@ -153,7 +159,7 @@ pub(crate) fn file_history(
     rel: &str,
     first_parent: bool,
     cancel: &CancellationToken,
-    index: &mut crate::log_index::LogIndex,
+    index: &std::sync::Mutex<LogIndex>,
 ) -> IdeResult<(HashSet<ObjectId>, HashMap<ObjectId, String>)> {
     let mut ids = HashSet::new();
     let mut paths = HashMap::new();
@@ -173,12 +179,12 @@ pub(crate) fn file_history(
         if first_parent {
             opts.push("--first-parent".into());
         }
-        let run = |index: &mut LogIndex, excluded: &[String]| -> IdeResult<Vec<(ObjectId, Option<char>)>> {
+        let run = |excluded: &[String]| -> IdeResult<Vec<(ObjectId, Option<char>)>> {
             let key = context
                 .as_ref()
                 .filter(|_| revs.iter().all(|rev| ObjectId::from_hex(rev.as_bytes()).is_ok()))
                 .map(|context| history_cache_key("walk", &(context, &revs, &path, first_parent, excluded)));
-            if let Some(text) = key.as_deref().and_then(|key| index.cached_file_history::<String>(key)) {
+            if let Some(text) = key.as_deref().and_then(|key| lock(index).cached_file_history::<String>(key)) {
                 return Ok(parse_name_status_log(&text));
             }
             let mut args = opts.clone();
@@ -188,11 +194,11 @@ pub(crate) fn file_history(
             // A path may have been a directory. In that case Git can use attributes
             // to classify renames between its children, even with --no-follow.
             if let Some(key) = key.filter(|_| output.stderr.is_empty() && only_literal_file(&text, &path)) {
-                index.cache_file_history(&key, &text);
+                lock(index).cache_file_history(&key, &text);
             }
             Ok(parse_name_status_log(&text))
         };
-        let records = run(index, &[])?;
+        let records = run(&[])?;
         // Where the file appears its history ends: what is behind that is another file of
         // the same name (a rename continues the history below). The commits of the history
         // are those not behind a creation; the statuses come from the full listing (with
@@ -202,7 +208,14 @@ pub(crate) fn file_history(
             && match repo.as_ref() {
                 Some(repo) if !first_parent => {
                     let listed: Vec<ObjectId> = records.iter().map(|(id, _)| *id).collect();
-                    crate::fork_file_history::exclusion_walk_needed(repo, index, &revs, &listed, &created, cancel)?
+                    crate::fork_file_history::exclusion_walk_needed(
+                        repo,
+                        &mut lock(index),
+                        &revs,
+                        &listed,
+                        &created,
+                        cancel,
+                    )?
                 }
                 _ => true,
             };
@@ -210,7 +223,7 @@ pub(crate) fn file_history(
             None
         } else {
             let excluded: Vec<String> = created.iter().map(|id| format!("^{id}^@")).collect();
-            Some(run(index, &excluded)?.into_iter().map(|(id, _)| id).collect())
+            Some(run(&excluded)?.into_iter().map(|(id, _)| id).collect())
         };
         let mut created = Vec::new();
         for (id, first_status) in records {
@@ -268,10 +281,10 @@ fn history_cache_key<T: serde::Serialize>(kind: &str, input: &T) -> String {
 fn file_history_context(
     r: &Repo,
     repo: &gix::Repository,
-    index: &crate::log_index::LogIndex,
+    index: &std::sync::Mutex<LogIndex>,
     cancel: &CancellationToken,
 ) -> Option<String> {
-    index.db()?;
+    lock(index).db()?;
     if [
         "GIT_SHALLOW_FILE",
         "GIT_LITERAL_PATHSPECS",
@@ -411,7 +424,7 @@ fn rename_sources(
     path: &str,
     first_parent: bool,
     cancel: &CancellationToken,
-    index: &mut crate::log_index::LogIndex,
+    index: &std::sync::Mutex<LogIndex>,
     context: Option<&str>,
 ) -> IdeResult<Vec<(String, String)>> {
     if created.is_empty() {
@@ -419,7 +432,7 @@ fn rename_sources(
     }
     let stdin: String = created.iter().map(|id| format!("{id}\n")).collect();
     let key = context.map(|context| history_cache_key("creation-parents", &(context, &stdin)));
-    let parents = if let Some(parents) = key.as_deref().and_then(|key| index.cached_file_history::<String>(key)) {
+    let parents = if let Some(parents) = key.as_deref().and_then(|key| lock(index).cached_file_history::<String>(key)) {
         parents
     } else {
         let output = crate::cli::run_cancellable_stdin(
@@ -430,7 +443,7 @@ fn rename_sources(
         )?;
         let parents = output.stdout_str();
         if let Some(key) = key.filter(|_| output.stderr.is_empty()) {
-            index.cache_file_history(&key, &parents);
+            lock(index).cache_file_history(&key, &parents);
         }
         parents
     };
@@ -443,19 +456,19 @@ fn rename_sources(
                 return Err(IdeError::cancelled());
             }
             let exact_key = context.map(|context| history_cache_key("exact-rename", &(context, parent, commit, path)));
-            if let Some(old) = exact_key.as_deref().and_then(|key| index.cached_file_history::<String>(key)) {
+            if let Some(old) = exact_key.as_deref().and_then(|key| lock(index).cached_file_history::<String>(key)) {
                 sources.push((parent.to_owned(), old));
                 continue;
             }
             // A no-removal result depends only on the two trees, not on rename
             // thresholds, attributes, or what branch currently reaches the commits.
             let key = context.map(|_| history_cache_key("no-rename-source", &(parent, commit)));
-            if key.as_deref().and_then(|key| index.cached_file_history::<bool>(key)) == Some(true) {
+            if key.as_deref().and_then(|key| lock(index).cached_file_history::<bool>(key)) == Some(true) {
                 continue;
             }
             if repo.and_then(|repo| may_have_rename_source(repo, parent, commit)) == Some(false) {
                 if let Some(key) = key {
-                    index.cache_file_history(&key, &true);
+                    lock(index).cache_file_history(&key, &true);
                 }
                 continue;
             }
@@ -465,7 +478,7 @@ fn rename_sources(
                 if let Some(key) = exact_key.filter(|_| {
                     exact_score && repo.and_then(|repo| exact_rename(repo, parent, commit, &old, path)) == Some(true)
                 }) {
-                    index.cache_file_history(&key, &old);
+                    lock(index).cache_file_history(&key, &old);
                 }
                 sources.push((parent.to_owned(), old));
             }
@@ -478,7 +491,6 @@ pub(crate) fn log(r: &Repo, q: &LogQuery, cancel: &CancellationToken) -> IdeResu
     if cancel.is_cancelled() {
         return Err(IdeError::cancelled());
     }
-    let mut index = r.log_index.lock().unwrap_or_else(|p| p.into_inner());
     let result = if q.summary_only {
         let mut all = q.clone();
         all.skip = 0;
@@ -494,14 +506,19 @@ pub(crate) fn log(r: &Repo, q: &LogQuery, cancel: &CancellationToken) -> IdeResu
         let shallow: HashSet<ObjectId> = shallow_vec.iter().copied().collect();
         let refs = r.log_refs()?;
         let key = format!("{}:{refs:?}:{shallow_vec:?}", serde_json::to_string(&all).map_err(gx)?);
-        let cached = index.views.get(&key).cloned();
+        let cached = lock(&r.log_index).views.get(&key).cloned();
         let view = if let Some(cached) = cached {
             cached
         } else {
             // Immutable metadata is reused across roots, filters, merges and ref changes.
             all.request = q.request;
-            let rows =
-                std::sync::Arc::new(crate::log_index::IndexedView::new(log_indexed_rows(r, &all, cancel, &mut index)?));
+            let rows = std::sync::Arc::new(crate::log_index::IndexedView::new(log_indexed_rows(
+                r,
+                &all,
+                cancel,
+                &r.log_index,
+            )?));
+            let mut index = lock(&r.log_index);
             if index.views.len() >= 4 {
                 index.views.clear();
             }
@@ -523,6 +540,7 @@ pub(crate) fn log(r: &Repo, q: &LogQuery, cancel: &CancellationToken) -> IdeResu
         let retain = q.retain_until.as_ref().and_then(|id| find_pos(id)).map(|i| i + 1).unwrap_or(0);
         let limit = if q.limit == 0 { usize::MAX } else { (q.limit as usize).max(retain.saturating_sub(start)) };
         let total = view.rows.len() as u32;
+        let mut index = lock(&r.log_index);
         let db = index.db().cloned();
         let txn = db.as_ref().and_then(|db| db.begin_read().ok());
         let table = txn.as_ref().and_then(|t| t.open_table(crate::log_index::COMMITS).ok());
@@ -549,9 +567,9 @@ pub(crate) fn log(r: &Repo, q: &LogQuery, cancel: &CancellationToken) -> IdeResu
         }
         Ok(result)
     } else {
-        log_indexed(r, q, cancel, &mut index)
+        log_indexed(r, q, cancel, &r.log_index)
     };
-    index.flush();
+    lock(&r.log_index).flush();
     result
 }
 
@@ -649,7 +667,7 @@ fn log_indexed(
     r: &Repo,
     q: &LogQuery,
     cancel: &CancellationToken,
-    index: &mut crate::log_index::LogIndex,
+    shared: &std::sync::Mutex<LogIndex>,
 ) -> IdeResult<Vec<Commit>> {
     let repo = r.gix()?;
     let shallow: HashSet<ObjectId> =
@@ -685,6 +703,8 @@ fn log_indexed(
         && q.since_ms.is_none()
         && q.until_ms.is_none()
     {
+        let mut guard = lock(shared);
+        let index = &mut *guard;
         update_head_reachable(&repo, index, cancel)?;
         let id = tips[0];
         let record = index.get(&repo, id)?;
@@ -715,7 +735,9 @@ fn log_indexed(
         commit.message_truncated = false;
         return Ok(vec![commit]);
     }
-    let rows = log_indexed_rows(r, q, cancel, index)?;
+    let rows = log_indexed_rows(r, q, cancel, shared)?;
+    let mut guard = lock(shared);
+    let index = &mut *guard;
     let db = index.db().cloned();
     let txn = db.as_ref().and_then(|db| db.begin_read().ok());
     let table = txn.as_ref().and_then(|t| t.open_table(crate::log_index::COMMITS).ok());
@@ -733,7 +755,7 @@ fn log_indexed_rows(
     r: &Repo,
     q: &LogQuery,
     cancel: &CancellationToken,
-    index: &mut crate::log_index::LogIndex,
+    shared: &std::sync::Mutex<LogIndex>,
 ) -> IdeResult<Vec<crate::log_index::IndexedRow>> {
     if cancel.is_cancelled() {
         return Err(IdeError::cancelled());
@@ -784,7 +806,7 @@ fn log_indexed_rows(
                 }
             }
         }
-        Some(sort_subset(&repo, ids, q.order, q.first_parent, &shallow, cancel, &index.nodes)?)
+        Some(sort_subset(&repo, ids, q.order, q.first_parent, &shallow, cancel, &lock(shared).nodes)?)
     } else {
         None
     };
@@ -803,7 +825,7 @@ fn log_indexed_rows(
     } else if q.follow && paths.len() == 1 && !r.root().join(&paths[0]).is_dir() {
         // Following renames is for a file: a directory gains files all the time, and each
         // creation would cut its history short.
-        let (ids, at) = file_history(r, &scopes, &paths[0], q.first_parent, cancel, index)?;
+        let (ids, at) = file_history(r, &scopes, &paths[0], q.first_parent, cancel, shared)?;
         history_paths = at;
         Some(ids)
     } else {
@@ -811,14 +833,18 @@ fn log_indexed_rows(
     };
     let authors: Vec<_> =
         q.author.iter().chain(&q.authors).map(|a| a.trim().to_lowercase()).filter(|a| !a.is_empty()).collect();
-    update_head_reachable(&repo, index, cancel)?;
+    update_head_reachable(&repo, &mut lock(shared), cancel)?;
     let mut range_ids_set = range_ids.as_ref().map(|ids| ids.iter().copied().collect::<HashSet<_>>());
     type Walk<'a> = Box<dyn Iterator<Item = IdeResult<ObjectId>> + 'a>;
     let walk: Walk<'_> = if let Some(ids) = range_ids {
         Box::new(ids.into_iter().map(Ok))
     } else if q.summary_only {
-        let ids = index.graph(&repo, &tips, &shallow, q.first_parent, cancel)?;
-        Box::new(sort_subset(&repo, ids, q.order, q.first_parent, &shallow, cancel, &index.nodes)?.into_iter().map(Ok))
+        let ids = lock(shared).graph(&repo, &tips, &shallow, q.first_parent, cancel)?;
+        Box::new(
+            sort_subset(&repo, ids, q.order, q.first_parent, &shallow, cancel, &lock(shared).nodes)?
+                .into_iter()
+                .map(Ok),
+        )
     } else if repo.is_shallow().unwrap_or(false) || q.request.is_some() {
         // The process can be interrupted even during indegree preparation. Git also
         // respects shallow boundaries while retaining a topological order.
@@ -885,11 +911,17 @@ fn log_indexed_rows(
     };
     let walk: Walk<'_> = if q.order == LogOrder::Standard {
         let ids = walk.collect::<IdeResult<Vec<_>>>()?;
-        Box::new(sort_subset(&repo, ids, q.order, q.first_parent, &shallow, cancel, &index.nodes)?.into_iter().map(Ok))
+        Box::new(
+            sort_subset(&repo, ids, q.order, q.first_parent, &shallow, cancel, &lock(shared).nodes)?
+                .into_iter()
+                .map(Ok),
+        )
     } else {
         walk
     };
     let text = q.text.as_deref().map(|t| TextFilter::new(r, &scopes, q, t, cancel)).transpose()?.flatten();
+    let mut guard = lock(shared);
+    let index = &mut *guard;
     let db = index.db().cloned();
     let txn = db.as_ref().and_then(|db| db.begin_read().ok());
     let table = txn.as_ref().and_then(|t| t.open_table(crate::log_index::COMMITS).ok());
