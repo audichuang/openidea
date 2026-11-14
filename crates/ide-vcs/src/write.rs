@@ -64,29 +64,45 @@ pub(crate) fn blame(
         Err(error) => return Err(error.into()),
     };
     let text = current_text.map(str::to_owned).unwrap_or_else(|| decode(&disk, encoding).into_owned());
+    // The revision is resolved once: the blob, git and the cache slot all use this commit,
+    // even when the name (HEAD) moves while blame runs.
+    let resolved = {
+        let repo = r.gix()?;
+        match resolve_revision(&repo, revision)? {
+            Some(commit) => {
+                let version = crate::blame::BlameVersion { commit, inputs: blame_inputs(r, &repo) };
+                let base = crate::repo::blob_at(&repo, &rel, &commit.to_string())?;
+                // Restricted git never runs these conversions, and the path before the cache
+                // compared the raw blob there too.
+                let converted = base.is_some() && crate::execution_allowed() && converted_by_git(&repo, &rel)?;
+                Some((version, base, converted))
+            }
+            None => None,
+        }
+    };
     if encoding.has_ascii_conversion() {
-        return converted_blame(r, path, &rel, &text, revision, encoding);
+        return converted_blame(r, path, &rel, &text, revision, resolved.map(|(version, ..)| version), encoding);
     }
     let line_count = text.split_inclusive('\n').count();
-    let (base, commit) = {
-        let repo = r.gix()?;
-        let Some(base) = crate::repo::blob_at(&repo, &rel, revision)? else {
-            return Ok(uncommitted_lines(line_count));
-        };
-        (base, resolve(&repo, revision)?)
-    };
-    // The revision's blame is computed once per commit and shared; the editor's text is
-    // mapped onto it in-process, so typing never re-runs git.
-    let base_lines = revision_blame(r, &rel, revision, commit)?;
-    let base = decode(&base, encoding);
-    let mut lines =
+    let Some((version, Some(base), converted)) = resolved else { return Ok(uncommitted_lines(line_count)) };
+    let commit = version.commit.to_string();
+    let mut lines = if converted {
+        // The working text is git's conversion of the blob (filter, ident, encoding): only
+        // git can tell which lines it leaves unchanged.
+        contents_blame(r, path, &rel, &disk, current_text, &text, &commit, encoding)?
+    } else {
+        // The revision's blame is computed once per commit and shared; the editor's text is
+        // mapped onto it in-process, so typing never re-runs git.
+        let base_lines = revision_blame(r, &rel, revision, version)?;
+        let base = decode(&base, encoding);
         if base_lines.len() == base.split_inclusive('\n').count() && !has_lone_cr(&base) && !has_lone_cr(&text) {
             crate::blame::map_onto_text(&base_lines, &base, &text, &uncommitted_lines(1)[0])
         } else {
             // A textconv filter changed the line count, or a lone CR splits lines differently
             // for git and the diff: let git blame the text itself, as before the cache.
-            contents_blame(r, path, &rel, &disk, current_text, &text, revision, encoding)?
-        };
+            contents_blame(r, path, &rel, &disk, current_text, &text, &commit, encoding)?
+        }
+    };
     // Defensive: always exactly one entry per line.
     lines.truncate(line_count);
     while lines.len() < line_count {
@@ -95,17 +111,85 @@ pub(crate) fn blame(
     Ok(lines)
 }
 
-/// The blame of `rel` as committed at `revision` (`commit`), from the repository's cache.
-fn revision_blame(r: &Repo, rel: &str, revision: &str, commit: gix::ObjectId) -> IdeResult<Arc<Vec<BlameLine>>> {
+/// The commit `revision` names now; `None` for an unborn HEAD.
+fn resolve_revision(repo: &gix::Repository, revision: &str) -> IdeResult<Option<gix::ObjectId>> {
+    if revision == "HEAD" && repo.head().map_err(gx)?.is_unborn() {
+        return Ok(None);
+    }
+    resolve(repo, revision).map(Some)
+}
+
+/// Whether git converts `rel` between the blob and the working tree beyond line endings, so
+/// the working text cannot be compared with the blob directly.
+fn converted_by_git(repo: &gix::Repository, rel: &str) -> IdeResult<bool> {
+    let index = repo.index_or_empty().map_err(gx)?;
+    let mut stack = repo
+        .attributes_only(&index, gix::worktree::stack::state::attributes::Source::WorktreeThenIdMapping)
+        .map_err(gx)?;
+    let mut outcome = stack.selected_attribute_matches(["filter", "ident", "working-tree-encoding"]);
+    stack.at_entry(rel.as_bytes().as_bstr(), None).map_err(gx)?.matching_attributes(&mut outcome);
+    Ok(outcome
+        .iter_selected()
+        .any(|m| matches!(m.assignment.state, gix::attrs::StateRef::Set | gix::attrs::StateRef::Value(_))))
+}
+
+/// Stamps of what changes `git blame` output for an unchanged commit: the history depth
+/// (`shallow`), replace refs, config, and the mailmap and ignore-revs files it reads.
+fn blame_inputs(r: &Repo, repo: &gix::Repository) -> Vec<Option<(std::time::SystemTime, u64)>> {
+    let common = repo.common_dir();
+    let mut files = vec![
+        common.join("shallow"),
+        common.join("packed-refs"),
+        common.join("refs").join("replace"),
+        common.join("config"),
+        repo.git_dir().join("config.worktree"),
+        r.root().join(".mailmap"),
+    ];
+    let config = repo.config_snapshot();
+    let config = config.plumbing();
+    // Every config file read (system, global, includes); restricted handles read none.
+    files.extend(config.sections().filter_map(|section| section.meta().path.clone()));
+    for key in ["mailmap.file", "blame.ignoreRevsFile"] {
+        for value in config.strings(key).unwrap_or_default() {
+            let value = value.to_str_lossy();
+            let path = match value.strip_prefix("~/") {
+                Some(rest) => gix::path::env::home_dir().map(|home| home.join(rest)),
+                None => Some(r.root().join(value.as_ref())),
+            };
+            files.extend(path);
+        }
+    }
+    files.sort();
+    files.dedup();
+    crate::repo::stamp(&files)
+}
+
+/// The blame of `rel` as committed in `version` (what `revision` resolved to), from the
+/// repository's cache. Git blames the resolved commit, never the name, which may have moved.
+fn revision_blame(
+    r: &Repo,
+    rel: &str,
+    revision: &str,
+    version: crate::blame::BlameVersion,
+) -> IdeResult<Arc<Vec<BlameLine>>> {
     let textconv = crate::execution_allowed();
-    r.blame_cache().get_or_run(rel, revision, commit, textconv, |cancel| {
+    let commit = version.commit.to_string();
+    r.blame_cache().get_or_run(rel, revision, version, textconv, |cancel| {
+        #[cfg(test)]
+        BEFORE_REVISION_BLAME.with(|hook| hook.borrow_mut().as_mut().map(|run| run()));
         let args: &[&str] = if textconv {
-            &["--literal-pathspecs", "blame", "--porcelain", revision, "--", rel]
+            &["--literal-pathspecs", "blame", "--porcelain", &commit, "--", rel]
         } else {
-            &["--literal-pathspecs", "blame", "--no-textconv", "--porcelain", revision, "--", rel]
+            &["--literal-pathspecs", "blame", "--no-textconv", "--porcelain", &commit, "--", rel]
         };
         Ok(crate::blame::parse_porcelain(&cli::run_cancellable(r.root(), args, cancel)?.stdout_str()))
     })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Runs between resolving the revision and running git, to move refs in that window.
+    static BEFORE_REVISION_BLAME: std::cell::RefCell<Option<Box<dyn FnMut()>>> = const { std::cell::RefCell::new(None) };
 }
 
 fn has_lone_cr(text: &str) -> bool {
@@ -191,13 +275,14 @@ fn converted_blame(
     rel: &str,
     text: &str,
     revision: &str,
+    version: Option<crate::blame::BlameVersion>,
     encoding: TextEncoding,
 ) -> IdeResult<Vec<BlameLine>> {
     let current = crate::diff::normalize_eol(text);
     let mut result = uncommitted_lines(current.split_inclusive('\n').count());
-    let Some(base) = r.file_bytes_at(path, Some(revision))? else { return Ok(result) };
-    let commit = resolve(&r.gix()?, revision)?;
-    let physical = revision_blame(r, rel, revision, commit)?;
+    let Some(version) = version else { return Ok(result) };
+    let Some(base) = r.file_bytes_at(path, Some(&version.commit.to_string()))? else { return Ok(result) };
+    let physical = revision_blame(r, rel, revision, version)?;
     let raw = crate::text_encoding::decode_raw(&base, encoding);
     let raw = crate::diff::normalize_eol(&raw);
     let mut logical = Vec::new();
@@ -1411,4 +1496,54 @@ fn decode_diff(bytes: &[u8], encoding: TextEncoding) -> String {
         }
     }
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+
+    fn git(root: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .current_dir(root)
+            .args(args)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", if cfg!(windows) { "NUL" } else { "/dev/null" })
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{args:?}: {}", String::from_utf8_lossy(&output.stderr));
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    #[test]
+    fn head_moving_while_blame_runs_does_not_mix_commits() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = crate::repo::absolute(temp.path()).unwrap();
+        git(&root, &["init", "-q", "-b", "main"]);
+        git(&root, &["config", "user.name", "Test"]);
+        git(&root, &["config", "user.email", "test@example.com"]);
+        std::fs::write(root.join("f.txt"), "a\nb\nc\n").unwrap();
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-qm", "first"]);
+        let first = git(&root, &["rev-parse", "HEAD"]);
+        std::fs::write(root.join("f.txt"), "a\nB\nc\n").unwrap();
+        git(&root, &["commit", "-qam", "second"]);
+        let second = git(&root, &["rev-parse", "HEAD"]);
+        let repo = Repo::discover(&root).unwrap().unwrap();
+        repo.set_execution_allowed(true);
+        // HEAD moves back to `first` after blame read `second`, before its git runs.
+        let moved = root.clone();
+        BEFORE_REVISION_BLAME.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                git(&moved, &["update-ref", "--no-deref", "HEAD", &first]);
+            }))
+        });
+        let lines = repo.blame(&root.join("f.txt"), Some("a\nB\nc\n"), None, encoding_rs::UTF_8).unwrap();
+        BEFORE_REVISION_BLAME.with(|hook| hook.borrow_mut().take());
+        assert_eq!(lines[1].commit, second, "the blame of one commit, not the one HEAD moved to");
+        // Back on `second`, the cache serves `second`'s blame.
+        git(&root, &["update-ref", "--no-deref", "HEAD", &second]);
+        let lines = repo.blame(&root.join("f.txt"), Some("a\nB\nc\n"), None, encoding_rs::UTF_8).unwrap();
+        assert_eq!(lines[1].commit, second);
+    }
 }

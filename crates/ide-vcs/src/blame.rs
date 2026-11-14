@@ -86,9 +86,17 @@ struct SlotKey {
     textconv: bool,
 }
 
+/// What a revision name resolved to, plus stamps of the other inputs that change `git blame`
+/// output for the same commit (shallow depth, replace refs, config, mailmap, ignore-revs).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(crate) struct BlameVersion {
+    pub(crate) commit: gix::ObjectId,
+    pub(crate) inputs: Vec<Option<(std::time::SystemTime, u64)>>,
+}
+
 struct Slot {
     key: SlotKey,
-    commit: gix::ObjectId,
+    version: BlameVersion,
     blame: Shared,
     cancel: CancellationToken,
 }
@@ -102,14 +110,15 @@ pub(crate) struct BlameCache {
 }
 
 impl BlameCache {
-    /// The blame of `rel` at `revision` (resolved to `commit`), running `run` only when
+    /// The blame of `rel` at `revision` (resolved to `version`), running `run` only when
     /// no caller has: concurrent callers wait for the one run. A revision name that now
-    /// resolves to another commit (HEAD moved) cancels the run still going for the old one.
+    /// resolves to another version (HEAD moved, history deepened) cancels the run still
+    /// going for the old one.
     pub(crate) fn get_or_run(
         &self,
         rel: &str,
         revision: &str,
-        commit: gix::ObjectId,
+        version: BlameVersion,
         textconv: bool,
         run: impl FnOnce(&CancellationToken) -> IdeResult<Vec<BlameLine>>,
     ) -> IdeResult<Arc<Vec<BlameLine>>> {
@@ -117,7 +126,7 @@ impl BlameCache {
         let (blame, cancel) = {
             let mut slots = self.slots.lock().unwrap_or_else(|e| e.into_inner());
             let slot = match slots.iter().position(|s| s.key == key) {
-                Some(i) if slots[i].commit == commit => slots.remove(i).expect("index in range"),
+                Some(i) if slots[i].version == version => slots.remove(i).expect("index in range"),
                 found => {
                     if let Some(old) = found.and_then(|i| slots.remove(i)) {
                         old.cancel.cancel();
@@ -125,7 +134,7 @@ impl BlameCache {
                     if slots.len() >= CACHED_FILES {
                         slots.pop_front();
                     }
-                    Slot { key, commit, blame: Shared::default(), cancel: CancellationToken::new() }
+                    Slot { key, version, blame: Shared::default(), cancel: CancellationToken::new() }
                 }
             };
             let handles = (slot.blame.clone(), slot.cancel.clone());
@@ -215,8 +224,8 @@ mod tests {
         assert_eq!(mapped("// 中文\nlet a = 1;\n", "// 中文\nlet a = 2;\n"), ["c0", "-"]);
     }
 
-    fn oid(byte: u8) -> gix::ObjectId {
-        gix::ObjectId::from_bytes_or_panic(&[byte; 20])
+    fn version(byte: u8) -> BlameVersion {
+        BlameVersion { commit: gix::ObjectId::from_bytes_or_panic(&[byte; 20]), inputs: Vec::new() }
     }
 
     #[test]
@@ -227,25 +236,30 @@ mod tests {
             runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(vec![line("c")])
         };
-        cache.get_or_run("a.py", "HEAD", oid(1), true, run).unwrap();
-        cache.get_or_run("a.py", "HEAD", oid(1), true, run).unwrap();
+        cache.get_or_run("a.py", "HEAD", version(1), true, run).unwrap();
+        cache.get_or_run("a.py", "HEAD", version(1), true, run).unwrap();
         assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 1);
         // Another file, revision name or textconv mode is its own entry.
-        cache.get_or_run("b.py", "HEAD", oid(1), true, run).unwrap();
-        cache.get_or_run("a.py", "MERGE_HEAD", oid(1), true, run).unwrap();
-        cache.get_or_run("a.py", "HEAD", oid(1), false, run).unwrap();
+        cache.get_or_run("b.py", "HEAD", version(1), true, run).unwrap();
+        cache.get_or_run("a.py", "MERGE_HEAD", version(1), true, run).unwrap();
+        cache.get_or_run("a.py", "HEAD", version(1), false, run).unwrap();
         assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 4);
         // HEAD moved: blamed again.
-        cache.get_or_run("a.py", "HEAD", oid(2), true, run).unwrap();
+        cache.get_or_run("a.py", "HEAD", version(2), true, run).unwrap();
         assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 5);
+        // Same commit, another shallow depth or config: blamed again.
+        let mut deepened = version(2);
+        deepened.inputs.push(None);
+        cache.get_or_run("a.py", "HEAD", deepened, true, run).unwrap();
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 6);
     }
 
     #[test]
     fn cache_does_not_remember_failures() {
         let cache = BlameCache::default();
-        let failed = cache.get_or_run("a.py", "HEAD", oid(1), true, |_| Err(ide_core::IdeError::cancelled()));
+        let failed = cache.get_or_run("a.py", "HEAD", version(1), true, |_| Err(ide_core::IdeError::cancelled()));
         assert!(failed.is_err());
-        let lines = cache.get_or_run("a.py", "HEAD", oid(1), true, |_| Ok(vec![line("c")])).unwrap();
+        let lines = cache.get_or_run("a.py", "HEAD", version(1), true, |_| Ok(vec![line("c")])).unwrap();
         assert_eq!(lines[0].commit, "c");
     }
 
@@ -257,7 +271,7 @@ mod tests {
         let first = {
             let (cache, runs) = (cache.clone(), runs.clone());
             std::thread::spawn(move || {
-                cache.get_or_run("a.py", "HEAD", oid(1), true, |cancel| {
+                cache.get_or_run("a.py", "HEAD", version(1), true, |cancel| {
                     runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     started_tx.send(()).unwrap();
                     // Stands in for a long git blame that is killed on cancellation.
@@ -272,7 +286,7 @@ mod tests {
         let waiter = {
             let (cache, runs) = (cache.clone(), runs.clone());
             std::thread::spawn(move || {
-                cache.get_or_run("a.py", "HEAD", oid(1), true, |_| {
+                cache.get_or_run("a.py", "HEAD", version(1), true, |_| {
                     runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     Ok(vec![])
                 })
@@ -282,7 +296,7 @@ mod tests {
         while Arc::strong_count(&cache.slots.lock().unwrap()[0].blame) < 3 {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        let moved = cache.get_or_run("a.py", "HEAD", oid(2), true, |_| Ok(vec![line("new")])).unwrap();
+        let moved = cache.get_or_run("a.py", "HEAD", version(2), true, |_| Ok(vec![line("new")])).unwrap();
         assert_eq!(moved[0].commit, "new");
         assert!(first.join().unwrap().is_err());
         // The waiter joined the cancelled run instead of starting its own.
