@@ -92,4 +92,14 @@ fn blobless_sparse_clone_keeps_its_repository_and_status() {
     // Skip-worktree entries outside the checkout are not missing files.
     assert!(find("app/main.rs").is_none(), "{status:?}");
     assert_eq!(status.len(), 4, "{status:?}");
+
+    // The watcher's scoped refresh (a trusted project's `git status` with a pathspec) follows the
+    // same rules: no rename detection, no fetch.
+    repo.set_execution_allowed(true);
+    let scoped = repo.status_paths(&[work.join("guide2.txt"), work.join("docs/guide.txt")]).expect("scoped status");
+    let find = |rel: &str| scoped.iter().find(|f| f.rel_path == rel);
+    let moved = find("guide2.txt").expect("guide2.txt listed");
+    assert_eq!((moved.staged, moved.renamed_from.as_deref()), (Some(ChangeKind::Added), None));
+    assert_eq!(find("docs/guide.txt").expect("docs/guide.txt listed").staged, Some(ChangeKind::Deleted));
+    assert_eq!(scoped.len(), 2, "{scoped:?}");
 }
