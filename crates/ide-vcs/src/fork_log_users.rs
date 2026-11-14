@@ -15,6 +15,8 @@ use std::sync::{Mutex, OnceLock};
 
 struct Entry {
     tips: Vec<String>,
+    /// Deepening a shallow clone adds history without moving a ref.
+    shallow: Vec<gix::ObjectId>,
     users: BTreeSet<String>,
 }
 
@@ -34,10 +36,18 @@ pub(crate) fn log_users(r: &Repo, git_dir: &std::path::Path) -> IdeResult<Vec<St
         cli::run(root, &["rev-list", "--all", "--no-walk"], None)?.stdout_str().lines().map(str::to_string).collect();
     tips.sort_unstable();
     tips.dedup();
+    let mut shallow: Vec<gix::ObjectId> = r
+        .gix()?
+        .shallow_commits()
+        .map_err(crate::repo::gx)?
+        .map(|ids| ids.iter().copied().collect())
+        .unwrap_or_default();
+    shallow.sort_unstable();
     let key = (git_dir.to_path_buf(), crate::execution_allowed());
     let previous = {
         let cache = cache().lock().unwrap_or_else(|p| p.into_inner());
         match cache.get(&key) {
+            Some(entry) if entry.shallow != shallow => None,
             Some(entry) if entry.tips == tips => return Ok(entry.users.iter().cloned().collect()),
             Some(entry) => Some((entry.tips.clone(), entry.users.clone())),
             None => None,
@@ -69,6 +79,6 @@ pub(crate) fn log_users(r: &Repo, git_dir: &std::path::Path) -> IdeResult<Vec<St
         }
     };
     let list = users.iter().cloned().collect();
-    cache().lock().unwrap_or_else(|p| p.into_inner()).insert(key, Entry { tips, users });
+    cache().lock().unwrap_or_else(|p| p.into_inner()).insert(key, Entry { tips, shallow, users });
     Ok(list)
 }
