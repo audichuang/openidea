@@ -530,10 +530,10 @@ fn blame_against_another_revision() {
 
 /// Commit per line from `git blame --contents` of `text` (the pre-cache implementation);
 /// `None` for uncommitted lines.
-fn contents_blame_commits(fx: &Fixture, rel: &str, text: &str) -> Vec<Option<String>> {
+fn contents_blame_commits(dir: &Path, rel: &str, text: &str) -> Vec<Option<String>> {
     use std::io::Write;
     let mut child = Command::new("git")
-        .current_dir(&fx.dir)
+        .current_dir(dir)
         .args(["blame", "--porcelain", "--contents", "-", "HEAD", "--", rel])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -604,7 +604,7 @@ fn edited_blame_matches_git_blame_of_the_contents() {
         String::new(),
     ];
     for (i, text) in cases.iter().enumerate() {
-        let expected = contents_blame_commits(&fx, "f.py", text);
+        let expected = contents_blame_commits(&fx.dir, "f.py", text);
         let actual: Vec<_> = repo
             .blame(&fx.path("f.py"), Some(text), None, encoding_rs::UTF_8)
             .unwrap()
@@ -641,6 +641,75 @@ fn blame_follows_head_and_line_endings() {
     let lines = repo.blame(&fx.path("cr.txt"), None, None, encoding_rs::UTF_8).unwrap();
     assert_eq!(lines.len(), 2);
     assert!(lines.iter().all(|l| l.commit == cr));
+}
+
+/// Commit per line, `None` for uncommitted lines.
+fn blame_commits(lines: Vec<ide_vcs::BlameLine>) -> Vec<Option<String>> {
+    lines.into_iter().map(|l| (!l.commit.bytes().all(|b| b == b'0')).then_some(l.commit)).collect()
+}
+
+#[test]
+fn blame_of_files_git_converts_matches_git_blame_of_the_contents() {
+    let fx = Fixture::new();
+    fx.git(&["config", "filter.demo.clean", "sed s/WORK/CANON/"]);
+    fx.git(&["config", "filter.demo.smudge", "sed s/CANON/WORK/"]);
+    fx.write(".gitattributes", "*.demo filter=demo\n*.id ident\n");
+    fx.write("f.demo", "one\nWORK two\nthree\n");
+    fx.write("f.id", "one\n$Id$\nthree\n");
+    fx.commit_all("first");
+    fx.write("f.demo", "one\nWORK two\nthree\nfour\n");
+    fx.write("f.id", "one\n$Id$\nthree\nfour\n");
+    fx.commit_all("second");
+    // Check the files out again so the working tree holds what git's conversion makes of them.
+    std::fs::remove_file(fx.path("f.demo")).unwrap();
+    std::fs::remove_file(fx.path("f.id")).unwrap();
+    fx.git(&["checkout", "--", "f.demo", "f.id"]);
+    // The fixture is live: the committed and the working-tree bytes differ.
+    assert!(fx.git(&["show", "HEAD:f.demo"]).contains("CANON two"));
+    assert!(fx.read("f.demo").contains("WORK two"));
+    assert!(fx.git(&["show", "HEAD:f.id"]).contains("$Id$"));
+    assert!(fx.read("f.id").contains("$Id: "));
+    let repo = fx.repo();
+    for rel in ["f.demo", "f.id"] {
+        let disk = fx.read(rel);
+        let edited = disk.replacen("three", "THREE", 1);
+        for current in [None, Some(disk.as_str()), Some(edited.as_str())] {
+            let expected = contents_blame_commits(&fx.dir, rel, current.unwrap_or(&disk));
+            let actual = blame_commits(repo.blame(&fx.path(rel), current, None, encoding_rs::UTF_8).unwrap());
+            assert_eq!(actual, expected, "{rel} with {current:?}");
+        }
+    }
+}
+
+#[test]
+fn blame_follows_a_deepened_shallow_clone_and_mailmap_with_the_same_head() {
+    let fx = Fixture::new();
+    fx.write("f.txt", "a\nb\nc\n");
+    let first = fx.commit_all("first");
+    fx.write("f.txt", "a\nB\nc\n");
+    let second = fx.commit_all("second");
+    // Git refuses a clone source with a local hooks-path override.
+    fx.git(&["config", "--unset", "core.hooksPath"]);
+    let clone = fx.dir.parent().unwrap().join("clone");
+    let url = format!("file://{}", fx.dir.display());
+    git_in(fx.dir.parent().unwrap(), &["clone", "-q", "--depth", "1", &url, "clone"]);
+    configure(&clone);
+    let repo = Repo::discover(&clone).unwrap().unwrap();
+    repo.set_execution_allowed(true);
+    let path = clone.join("f.txt");
+    let commits = |repo: &Repo| blame_commits(repo.blame(&path, None, None, encoding_rs::UTF_8).unwrap());
+    // Depth 1: every line belongs to the boundary commit.
+    let shallow = commits(&repo);
+    assert!(shallow.iter().all(|c| c.as_deref() == Some(second.as_str())), "{shallow:?}");
+    git_in(&clone, &["fetch", "-q", "--deepen", "1"]);
+    let deepened = commits(&repo);
+    assert_eq!(deepened, contents_blame_commits(&clone, "f.txt", "a\nB\nc\n"));
+    assert_eq!(deepened, [Some(first.clone()), Some(second.clone()), Some(first.clone())]);
+    // A mailmap entry renames the author without moving HEAD.
+    let author = |repo: &Repo| repo.blame(&path, None, None, encoding_rs::UTF_8).unwrap()[0].author.clone();
+    assert_eq!(author(&repo), "Test User");
+    std::fs::write(clone.join(".mailmap"), "Mapped Name <test@example.com>\n").unwrap();
+    assert_eq!(author(&repo), "Mapped Name");
 }
 
 #[test]
