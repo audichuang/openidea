@@ -714,6 +714,15 @@ export class DocModel {
         // Refused: the file changed on disk; the buffer stays dirty and the backend warned.
         if (!(await backend.autosave(this.doc))) {
           refused = true;
+          // Blur already warned once per disk state; a save someone asked for says it again.
+          if (reason !== "auto") {
+            const path = this.path;
+            this.manager.notify({
+              level: "warning",
+              title: "Not saved: changed on disk",
+              body: tx`${path} changed on disk and kept the external changes. Save it from its editor to overwrite them, or reload it from disk.`,
+            });
+          }
           return;
         }
       } else await backend.save(this.doc);
@@ -730,6 +739,11 @@ export class DocModel {
     clearTimeout(this.refreshTimer);
     this.sync.dispose();
   }
+}
+
+/** A save refused because the file changed on disk, for callers that act on the saved file next. */
+export function notSaved(path: string): Error {
+  return new Error(tx`${path} changed on disk and was not saved.`);
 }
 
 export interface ManagerHost {
@@ -879,32 +893,17 @@ export class DocumentManager {
   /**
    * Saves dirty documents; failures are notified, and an explicit Save All also rejects with them.
    * Only `overwrite` (the document the user saves with Save) may replace a file that changed on
-   * disk; the others are kept dirty and an explicit Save All names them.
+   * disk; the others are kept dirty, and a non-automatic save names them.
    */
   async saveAll(reason: "explicit" | "auto", overwrite?: DocModel | null) {
     const errors: unknown[] = [];
-    const refused: DocModel[] = [];
     await Promise.all(
       [...this.byPath.values()].map((m) =>
-        m.save(reason, { overwrite: m === overwrite }).then(
-          (r) => {
-            if (r) refused.push(m);
-          },
-          (e) => {
-            errors.push(e);
-          },
-        ),
+        m.save(reason, { overwrite: m === overwrite }).catch((e) => {
+          errors.push(e);
+        }),
       ),
     );
-    // Blur already warned once per disk state; a Save All, Run or VCS operation says it again.
-    if (reason === "explicit" && refused.length) {
-      const files = refused.map((m) => m.path).join("\n");
-      this.notify({
-        level: "warning",
-        title: "Not saved: changed on disk",
-        body: tx`${files} changed on disk and kept the external changes. Save it from its editor to overwrite them, or reload it from disk.`,
-      });
-    }
     if (errors.length) {
       const e = errors[0];
       this.notify({ level: "error", title: "Could not save", body: e instanceof Error ? e.message : String(e) });
