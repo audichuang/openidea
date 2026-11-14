@@ -101,11 +101,16 @@ fn paused_git(dir: &Path, started: &Path, release: &Path) -> std::path::PathBuf 
     wrapper
 }
 
-#[test]
-fn a_branch_switch_during_a_search_does_not_change_its_current_branch_marks() {
-    let _git = GIT_EXECUTABLE.lock().unwrap_or_else(|e| e.into_inner());
-    let tmp = tempfile::tempdir().unwrap();
-    let dir = tmp.path().join("repo");
+type Marks = Vec<(String, Option<bool>, Option<Vec<String>>)>;
+
+fn marks(log: Vec<ide_vcs::Commit>) -> Marks {
+    log.into_iter().map(|c| (c.id, c.on_current_branch, c.graph_parents)).collect()
+}
+
+/// `main` and `other` diverge after the second commit; `main` is checked out. Returns the
+/// text search over both branches and its marks run serially on `main`.
+fn diverged_repo(tmp: &Path) -> (std::path::PathBuf, LogQuery, Marks) {
+    let dir = tmp.join("repo");
     std::fs::create_dir(&dir).unwrap();
     git(&dir, &["init", "-q"]);
     for (i, branch) in [(0, None), (1, None), (2, Some("other")), (3, Some("main"))] {
@@ -123,12 +128,16 @@ fn a_branch_switch_during_a_search_does_not_change_its_current_branch_marks() {
         summary_only: true,
         ..Default::default()
     };
-    let marks = |log: Vec<ide_vcs::Commit>| -> Vec<(String, Option<bool>, Option<Vec<String>>)> {
-        log.into_iter().map(|c| (c.id, c.on_current_branch, c.graph_parents)).collect()
-    };
     let serial = marks(Repo::discover(&dir).unwrap().unwrap().log(&query).unwrap());
     assert!(serial.iter().any(|row| row.1 == Some(false)) && serial.iter().any(|row| row.1 == Some(true)));
+    (dir, query, serial)
+}
 
+#[test]
+fn a_branch_switch_during_a_search_does_not_change_its_current_branch_marks() {
+    let _git = GIT_EXECUTABLE.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = tempfile::tempdir().unwrap();
+    let (dir, query, serial) = diverged_repo(tmp.path());
     let started = tmp.path().join("grep-started");
     let release = tmp.path().join("grep-release");
     ide_vcs::set_git_executable(Some(&paused_git(tmp.path(), &started, &release)));
@@ -152,6 +161,36 @@ fn a_branch_switch_during_a_search_does_not_change_its_current_branch_marks() {
     ide_vcs::set_git_executable(None);
     assert_eq!(marks(concurrent), serial);
     // The view cached for these refs.
+    assert_eq!(marks(repo.log(&query).unwrap()), serial);
+}
+
+#[test]
+fn a_search_that_ends_on_another_branch_caches_marks_for_the_branch_it_started_on() {
+    let _git = GIT_EXECUTABLE.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = tempfile::tempdir().unwrap();
+    let (dir, query, serial) = diverged_repo(tmp.path());
+    let started = tmp.path().join("grep-started");
+    let release = tmp.path().join("grep-release");
+    ide_vcs::set_git_executable(Some(&paused_git(tmp.path(), &started, &release)));
+    let repo = Repo::discover(&dir).unwrap().unwrap();
+    repo.set_execution_allowed(true);
+    let concurrent = std::thread::scope(|scope| {
+        let search = scope.spawn(|| repo.log(&query).unwrap());
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !started.exists() {
+            assert!(Instant::now() < deadline, "the search never reached --grep");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        git(&dir, &["checkout", "-q", "other"]);
+        assert!(!search.is_finished(), "the search ended before the switch; the test proves nothing");
+        std::fs::write(&release, "").unwrap();
+        search.join().unwrap()
+    });
+    ide_vcs::set_git_executable(None);
+    // The search started on `main`: its rows carry `main`'s marks.
+    assert_eq!(marks(concurrent), serial);
+    git(&dir, &["checkout", "-q", "main"]);
+    // The view cached under `main`'s refs.
     assert_eq!(marks(repo.log(&query).unwrap()), serial);
 }
 
