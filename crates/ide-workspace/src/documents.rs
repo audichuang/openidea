@@ -162,9 +162,32 @@ struct DocState {
     /// Disk state we last loaded or wrote; changes matching it are our own.
     disk_mtime: f64,
     disk_len: u64,
+    /// Text as of that disk state: an edit that returns to it (undo) leaves the
+    /// document clean. `None` once a pending encoding / line-ending / BOM change
+    /// makes the buffer differ from the file whatever the text, and for large files.
+    clean_text: Option<Document>,
+    /// External disk state already reported as conflicting with unsaved changes.
+    conflict: Option<(f64, u64)>,
     closed: bool,
     /// URI of a virtual document (no file behind it).
     uri: Option<String>,
+}
+
+impl DocState {
+    /// The buffer matches the file on disk again, read or written at `mtime`.
+    fn synced(&mut self, mtime: f64) {
+        self.disk_mtime = mtime;
+        self.disk_len = disk_len(&self.path);
+        self.conflict = None;
+        self.clean_text = (!self.large).then(|| self.doc.clone());
+    }
+
+    /// Disk state (mtime, length) of a file that changed since we last read or wrote it.
+    fn changed_on_disk(&self) -> Option<(f64, u64)> {
+        let meta = std::fs::metadata(&self.path).ok()?;
+        let stamp = (ide_vfs::mtime_ms(&meta), meta.len());
+        (stamp != (self.disk_mtime, self.disk_len)).then_some(stamp)
+    }
 }
 
 fn keys_for(path: &Path) -> Vec<PathBuf> {
@@ -238,8 +261,7 @@ impl Documents {
                 let loaded = Self::load_as(&st.path, &st.encoding, enabled)?;
                 self.replace_locked(id, st, &loaded.text)?;
                 st.native_to_ascii = enabled;
-                st.disk_mtime = loaded.mtime_ms;
-                st.disk_len = disk_len(&st.path);
+                st.synced(loaded.mtime_ms);
                 Ok(())
             });
             if let Err(e) = result {
@@ -433,9 +455,13 @@ impl Documents {
             encoding_chosen: false,
             disk_mtime: loaded.mtime_ms,
             disk_len: disk_len(path),
+            clean_text: None,
+            conflict: None,
             closed: false,
             uri: None,
         };
+        let mut state = state;
+        state.clean_text = (!state.large).then(|| state.doc.clone());
         let slot: Slot = Arc::new(Mutex::new(state));
         let st = slot.lock();
         let id = {
@@ -505,6 +531,8 @@ impl Documents {
             encoding_chosen: false,
             disk_mtime: 0.0,
             disk_len: 0,
+            clean_text: None,
+            conflict: None,
             closed: false,
             uri: Some(uri.to_owned()),
         };
@@ -598,7 +626,8 @@ impl Documents {
                     tracing::warn!("edit of {} rejected: {e}", st.path.display());
                 }
             })?;
-            self.set_dirty(doc, st, true);
+            let dirty = !st.clean_text.as_ref().is_some_and(|clean| clean.same_text(&st.doc));
+            self.set_dirty(doc, st, dirty);
             self.notify_changed(doc, st, &applied, &edits);
             Ok(st.doc.version())
         })
@@ -727,8 +756,7 @@ impl Documents {
             } else {
                 ide_vfs::save_text(&st.path, &text, &st.encoding, st.has_bom)?
             };
-            st.disk_mtime = mtime;
-            st.disk_len = disk_len(&st.path);
+            st.synced(mtime);
             self.set_dirty(doc, st, false);
             if st.observed {
                 let text = st.doc.text();
@@ -738,6 +766,42 @@ impl Documents {
             }
             Ok(())
         })
+    }
+
+    /// [`save`](Self::save) for an implicit save (focus loss, tab switch): refuses
+    /// to overwrite a file that changed on disk since the buffer last matched it,
+    /// even when no watcher event reported the change, and warns once per disk
+    /// state instead. `Ok(false)`: not saved; the document stays dirty until an
+    /// explicit save overwrites the file or Reload from Disk discards the buffer.
+    pub fn autosave(&self, doc: DocId) -> IdeResult<bool> {
+        let refused = self.with_doc(doc, |st| {
+            if !st.dirty || st.uri.is_some() {
+                return Ok(false);
+            }
+            let Some(stamp) = st.changed_on_disk() else { return Ok(false) };
+            if st.conflict != Some(stamp) {
+                st.conflict = Some(stamp);
+                self.warn_changed_on_disk(st);
+            }
+            Ok(true)
+        })?;
+        if refused {
+            return Ok(false);
+        }
+        self.save(doc).map(|()| true)
+    }
+
+    fn warn_changed_on_disk(&self, st: &DocState) {
+        let name = st.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        self.sink.emit(IdeEvent::Notify {
+            level: NotifyLevel::Warning,
+            title: format!("{name} changed on disk"),
+            body: Some(format!(
+                "{} was modified externally but has unsaved changes in the editor. \
+                 Saving will overwrite the external changes.",
+                st.path.display()
+            )),
+        });
     }
 
     /// Saves every dirty document; reports the first failure after trying all.
@@ -884,6 +948,7 @@ impl Documents {
                 return Err(read_only_error(&st.path));
             }
             st.doc.set_line_ending(le);
+            st.clean_text = None;
             self.set_dirty(doc, st, true);
             Ok(())
         })
@@ -908,9 +973,8 @@ impl Documents {
                 st.encoding = loaded.encoding.clone();
                 st.encoding_chosen = true;
                 st.has_bom = loaded.has_bom;
-                st.disk_mtime = loaded.mtime_ms;
-                st.disk_len = disk_len(&st.path);
                 self.replace_locked(doc, st, &loaded.text)?;
+                st.synced(loaded.mtime_ms);
                 // Reloading is not an edit: the buffer matches the file again.
                 self.set_dirty(doc, st, false);
                 return Ok(DocumentEncoding { encoding: st.encoding.clone(), has_bom: st.has_bom });
@@ -927,6 +991,7 @@ impl Documents {
             st.encoding = encoding.to_owned();
             st.encoding_chosen = true;
             st.has_bom = has_bom;
+            st.clean_text = None;
             self.set_dirty(doc, st, true);
             Ok(DocumentEncoding { encoding: st.encoding.clone(), has_bom: st.has_bom })
         })
@@ -975,6 +1040,7 @@ impl Documents {
             }
             if st.has_bom != has_bom {
                 st.has_bom = has_bom;
+                st.clean_text = None;
                 self.set_dirty(doc, st, true);
             }
             Ok(DocumentEncoding { encoding: st.encoding.clone(), has_bom: st.has_bom })
@@ -1024,9 +1090,9 @@ impl Documents {
             st.native_to_ascii = native_to_ascii;
             loaded
         };
-        st.disk_mtime = loaded.mtime_ms;
-        st.disk_len = disk_len(&st.path);
         if loaded.binary || st.binary {
+            st.disk_mtime = loaded.mtime_ms;
+            st.disk_len = disk_len(&st.path);
             return Ok(());
         }
         st.encoding = loaded.encoding;
@@ -1035,6 +1101,7 @@ impl Documents {
         let ec_eol = st.editorconfig.as_ref().and_then(|ec| ec.end_of_line);
         st.doc.set_line_ending(ec_eol.unwrap_or_else(|| LineEnding::detect(&loaded.text)));
         self.replace_locked(id, st, &loaded.text)?;
+        st.synced(loaded.mtime_ms);
         Ok(())
     }
 
@@ -1095,18 +1162,11 @@ impl Documents {
                     return Ok(());
                 }
                 if st.dirty {
-                    st.disk_mtime = mtime;
-                    st.disk_len = meta.len();
-                    let name = st.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    self.sink.emit(IdeEvent::Notify {
-                        level: NotifyLevel::Warning,
-                        title: format!("{name} changed on disk"),
-                        body: Some(format!(
-                            "{} was modified externally but has unsaved changes in the editor. \
-                             Saving will overwrite the external changes.",
-                            st.path.display()
-                        )),
-                    });
+                    // The stamp the buffer is based on stays: autosave must not overwrite this.
+                    if st.conflict != Some((mtime, meta.len())) {
+                        st.conflict = Some((mtime, meta.len()));
+                        self.warn_changed_on_disk(st);
+                    }
                     return Ok(());
                 }
                 self.reload_locked(id, st, force_clean)

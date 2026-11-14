@@ -371,6 +371,8 @@ export const commands = {
 	 */
 	docEdit: (doc: DocId, baseVersion: number, changes: ChangeSet) => typedError<number, IdeError>(__TAURI_INVOKE("doc_edit", { doc, baseVersion, changes })),
 	docSave: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_save", { doc })),
+	/**  Implicit save; `false` when the file changed on disk since the editor read it and was kept. */
+	docAutosave: (doc: DocId) => typedError<boolean, IdeError>(__TAURI_INVOKE("doc_autosave", { doc })),
 	docSaveAll: () => typedError<null, IdeError>(__TAURI_INVOKE("doc_save_all")),
 	docSyncFromDisk: () => typedError<null, IdeError>(__TAURI_INVOKE("doc_sync_from_disk")),
 	docSnapshot: (doc: DocId) => typedError<DocumentInfo, IdeError>(__TAURI_INVOKE("doc_snapshot", { doc })),

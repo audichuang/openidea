@@ -668,7 +668,11 @@ export class DocModel {
       }
       await this.sync.whenIdle();
       if (this.closed) return;
-      await this.manager.backend.save(this.doc);
+      const backend = this.manager.backend;
+      if (reason === "auto" && backend.autosave) {
+        // Refused: the file changed on disk; the buffer stays dirty and the backend warned.
+        if (!(await backend.autosave(this.doc))) return;
+      } else await backend.save(this.doc);
       this.modified.clear();
       this.setMeta({ dirty: false });
       _emitEditorEvent({ type: "docSaved", doc: this.doc, path: this.path });
@@ -798,6 +802,9 @@ export class DocumentManager {
         } catch (e) {
           console.warn(`autosave of ${model.path} failed`, e);
         }
+        // Not saved (the file changed on disk, or saving failed): keep the edits; reopening the
+        // file shows them, and closing the window asks about them.
+        if (model.getMeta().dirty) return;
       }
       if (model.inUse()) return;
       await model.sync.whenIdle();

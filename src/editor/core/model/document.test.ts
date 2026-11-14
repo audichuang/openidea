@@ -261,6 +261,61 @@ describe("DocumentManager + slots", () => {
     }
   });
 
+  it("keeps the document dirty when the backend refuses an autosave over a changed file", async () => {
+    const { backend, manager } = setup({ "/p/run.py": "old\n" });
+    const model = await manager.acquire("/p/run.py");
+    const slot = new EditorSlot(model, "t1", host);
+    slot.dispatchLocal({ changes: { from: 0, insert: "x" } });
+    let accept = false;
+    const autosave = vi.fn(async (doc: Parameters<typeof backend.save>[0]) => {
+      if (accept) await backend.save(doc);
+      return accept;
+    });
+    backend.autosave = autosave;
+    const save = vi.spyOn(backend, "save");
+    const saved: unknown[] = [];
+    const off = onEditorEvent((event) => {
+      if (event.type === "docSaved") saved.push(event);
+    });
+    try {
+      await model.save("auto");
+      expect(autosave).toHaveBeenCalledWith(model.doc);
+      expect(save).not.toHaveBeenCalled();
+      expect(backend.files.get(model.path)).toBe("old\n");
+      expect(model.getMeta().dirty).toBe(true);
+      expect(saved).toEqual([]);
+
+      accept = true;
+      await model.save("auto");
+      expect(backend.files.get(model.path)).toBe("xold\n");
+      expect(model.getMeta().dirty).toBe(false);
+      expect(saved).toHaveLength(1);
+    } finally {
+      off();
+      manager.stop();
+    }
+  });
+
+  it("keeps a document whose autosave was refused open when its last tab closes", async () => {
+    const { backend, manager } = setup({ "/p/run.py": "old\n" });
+    const model = await manager.acquire("/p/run.py");
+    const slot = new EditorSlot(model, "t1", host);
+    slot.dispatchLocal({ changes: { from: 0, insert: "x" } });
+    backend.autosave = vi.fn(async () => false);
+    try {
+      slot.dispose();
+      await settle();
+      expect(backend.autosave).toHaveBeenCalledWith(model.doc);
+      expect(manager.get("/p/run.py")).toBe(model);
+      expect(backend.docs.size).toBe(1);
+      const reopened = await manager.acquire("/p/run.py");
+      expect(reopened).toBe(model);
+      expect(reopened.getMeta().dirty).toBe(true);
+    } finally {
+      manager.stop();
+    }
+  });
+
   it("closes the backend document when the last slot goes away", async () => {
     const { backend, manager } = setup({ "/p/a.txt": "x" });
     const model = await manager.acquire("/p/a.txt");
