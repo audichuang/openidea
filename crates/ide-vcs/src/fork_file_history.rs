@@ -37,7 +37,7 @@ pub(crate) fn exclusion_walk_needed(
     if repo.is_shallow().unwrap_or(true) {
         return Ok(true);
     }
-    if let Err(error) = index.ensure_nodes(repo, listed, &HashSet::new(), cancel) {
+    if let Err(error) = index.ensure_nodes(repo, created, &HashSet::new(), cancel) {
         return if cancel.is_cancelled() { Err(error) } else { Ok(true) };
     }
     let mut stack = Vec::new();
