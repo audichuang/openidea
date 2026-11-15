@@ -1,8 +1,12 @@
 .range {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  white-space: nowrap;
   color: var(--fg-subtle);
   font-size: var(--fs-small);
 }
+.file,
 .summary,
 .meta {
   overflow: hidden;
