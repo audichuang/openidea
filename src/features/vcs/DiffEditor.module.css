@@ -144,7 +144,10 @@
    `.cm-gutter { min-height: 100% }`). Inside the diff's flex layout WebKit then relaid the whole
    document out on every layout (~48 ms for a 4,600-line unified diff), and showing a diff forces
    several. Flex fills the same space: the scroller grows in the editor's column, and the gutter
-   columns stretch to `.cm-gutters`, whose height CodeMirror sets in pixels. */
+   columns stretch to `.cm-gutters`, whose height CodeMirror sets in pixels.
+   The basis is `0%`, not `0` or `auto`: `0` collapsed the diff to 0 px in a host without a fixed
+   height (the diff dialog), and `auto` measures the content again on every layout (~40 ms more per
+   file switch). `0%` is 0 under a fixed height and content height otherwise, as the percentages were. */
 .host > :global(.cm-editor > .cm-scroller) {
   flex: 1 1 0%;
   min-height: 0;
