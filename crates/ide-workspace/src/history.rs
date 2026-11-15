@@ -1,5 +1,5 @@
 use crate::file_moves::{FileMove, moved_path};
-use ide_core::{IdeError, IdeResult};
+use ide_core::{IdeError, IdeResult, project_dir};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -161,6 +161,13 @@ fn valid_entry(e: &HistoryEntry) -> bool {
     }
 }
 
+/// The project's settings file, at any project root below the history's. It holds the values of
+/// the project's MCP servers (headers, environment), which stay in the project and never go into
+/// the user's data, so Local History does not record it (#307).
+fn never_recorded(path: &Path) -> bool {
+    path.ends_with(Path::new(project_dir::DIR).join(crate::settings::PROJECT_FILE))
+}
+
 /// Text of a file for an automatic snapshot: small, non-binary files only.
 fn read_snapshot_text(path: &Path) -> Option<String> {
     read_snapshot_disk_text(path).map(|text| document_text(&text).into_owned())
@@ -314,12 +321,18 @@ impl LocalHistory {
 
     /// Records a snapshot unless it equals the latest one recorded for `path`.
     pub fn record(&self, path: &Path, content: &str, label: &str) -> IdeResult<()> {
+        if never_recorded(path) {
+            return Ok(());
+        }
         self.store(path, content, label, false, None).map(|_| ())
     }
 
     /// Records a snapshot even when the content did not change, so the event
     /// ("Deleted", "Before refactoring: Move") shows in the history.
     pub fn record_event(&self, path: &Path, content: &str, label: &str) -> IdeResult<()> {
+        if never_recorded(path) {
+            return Ok(());
+        }
         self.store(path, content, label, true, None).map(|_| ())
     }
 
@@ -346,6 +359,9 @@ impl LocalHistory {
 
     /// Snapshots the file on disk (small text files only); `force` as in [`record_event`](Self::record_event).
     pub fn record_file(&self, path: &Path, label: &str, force: bool) -> IdeResult<bool> {
+        if never_recorded(path) {
+            return Ok(false);
+        }
         match read_snapshot_text(path) {
             Some(text) => self.store(path, &text, label, force, None).map(|_| true),
             None => Ok(false),
@@ -357,6 +373,9 @@ impl LocalHistory {
     /// has had that content from then on, but not before the oldest entry kept, so it neither
     /// adds a working day of its own nor falls to retention first. Returns whether one was recorded.
     pub fn record_original(&self, path: &Path) -> IdeResult<bool> {
+        if never_recorded(path) {
+            return Ok(false);
+        }
         let Some(text) = read_snapshot_text(path) else { return Ok(false) };
         let modified = fs::metadata(path)
             .and_then(|m| m.modified())
@@ -446,6 +465,7 @@ impl LocalHistory {
                 }
             }
         } else if let Some(id) = read_snapshot_disk_text(path)
+            .filter(|_| !never_recorded(path))
             .and_then(|raw| self.store(path, &document_text(&raw), DELETED, true, Some(&raw)).ok())
         {
             undo.files.push(DeletedFile { path: path.into(), id });
@@ -805,6 +825,45 @@ mod tests {
 
     thread_local! {
         pub(super) static ROOT_LOOKUPS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    #[test]
+    fn the_project_settings_file_never_reaches_the_history() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = tmp.path().join("history");
+        let root = tmp.path().join("project");
+        let h = LocalHistory::open(&store, &root).unwrap();
+        let secret = "Bearer mcp-value-5e1d";
+        let text = format!("[agents.mcpServers.remote.headers]\nAuthorization = \"{secret}\"\n");
+        let member = root.join("member");
+        for settings in [root.join(".openidea/settings.toml"), member.join(".openidea/settings.toml")] {
+            std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+            std::fs::write(&settings, &text).unwrap();
+            // A save in the IDE, an external change, a VCS operation and a delete.
+            h.record(&settings, &text, "Saved").unwrap();
+            h.record_event(&settings, &text, "Before Commit").unwrap();
+            h.record_external_changes(std::slice::from_ref(&settings), &[], 10);
+            assert!(!h.record_file(&settings, "After Commit", true).unwrap());
+            assert_eq!(h.record_deletion(settings.parent().unwrap(), 10), 0);
+            assert!(h.list(&settings).unwrap().is_empty());
+        }
+        let found: Vec<_> =
+            walk(&store).into_iter().filter(|f| fs::read_to_string(f).is_ok_and(|t| t.contains(secret))).collect();
+        assert!(found.is_empty(), "{found:?}");
+
+        // Other files in the folder are still recorded.
+        let other = root.join(".openidea/run.toml");
+        h.record(&other, "[run]", "Saved").unwrap();
+        assert_eq!(h.list(&other).unwrap().len(), 1);
+    }
+
+    fn walk(dir: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() { out.extend(walk(&path)) } else { out.push(path) }
+        }
+        out
     }
 
     #[test]
