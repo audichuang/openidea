@@ -23,6 +23,7 @@
 }
 .title {
   flex: 1;
+  white-space: nowrap;
   color: var(--fg-emphasis);
   font-weight: 500;
 }
