@@ -12,7 +12,7 @@ use toml_edit::{DocumentMut, Item, Table, TableLike};
 /// TOML keys use the camelCase names of the serde [`Settings`] struct, e.g.
 /// `[editor]` / `fontSize = 14`. A layer that fails to parse or holds values of
 /// the wrong type is logged and ignored as a whole.
-const PROJECT_FILE: &str = "settings.toml";
+pub(crate) const PROJECT_FILE: &str = "settings.toml";
 
 pub struct SettingsStore {
     global_file: PathBuf,
