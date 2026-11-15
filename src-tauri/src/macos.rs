@@ -265,8 +265,13 @@ pub fn native_groups(
 }
 
 /// Gives `window`'s hidden tabs the shown tab's frame. AppKit only resizes a tab when it is
-/// selected, so after a resize (or entering or leaving fullscreen) each tab's page would lay
-/// itself out again on its first showing, a few frames with the old layout. Main thread only.
+/// selected, so after a resize (or leaving fullscreen) each tab's page would lay itself out again
+/// on its first showing, a few frames with the old layout. Main thread only.
+///
+/// Not while the group is in or entering or leaving fullscreen: a hidden tab is not itself in
+/// fullscreen, so AppKit shrinks the Space's frame to the visible screen area, and when that tab
+/// is selected AppKit keeps that frame as the one to return to, so leaving fullscreen after a tab
+/// switch left the window below the menu bar and above the Dock instead of where it was.
 pub fn match_tab_frames(window: &WebviewWindow) {
     let Some(native) = ns_window(window) else { return };
     let Some(group) = (unsafe { &*native }).tabGroup() else { return };
@@ -286,6 +291,11 @@ pub fn match_tab_frames(window: &WebviewWindow) {
         if size.width < full.size.width || size.height < full.size.height {
             shown.setFrame_display(full, true);
         }
+    }
+    if shown.styleMask().contains(NSWindowStyleMask::FullScreen)
+        || group.windows().iter().any(|tab| in_fullscreen_transition(&tab))
+    {
+        return;
     }
     let frame = shown.frame();
     for tab in group.windows().iter() {
@@ -444,9 +454,14 @@ unsafe extern "C-unwind" fn should_terminate(_this: *mut AnyObject, _selector: S
 
 static APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
 
-/// Escape the page leaves unhandled reaches the window as `cancelOperation:`, on which NSWindow
-/// leaves full screen, so pressing Escape once more after closing a popup left full screen. The
-/// IDE's windows answer it with nothing; View › Appearance › Toggle Full Screen (⌃⌘F) leaves it.
+/// Escape the page leaves unhandled reaches the window, on which NSWindow leaves full screen, so
+/// pressing Escape once more after closing a popup left full screen. The IDE's windows answer it
+/// with nothing; View › Appearance › Toggle Full Screen (⌃⌘F) leaves it.
+///
+/// It arrives two ways: as `cancelOperation:` when the window itself is the first responder (no
+/// click in the page yet), and, once the page has focus, as `doCommandBySelector:` with
+/// `cancelOperation:`, which WebKit sends up for a key the page did not handle and NSWindow acts
+/// on without calling its own `cancelOperation:`.
 pub fn keep_full_screen_on_escape() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| unsafe {
@@ -460,12 +475,39 @@ pub fn keep_full_screen_on_escape() {
         if !added.as_bool() {
             tracing::warn!("could not handle cancelOperation:");
         }
+        let sel = objc2::sel!(doCommandBySelector:);
+        let Some(method) = NSWindow::class().instance_method(sel) else {
+            tracing::warn!("no NSWindow {sel:?}: Escape in the page leaves full screen");
+            return;
+        };
+        let _ = DO_COMMAND.set(std::mem::transmute::<Imp, DoCommand>(method.implementation()));
+        let imp: Imp = std::mem::transmute(do_command as DoCommand);
+        let added = objc2::ffi::class_addMethod(class, sel, imp, objc2::ffi::method_getTypeEncoding(method));
+        if !added.as_bool() {
+            tracing::warn!("could not handle {sel:?}");
+        }
     });
 }
 
 type CancelOperation = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject);
 
 unsafe extern "C-unwind" fn ignore_cancel_operation(_this: *mut AnyObject, _selector: Sel, _sender: *mut AnyObject) {}
+
+type DoCommand = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, Sel);
+
+/// NSWindow's own `doCommandBySelector:`.
+static DO_COMMAND: std::sync::OnceLock<DoCommand> = std::sync::OnceLock::new();
+
+unsafe extern "C-unwind" fn do_command(this: *mut AnyObject, sel: Sel, command: Sel) {
+    // SAFETY: only installed on TaoWindow, an NSWindow subclass; called on the main thread.
+    let window = unsafe { &*this.cast::<NSWindow>() };
+    if command == objc2::sel!(cancelOperation:) && in_fullscreen_space(window) {
+        return;
+    }
+    if let Some(original) = DO_COMMAND.get() {
+        unsafe { original(this, sel, command) };
+    }
+}
 
 /// Whether AppKit is handling a key press right now. A menu item performed at this point
 /// was chosen by its key equivalent: a click, arrow keys plus Return and accessibility
