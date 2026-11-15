@@ -115,7 +115,8 @@ pub fn save_before_quit(app: &AppHandle) {
 }
 
 /// macOS window resize: tell every tab of a group entering or leaving fullscreen, shown or not;
-/// and once the size has settled, give the hidden tabs the new frame (window events: main thread).
+/// and once the size has settled outside fullscreen, give the hidden tabs the new frame (window
+/// events: main thread).
 #[cfg(target_os = "macos")]
 pub fn resized(app: &AppHandle, label: &str) {
     use std::sync::atomic::{AtomicU64, Ordering};
