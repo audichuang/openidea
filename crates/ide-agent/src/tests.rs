@@ -476,6 +476,12 @@ async fn saved_conversation_reads_do_not_start_or_load_the_agent() {
         .unwrap();
     wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
     mgr.shutdown();
+    // The fake still waits for its permission request on a blocking thread, until its side of
+    // the connection reads the end `shutdown` sent. A test that returned first would drop the
+    // runtime before that read, and the drop waits for the blocked thread forever (#255).
+    tokio::time::timeout(Duration::from_secs(5), agent.latest().closed())
+        .await
+        .expect("the agent's side of the connection closes");
     let restored_agent = Arc::new(FakeAgent::default());
     let restored = manager(tmp.path(), restored_agent.clone());
     assert!(!restored.entries(&task.id, None).unwrap().is_empty());
