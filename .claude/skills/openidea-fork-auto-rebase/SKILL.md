@@ -76,7 +76,7 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
 
 ## 4. 移動 develop
 
-條件全部成立才移動：模式是 CLEAN 或 MECHANICAL、第 2 步沒有 fork 造成的紅、第 3 步 CI 綠（或只剩上游也紅的 job）。從第 0 步 approved 進來的，使用者的核可取代模式條件。
+條件全部成立才移動：模式是 CLEAN 或 MECHANICAL、第 2 步沒有 fork 造成的紅、第 3 步 `Fork CI passed` 綠。上游也紅的 job 不算綠：上游已修就搬它的修正，否則修測試或照 #252 加 filter 並開 issue，都是修正 commit（模式變 MANUAL）。從第 0 步 approved 進來的，使用者的核可取代模式條件。
 
 `git rev-parse fork/develop` 已經等於 HEAD（使用者自己移過，或前一次 run 推完還沒留言就死了）→ 不推，直接留 develop-moved 留言。否則：
 
