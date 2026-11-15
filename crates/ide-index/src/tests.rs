@@ -779,8 +779,15 @@ fn incremental_changes_refresh_the_warm_start_snapshot() {
     let changed = f.write("src/a.rs", "fn renamed() {}\n");
     idx.update(&[changed], &[]);
     assert!(idx.wait_idle(WAIT));
-    std::thread::sleep(Duration::from_millis(150));
-    assert!(f.cache.join("index.snapshot").exists(), "a watcher update must regenerate the snapshot");
+    // The update deletes the old snapshot before the worker goes idle; the new
+    // one is written after a debounce and a reconcile scan that `wait_idle`
+    // does not cover, so poll for it instead of sleeping a fixed time.
+    let snapshot = f.cache.join("index.snapshot");
+    let deadline = std::time::Instant::now() + WAIT;
+    while !snapshot.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(snapshot.exists(), "a watcher update must regenerate the snapshot");
 }
 
 #[test]
