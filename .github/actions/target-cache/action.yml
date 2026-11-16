@@ -106,6 +106,10 @@ runs:
     # mtimes from git instead: unchanged files far in the past, files changed since the commit the
     # cache was built from to now. Without that commit (rebased away, or no cache) every file stays
     # new and cargo rebuilds the workspace, which is always correct.
+    # Directories too: a build script's `rerun-if-changed=<dir>` (ide-language, ide-index) also
+    # compares the directory's own mtime, so checkout-new directories reran those scripts and
+    # rebuilt 15 crates on every run, even on an exact cache hit (#319). A directory that gained
+    # or lost a file since is set to now (or its nearest surviving parent, when it is gone).
     - if: inputs.mode == 'restore' && steps.outcome.outputs.restored == 'true'
       shell: bash
       working-directory: ${{ inputs.workdir }}
@@ -113,6 +117,13 @@ runs:
         src=$(cat target/.cache-source-sha 2>/dev/null || true)
         if [ -n "$src" ] && { git cat-file -e "$src^{commit}" 2>/dev/null || git fetch -q --depth=1 origin "$src"; }; then
           git ls-files -z | xargs -0 touch -t 200001010000
+          find . \( -path ./target -o -path ./.git -o -path ./node_modules \) -prune -o -type d -print0 |
+            xargs -0 touch -t 200001010000
+          git diff --no-renames --diff-filter=AD --name-only -z "$src" HEAD | tr '\0' '\n' | while IFS= read -r f; do
+            d=$(dirname "$f")
+            while [ ! -d "$d" ]; do d=$(dirname "$d"); done
+            touch "$d"
+          done
           changed=$(git diff --no-renames --diff-filter=d --name-only -z "$src" HEAD | tr '\0' '\n' | grep -c . || true)
           git diff --no-renames --diff-filter=d --name-only -z "$src" HEAD | xargs -0 -r touch
           echo "::notice::target cache from $src: $changed files changed since"
