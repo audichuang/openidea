@@ -93,7 +93,8 @@ describe("Group By › Repository in the changes tree", () => {
     expect(localStorage.getItem("openidea.vcs.groupByRepo")).toBe("false");
     expect(screen.queryByText("orders")).toBeNull();
     expect(screen.getAllByText("App.kt")).toHaveLength(2);
-    expect(screen.getByText("orders/src")).toBeTruthy();
+    // The fork draws the directory twice (a hidden sizer and the middle-truncated text).
+    expect(screen.getAllByText("orders/src").length).toBeGreaterThan(0);
     expect(groupByItems().Repository).toBe(false);
     // Each file keeps its own checkbox.
     const boxes = screen.getAllByRole("checkbox", { name: "Include App.kt in commit" });
