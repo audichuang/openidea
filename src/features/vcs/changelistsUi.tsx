@@ -1,5 +1,7 @@
 /** Change list dialogs: New / Edit Changelist, Move to Another Changelist, delete. */
 import { useId, useRef, useState, type ChangeEvent } from "react";
+import { clearContext, setContext } from "@/platform/context";
+import { onWorkflowSettingsChange } from "@/platform/workflowSettings";
 import { Checkbox, Dialog, IconButton, Input, Popup, SelectListbox, T, type SelectOption } from "@/ui";
 import type { InputProps } from "@/ui/Input";
 import { notifications } from "@/workbench/contributions";
@@ -24,7 +26,7 @@ import { confirmDialog, openDialog } from "./dialogs";
 import { fileCount, stripSlash } from "./model";
 import { refreshNow, useVcs } from "./store";
 import formStyles from "./ChangelistForm.module.css";
-import { isStagingArea } from "./staging";
+import { stagingAreaOn } from "./staging";
 import styles from "./common.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -277,13 +279,25 @@ export function setActiveChangelist(id: string) {
   updateChangelists((s) => setActiveList(s, id));
 }
 
+const STAGING_CONTEXT = "vcsStagingArea";
+
+/** Keeps `vcsStagingArea` in sync for `when` clauses (actions that narrow a commit are off with it). */
+export function trackStagingContext(): () => void {
+  setContext(STAGING_CONTEXT, stagingAreaOn());
+  const off = onWorkflowSettingsChange(stagingAreaOn, (on) => setContext(STAGING_CONTEXT, on));
+  return () => {
+    off();
+    clearContext(STAGING_CONTEXT);
+  };
+}
+
 /**
  * Commit… on a change list: include exactly its changes and focus the message — under
  * the modal interface it is in the Commit dialog, which this opens. Returns false with
  * the staging area, where a commit takes the whole index and inclusion cannot narrow it.
  */
 export function commitChangelist(id: string): boolean {
-  if (isStagingArea()) return false;
+  if (stagingAreaOn()) return false;
   const { status, root } = useVcs.getState();
   const checks = checksForList(status, root ?? "", useChangelists.getState().state, id);
   useCommit.setState((s) => ({ checks, tab: "changes", focusTick: s.focusTick + 1 }));
@@ -297,7 +311,7 @@ export function commitChangelist(id: string): boolean {
  * staging area.
  */
 export function commitFiles(paths: readonly string[]): boolean {
-  if (isStagingArea()) return false;
+  if (stagingAreaOn()) return false;
   const chosen = new Set(paths.map(stripSlash));
   const checks = new Map<string, "all" | "none">();
   for (const f of useVcs.getState().status)
