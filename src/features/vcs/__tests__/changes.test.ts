@@ -242,7 +242,7 @@ describe("Group By › Repository off", () => {
   const twins = [at("/w/api/src/config.ts"), at("/w/sdk/src/config.ts"), at("/w/sdk/src/client.ts")];
   const keys = (nodes: readonly ChangeNode[]): string[] => nodes.flatMap((n) => [n.key, ...keys(n.children ?? [])]);
   const files = (nodes: readonly ChangeNode[]) =>
-    changeFileNodes(nodes).map((n) => `${n.label} ${n.path} ${n.detail || "-"}`);
+    changeFileNodes(nodes).map((n) => `${n.label} ${n.path} ${n.dir || n.detail || "-"}`);
 
   it("lists the files of all repositories together, told apart by their directory", () => {
     const tree = buildChangeTree(twins, "/w", false, undefined, repos, false, {}, false);
