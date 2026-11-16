@@ -306,7 +306,12 @@ function MultiPushDialog({ only, onClose }: MultiPushDialogProps) {
       const list = pushCandidates(loaded);
       setRepos(list);
       // Fork decision (#224): nothing checked, or with `only` that repository unless it is up to date.
-      setChecked(defaultPushChecked(list.filter((r) => !hasNothingToPush(r)), only));
+      setChecked(
+        defaultPushChecked(
+          list.filter((r) => !hasNothingToPush(r)),
+          only,
+        ),
+      );
     });
     return () => {
       alive = false;
