@@ -78,7 +78,7 @@ jobs:
       - uses: actions/checkout@v5
       - run: |
           # Port upstream's ci.yml edits into this file, then update the pin.
-          pin=6dfcd5a4e470ceec7ac7d6ce862cca9bdf3947d5767bab39c6547a51a8e0daea
+          pin=2de2e8eb0e32645b06150da4e99ff900d2c6218ac57f559b24b4b1caa9f47637
           sha=$(sha256sum .github/workflows/ci.yml | cut -d' ' -f1)
           [ "$sha" = "$pin" ] || { echo "::error::upstream ci.yml changed ($sha); port it into fork-ci.yml and update the pin"; exit 1; }
 
@@ -283,10 +283,10 @@ jobs:
           artifacts: ${{ runner.temp }}/target-artifacts.jsonl
           workdir: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
           token: ${{ github.token }}
-      # nextest ran export_bindings, which rewrites src/bindings.ts.
-      - name: Bindings are up to date
+      # nextest ran export_bindings, which rewrites src/bindings.ts and the command snapshot.
+      - name: Bindings and command snapshot are up to date
         if: runner.os == 'Linux'
-        run: git diff --exit-code src/bindings.ts
+        run: git diff --exit-code src/bindings.ts src-tauri/tests/commands.snap
 
   server:
     name: Remote server (linux musl)
