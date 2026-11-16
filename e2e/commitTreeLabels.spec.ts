@@ -8,6 +8,8 @@ async function open(page: Page, query: string) {
   await page.goto(`/e2e/commitTreeLabels.html?${query}`);
   const tree = page.getByRole("tree", { name: "Changes" });
   await expect(tree.getByRole("treeitem").first()).toBeVisible();
+  // Several repositories start collapsed; these checks need every row.
+  await page.getByRole("button", { name: "Expand All" }).click();
   return tree;
 }
 
@@ -25,7 +27,7 @@ test("Stage and Unstage stay inside a narrow, deep tree and take the click", asy
     const b = await box(action);
     expect(b.x + b.width).toBeLessThanOrEqual(treeBox.x + treeBox.width);
     const hit = await page.evaluate(
-      ([x, y]) => document.elementFromPoint(x!, y!)?.closest('[role="button"]')?.getAttribute("aria-label"),
+      ([x, y]) => document.elementFromPoint(x!, y!)?.closest("button")?.getAttribute("aria-label"),
       [b.x + b.width / 2, b.y + b.height / 2],
     );
     expect(hit).toBe(await action.getAttribute("aria-label"));

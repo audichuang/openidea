@@ -20,7 +20,7 @@ export function effectiveKind(fs: Pick<FileStatus, "staged" | "unstaged">): Effe
   return null;
 }
 
-function kindOf(k: ChangeKind): EffectiveKind {
+export function kindOf(k: ChangeKind): EffectiveKind {
   return k === "untracked" ? "untracked" : k;
 }
 
