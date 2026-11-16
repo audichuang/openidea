@@ -107,6 +107,7 @@ import {
   setGroupByRepo,
   setGroupByStaging,
   setShowUnversionedSeparately,
+  setStagingRootIncluded,
   showsIgnoredFiles,
   useCommit,
   type CommitTab,
@@ -675,9 +676,11 @@ function useCommitChecks() {
   const lists = useChangelists((s) => s.state);
   const staging = useStagingArea();
   const allowCommitAll = useWorkflowSettings((s) => s.vcs.commit.commitAllWhenNothingStaged);
+  const roots = useVcs((s) => s.roots);
+  const excluded = useCommit((s) => s.stagingExcludedRoots);
   return useMemo(
-    () => inclusionChecks(status, root, lists, userChecks, staging, allowCommitAll),
-    [status, root, lists, userChecks, staging, allowCommitAll],
+    () => inclusionChecks(status, root, lists, userChecks, staging, allowCommitAll, { roots, excluded }),
+    [status, root, lists, userChecks, staging, allowCommitAll, roots, excluded],
   );
 }
 
@@ -1267,6 +1270,14 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
                     indeterminate={agg.indeterminate}
                     label={tx`Include ${n.type === "group" && (!n.changelist || n.label === DEFAULT_LIST_NAME) ? txPart(n.label) : n.label} in commit`}
                     onToggle={() => toggle(selected.has(n.key) && selected.size > 1 ? selectedNodes() : [n])}
+                  />
+                )}
+                {repoCheck && n.repo && (
+                  <CheckMark
+                    checked={!excludedRoots.has(n.repo)}
+                    indeterminate={false}
+                    label={tx`Include ${n.label} in commit`}
+                    onToggle={() => setStagingRootIncluded(n.repo!, excludedRoots.has(n.repo!))}
                   />
                 )}
                 {repo && (

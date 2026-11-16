@@ -46,10 +46,7 @@ interface CommitState extends CommitAuthorDetails {
   signOff: boolean;
   /** Commit Options › Run Git hooks. */
   runHooks: boolean;
-  /** Group By › Directory of the change list tree. */
   groupByDir: boolean;
-  /** Group By › Directory of the staging area tree (on by default, as in IDEA). */
-  stagingGroupByDir: boolean;
   /** Group the changes into Staged / Unstaged instead of one "Changes" group. */
   groupByStaging: boolean;
   /** With several repositories, a node per repository above their files. */
@@ -66,6 +63,8 @@ interface CommitState extends CommitAuthorDetails {
   checks: Map<string, CheckState>;
   /** Staged repositories the user unchecked for this commit. */
   excludedStagedRepos: ReadonlySet<string>;
+  /** With the staging area and several repositories: repositories unticked on their row (left out of the commit). */
+  stagingExcludedRoots: ReadonlySet<string>;
   /** Changed blocks left out of the commit (absolute path → `hunkKeys`) of `hunks` files. */
   excludedHunks: Map<string, Set<string>>;
   /** Excluded offsets in partially included blocks (path, hunk key, side). */
@@ -108,7 +107,6 @@ export const useCommit = create<CommitState>(() => ({
   ...DEFAULT_COMMIT_AUTHOR,
   runHooks: true,
   groupByDir: readBool("openidea.vcs.groupByDir", false),
-  stagingGroupByDir: readBool("openidea.vcs.stagingGroupByDir", true),
   groupByStaging: readBool("openidea.vcs.groupByStaging", false),
   groupByRepo: readBool("openidea.vcs.groupByRepo", true),
   showUnversionedSeparately: readBool("openidea.vcs.showUnversionedSeparately", true),
@@ -117,6 +115,7 @@ export const useCommit = create<CommitState>(() => ({
   commitDiffPreview: readBool("openidea.vcs.commitDiffPreview", false),
   checks: new Map(),
   excludedStagedRepos: new Set(),
+  stagingExcludedRoots: new Set(),
   excludedHunks: new Map(),
   excludedHunkLines: new Map(),
   selection: [],
@@ -142,6 +141,7 @@ export function sameCommitDraft(a: CommitState, b: CommitState): boolean {
     a.amendTarget === b.amendTarget &&
     a.checks === b.checks &&
     a.excludedStagedRepos === b.excludedStagedRepos &&
+    a.stagingExcludedRoots === b.stagingExcludedRoots &&
     a.groupByRepo === b.groupByRepo &&
     a.excludedHunks === b.excludedHunks &&
     a.excludedHunkLines === b.excludedHunkLines &&
@@ -178,13 +178,12 @@ export function setGroupByDir(v: boolean) {
   }
 }
 
-export function setStagingGroupByDir(v: boolean) {
-  useCommit.setState({ stagingGroupByDir: v });
-  try {
-    localStorage.setItem("openidea.vcs.stagingGroupByDir", String(v));
-  } catch {
-    // ignore
-  }
+/** Ticks or unticks a repository for the next commit (staging area, several repositories). */
+export function setStagingRootIncluded(root: string, included: boolean) {
+  const next = new Set(useCommit.getState().stagingExcludedRoots);
+  if (included) next.delete(root);
+  else next.add(root);
+  useCommit.setState({ stagingExcludedRoots: next });
 }
 
 export function setGroupByStaging(v: boolean) {
@@ -729,6 +728,7 @@ export function installCommitMessages(): () => void {
         fixupTarget: null,
         checks,
         excludedStagedRepos: new Set(),
+        stagingExcludedRoots: new Set(),
         excludedHunks: new Map(),
         excludedHunkLines: new Map(),
         selection: [],
