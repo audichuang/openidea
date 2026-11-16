@@ -5929,11 +5929,6 @@ export type GitSettings = {
 	pushDialogOnlyProtected?: boolean,
 	/**  Stashes and shelves share one tab. */
 	combineStashAndShelf?: boolean,
-	/**
-	 *  The non-modal Commit tool window works on the index: Staged / Unstaged groups,
-	 *  stage and unstage instead of inclusion checkboxes, and no change lists.
-	 */
-	stagingArea?: boolean,
 };
 
 export type GoBuildTags = {

@@ -11,7 +11,6 @@ import { tx } from "@/platform/i18n";
 import { commands } from "@/platform/ipc";
 import { checkOf, hunkIncluded, toggledHunk } from "./changes";
 import { useChangelists, withListDefaults } from "./changelists";
-import { stagingAreaOn } from "./staging";
 import { useCommit } from "./commitStore";
 import { hunkKeys } from "./hunks";
 import { statusOf, useVcs } from "./store";
@@ -34,8 +33,7 @@ const blocksField = StateField.define<Block[]>({
 /** The effective inclusion of `path` (change list defaults applied). */
 function inclusionOf(path: string) {
   const fs = statusOf(path);
-  // With the staging area, blocks go into the commit by staging them, not by checkboxes.
-  if (!fs || stagingAreaOn()) return null;
+  if (!fs) return null;
   const { status, root } = useVcs.getState();
   const { checks, excludedHunks } = useCommit.getState();
   const effective = withListDefaults(status, root ?? "", useChangelists.getState().state, checks);

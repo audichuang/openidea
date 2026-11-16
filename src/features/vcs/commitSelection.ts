@@ -10,8 +10,7 @@ import { workflowSettings } from "@/platform/workflowSettings";
 import { maybeEditorService, provideCommitService, useCommitCheckProviders } from "@/workbench/contributions";
 import { commitRepos, planCommit, type CommitPlan } from "./changes";
 import type { CommitProblem } from "./commitChecks";
-import { useChangelists } from "./changelists";
-import { inclusionChecks, stagingAreaOn } from "./staging";
+import { useChangelists, withListDefaults } from "./changelists";
 import { useCommit } from "./commitStore";
 import { hunkKeys } from "./hunks";
 import { baseName, rootOf } from "./model";
@@ -30,8 +29,7 @@ export function installDraftRevision(): () => void {
   });
   const offLists = useChangelists.subscribe(() => void revision++);
   const offRepo = useVcs.subscribe((s, p) => {
-    // With the staging area the index is the inclusion: a status change may change the commit.
-    if (s.root !== p.root || (s.status !== p.status && stagingAreaOn())) revision++;
+    if (s.root !== p.root) revision++;
   });
   return () => {
     offCommit();
@@ -43,7 +41,7 @@ export function installDraftRevision(): () => void {
 /** The included changes, as the status (refreshed by the caller) and the checkboxes say. */
 export function currentPlan(): CommitPlan {
   const { status, root } = useVcs.getState();
-  const checks = inclusionChecks(status, root ?? "", useChangelists.getState().state, useCommit.getState().checks);
+  const checks = withListDefaults(status, root ?? "", useChangelists.getState().state, useCommit.getState().checks);
   return planCommit(status, checks);
 }
 

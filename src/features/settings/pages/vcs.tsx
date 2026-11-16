@@ -504,12 +504,6 @@ export const VCS_PAGES: PageSpec[] = [
       {
         title: "Commit",
         options: [
-          {
-            kind: "toggle",
-            key: "vcs.git.stagingArea",
-            label: "Enable staging area",
-            hint: "Commit works on the Git index: stage and unstage changes instead of checking them. Change lists are not used. Only for the non-modal commit interface.",
-          },
           { kind: "toggle", key: "vcs.git.warnCrlf", label: "Warn if CRLF line separators are about to be committed" },
           {
             kind: "toggle",
