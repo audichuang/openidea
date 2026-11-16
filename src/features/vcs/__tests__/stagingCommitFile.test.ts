@@ -10,7 +10,6 @@ import { useProject } from "@/platform/project";
 import { nodeMenu } from "../CommitView";
 import { buildChangeTree, type ChangeNode } from "../changes";
 import { useCommit } from "../commitStore";
-import { buildStagingTree } from "../staging";
 import { useVcs } from "../store";
 
 /** Partially staged: in both Staged and Unstaged. */
@@ -42,7 +41,8 @@ afterEach(() => setStaging(false));
 describe("Commit File… with the staging area", () => {
   it("is not offered: a commit takes the whole index, not the picked files", () => {
     setStaging(true);
-    const staged = buildStagingTree([A, B], "/p", false).find((n) => n.group === "staged")!;
+    // The staging area's tree: Group By › Staging State without change lists.
+    const staged = buildChangeTree([A, B], "/p", false, undefined, ["/p"], true).find((n) => n.group === "staged")!;
     const node = fileNode([staged], "/p/a.ts")!;
     expect(labels(nodeMenu([node], ["/p"]))).not.toContain("Commit File…");
   });
