@@ -30,7 +30,9 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
   - PR 開著、沒有 develop-moved、**最後一則** `<!-- auto-rebase:approved <sha> -->` 留言排在最後一則 needs-human 之後、sha 等於 `git rev-parse fork/rebase/vX`（使用者看過 needs-human 的 PR 後核可；和 precheck 同一個定義。sha 不等代表核可後又推過；排在 needs-human 之前代表之前的 run 已拒絕它。兩者都是核可作廢，照下一條處理）→ vNEW=vX、PR=那個 PR，vOLD 與 OLD_DEVELOP 取 PR 說明。先確認 Fork CI 在這個 sha 上 `Fork CI passed` 成功，或紅的 job 都已在 PR 說明列為上游在 vX 也紅（第 3 步的規則）；不符就 PR 留言 `<!-- auto-rebase:needs-human -->` 說明哪裡不符，跳第 7 步。都符合就 `git checkout --detach <sha>`，從第 4 步「移動」做起（不重跑 rebase 與閘門），接著第 5、6 步。
   - PR 開著、有 `<!-- auto-rebase:needs-human -->` 留言、沒有符合上一條的 approved（precheck 只在它過時才讓你跑到這：上游出了更新的 release，或 develop 已經在 vX）→ **收鎖**：`rebase/vX` 的 tip 不在 `fork/develop` 或 `fork/backup/*` 上就先 `git push fork "fork/rebase/vX:refs/heads/backup/rebase-vX-$RUN"`；PR 留言說明原因後 `gh pr close`，刪 fork 的 `rebase/vX` 與 `ci-base/vX`。然後重新判斷：vNEW == vOLD 就結束、不推通知；否則 NEW。
   - 其他（precheck 判定鎖過期：前一次 run 死了）→ 同樣先備份不在 develop／backup 上的 tip、關 PR（有的話）、刪兩條分支，當 NEW 從頭來。不續跑半途的 rebase：從頭重來比較可靠。
-- 沒有 `rebase/*` 且 vNEW == vOLD → 結束，不推通知。
+- 沒有 `rebase/*` 且 vNEW == vOLD：
+  - `git ls-remote --tags fork "refs/tags/vNEW-fork.*"` 有東西 → 結束，不推通知。
+  - 沒有 → **RELEASE**：develop 已在 vNEW 卻從沒發過 vNEW 的版（有人手動 rebase 後沒發，或前一次 run 移動 develop 後、打 tag 前死了）。發的 sha＝`git rev-parse fork/develop`；先確認它的 develop push Fork CI（`gh run list -R audichuang/openidea --workflow fork-ci.yml --branch develop --commit <sha>`）`Fork CI passed` 成功（precheck 只在綠的時候放行；跑這步時又變了就跳第 7 步通知原因）。沒有 PR、不做第 1～5 步，直接第 6 步；vOLD 取上一個 fork release tag 的上游基底（`git describe --tags --abbrev=0 --match 'v*-fork.*' fork/main`，去掉 `-fork.N`），workflow 清單用上一個 fork release tag 當 OLD_DEVELOP，release notes 的模式寫「develop 已由手動 rebase 搬到 vNEW」，第 6 步第 5 點沒有 PR 可留言。
 - 否則 **NEW**：`OLD_DEVELOP=$(git rev-parse fork/develop)`。
 
 開始前清掉之前 run 留下的 worktree：`git worktree list` 裡路徑含 `auto-openidea-fork-rebase` 而且不是 `MAIN` 的、目錄名以 `ar-` 開頭但 `$RUN` 不是這次的，只在 `git -C <路徑> status --porcelain -- . ':!.rebase-review'` 沒輸出（`.rebase-review/` 是每次 run 自己寫的，notes 已進 tag 說明，不算）、不在 rebase 中、`git -C <路徑> branch -r --contains HEAD` 列得出 `fork/` 分支時刪（Orca 開的用 `orca worktree rm --worktree "id:38d295e1-a1dd-4eea-871a-5bbe1bef2554::<路徑>" --force --json`，其他用 `git worktree remove --force`），刪完再 `git branch -D` 它原本所在的 `audichuang/auto-openidea-fork-rebase-run-*` 本地分支（有的話）；其餘列進通知。
@@ -109,7 +111,7 @@ develop 一移動（含已在 HEAD 不重推的情況）就列出這次 rebase �
    git push --atomic --force-with-lease=main:$old fork <sha>:refs/heads/main vNEW-fork.N
    ```
    推完再用第 4 步同一份路徑清單查一次 `gh workflow list`，main 移動後才出現註冊的就 disable。從第 0 步 develop-moved 進來的沒跑過第 4 步，在這裡照第 4 步的指令列清單，`<develop sha>` 是留言裡的 sha，OLD_DEVELOP 取 PR 說明。
-4. `gh run list -R audichuang/openidea --workflow fork-release.yml --branch vNEW-fork.N --json databaseId,headSha` 找 run，`gh-wait run <id>` 等完。tag 的 commit 與版本和 develop 候選版相符時 tag run 不建置：plan 等候選版跑完（可能三、四十分鐘）再發布它的 assets；候選版失敗或版本不符時才自己並行建置 macOS 與 Windows（FORK.md Release）。兩種都是兩個平台都成功才發布、附 latest.json、更新 cask。失敗看 tag run 的 `--log-failed`，重用失敗時也看候選版 run；只靠改程式才能修的失敗不在這裡修，通知裡寫原因。
+4. 用 `gh-wait tag vNEW-fork.N -R audichuang/openidea --workflow fork-release.yml` 等完（它只追這個 tag 開的 run；同一個 sha 在 develop push 時跑的候選版不算）。不帶參數的 `gh-wait` 看的是本機 HEAD，這裡推的是 refspec 與 tag，不能用；`-R` 一定要帶，fork checkout 的預設 repo 是上游。tag 的 commit 與版本和 develop 候選版相符時 tag run 不建置：plan 等候選版跑完（可能三、四十分鐘）再發布它的 assets；候選版失敗或版本不符時才自己並行建置 macOS 與 Windows（FORK.md Release）。兩種都是兩個平台都成功才發布、附 latest.json、更新 cask。失敗看 tag run 的 `--log-failed`，重用失敗時也看候選版 run；只靠改程式才能修的失敗不在這裡修，通知裡寫原因。
 5. 發版成功 → PR 留言結果後關閉，刪 `rebase/vNEW` 與 `ci-base/vNEW`。
 6. 再跑 `"$SKILL_DIR/scripts/mark-releases-done.sh" vNEW`：把使用者 GitHub 收件匣裡 vNEW（含）以前的 l0ng-ai/openidea release 通知標成 Done，使用者看收件匣沒有上游 release 就知道 fork 已跟上。失敗（結束碼非 0）不擋收尾，寫進第 7 步通知。
 
