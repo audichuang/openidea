@@ -6,6 +6,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
+import { writeClipboardText } from "@/platform/clipboard";
 import { tx } from "@/platform/i18n";
 import { Button, Checkbox, Dialog, EmptyState, Icon, Select, Spinner, T, Tree, type SelectOption } from "@/ui";
 import { notifications } from "@/workbench/contributions";
@@ -227,7 +228,7 @@ export function SchemaCompareDialog({ initial }: { initial: Side | null }) {
   const roots: Row[] = shown.map((diff) => ({ kind: "table", key: diff.key, diff }));
 
   const copy = async () => {
-    await navigator.clipboard.writeText(sql);
+    await writeClipboardText(sql);
     notifications().notify({ level: "info", title: "Migration script copied", key: "db-compare" });
   };
 
