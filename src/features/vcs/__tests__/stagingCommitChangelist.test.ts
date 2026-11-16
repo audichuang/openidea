@@ -9,10 +9,9 @@ import { executeAction } from "@/platform/actions";
 import { clearContext, setContext } from "@/platform/context";
 import { useProject } from "@/platform/project";
 import { useChangelists } from "../changelists";
-import { commitChangelist, commitFiles } from "../changelistsUi";
+import { commitChangelist, commitFiles, trackStagingContext } from "../changelistsUi";
 import { useCommit } from "../commitStore";
 import { registerHistoryActions } from "../historyActions";
-import { trackStagingContext } from "../staging";
 import { useVcs } from "../store";
 
 const A = { path: "/p/a.ts", relPath: "a.ts", staged: "modified", unstaged: null, renamedFrom: null } as const;
