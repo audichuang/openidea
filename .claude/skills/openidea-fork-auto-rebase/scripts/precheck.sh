@@ -1,7 +1,9 @@
 #!/bin/bash
 # Orca automation precheck for the OpenIDEA fork: exit 0 when upstream has a newer release than develop's base and
 # no run holds the fork's rebase/* lock, when a held lock went stale (a run died; the skill's step 0 handles it), or
-# when a lock left for the user is obsolete (a newer release, or develop already on its version; step 0 retires it).
+# when a lock left for the user is obsolete (a newer release, or develop already on its version; step 0 retires it),
+# or when develop already sits on the newest release but the fork never released it and develop's Fork CI is green
+# (develop moved by hand, or a run died between moving develop and tagging; the skill's RELEASE mode).
 set -euo pipefail
 name="OpenIDEA fork 自動 rebase"
 trap 'rc=$?; m="precheck failed (exit $rc) at line $LINENO: $BASH_COMMAND"; echo "$m" >&2; "$HOME/.config/fork-automation/precheck-alert.sh" "$name" "$m" || true' ERR
@@ -73,5 +75,19 @@ if [ -n "$lock" ]; then
   fi
   echo "waiting for the user: $branch"
   exit 1
+fi
+if [ "$base" = "$newest" ]; then
+  # Why: the newer-release check below never fires again for a base develop already sits on, so a manual rebase
+  # that skipped the release left v0.1.46 unreleased in silence (2026-11-17).
+  tags=$(git ls-remote --tags fork "refs/tags/${base}-fork.*") || skip "git ls-remote fork tags failed"
+  [ -z "$tags" ] || exit 1
+  tip=$(git rev-parse fork/develop)
+  ci=$(gh run list -R audichuang/openidea --workflow fork-ci.yml --branch develop --commit "$tip" --json status,conclusion --jq '.[0] // empty | "\(.status) \(.conclusion)"') || skip "gh run list failed"
+  case $ci in
+    "completed success") echo "unreleased: develop on $base has no ${base}-fork.* release"; exit 0 ;;
+    # Why skip: it alerts once develop stays red for 6 h, instead of a silent hourly no-op.
+    completed*) skip "develop on $base is unreleased and Fork CI on ${tip:0:9} is ${ci#completed }" ;;
+    *) echo "unreleased: develop on $base waits for Fork CI on ${tip:0:9} (${ci:-no run yet})"; exit 1 ;;
+  esac
 fi
 newer "$newest" "$base" || exit 1
