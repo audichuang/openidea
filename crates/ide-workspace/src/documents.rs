@@ -645,6 +645,9 @@ impl Documents {
             disk_len: 0,
             closed: false,
             uri: Some(key.to_string_lossy().into_owned()),
+            disk_hash: None,
+            clean_text: None,
+            conflict: None,
         };
         let slot: Slot = Arc::new(Mutex::new(state));
         let st = slot.lock();
@@ -931,10 +934,11 @@ impl Documents {
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            let mtime = if st.native_to_ascii {
+            let (mtime, hash) = if st.native_to_ascii {
                 ide_vfs::save_properties_text(&target, &text)?
             } else {
-                ide_vfs::save_text(&target, &text, &st.encoding, st.has_bom)?
+                let bytes = ide_vfs::encode(&text, &st.encoding, st.has_bom)?;
+                (ide_vfs::write_atomic(&target, &bytes)?, blake3::hash(&bytes))
             };
             // Re-key the registry before anyone opens the new path in parallel.
             let keys = keys_for(&target);
@@ -968,8 +972,7 @@ impl Documents {
             st.ui_mode = ui_mode;
             st.editorconfig = if defaults.editorconfig { self.editorconfig.resolve(&st.path) } else { None };
             st.native_to_ascii = defaults.native_to_ascii_for(&st.path);
-            st.disk_mtime = mtime;
-            st.disk_len = disk_len(&st.path);
+            st.synced(mtime, Some(hash));
             self.set_dirty(doc, st, false);
             let info = Self::info(doc, st);
             if st.observed {

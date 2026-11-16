@@ -12,7 +12,7 @@
  * `general.closeWithoutWelcome` is on, in which case it closes. When
  * `general.closeTabsWithWindow` is on, that close drops the saved editor tabs.
  */
-import { commands, isTauri, onIdeEvent, type Settings } from "@/platform/ipc";
+import { IpcError, commands, isCancelled, isTauri, onIdeEvent, type Settings } from "@/platform/ipc";
 import { t, tx } from "@/platform/i18n";
 import { closeProject, provideLeaveProjectGuard, useProject } from "@/platform/project";
 import { useWindowGroup } from "@/platform/windowGroups";

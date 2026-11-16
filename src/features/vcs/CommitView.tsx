@@ -745,9 +745,9 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const roots = useMemo(
     () =>
       staging
-        ? buildStagingTree(status, root, groupByDir, repos, untrackedInUnstaged, heads)
-        : buildChangeTree(status, root, groupByDir, lists, repos, groupByStaging, heads, groupByRepo),
-    [staging, status, root, groupByDir, lists, repos, groupByStaging, untrackedInUnstaged, heads, groupByRepo],
+        ? buildStagingTree(status, root, groupByDir, repos, untrackedInUnstaged)
+        : buildChangeTree(status, root, groupByDir, lists, repos, groupByStaging, undefined, groupByRepo),
+    [staging, status, root, groupByDir, lists, repos, groupByStaging, untrackedInUnstaged, groupByRepo],
   );
   const [byKey, parents] = useMemo(() => {
     const m = new Map<string, ChangeNode>();

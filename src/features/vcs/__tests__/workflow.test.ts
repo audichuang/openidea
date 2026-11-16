@@ -6,6 +6,7 @@ import {
   isProtectedBranch,
   isLeaseRejected,
   isPushRejected,
+  defaultPushChecked,
   pushCandidates,
   pushRepoCommits,
   type RepoPush,
