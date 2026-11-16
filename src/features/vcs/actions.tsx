@@ -25,7 +25,7 @@ import {
   showUnstashDialog,
 } from "./changeOps";
 import { setAmend, useCommit } from "./commitStore";
-import { commitPlan } from "./commitSelection";
+import { currentPlan } from "./commitSelection";
 import { gotoConflict, resolveAtCaret, showConflictsDialog } from "./conflictsUi";
 import { focusedDiffNavigator } from "./diffNavigator";
 import { showDiffWindow } from "./DiffWindow";
@@ -384,7 +384,7 @@ export function registerVcsActions(): () => void {
           : fromSel?.length
             ? sel
             : focused
-              ? commitPlan().included.map((f) => f.path)
+              ? currentPlan().included.map((f) => f.path)
               : undefined;
         if (paths?.length) {
           const candidates = rollbackCandidates(paths);
