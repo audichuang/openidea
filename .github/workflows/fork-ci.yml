@@ -167,20 +167,22 @@ jobs:
           # runs inside Linux dev containers (ide-remote container_tunnel.rs), never on Windows.
           # The other four fail on Windows in upstream's own CI too (l0ng-ai/openidea runs 43340611117
           # and, for v0.1.44, 43388513661); drop each once a rebase brings upstream's fix (#252).
+          # Upstream main after v0.1.45 adds three more that fail in its own Windows CI too
+          # (l0ng-ai/openidea job 133228964562): two ide-dap tests and editor_panels_validate_… (#252).
           - {
               os: windows-latest,
               partition: "1/3",
-              filter: "not (package(ide-host) & test(/^relay::/)) & not (package(ide-remote) & test(=download_into_copies_only_the_selected_items)) & not (package(ide-host) & test(=background_tasks_scale_and_renew_cpu_fuel_budget)) & not (package(ide-lsp) & test(=library_source::tests::maps_class_folder_classes_to_project_sources)) & not (package(ide-sdk) & test(=tests::jar_application_runs_on_the_project_jdk_unless_a_jre_is_chosen))",
+              filter: "not (package(ide-host) & test(/^relay::/)) & not (package(ide-remote) & test(=download_into_copies_only_the_selected_items)) & not (package(ide-host) & test(=background_tasks_scale_and_renew_cpu_fuel_budget)) & not (package(ide-lsp) & test(=library_source::tests::maps_class_folder_classes_to_project_sources)) & not (package(ide-sdk) & test(=tests::jar_application_runs_on_the_project_jdk_unless_a_jre_is_chosen)) & not (package(ide-dap) & test(=tests::windows_stop_releases_the_debuggees_port_before_returning)) & not (package(ide-dap) & test(=js_cdp::tests::a_session_that_goes_away_switches_interception_off)) & not (package(ide-host) & test(=plugins::ui_points::tests::editor_panels_validate_api_width_when_capability_and_page))",
             }
           - {
               os: windows-latest,
               partition: "2/3",
-              filter: "not (package(ide-host) & test(/^relay::/)) & not (package(ide-remote) & test(=download_into_copies_only_the_selected_items)) & not (package(ide-host) & test(=background_tasks_scale_and_renew_cpu_fuel_budget)) & not (package(ide-lsp) & test(=library_source::tests::maps_class_folder_classes_to_project_sources)) & not (package(ide-sdk) & test(=tests::jar_application_runs_on_the_project_jdk_unless_a_jre_is_chosen))",
+              filter: "not (package(ide-host) & test(/^relay::/)) & not (package(ide-remote) & test(=download_into_copies_only_the_selected_items)) & not (package(ide-host) & test(=background_tasks_scale_and_renew_cpu_fuel_budget)) & not (package(ide-lsp) & test(=library_source::tests::maps_class_folder_classes_to_project_sources)) & not (package(ide-sdk) & test(=tests::jar_application_runs_on_the_project_jdk_unless_a_jre_is_chosen)) & not (package(ide-dap) & test(=tests::windows_stop_releases_the_debuggees_port_before_returning)) & not (package(ide-dap) & test(=js_cdp::tests::a_session_that_goes_away_switches_interception_off)) & not (package(ide-host) & test(=plugins::ui_points::tests::editor_panels_validate_api_width_when_capability_and_page))",
             }
           - {
               os: windows-latest,
               partition: "3/3",
-              filter: "not (package(ide-host) & test(/^relay::/)) & not (package(ide-remote) & test(=download_into_copies_only_the_selected_items)) & not (package(ide-host) & test(=background_tasks_scale_and_renew_cpu_fuel_budget)) & not (package(ide-lsp) & test(=library_source::tests::maps_class_folder_classes_to_project_sources)) & not (package(ide-sdk) & test(=tests::jar_application_runs_on_the_project_jdk_unless_a_jre_is_chosen))",
+              filter: "not (package(ide-host) & test(/^relay::/)) & not (package(ide-remote) & test(=download_into_copies_only_the_selected_items)) & not (package(ide-host) & test(=background_tasks_scale_and_renew_cpu_fuel_budget)) & not (package(ide-lsp) & test(=library_source::tests::maps_class_folder_classes_to_project_sources)) & not (package(ide-sdk) & test(=tests::jar_application_runs_on_the_project_jdk_unless_a_jre_is_chosen)) & not (package(ide-dap) & test(=tests::windows_stop_releases_the_debuggees_port_before_returning)) & not (package(ide-dap) & test(=js_cdp::tests::a_session_that_goes_away_switches_interception_off)) & not (package(ide-host) & test(=plugins::ui_points::tests::editor_panels_validate_api_width_when_capability_and_page))",
             }
     runs-on: ${{ matrix.os }}
     # actions:write lets the develop run delete the target caches its save supersedes.
