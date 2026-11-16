@@ -147,11 +147,14 @@ interface PlannedCommit extends CommitPlan {
 /** The included changes and their target repositories from a single status snapshot. */
 export function currentPlan(): PlannedCommit {
   const { status, root, roots } = useVcs.getState();
-  const { checks: overrides, groupByRepo, excludedStagedRepos } = useCommit.getState();
+  const { checks: overrides, groupByRepo, excludedStagedRepos, stagingExcludedRoots } = useCommit.getState();
   const staging = stagingAreaOn();
   const scope = stagedRepositoryScope(status, roots, staging && groupByRepo);
   const files = statusForCommit(status, roots, scope, excludedStagedRepos);
-  const checks = inclusionChecks(files, root ?? "", useChangelists.getState().state, overrides, staging);
+  const checks = inclusionChecks(files, root ?? "", useChangelists.getState().state, overrides, staging, undefined, {
+    roots,
+    excluded: stagingExcludedRoots,
+  });
   const plan = planCommit(files, checks, workflowSettings().vcs.commit.includeChangesByDefault);
   return {
     ...plan,
