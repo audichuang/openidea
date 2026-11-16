@@ -11,17 +11,13 @@ export interface CommitSummary {
 
 /**
  * What the commit would do to `files` (the ones it takes, as `planCommit` includes them).
- * `checks`: the inclusion checkboxes, which decide each file's part (`planCommit`); `null`
- * with the staging area, which commits the index as it is. Unversioned files are added;
- * renames count as modified.
+ * `checks`: the inclusion, which decides each file's part (`planCommit`); with the staging
+ * area, `inclusionChecks`' view of the index. Unversioned files are added; renames count as modified.
  */
-export function commitSummary(
-  files: readonly FileStatus[],
-  checks: ReadonlyMap<string, CheckState> | null,
-): CommitSummary {
+export function commitSummary(files: readonly FileStatus[], checks: ReadonlyMap<string, CheckState>): CommitSummary {
   const out: CommitSummary = { added: 0, modified: 0, deleted: 0 };
   for (const fs of files) {
-    const kind = committedKind(fs, checks ? checkOf(fs, checks) : "staged");
+    const kind = committedKind(fs, checkOf(fs, checks));
     if (!kind || kind === "ignored") continue;
     if (kind === "added" || kind === "untracked") out.added++;
     else if (kind === "deleted") out.deleted++;
