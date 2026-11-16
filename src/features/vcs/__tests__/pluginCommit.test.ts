@@ -20,6 +20,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 });
 
 import type { CommitSelection, FileStatus } from "@/bindings";
+import { useProject } from "@/platform/project";
 import { maybeCommitService, registerCommitCheckProvider } from "@/workbench/contributions";
 import { commitChanges } from "../changeOps";
 import { draftRevision, installDraftRevision, provideCommit } from "../commitSelection";
@@ -55,6 +56,7 @@ beforeEach(() => {
     checks: new Map([["/p/b.ts", "none" as const]]),
     excludedHunks: new Map(),
     checkProblems: [],
+    stagingExcludedRoots: new Set(),
   });
   disposers = [installDraftRevision(), provideCommit()];
 });
@@ -132,6 +134,44 @@ describe("the commit plugins see", () => {
     useCommit.setState({ checks: new Map(files.map((f) => [f.path, "none" as const])) });
     expect((await maybeCommitService()!.changes())!.patch).toBe("");
     expect(createPatch).not.toHaveBeenCalled();
+  });
+});
+
+describe("the commit plugins see with the staging area and several repositories", () => {
+  const setStaging = (on: boolean) =>
+    useProject.setState({ settings: { vcs: { git: { stagingArea: on }, commit: { nonModal: true } } } } as never);
+  const staged = (path: string): FileStatus => ({
+    path,
+    relPath: path.split("/").pop()!,
+    staged: "modified",
+    unstaged: null,
+    renamedFrom: null,
+  });
+
+  beforeEach(() => {
+    setStaging(true);
+    useVcs.setState({ roots: ["/p", "/q"], status: [staged("/p/a.ts"), staged("/q/c.ts")] });
+  });
+  afterEach(() => setStaging(false));
+
+  it("leaves out the repositories unticked on their rows", async () => {
+    const service = maybeCommitService()!;
+    expect((await service.selection())!.repositories.map((r) => r.root).sort()).toEqual(["/p", "/q"]);
+    useCommit.setState({ stagingExcludedRoots: new Set(["/p"]) });
+    expect((await service.selection())!.repositories.map((r) => r.root)).toEqual(["/q"]);
+  });
+
+  it("is a new draft when a repository is ticked or unticked", () => {
+    const before = draftRevision();
+    useCommit.setState({ stagingExcludedRoots: new Set(["/q"]) });
+    expect(draftRevision()).toBeGreaterThan(before);
+  });
+
+  it("commits only the ticked repositories", async () => {
+    useCommit.setState({ stagingExcludedRoots: new Set(["/q"]) });
+    await commitChanges();
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(commit.mock.calls[0]![0]).toBe("/p");
   });
 });
 

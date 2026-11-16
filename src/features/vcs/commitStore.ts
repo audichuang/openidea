@@ -14,10 +14,7 @@ interface CommitState {
   author: string;
   /** Commit Options › Run Git hooks. */
   runHooks: boolean;
-  /** Group By › Directory of the change list tree. */
   groupByDir: boolean;
-  /** Group By › Directory of the staging area tree (on by default, as in IDEA). */
-  stagingGroupByDir: boolean;
   /** Group the changes into Staged / Unstaged instead of one "Changes" group. */
   groupByStaging: boolean;
   /** With several repositories, a node per repository above their files. */
@@ -30,6 +27,8 @@ interface CommitState {
   commitDiffPreview: boolean;
   /** User overrides of the inclusion checkboxes (absolute path → state). */
   checks: Map<string, CheckState>;
+  /** With the staging area and several repositories: repositories unticked on their row (left out of the commit). */
+  stagingExcludedRoots: ReadonlySet<string>;
   /** Changed blocks left out of the commit (absolute path → `hunkKeys`) of `hunks` files. */
   excludedHunks: Map<string, Set<string>>;
   /** Absolute paths selected in the changes tree. */
@@ -60,13 +59,13 @@ export const useCommit = create<CommitState>(() => ({
   author: "",
   runHooks: true,
   groupByDir: readBool("openidea.vcs.groupByDir", false),
-  stagingGroupByDir: readBool("openidea.vcs.stagingGroupByDir", true),
   groupByStaging: readBool("openidea.vcs.groupByStaging", false),
   groupByRepo: readBool("openidea.vcs.groupByRepo", true),
   showUnversionedSeparately: readBool("openidea.vcs.showUnversionedSeparately", true),
   diffPreview: readBool("openidea.vcs.diffPreview", true),
   commitDiffPreview: readBool("openidea.vcs.commitDiffPreview", false),
   checks: new Map(),
+  stagingExcludedRoots: new Set(),
   excludedHunks: new Map(),
   selection: [],
   selectionKeys: [],
@@ -105,13 +104,12 @@ export function setGroupByDir(v: boolean) {
   }
 }
 
-export function setStagingGroupByDir(v: boolean) {
-  useCommit.setState({ stagingGroupByDir: v });
-  try {
-    localStorage.setItem("openidea.vcs.stagingGroupByDir", String(v));
-  } catch {
-    // ignore
-  }
+/** Ticks or unticks a repository for the next commit (staging area, several repositories). */
+export function setStagingRootIncluded(root: string, included: boolean) {
+  const next = new Set(useCommit.getState().stagingExcludedRoots);
+  if (included) next.delete(root);
+  else next.add(root);
+  useCommit.setState({ stagingExcludedRoots: next });
 }
 
 export function setGroupByStaging(v: boolean) {
@@ -385,6 +383,7 @@ export function installPreparedMessage(): () => void {
         message: "",
         amend: false,
         checks: new Map(),
+        stagingExcludedRoots: new Set(),
         excludedHunks: new Map(),
         selection: [],
         selectionKeys: [],
