@@ -23,7 +23,8 @@ pub struct WalkRefusals {
 }
 
 impl WalkRefusals {
-    fn unportable(&mut self, path: String) {
+    /// Counts and names (the first few) a path whose name the payload cannot carry.
+    pub fn unportable(&mut self, path: String) {
         self.unportable += 1;
         note_skipped(&mut self.unportable_paths, path);
     }
@@ -204,9 +205,9 @@ pub fn copy_selection(
 }
 
 /// [`copy_selection`] with the detail a local CLI prints: the per-file
-/// skip reasons and the size/unreadable split its notes report.
-/// [`TransferError::EmptySelection`] reaches the caller, so a surface can
-/// say「every file in the selected folders was skipped」its own way.
+/// skip reasons and the size/unreadable split its notes report. A selection
+/// whose every file was skipped is a report with nothing copied that still
+/// names the refusals.
 pub fn copy_selection_detailed(
     sel: ExportSelection,
     settings: &Settings,
@@ -222,7 +223,31 @@ pub fn copy_selection_detailed(
     // what the rest of the folder holds.
     let mut limit = file_limit;
     let (expanded, plan) = loop {
-        let expanded = expand_folder_items_in_input_order(sel.clone(), limit, &cancel)?;
+        let expanded = expand_folder_items_inner(sel.clone(), limit, &cancel, true)?;
+        if expanded.sel.items.is_empty() {
+            // Every selected file was skipped: nothing is copied, and the refusals are named.
+            let walk_unreadable = expanded.skipped - expanded.detail.unportable - expanded.detail.symlink_dirs;
+            return Ok(CopyReport {
+                outcome: CopyOutcome {
+                    payload: String::new(),
+                    copied: 0,
+                    chars: 0,
+                    lines: 0,
+                    words: 0,
+                    tokens: 0,
+                    skipped: expanded.skipped,
+                    truncated: false,
+                    non_text_files: 0,
+                    non_text: Default::default(),
+                },
+                files: Vec::new(),
+                skipped_file_size: 0,
+                skipped_unreadable: walk_unreadable,
+                skipped_unreadable_paths: expanded.skipped_paths,
+                skip_detail: expanded.detail,
+                file_limit_reached: false,
+            });
+        }
         if !expanded.truncated {
             let plan = super::plan_export_with(&expanded.sel, settings, Some(super::CLIPBOARD_PAYLOAD_MAX), opts)?;
             break (expanded, plan);
@@ -248,7 +273,7 @@ pub fn copy_selection_detailed(
     };
     let mut plan = plan;
     // The walk stopped at the limit: files it never listed are left out too.
-    plan.non_text.limit_left_out_lower_bound = expanded.truncated;
+    plan.non_text.limit_left_out_lower_bound |= expanded.truncated;
     let skipped = plan.skipped_unreadable_count + plan.skipped_file_size_count + expanded.skipped;
     // `expanded.skipped` also counts unportable names and symlinked folders: not unreadable.
     let walk_unreadable = expanded.skipped - expanded.detail.unportable - expanded.detail.symlink_dirs;
@@ -323,7 +348,12 @@ pub fn expand_folder_items(
     limit: usize,
     cancel: &CancelToken,
 ) -> Result<FolderExpansion, TransferError> {
-    expand_folder_items_inner(sel, limit, cancel, false)
+    nonempty(expand_folder_items_inner(sel, limit, cancel, false)?)
+}
+
+/// A walk that kept no file is [`TransferError::EmptySelection`] for the public expansions.
+fn nonempty(expanded: FolderExpansion) -> Result<FolderExpansion, TransferError> {
+    if expanded.sel.items.is_empty() { Err(TransferError::EmptySelection) } else { Ok(expanded) }
 }
 
 /// Expands folder items preserving first-occurrence deduplication in input order.
@@ -337,7 +367,7 @@ pub fn expand_folder_items_in_input_order(
     limit: usize,
     cancel: &CancelToken,
 ) -> Result<FolderExpansion, TransferError> {
-    expand_folder_items_inner(sel, limit, cancel, true)
+    nonempty(expand_folder_items_inner(sel, limit, cancel, true)?)
 }
 
 fn expand_folder_items_inner(
@@ -450,8 +480,10 @@ fn expand_folder_items_inner(
     }
     // The rebuild carries the optional fields over (`with_items`): a commit
     // copy from a subfolder keeps its `filter_root`, so relative exclude
-    // rules keep matching folder-relative paths.
-    let sel = sel.with_items(items)?;
+    // rules keep matching folder-relative paths. A walk that kept no file
+    // keeps what it refused, so a copy can name it (an empty selection is
+    // never validated or planned).
+    let sel = if items.is_empty() { ExportSelection { items, ..sel } } else { sel.with_items(items)? };
     Ok(FolderExpansion { sel, skipped, skipped_paths, detail, truncated, truncated_at })
 }
 

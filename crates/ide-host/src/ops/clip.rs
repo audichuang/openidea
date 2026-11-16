@@ -131,7 +131,7 @@ pub struct ClipNonTextSummary {
     pub exceeds_payload_cap: bool,
     /// Files the file-count limit leaves out of what `Include` copies.
     pub limit_left_out: u32,
-    /// `limit_left_out` is a lower bound (a folder walk stopped at the limit).
+    /// `limit_left_out` is a lower bound (a folder walk stopped at the limit, or more than 1000 were left out).
     pub limit_left_out_at_least: bool,
     /// The `headerFormat` cannot be escaped: `Include` would write Base64 lines that read as file headers.
     pub header_cannot_be_escaped: bool,
@@ -254,36 +254,115 @@ fn rel_set(root: &Path, paths: &[PathBuf]) -> BTreeSet<String> {
         .collect()
 }
 
+/// The changes a Git copy found: every listed item (portable or not) and the paths dropped because their name
+/// is not UTF-8, spelled lossily and relative to the repository root.
+struct GitItems {
+    items: Vec<ExportItem>,
+    /// (repository root, lossy path relative to it).
+    non_utf8: Vec<(PathBuf, String)>,
+}
+
 /// The labelled changes of `source` in each repository of `paths` (or `repo`), narrowed to `paths`.
-fn git_items(repos: &[(PathBuf, Vec<PathBuf>)], source: impl Fn() -> GitSource) -> IdeResult<(Vec<ExportItem>, usize)> {
-    let (items, skipped, _) = git_items_with_renames(repos, source)?;
-    Ok((items, skipped))
+fn git_items(repos: &[(PathBuf, Vec<PathBuf>)], source: impl Fn() -> GitSource) -> IdeResult<GitItems> {
+    let (found, _) = git_items_with_renames(repos, source)?;
+    Ok(found)
 }
 
 /// [`git_items`], plus the source paths of the renames (repo-relative, unfiltered by `paths`).
 fn git_items_with_renames(
     repos: &[(PathBuf, Vec<PathBuf>)],
     source: impl Fn() -> GitSource,
-) -> IdeResult<(Vec<ExportItem>, usize, Vec<String>)> {
+) -> IdeResult<(GitItems, Vec<String>)> {
     let opts = RunOptions::default();
     let mut items = Vec::new();
     let mut renamed_from = Vec::new();
-    let mut skipped = 0;
+    let mut non_utf8 = Vec::new();
     for (root, paths) in repos {
         let git = Git::open(root).map_err(err)?;
         let id = CanonicalRootId::new(git.root()).map_err(err)?;
         let changed = changed_items(&id, &git, &source(), &opts).map_err(err)?;
-        skipped += changed.skipped_non_utf8;
         renamed_from.extend(changed.renamed_from);
         let wanted = rel_set(git.root(), paths);
-        items.extend(changed.items.into_iter().filter(|i| {
+        let selected = |rel: &str| {
             // "" is the repository itself (its root was selected).
             wanted.is_empty()
                 || wanted.contains("")
-                || wanted.iter().any(|w| i.relative_path == *w || i.relative_path.starts_with(&format!("{w}/")))
-        }));
+                || wanted.iter().any(|w| rel == w || rel.starts_with(&format!("{w}/")))
+        };
+        non_utf8
+            .extend(changed.non_utf8_paths.into_iter().filter(|p| selected(p)).map(|p| (id.path().to_path_buf(), p)));
+        items.extend(changed.items.into_iter().filter(|i| selected(&i.relative_path)));
     }
-    Ok((items, skipped, renamed_from))
+    Ok((GitItems { items, non_utf8 }, renamed_from))
+}
+
+/// A Git copy (changes, a commit, a range, a commit list) of `found`. A changed path whose name a header cannot
+/// carry (`is_exportable_relative_path`, not UTF-8 included) is skipped and named under "Name not portable"; the
+/// rest is copied. When nothing is left the result is empty and names them (the UI says "Nothing to copy").
+fn git_copy(
+    project: &Path,
+    content_roots: &[PathBuf],
+    found: GitItems,
+    settings: &Settings,
+    mode: ClipNonTextMode,
+) -> IdeResult<ClipCopyResult> {
+    // Named as the payload would spell them: relative to the project when the repository is inside it.
+    let project_canon = dunce::canonicalize(project).unwrap_or_else(|_| project.to_path_buf());
+    let shown = |root: &Path, rel: String| match root.strip_prefix(&project_canon) {
+        Ok(sub) if !sub.as_os_str().is_empty() => format!("{}/{rel}", sub.to_string_lossy().replace('\\', "/")),
+        _ => rel,
+    };
+    let mut refusals = WalkRefusals::default();
+    for (root, name) in found.non_utf8 {
+        refusals.unportable(shown(&root, name));
+    }
+    // The header carries the repository's folder too: inside the project its project-relative path follows the
+    // same rule; outside, the absolute path is spelled, which must hold no control character (a newline would
+    // start a forged header).
+    let portable = |i: &ExportItem| {
+        let rel = &i.relative_path;
+        ide_clip::paths::is_exportable_relative_path(rel)
+            && match i.root.path().strip_prefix(&project_canon) {
+                Ok(sub) if !sub.as_os_str().is_empty() => {
+                    ide_clip::paths::is_exportable_relative_path(&shown(i.root.path(), rel.clone()))
+                }
+                Ok(_) => true,
+                Err(_) => !i.root.path().to_string_lossy().chars().any(char::is_control),
+            }
+    };
+    let (items, unportable): (Vec<_>, Vec<_>) = found.items.into_iter().partition(portable);
+    for item in unportable {
+        refusals.unportable(shown(item.root.path(), item.relative_path));
+    }
+    let skipped = refusals.unportable;
+    if items.is_empty() && skipped > 0 {
+        return Ok(refused_result(skipped, Vec::new(), refusals, settings));
+    }
+    file_copy(git_selection(project, content_roots, items)?, skipped, Vec::new(), refusals, settings, mode)
+}
+
+/// A files result that copied nothing because every selected path was skipped: it names what was skipped, which
+/// the UI reports as "Nothing to copy" (an error would reach the user as a raw `IpcError`).
+fn refused_result(
+    skipped: usize,
+    skipped_paths: Vec<String>,
+    refusals: WalkRefusals,
+    settings: &Settings,
+) -> ClipCopyResult {
+    let unreadable = skipped.saturating_sub(refusals.unportable + refusals.symlink_dirs);
+    ClipCopyResult {
+        mode: "files".into(),
+        skipped: n(skipped),
+        skipped_unreadable: n(unreadable),
+        skipped_unreadable_paths: skipped_paths.into_iter().take(SKIPPED_PATHS_SHOWN).collect(),
+        skipped_unportable: n(refusals.unportable),
+        skipped_unportable_paths: refusals.unportable_paths,
+        skipped_symlink_dirs: n(refusals.symlink_dirs),
+        skipped_symlink_dir_paths: refusals.symlink_dir_paths,
+        file_limit: n(file_limit(settings)),
+        notify: settings.show_copy_notification,
+        ..ClipCopyResult::empty()
+    }
 }
 
 /// `paths` grouped by repository, in first-seen order.
@@ -328,11 +407,10 @@ fn file_copy(
     let mut refusals = report.skip_detail;
     let primary_refusals_count = primary_refusals.unportable + primary_refusals.symlink_dirs;
     refusals.merge(primary_refusals);
-    // Only non-text files were found and Exclude left them out: the result still carries the
-    // summary (empty text), so the UI can ask before giving up.
-    if o.copied == 0 && o.non_text.count() == 0 {
-        return Err(IdeError::invalid("Nothing to copy"));
-    }
+    // A result that copied no file (every file skipped, only size placeholders, or only non-text
+    // files that Exclude left out) is still a result: it names what was skipped and carries the
+    // non-text summary, so the UI can ask first or say "Nothing to copy" without touching the
+    // clipboard.
     Ok(ClipCopyResult {
         mode: "files".into(),
         files: n(o.copied),
@@ -511,22 +589,8 @@ pub fn copy_in_with(
                 }
             }
             if parts.is_empty() {
-                // Every selected path was refused: an empty result that names what was refused, which the
-                // UI reports as "Nothing to copy". An error would reach the user as a raw `IpcError`.
-                let unreadable = skipped.saturating_sub(refusals.unportable + refusals.symlink_dirs);
-                return Ok(ClipCopyResult {
-                    mode: "files".into(),
-                    skipped: n(skipped),
-                    skipped_unreadable: n(unreadable),
-                    skipped_unreadable_paths: skipped_paths.into_iter().take(SKIPPED_PATHS_SHOWN).collect(),
-                    skipped_unportable: n(refusals.unportable),
-                    skipped_unportable_paths: refusals.unportable_paths,
-                    skipped_symlink_dirs: n(refusals.symlink_dirs),
-                    skipped_symlink_dir_paths: refusals.symlink_dir_paths,
-                    file_limit: n(file_limit(settings)),
-                    notify: settings.show_copy_notification,
-                    ..ClipCopyResult::empty()
-                });
+                // Every selected path was refused: an empty result that names what was refused.
+                return Ok(refused_result(skipped, skipped_paths, refusals, settings));
             }
             // A refused group's root was never declared to the selection.
             absolute.retain(|r| parts.iter().any(|(root, _)| root == r));
@@ -555,107 +619,74 @@ pub fn copy_in_with(
         }
         ClipCopySource::Changes { paths, side } => {
             let repos = by_repo(&paths)?;
-            let (mut items, skipped) = match side {
+            let mut found = match side {
                 ClipChangeSide::Staged => git_items(&repos, || GitSource::Staged)?,
                 ClipChangeSide::Working | ClipChangeSide::Unstaged => git_items(&repos, || GitSource::Working)?,
             };
             if matches!(side, ClipChangeSide::Unstaged) {
-                for item in &mut items {
+                for item in &mut found.items {
                     item.source = transfer::SourceKind::Unstaged;
                 }
             }
-            file_copy(
-                git_selection(project, content_roots, items)?,
-                skipped,
-                Vec::new(),
-                WalkRefusals::default(),
-                settings,
-                non_text,
-            )
+            git_copy(project, content_roots, found, settings, non_text)
         }
         ClipCopySource::CommitFiles { repo, rev, paths } => {
             let root = repo_root(&repo)?;
             let no_filter = paths.is_empty();
-            let (items, skipped) = git_items(&[(root.clone(), paths)], || GitSource::Commit(rev.clone()))?;
-            if items.is_empty() && no_filter {
+            let found = git_items(&[(root.clone(), paths)], || GitSource::Commit(rev.clone()))?;
+            if found.items.is_empty() && found.non_utf8.is_empty() && no_filter {
                 return Err(IdeError::no_net_changes());
             }
-            file_copy(
-                git_selection(project, content_roots, items)?,
-                skipped,
-                Vec::new(),
-                WalkRefusals::default(),
-                settings,
-                non_text,
-            )
+            git_copy(project, content_roots, found, settings, non_text)
         }
         ClipCopySource::Range { repo, base, tip, paths } => {
             let root = repo_root(&repo)?;
             let no_filter = paths.is_empty();
-            let (items, skipped) = git_items(&[(root.clone(), paths)], || GitSource::Range(base.clone(), tip.clone()))?;
-            if items.is_empty() && no_filter {
+            let found = git_items(&[(root.clone(), paths)], || GitSource::Range(base.clone(), tip.clone()))?;
+            if found.items.is_empty() && found.non_utf8.is_empty() && no_filter {
                 return Err(IdeError::no_net_changes());
             }
-            file_copy(
-                git_selection(project, content_roots, items)?,
-                skipped,
-                Vec::new(),
-                WalkRefusals::default(),
-                settings,
-                non_text,
-            )
+            git_copy(project, content_roots, found, settings, non_text)
         }
         ClipCopySource::RootRange { repo, tip, paths } => {
             let root = repo_root(&repo)?;
             let no_filter = paths.is_empty();
             let empty = Git::open(&root).map_err(err)?.empty_tree_with(&opts).map_err(err)?;
-            let (items, skipped) =
-                git_items(&[(root.clone(), paths)], || GitSource::Range(empty.clone(), tip.clone()))?;
-            if items.is_empty() && no_filter {
+            let found = git_items(&[(root.clone(), paths)], || GitSource::Range(empty.clone(), tip.clone()))?;
+            if found.items.is_empty() && found.non_utf8.is_empty() && no_filter {
                 return Err(IdeError::no_net_changes());
             }
-            file_copy(
-                git_selection(project, content_roots, items)?,
-                skipped,
-                Vec::new(),
-                WalkRefusals::default(),
-                settings,
-                non_text,
-            )
+            git_copy(project, content_roots, found, settings, non_text)
         }
         ClipCopySource::CommitList { repo, revs, paths } => {
             let root = repo_root(&repo)?;
             let no_filter = paths.is_empty();
-            let mut items: Vec<ExportItem> = Vec::new();
-            let mut skipped = 0;
+            let mut picked = GitItems { items: Vec::new(), non_utf8: Vec::new() };
             // Paths a newer selected commit renamed away: they no longer exist there.
             let mut renamed_away: HashSet<String> = HashSet::new();
             // Newest first: a path keeps the item of the newest selected commit touching it.
             for rev in &revs {
-                let (found, s, renamed_from) =
+                let (found, renamed_from) =
                     git_items_with_renames(&[(root.clone(), paths.clone())], || GitSource::Commit(rev.clone()))?;
-                skipped += s;
-                for item in found {
+                for name in found.non_utf8 {
+                    if !picked.non_utf8.contains(&name) {
+                        picked.non_utf8.push(name);
+                    }
+                }
+                for item in found.items {
                     if renamed_away.contains(&item.relative_path) {
                         continue;
                     }
-                    if !items.iter().any(|i| i.relative_path == item.relative_path) {
-                        items.push(item);
+                    if !picked.items.iter().any(|i| i.relative_path == item.relative_path) {
+                        picked.items.push(item);
                     }
                 }
                 renamed_away.extend(renamed_from);
             }
-            if items.is_empty() && no_filter {
+            if picked.items.is_empty() && picked.non_utf8.is_empty() && no_filter {
                 return Err(IdeError::no_net_changes());
             }
-            file_copy(
-                git_selection(project, content_roots, items)?,
-                skipped,
-                Vec::new(),
-                WalkRefusals::default(),
-                settings,
-                non_text,
-            )
+            git_copy(project, content_roots, picked, settings, non_text)
         }
         ClipCopySource::Commits { repo, tip, selected } => {
             let git = Git::open(&repo).map_err(err)?;
