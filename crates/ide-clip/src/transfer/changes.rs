@@ -10,6 +10,8 @@ pub struct ChangedItems {
     pub items: Vec<ExportItem>,
     /// Entries dropped because their path name is not UTF-8 (cannot go in a header).
     pub skipped_non_utf8: usize,
+    /// Their lossy spellings, relative to the repository root.
+    pub non_utf8_paths: Vec<String>,
     /// Listed paths whose new side is a submodule commit (gitlink).
     pub gitlinks: Vec<String>,
     /// Changes outside `root` when `root` is a subdirectory of the repository.
@@ -54,7 +56,8 @@ pub fn changed_items(
     let offset =
         root_path.strip_prefix(&git_root).map_err(|_| TransferError::UnknownRoot(root.path().to_path_buf()))?;
 
-    let (changes, skipped_non_utf8) = gitsrc::list_changes_with(git, source, opts)?;
+    let (changes, non_utf8_paths) = gitsrc::list_changes_named_with(git, source, opts)?;
+    let skipped_non_utf8 = non_utf8_paths.len();
     let kind = match source {
         GitSource::Working => SourceKind::Working,
         GitSource::Staged => SourceKind::Staged,
@@ -92,5 +95,5 @@ pub fn changed_items(
         }
     }
 
-    Ok(ChangedItems { items, skipped_non_utf8, gitlinks, out_of_scope, renamed_from })
+    Ok(ChangedItems { items, skipped_non_utf8, non_utf8_paths, gitlinks, out_of_scope, renamed_from })
 }
