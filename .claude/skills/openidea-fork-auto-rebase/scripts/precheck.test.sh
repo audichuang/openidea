@@ -11,6 +11,8 @@ check() {
   local label=$1 want=$2 want_alert=$3 newest=$4 base=$5 held=$6 marks=$7 age=${8:-1} fail=${9:-} stamp=${10:-}
   # COMMENTS: PR comments JSON; when set, the fake gh runs precheck's real --jq filter on it instead of echoing marks.
   local comments=${COMMENTS:-}
+  # FORKTAG: fork release tags of the base (default: released); DEVCI: "status conclusion" of develop's tip Fork CI.
+  local forktag=${FORKTAG-x} devci=${DEVCI:-completed success}
   local t
   t=$(mktemp -d)
   mkdir -p "$t/Project/openidea" "$t/bin" "$t/.config/fork-automation" "$t/.cache/fork-automation"
@@ -19,7 +21,10 @@ check() {
 #!/bin/bash
 case "\$1" in
   describe) echo $base ;;
-  ls-remote) [ -z "$held" ] || printf 'abc\trefs/heads/rebase/$held\n' ;;
+  ls-remote)
+    if [ "\$2" = --tags ]; then [ -z "$forktag" ] || printf 'def\trefs/tags/$base-fork.1\n'
+    else [ -z "$held" ] || printf 'abc\trefs/heads/rebase/$held\n'; fi ;;
+  rev-parse) echo 0123456789abcdef ;;
 esac
 EOF
   cat > "$t/bin/gh" <<EOF
@@ -27,6 +32,7 @@ EOF
 [ "$fail" != fail ] || exit 1
 case "\$*" in
   *releases/latest*) echo $newest ;;
+  *"run list"*) echo "$devci" ;;
   *commits/*) echo $(iso_ago "$age") ;;
   *"pr list"*) echo "7 $(iso_ago "$age")" ;;
   *"pr view"*)
@@ -86,4 +92,8 @@ COMMENTS="{\"comments\":[$NH,$AP,$NH,$AP]}" \
   check "real filter: re-approved after rejection"      0 0 v0.1.35 v0.1.34 v0.1.35 ""
 COMMENTS="{\"comments\":[$NH,$AP,$NH]}" \
   check "real filter: approval rejected, upstream newer" 0 0 v0.1.36 v0.1.34 v0.1.35 ""
+FORKTAG= check "same release, never released, CI green" 0 0 v0.1.46 v0.1.46 "" ""
+FORKTAG= DEVCI="in_progress " check "same release, never released, CI running" 1 0 v0.1.46 v0.1.46 "" ""
+FORKTAG= DEVCI="completed failure" check "same release, never released, CI red" 1 0 v0.1.46 v0.1.46 "" ""
+FORKTAG= DEVCI="completed failure" check "never released, CI red 7 h" 1 1 v0.1.46 v0.1.46 "" "" 1 "" 7
 exit "$failed"
