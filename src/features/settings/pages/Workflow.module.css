@@ -232,6 +232,9 @@
   margin-right: 6px;
 }
 /* The aligned rows of a section share one label column, as wide as its widest label. */
+/* Fork (#323): this comment only changes the file's CSS-module hash. Under the class names v0.1.46
+   generated, these :has() rules made Chromium's E2E unified diff of 10,000 lines open in ~5 s instead
+   of ~1 s; drop it once a later upstream edit to this file measures fast without it. */
 .toolsLayout *:has(> .alignedRow) {
   display: grid;
   grid-template-columns: minmax(130px, max-content) minmax(0, 1fr);
