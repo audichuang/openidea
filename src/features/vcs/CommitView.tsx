@@ -896,8 +896,9 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                 checked: groupByDir,
                 run: () => (staging ? setStagingGroupByDir : setGroupByDir)(!groupByDir),
               },
-              // IDEA offers it once the project has several repositories.
-              ...(repos.length > 1
+              // IDEA offers it once the project has several repositories; the staging tree always
+              // groups by repository (buildStagingTree), so the toggle would do nothing there.
+              ...(repos.length > 1 && !staging
                 ? [{ label: "Repository", checked: groupByRepo, run: () => setGroupByRepo(!groupByRepo) }]
                 : []),
               ...(staging
