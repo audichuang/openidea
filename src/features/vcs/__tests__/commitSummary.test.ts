@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { FileStatus } from "@/bindings";
 import { type CheckState, planCommit } from "../changes";
 import { commitSummary } from "../commitSummary";
+import { stagingChecks } from "../staging";
 
 const fs = (rel: string, staged: FileStatus["staged"], unstaged: FileStatus["unstaged"]): FileStatus => ({
   path: `/r/${rel}`,
@@ -31,7 +32,7 @@ describe("commitSummary", () => {
   it("counts the staged change with the staging area", () => {
     // Staged edit, deleted in the working tree since: the commit takes the edit.
     const files = [fs("a.ts", "modified", "deleted"), fs("b.ts", "added", "modified"), fs("c.ts", "deleted", null)];
-    expect(commitSummary(files, null)).toEqual({ added: 1, modified: 1, deleted: 1 });
+    expect(planned(files, stagingChecks(files))).toEqual({ added: 1, modified: 1, deleted: 1 });
   });
 
   it("counts what the checkbox commits: a partially staged file checked for its staged part", () => {
@@ -49,7 +50,6 @@ describe("commitSummary", () => {
   });
 
   it("is all zero without files", () => {
-    expect(commitSummary([], null)).toEqual({ added: 0, modified: 0, deleted: 0 });
     expect(commitSummary([], new Map())).toEqual({ added: 0, modified: 0, deleted: 0 });
   });
 });
