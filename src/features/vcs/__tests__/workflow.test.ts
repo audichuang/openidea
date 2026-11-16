@@ -3,7 +3,14 @@ import type { BranchInfo } from "@/bindings";
 import { addBlankLineAfterSubject, messageProblems, wrapAtMargin } from "../CommitView";
 import { linkifyIssues } from "../issueLinks";
 import { isProtectedBranch } from "../branches";
-import { isLeaseRejected, isPushRejected, pushCandidates, pushRepoCommits, type RepoPush } from "../remoteUi";
+import {
+  defaultPushChecked,
+  isLeaseRejected,
+  isPushRejected,
+  pushCandidates,
+  pushRepoCommits,
+  type RepoPush,
+} from "../remoteUi";
 import { attentionRepo } from "../store";
 import { statusDecorations } from "../model";
 
