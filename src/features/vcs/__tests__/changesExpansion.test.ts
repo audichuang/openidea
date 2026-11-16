@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import type { FileStatus } from "@/bindings";
 import { buildChangeTree } from "../changes";
 import { expandedKeys } from "../changesExpansion";
-import { buildStagingTree } from "../staging";
 
 const fs = (path: string, staged: FileStatus["staged"], unstaged: FileStatus["unstaged"]): FileStatus => ({
   path,
@@ -54,9 +53,13 @@ describe("default expansion of the changes tree", () => {
   });
 
   it("opens the chain of the staging area's groups the same way", () => {
-    const tree = buildStagingTree(
+    // The staging area's tree: Group By › Staging State without change lists.
+    const tree = buildChangeTree(
       [fs("/r/src/a/A.kt", "modified", null), fs("/r/src/b/B.kt", "modified", null)],
       "/r",
+      true,
+      undefined,
+      [],
       true,
     );
     const open = expandedKeys(tree, NONE);
