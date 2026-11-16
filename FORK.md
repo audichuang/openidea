@@ -74,6 +74,8 @@ After a rebase, check the three places where upstream's tests can't see the fork
 ## Release
 
 - Version `vX.Y.Z-fork.N`: X.Y.Z is the fork base, N counts up per base from 1.
+- Every fork base gets released. Whoever moves `develop` onto a new base (the automation, or a rebase done by hand in a session) tags `vX.Y.Z-fork.1` once the develop push's Fork CI is green, in the same session. As a backstop, the hourly precheck starts the skill's RELEASE mode when `develop` sits on the newest upstream release with no `vX.Y.Z-fork.*` tag and a green develop Fork CI (v0.1.46 went unreleased for a day after a manual rebase: the newer-release check never fires again for a base `develop` already has).
+- Wait for CI and the release with an explicit target and `-R audichuang/openidea`: `gh-wait commit <develop sha> -R audichuang/openidea` after moving `develop`, `gh-wait tag vX.Y.Z-fork.N -R audichuang/openidea --workflow fork-release.yml` after the tag push (gh-quota 0.2.11+; with an older gh-wait, find the tag's run with `gh run list --workflow fork-release.yml --branch <tag>` and `gh-wait run <id>`). A bare `gh-wait` in the main checkout waits on its own stale `develop`, and without `-R` an older gh-wait asked the upstream, which answers a fork commit with no checks until the timeout.
 - Move `main` and push an annotated tag in one atomic push. The tag message is the release notes, in Traditional Chinese: the fork base, upstream's user-visible changes since the last release, the fork's user-visible changes.
 
   ```sh
