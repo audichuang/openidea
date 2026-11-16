@@ -30,7 +30,13 @@ export const draftRevision = () => revision;
 
 export function installDraftRevision(): () => void {
   const offCommit = useCommit.subscribe((s, p) => {
-    if (s.message !== p.message || s.amend !== p.amend || s.checks !== p.checks || s.excludedHunks !== p.excludedHunks)
+    if (
+      s.message !== p.message ||
+      s.amend !== p.amend ||
+      s.checks !== p.checks ||
+      s.excludedHunks !== p.excludedHunks ||
+      s.stagingExcludedRoots !== p.stagingExcludedRoots
+    )
       revision++;
   });
   const offLists = useChangelists.subscribe(() => void revision++);
@@ -47,8 +53,10 @@ export function installDraftRevision(): () => void {
 
 /** The included changes, as the status (refreshed by the caller) and the checkboxes say. */
 export function currentPlan(): CommitPlan {
-  const { status, root } = useVcs.getState();
-  const checks = inclusionChecks(status, root ?? "", useChangelists.getState().state, useCommit.getState().checks);
+  const { status, root, roots } = useVcs.getState();
+  const { checks: userChecks, stagingExcludedRoots: excluded } = useCommit.getState();
+  const lists = useChangelists.getState().state;
+  const checks = inclusionChecks(status, root ?? "", lists, userChecks, stagingAreaOn(), { roots, excluded });
   return planCommit(status, checks);
 }
 
