@@ -174,19 +174,19 @@ async function openPushDialog() {
   fireEvent.click(screen.getByRole("button", { name: "Select All" }));
 }
 
-it("lists every repository on Push all, checks those with commits, expands none and shows no files", async () => {
+it("lists every repository on Push all, checks none, expands none and shows no files", async () => {
   mocks.upToDate.add("/p/c");
   render(<VcsDialogHost />);
   await act(() => showPushDialog());
 
   await screen.findByRole("textbox", { name: "Target branch of a" });
   expect(screen.getByRole("textbox", { name: "Target branch of c" })).toBeInTheDocument();
-  for (const name of ["a", "b"]) expect(screen.getByRole("checkbox", { name })).toBeChecked();
-  expect(screen.getByRole("checkbox", { name: "c" })).not.toBeChecked();
+  // Fork decision (#224, FORK.md): Push all starts with nothing checked.
+  for (const name of ["a", "b", "c"]) expect(screen.getByRole("checkbox", { name })).not.toBeChecked();
   expect(screen.queryByText("Work")).toBeNull();
   expect(mocks.changes).not.toHaveBeenCalled();
 
-  check("b");
+  check("a");
   fireEvent.click(screen.getByRole("button", { name: "Push" }));
   await waitFor(() => expect(mocks.ops).toHaveLength(1));
   expect(mocks.ops[0]?.repo).toBe("/p/a");

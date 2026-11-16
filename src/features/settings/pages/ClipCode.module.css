@@ -2,14 +2,14 @@
 .editor {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
   flex: 1;
   min-width: 0;
 }
 .rules {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   border: 1px solid var(--border);
   border-radius: var(--radius-small);
   padding: 6px;
@@ -18,7 +18,7 @@
 .rule {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .value {
   flex: 1;
@@ -31,5 +31,5 @@
 .buttons {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-1-5);
 }

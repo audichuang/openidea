@@ -287,9 +287,6 @@ mod imp {
     const OPEN_ATTEMPTS: usize = 10;
     const OPEN_RETRY: Duration = Duration::from_millis(20);
 
-    /// `CF_DIB`: a device-independent bitmap without its file header.
-    const CF_DIB: u32 = 8;
-
     #[link(name = "user32")]
     unsafe extern "system" {
         fn RegisterClipboardFormatW(name: *const u16) -> u32;
@@ -299,7 +296,6 @@ mod imp {
         fn GetClipboardData(format: u32) -> Handle;
         fn SetClipboardData(format: u32, memory: Handle) -> Handle;
         fn IsClipboardFormatAvailable(format: u32) -> i32;
-        fn RegisterClipboardFormatW(name: *const u16) -> u32;
     }
 
     /// `CF_DIB`: Windows synthesizes it from `CF_BITMAP` and `CF_DIBV5`, so every

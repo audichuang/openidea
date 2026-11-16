@@ -8736,7 +8736,6 @@
   "Non-text files already identical, left unchanged: {unchanged}.": "内容相同、未更改的非文本文件：{unchanged}。",
   "Corrupt non-text files skipped ({count}): {shown}": "已损坏而跳过的非文本文件（{count}）：{shown}",
   "Non-text file · {size}": "非文本文件 · {size}",
-  "Different": "不同",
   "Corrupt non-text file": "损坏的非文本文件",
   "Corrupt": "已损坏",
   "Copy non-text files?": "要复制非文本文件吗？",
