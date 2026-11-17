@@ -156,7 +156,7 @@ export function createGitGraphBridge(): GitGraphBridge {
       }));
     },
     async commitMenu(commit, selection) {
-      const [{ commitMenu }, outgoing] = await Promise.all([import("./GitLog"), outgoingCommits(commit.repo)]);
+      const [{ commitMenu }, outgoing] = await Promise.all([import("./log/commitMenu"), outgoingCommits(commit.repo)]);
       const head = useVcs.getState().heads[commit.repo]?.head ?? null;
       return applyPushGuard(withoutLogNavigation(commitMenu(commit, selection)), commit, outgoing, head);
     },
@@ -171,7 +171,7 @@ export function createGitGraphBridge(): GitGraphBridge {
       return inRepo(repo, withActionLabels(tagMenu(tag)));
     },
     async filesMenu(commit, files) {
-      const { changesMenu } = await import("./GitLog");
+      const { changesMenu } = await import("./log/CommitDetails");
       return retargetClipItems(changesMenu(toLogChanges(files, commit, commit.repo)), [commit]);
     },
     async openDiff(commit, files: ChangedFile[], index, preview = false) {
