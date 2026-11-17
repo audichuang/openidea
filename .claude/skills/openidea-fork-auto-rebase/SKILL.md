@@ -82,11 +82,11 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
 
 前提：第 2 步沒有 fork 造成的紅、第 3 步 `Fork CI passed` 綠。上游也紅的 job 不算綠：先照第 4 步那段修（修正 commit 推上去後回第 2、3 步），修不掉才交人。下面每一處「交人」都是照第 4 步「不符合條件」那段留 needs-human（含交回方法），寫明 3b 做到哪、卡在哪，再跳第 7 步。
 
-先在 PR 留言「自審開始」（心跳：3b 加一輪修正可能跑很久，precheck 六小時沒動靜會判鎖過期）。refs 一律用完整 sha：`OB=UPSTREAM_BASE`、`OT=OLD_DEVELOP`、`NB=$(git rev-parse 'vNEW^{commit}')`、`NT=$(git rev-parse HEAD)`。
+先在 PR 留言「自審開始」（心跳：3b 加一輪修正可能跑很久，precheck 六小時沒動靜會判鎖過期）。下面的 OB、OT、NB、NT 是佔位字，寫進指令時代換成完整 sha：OB＝UPSTREAM_BASE、OT＝OLD_DEVELOP、NB＝`git rev-parse 'vNEW^{commit}'`、NT＝`git rev-parse HEAD`。
 
 1. **必交人路徑**：下面三份檔案清單的聯集，任何一個落在 FORK.md「Reserved for the user」的路徑就交人，留言寫明是哪個路徑、為什麼要人看。
-   - 手動碰過的檔：`conflicts.txt` 裡 MANUAL 類的檔，加上 `git range-diff --no-color -s OB..OT NB..NT` 裡 `>`（新增的修正 commit）、`<`（被丟掉的 commit）、+/- 行有變的 `!` commit 改到的檔（`git show --format= --name-only <sha>`）。
-   - 上游這次改到的保留路徑：`git diff --name-only OB NB` 落在保留路徑的檔。上游自己改了視窗 chrome，沒有衝突也要實機看。
+   - 手動碰過的檔：`conflicts.txt` 裡 MANUAL 類的檔，加上 `git range-diff --no-color OB..OT NB..NT` 裡 `>`（新增的修正 commit）、`<`（被丟掉的 commit）、+/- 行有變的 `!` commit 改到的檔（不帶 `-s`：要看內層 diff 才分得出 +/- 行有變還是只有 context；對帳腳本的報告也列了這份）（`git show --format= --name-only <sha>`）。
+   - 上游這次改到的視窗 chrome：`git diff --name-only OB NB` 落在保留清單第一項（macOS 視窗 chrome）的檔。上游自己改了它，沒有衝突也要實機看；上游改其他保留路徑不算。
    - 會削弱閘門的修正：修正 commit 改了 `.config/nextest.toml`、`fork-ci.yml` 裡的測試 filter 或 skip，或刪掉、`#[ignore]`、`.skip` 了測試。同樣交人。純資源設定（磁碟、逾時、runner）不在此列，由審查者看。
 2. **對帳腳本**：同一個 Bash 呼叫裡取出並執行，取不到或是空檔就交人：
    ```sh
@@ -116,7 +116,7 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
 
 ## 4. 移動 develop
 
-條件全部成立才移動：模式是 CLEAN 或 MECHANICAL（或 MANUAL 而第 3b 步通過）、第 2 步沒有 fork 造成的紅、第 3 步 `Fork CI passed` 綠。上游也紅的 job 不算綠：上游已修就搬它的修正，否則修測試或照 #252 加 filter 並開 issue，都是修正 commit（模式變 MANUAL）。推上去後回第 2、3 步，再進第 3b 步（加 filter 屬於削弱閘門，3b 會交人）。從第 0 步 approved 進來的，使用者的核可取代模式條件。
+條件全部成立才移動：模式是 CLEAN 或 MECHANICAL（或 MANUAL 而第 3b 步通過）、第 2 步沒有 fork 造成的紅、第 3 步 `Fork CI passed` 綠。上游也紅的 job 不算綠：上游已修就搬它的修正，否則修測試或照 #252 加 filter 並開 issue，都是修正 commit（模式變 MANUAL）。推上去後回第 2、3 步，再進第 3b 步（加 filter 屬於削弱閘門，3b 會交人）。從第 0 步 approved 進來的不做這段修正：PR 說明已列為上游也紅、使用者核可過的 job 照第 0 步的規則放行，推修正 commit 會讓核可作廢。從第 0 步 approved 進來的，使用者的核可取代模式條件。
 
 `git rev-parse fork/develop` 已經等於 HEAD（使用者自己移過，或前一次 run 推完還沒留言就死了）→ 不推，直接留 develop-moved 留言。否則：
 
