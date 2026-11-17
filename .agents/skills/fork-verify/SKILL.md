@@ -123,7 +123,7 @@ Recipes (dev build only, since Vite serves `/src/...`):
 
 - **Open a fixture project + file** (setup; the user path is Welcome → Open, a native dialog):
   `webview_execute_js windowId=main script=import("/src/features/app/windows.ts").then(m => m.openProjectInWindow("<S>/repo", true, ["<S>/repo/app.txt"])).then(() => "ok")`.
-  A new `project-N` shows **"Trust and Open Project?"** for a path not trusted before: snapshot `[role=dialog]`, click the `Trust Project` ref. A path trusted in an earlier run opens without it (the dev data dir persists).
+  A path not trusted before shows **"Trust and Open Project?"** in the window that made the call (`main` for `openProjectInWindow` from `main`, measured 2026-11-17), and the call does not return until it is answered, so don't await it through `bridge-js.mjs` (it times out): snapshot `[role=dialog]`, click the `Trust Project` ref. A path trusted in an earlier run opens without it (the dev data dir persists).
 - **Settings** through the same call the Settings page makes:
   `import("/src/bindings.ts").then(m => m.commands.settingsSet("global", "appearance.theme", JSON.stringify("dark"))).then(r => r.status)`.
   Keys and defaults live in `src/features/settings/model/schema.ts` (appearance, general, files …) and `src/platform/workflowSettings.ts` (`vcs.*`). Restore them afterwards.
