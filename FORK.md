@@ -81,7 +81,7 @@ The unattended rebase reviews MANUAL resolutions itself (below), except when a h
 - The update chain: `src-tauri/src/fork_updater.rs`, `.github/workflows/fork-release.yml`, `.github/actions/fork-release-setup/**` (a broken updater cannot fix itself on the user's three machines).
 - Anything that weakens the gate: a fix commit that changes `.config/nextest.toml`, adds a test filter or skip to `fork-ci.yml`, or deletes, ignores or skips a test (the review would otherwise accept a green CI the fix itself produced).
 
-Upstream's own changes to the window-chrome paths count too, conflict or not, and so does a dropped fork commit that touched any of these paths.
+Upstream's own changes to the window-chrome paths count too, in every mode (CLEAN and MECHANICAL included), conflict or not, renames by their old and new paths; so does a dropped fork commit that touched any of these paths.
 
 ## Unattended rebase
 
