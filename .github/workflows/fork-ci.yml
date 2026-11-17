@@ -97,6 +97,10 @@ jobs:
         if: hashFiles('scripts/fork/resolve-conflicts.py') != ''
       - run: python3 scripts/fork/test_resolve_conflicts.py
         if: hashFiles('scripts/fork/test_resolve_conflicts.py') != ''
+      - run: python3 -m py_compile scripts/fork/rebase-audit.py
+        if: hashFiles('scripts/fork/rebase-audit.py') != ''
+      - run: python3 scripts/fork/test_rebase_audit.py
+        if: hashFiles('scripts/fork/test_rebase_audit.py') != ''
 
   clippy:
     name: Clippy (${{ matrix.os }})
