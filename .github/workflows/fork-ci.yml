@@ -202,7 +202,9 @@ jobs:
         if: runner.os == 'Windows'
         uses: samypr100/setup-dev-drive@v4
         with:
-          drive-size: 40GB
+          # Why 60GB: a rebase onto a new upstream version rebuilds every workspace crate next to the
+          # restored target cache (5.1 GB zstd on v0.1.47); 40GB ran out of space in all three slices.
+          drive-size: 60GB
           workspace-copy: true
           trusted-dev-drive: true
       - uses: pnpm/action-setup@v5
