@@ -35,7 +35,7 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
   - 沒有 → **RELEASE**：develop 已在 vNEW 卻從沒發過 vNEW 的版（有人手動 rebase 後沒發，或前一次 run 移動 develop 後、打 tag 前死了）。發的 sha＝`git rev-parse fork/develop`；先確認它的 develop push Fork CI（`gh run list -R audichuang/openidea --workflow fork-ci.yml --branch develop --commit <sha>`）`Fork CI passed` 成功（precheck 只在綠的時候放行；跑這步時又變了就跳第 7 步通知原因）。沒有 PR、不做第 1～5 步，直接第 6 步；vOLD 取上一個 fork release tag 的上游基底（`git describe --tags --abbrev=0 --match 'v*-fork.*' fork/main`，去掉 `-fork.N`），workflow 清單用上一個 fork release tag 當 OLD_DEVELOP，release notes 的模式寫「develop 已由手動 rebase 搬到 vNEW」，第 6 步第 5 點沒有 PR 可留言。
 - 否則 **NEW**：`OLD_DEVELOP=$(git rev-parse fork/develop)`。
 
-開始前清掉之前 run 留下的 worktree：`git worktree list` 裡路徑含 `auto-openidea-fork-rebase` 而且不是 `MAIN` 的、目錄名以 `ar-` 開頭但 `$RUN` 不是這次的，只在 `git -C <路徑> status --porcelain -- . ':!.rebase-review'` 沒輸出（`.rebase-review/` 是每次 run 自己寫的，notes 已進 tag 說明，不算）、不在 rebase 中、`git -C <路徑> branch -r --contains HEAD` 列得出 `fork/` 分支時刪（Orca 開的用 `orca worktree rm --worktree "id:38d295e1-a1dd-4eea-871a-5bbe1bef2554::<路徑>" --force --json`，其他用 `git worktree remove --force`），刪完再 `git branch -D` 它原本所在的 `audichuang/auto-openidea-fork-rebase-run-*` 本地分支（有的話）；其餘列進通知。
+開始前清掉之前 run 留下的 worktree：`git worktree list` 裡路徑含 `auto-openidea-fork-rebase` 而且不是 `MAIN` 的、目錄名以 `ar-` 開頭但 `$RUN` 不是這次的，只在 `git -C <路徑> status --porcelain -- . ':!.rebase-review'` 沒輸出（`.rebase-review/` 是每次 run 自己寫的，notes 已進 tag 說明，不算）、不在 rebase 中、`git -C <路徑> branch -r --contains HEAD` 列得出 `fork/` 分支時刪（Orca 開的用 `orca worktree rm --worktree "id:38d295e1-a1dd-4eea-871a-5bbe1bef2554::<路徑>" --force --json`，其他用 `git worktree remove --force`），刪完再 `git branch -D` 它原本所在的 `audichuang/auto-openidea-fork-rebase-run-*` 本地分支（有的話）；其餘列進通知。之前的 run 死在第 3c 步時，它的 dev app 可能還開著：`pgrep -fl target/debug/openidea` 裡路徑在上面那些舊 run worktree 底下的，先停它的程序樹（第 3c 步第 7 點的 `tree`，從那個 app 的 pid 往上找到 `pnpm dev:app` 再停），再刪它的 `~/Library/Application Support/<identifier>/` 與 `~/Library/Caches/<identifier>/`（在那個 worktree 裡跑 `node -e 'import("./scripts/dev-session.ts").then(m=>console.log(m.worktreeId(process.cwd())))'` 取得 identifier）；不算第 3c 步說的「別人的 dev app」。
 
 一律在 `MAIN` 做，不動 `~/Project/openidea` 主 checkout。全程 detached HEAD，推送寫明目的地（`git push fork HEAD:refs/heads/rebase/vNEW`）。
 
@@ -148,7 +148,8 @@ osascript -e "tell application \"System Events\" to tell (first process whose un
 2. **preflight**：
    - osascript 讀得到 frontmost 程序；`cliclick p:.` 成功。
    - `screencapture -x` 的像素等於螢幕點大小乘 backing scale。點大小用 `osascript -e 'tell application "Finder" to get bounds of window of desktop'` 讀（Mac mini：1920×1080 點，3840×2160 像素）。
-   - 用 `sips -Z 800` 縮小後 Read 看一眼，不是全黑（螢幕鎖定或休眠）。
+   - 螢幕沒鎖定：`swift -e 'import CoreGraphics; let d = CGSessionCopyCurrentDictionary() as? [String: Any]; print(d?["CGSSessionScreenIsLocked"] ?? 0, d?["kCGSSessionOnConsoleKey"] ?? 0)'` 要印 `0 1`（鎖定時第一個是 1；不在 console 上時第二個是 0）。
+   - 用 `sips -Z 800` 縮小後 Read 看一眼，不是全黑（顯示器休眠）。
    - 任何一項不過就交人，寫明是哪一項：輔助使用或螢幕錄製權限只有使用者能給。
 3. **螢幕是使用者的桌面**：Mac mini 同時開著使用者的其他 app，包括密碼管理器、系統對話框和常駐的通知。
    - 截圖只存在 `$S/`，Read 看完就算，不上傳、不貼進 PR、Bark 或任何對外的地方。
@@ -182,7 +183,9 @@ osascript -e "tell application \"System Events\" to tell (first process whose un
      - 選單列在全螢幕顯示（要改全域 `defaults`，排程不改）
      - 瀏海螢幕
      - 寬視窗存檔加入全螢幕群組（#71）
-     - tab 拖曳排序
+     - tab 拖曳排序、Move Tab to New Window
+     - 關 tab、關整組與未存檔提示（#194、#207、#209）
+     - 重啟後還原群組
 
      然後接第 4 步。
 
