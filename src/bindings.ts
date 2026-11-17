@@ -1325,8 +1325,6 @@ export const commands = {
 	windowFlashTaskbar: (flash: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("window_flash_taskbar", { flash })),
 	/**  Height of the web title bar in native logical pixels (CSS height × IDE zoom). */
 	windowSetTitlebarHeight: (height: number | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_set_titlebar_height", { height })),
-	/**  Whether this window is in native full screen (on macOS, also a tab of a fullscreen group). */
-	windowIsFullscreen: () => __TAURI_INVOKE<boolean>("window_is_fullscreen"),
 	/**
 	 *  Starts dragging `window` while the primary mouse button is still down; returns whether a drag began.
 	 * 
@@ -6504,6 +6502,9 @@ export type GitSettings = {
 	incomingCheck?: string,
 	/**  Minutes between background checks for incoming commits. */
 	incomingCheckInterval?: number,
+	/**  Fetch every repository of the project in the background every `auto_fetch_minutes`. */
+	autoFetch?: boolean,
+	autoFetchMinutes?: number,
 	/**  Branch name globs, `;`/`,`-separated; force push to them is prohibited. */
 	protectedBranches?: string,
 	/**  Initial state of Commit Options › Sign-off Commit. */
@@ -7036,8 +7037,6 @@ export type IdeEvent =
 { type: "dbSourcesChanged" } | { type: "mcpRequest"; id: number; request: McpUiRequest } | { type: "mcpRequestClosed"; id: number } | 
 /**  Project window membership or selection changed. */
 { type: "windowGroupsChanged" } | 
-/**  A window entered or left full screen, itself or as a member of a full-screen window group. */
-{ type: "windowFullscreenChanged" } | 
 /**
  *  This remote window's connection to its host ended on its own (network loss, the host or
  *  its server went away); the window's project is unreachable until it reconnects.
