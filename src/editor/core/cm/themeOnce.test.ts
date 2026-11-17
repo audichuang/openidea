@@ -10,7 +10,9 @@ import { indexedMarkers } from "@/features/plugins/indexedMarkers";
 import { inlineBlame } from "@/features/vcs/inlineBlame";
 import { movedCodeHighlights } from "@/features/vcs/movedCode";
 import { iconAreaExtension } from "./iconArea";
+import type { EditorSettings } from "@/platform/ipc";
 import { seamlessSelection } from "./selectionLayer";
+import { fontExtension } from "./setup";
 
 const ctx: EditorDocContext = { doc: 1, path: "/p/A.java", language: "java", uiMode: null, readOnly: false };
 const views: EditorView[] = [];
@@ -36,6 +38,7 @@ it.each([
   ["indexedMarkers", () => [iconAreaExtension, indexedMarkers(ctx.path)]],
   ["seamlessSelection", () => [drawSelection(), seamlessSelection()]],
   ["movedCodeHighlights", () => movedCodeHighlights(true)],
+  ["fontExtension", () => fontExtension({ fontSize: 15, lineHeight: 22 } as EditorSettings)],
 ])("%s mounts its theme once, however many editors use it", (_name, extensions) => {
   mount(extensions());
   const after = cssRules();
@@ -44,7 +47,8 @@ it.each([
   expect(cssRules()).toBe(after);
 });
 
-// The same rule for every theme in the app: one built at module level is mounted once.
+// The same rule for every theme in the app: one built at module level is mounted once, and so is
+// one kept in a module-level cache keyed by its values (`cache.set(key, (theme = EditorView.theme(…)))`).
 it("builds every EditorView theme at module level", () => {
   const sources = (readdirSync("src", { recursive: true }) as string[])
     .filter((f) => /\.tsx?$/.test(f) && !/\.test\.tsx?$|__tests__/.test(f))
@@ -54,7 +58,8 @@ it("builds every EditorView theme at module level", () => {
       .split("\n")
       .flatMap((line, i) =>
         /EditorView\.(theme|baseTheme)\(/.test(line) &&
-        !/^(export )?const \w+ = EditorView\.(theme|baseTheme)\(/.test(line)
+        !/^(export )?const \w+ = EditorView\.(theme|baseTheme)\(/.test(line) &&
+        !/\w+\.set\(\w+, \(\w+ = EditorView\.(theme|baseTheme)\(/.test(line)
           ? [`${file}:${i + 1}`]
           : [],
       ),
