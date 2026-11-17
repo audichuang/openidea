@@ -51,6 +51,7 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
 3. `GIT_EDITOR=true git rebase --onto vNEW "$UPSTREAM_BASE"`，單獨跑、看結束碼（不要接 `| tail`）。每次停在衝突，對每個衝突檔照 FORK.md「Rebase conflicts」分類：
    - locale JSON → `python3 "$RESOLVE" locale <檔>`
    - 兩邊都在檔尾加東西的測試檔 → `python3 "$RESOLVE" append <檔>`
+   - 衝突 hunk 只有單行 `import`／`use` → `python3 "$RESOLVE" imports <檔>`（多行 import 清單或夾著程式碼的，腳本會拒絕；它不照 rustfmt 排序，交給 fmt 閘門）
    - `Cargo.lock`、`pnpm-lock.yaml`、`src/bindings.ts` → `git checkout --ours -- <檔>`（rebase 時 ours 是上游），第 4 點重新產生
    - 腳本拒絕（exit 1）或其他任何檔 → MANUAL：保留 fork 功能、採上游新結構自己解；沒把握就 `git rebase --abort`，鎖留著，跳到第 7 步（開 PR、標 needs-human）。
    - 上游改寫 macOS 專案視窗群組（Tab 或全螢幕）而衝突 → 不是交人的產品決策，照 FORK.md 的 standing decision：abort 後在 vNEW 上先 commit 一個退回上游視窗 commit 的 `revert(macos)`，再把 fork 重放到它上面（模式 MANUAL，照常跑完閘門；這些檔在 FORK.md「Reserved for the user」，第 3b 步會交人做實機全螢幕檢查，交的是外觀驗收，不是要使用者做決定）。
