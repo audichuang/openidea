@@ -58,7 +58,7 @@ Standing decision: on macOS, project window groups keep the fork's AppKit native
 
 Standing decision: the multi-repository Push dialog (⌘⇧K, Commit and Push) starts with no repository checked and offers Select All / Select None (`defaultPushChecked`, `src/features/vcs/remoteUi.tsx`; the user's call, #224). Upstream checks every repository with outgoing commits; keep the fork's default when upstream changes it. Push… from one repository's branch menu still checks only that one.
 
-Standing decision: background fetch. Upstream's incoming check (l0ng-ai/openidea#3812, v0.1.47: every repository with an upstream, `vcs.git.incomingCheckInterval`) is the base. When the fork's `vcs.git.autoFetch` is on, it takes the schedule over: every repository with or without an upstream, every `autoFetchMinutes`, retrying the failed ones and warning once per failure streak (`fetchPlan` in `src/features/vcs/incoming.ts`). When upstream changes the incoming check again, keep its structure and re-apply only that takeover.
+Standing decision: background fetch is upstream's incoming check alone (l0ng-ai/openidea#3812, v0.1.47: `vcs.git.incomingCheck` + `incomingCheckInterval`, one Settings row). The fork's own `vcs.git.autoFetch` / `autoFetchMinutes` was removed in favour of it (the user's call, 2026-11-18): take upstream's `src/features/vcs/incoming.ts` as it is.
 
 Standing decision: the Shelve Changes dialog keeps the fork's directory tree with an embedded diff preview (`src/features/vcs/shelf.tsx`); Unshelve and Create Patch use upstream's checkable tree (l0ng-ai/openidea#3778).
 
