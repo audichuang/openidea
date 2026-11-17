@@ -82,11 +82,11 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
 
 前提：第 2 步沒有 fork 造成的紅、第 3 步 `Fork CI passed` 綠。上游也紅的 job 不算綠：先照第 4 步那段修（修正 commit 推上去後回第 2、3 步），修不掉才交人。下面每一處「交人」都是照第 4 步「不符合條件」那段留 needs-human（含交回方法），寫明 3b 做到哪、卡在哪，再跳第 7 步。
 
-先在 PR 留言「自審開始」（心跳：3b 加一輪修正可能跑很久，precheck 六小時沒動靜會判鎖過期）。下面的 OB、OT、NB、NT 是佔位字，寫進指令時代換成完整 sha：OB＝UPSTREAM_BASE、OT＝OLD_DEVELOP、NB＝`git rev-parse 'vNEW^{commit}'`、NT＝`git rev-parse HEAD`。
+先在 PR 留言「自審開始」（心跳：3b 加一輪修正可能跑很久，precheck 六小時沒動靜會判鎖過期）。下面的 OB、OT、NB、NT 是佔位字，寫進指令時代換成完整 sha：OB＝UPSTREAM_BASE、OT＝OLD_DEVELOP、NB＝`git rev-parse 'vNEW^{commit}'`、NT＝`git rev-parse HEAD`。每一輪（含修正後重審）開頭都重新取 NT，清單與報告都用這一輪的 NT 重建。
 
 1. **必交人路徑**：下面三份檔案清單的聯集，任何一個落在 FORK.md「Reserved for the user」的路徑就交人，留言寫明是哪個路徑、為什麼要人看。
-   - 手動碰過的檔：`conflicts.txt` 裡 MANUAL 類的檔，加上 `git range-diff --no-color OB..OT NB..NT` 裡 `>`（新增的修正 commit）、`<`（被丟掉的 commit）、+/- 行有變的 `!` commit 改到的檔（不帶 `-s`：要看內層 diff 才分得出 +/- 行有變還是只有 context；對帳腳本的報告也列了這份）（`git show --format= --name-only <sha>`）。
-   - 上游這次改到的視窗 chrome：`git diff --name-only OB NB` 落在保留清單第一項（macOS 視窗 chrome）的檔。上游自己改了它，沒有衝突也要實機看；上游改其他保留路徑不算。
+   - 手動碰過的檔：`conflicts.txt` 裡 MANUAL 類的檔，加上 `git range-diff --no-color OB..OT NB..NT` 裡 `>`（新增的修正 commit）、`<`（被丟掉的 commit）、+/- 行有變的 `!` commit 改到的檔（不帶 `-s`：要看內層 diff 才分得出 +/- 行有變還是只有 context；對帳腳本的報告也列了這份）（`git show --format= --name-status <sha>`，rename 的來源與目的路徑都算）。
+   - 上游這次改到的視窗 chrome：`git diff --name-status OB NB` 落在保留清單第一項（macOS 視窗 chrome）的檔，rename 的來源與目的路徑都算（上游把保留檔搬走也要人看，FORK.md 的清單跟著更新）。上游自己改了它，沒有衝突也要實機看；上游改其他保留路徑不算。
    - 會削弱閘門的修正：修正 commit 改了 `.config/nextest.toml`、`fork-ci.yml` 裡的測試 filter 或 skip，或刪掉、`#[ignore]`、`.skip` 了測試。同樣交人。純資源設定（磁碟、逾時、runner）不在此列，由審查者看。
 2. **對帳腳本**：同一個 Bash 呼叫裡取出並執行，取不到或是空檔就交人：
    ```sh
@@ -104,19 +104,19 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
    - 上游新行為被 fork 蓋掉。
    - 只在執行期才會壞的地方。
 
-   範圍限這次 rebase 的變化（`git range-diff` 與衝突檔），不審 OT 裡原本就有的 fork 程式。沒跑起來或沒有結果就交人。
+   範圍限這次 rebase 的變化（`git range-diff`、衝突檔，以及 OB..NB 上游的改動是否讓沒改的 fork 呼叫、事件、設定失效），不審 OT 裡本來就壞的東西。沒跑起來或沒有結果就交人。
 
 4. **Codex 兜底**：先留心跳留言。用 codex skill 跑 adversarial review，`--base` 是 NB。focus 寫「只看這次 rebase 手解的檔、被丟掉與新增的 commit；OLD_DEVELOP 原本就有的 fork 程式不在範圍」，並列出第 1 點的手動檔清單。Codex 跑不起來或沒有結果就交人，不能跳過。
 5. **裁定**：
-   - **既有問題**：finding 指到的程式和 OT 的 fork 增量相同（rebase 前就是這樣），只列進第 7 步通知的細節，不擋，也不在這裡修（「範圍」那段）。
+   - **既有問題**：只有能證明同一個失敗在 OT 上就存在（rebase 前就壞），才只列進第 7 步通知的細節，不擋，也不在這裡修（「範圍」那段）。fork 程式沒改不等於沒事：上游換了它依賴的結構、事件或設定（v0.1.47 拆 GitLog 後，`gitGraphBridge.ts` 原封不動的動態 import 就失效了），這類算這次的 finding。
    - **其餘 finding**：能用證據證明不成立的，寫進留言駁回；成立的就修（修正 commit），修完回第 2、3 步重跑閘門與 CI，再從本步**第 1 點**重審一次。修正 commit 也可能碰到保留路徑，所以要從第 1 點開始。
    - **通過**：三者都沒有剩下的 finding，對帳項目也都解釋了。
    - **交人**：第二輪還有成立的 finding，或你判斷不了。needs-human 留言列出 finding 與你的看法。
-6. 通過 → PR 留言第一行 `<!-- auto-rebase:self-reviewed <NT> -->`，下面寫三者的結果摘要與「未實機測試」，接第 4 步。這個標記只是稽核紀錄，precheck 不讀。run 在這之後、推 develop 之前死掉的話，鎖過期後會從頭重來。
+6. 通過 → 確認 `git rev-parse HEAD` 等於這一輪審過的 NT（不等就回第 1 點），PR 留言第一行 `<!-- auto-rebase:self-reviewed <NT> -->`，下面寫三者的結果摘要與「未實機測試」，接第 4 步。這個標記只是稽核紀錄，precheck 不讀。run 在這之後、推 develop 之前死掉的話，鎖過期後會從頭重來。
 
 ## 4. 移動 develop
 
-條件全部成立才移動：模式是 CLEAN 或 MECHANICAL（或 MANUAL 而第 3b 步通過）、第 2 步沒有 fork 造成的紅、第 3 步 `Fork CI passed` 綠。上游也紅的 job 不算綠：上游已修就搬它的修正，否則修測試或照 #252 加 filter 並開 issue，都是修正 commit（模式變 MANUAL）。推上去後回第 2、3 步，再進第 3b 步（加 filter 屬於削弱閘門，3b 會交人）。從第 0 步 approved 進來的不做這段修正：PR 說明已列為上游也紅、使用者核可過的 job 照第 0 步的規則放行，推修正 commit 會讓核可作廢。從第 0 步 approved 進來的，使用者的核可取代模式條件。
+條件全部成立才移動：模式是 CLEAN 或 MECHANICAL（或 MANUAL 而第 3b 步通過）、第 3b 步第 1 點的保留路徑檢查沒有命中（CLEAN、MECHANICAL 也要做這一點：上游改了視窗 chrome，沒衝突也要人實機看；從第 0 步 approved 進來的不用）、第 2 步沒有 fork 造成的紅、第 3 步 `Fork CI passed` 綠。上游也紅的 job 不算綠：上游已修就搬它的修正，否則修測試或照 #252 加 filter 並開 issue，都是修正 commit（模式變 MANUAL）。推上去後回第 2、3 步，再進第 3b 步（加 filter 屬於削弱閘門，3b 會交人）。從第 0 步 approved 進來的不做這段修正：PR 說明已列為上游也紅、使用者核可過的 job 照第 0 步的規則放行，推修正 commit 會讓核可作廢。從第 0 步 approved 進來的，使用者的核可取代模式條件。
 
 `git rev-parse fork/develop` 已經等於 HEAD（使用者自己移過，或前一次 run 推完還沒留言就死了）→ 不推，直接留 develop-moved 留言。否則：
 
