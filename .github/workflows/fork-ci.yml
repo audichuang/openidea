@@ -170,10 +170,23 @@ jobs:
           # Why filter: ide-host's relay:: tests time out on these runners (#200); the relay only
           # runs inside Linux dev containers (ide-remote container_tunnel.rs), never on Windows.
           # A test that also fails in upstream's own Windows CI goes in this filter only until a rebase
-          # brings upstream's fix (#252); upstream's v0.1.47 CI passed all seven filtered before.
-          - { os: windows-latest, partition: "1/3", filter: "not (package(ide-host) & test(/^relay::/))" }
-          - { os: windows-latest, partition: "2/3", filter: "not (package(ide-host) & test(/^relay::/))" }
-          - { os: windows-latest, partition: "3/3", filter: "not (package(ide-host) & test(/^relay::/))" }
+          # brings upstream's fix (#252). js_cdp's a_session_that_goes_away… is intermittent: it passed
+          # in upstream's v0.1.47 CI but failed in upstream main's (run 44117076692) and here.
+          - {
+              os: windows-latest,
+              partition: "1/3",
+              filter: "not (package(ide-host) & test(/^relay::/)) & not (package(ide-dap) & test(=js_cdp::tests::a_session_that_goes_away_switches_interception_off))",
+            }
+          - {
+              os: windows-latest,
+              partition: "2/3",
+              filter: "not (package(ide-host) & test(/^relay::/)) & not (package(ide-dap) & test(=js_cdp::tests::a_session_that_goes_away_switches_interception_off))",
+            }
+          - {
+              os: windows-latest,
+              partition: "3/3",
+              filter: "not (package(ide-host) & test(/^relay::/)) & not (package(ide-dap) & test(=js_cdp::tests::a_session_that_goes_away_switches_interception_off))",
+            }
     runs-on: ${{ matrix.os }}
     # actions:write lets the develop run delete the target caches its save supersedes.
     permissions:
