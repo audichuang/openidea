@@ -1,6 +1,6 @@
 ---
 name: openidea-fork-auto-rebase
-description: Unattended pipeline that rebases the OpenIDEA fork's develop onto the newest upstream release, runs the local gates and Fork CI, then moves develop and releases when the rebase was CLEAN or MECHANICAL, or leaves a PR for the user. Use when the "OpenIDEA fork 自動 rebase" Orca automation fires, or when the user asks to run or resume that pipeline.
+description: Unattended pipeline that rebases the OpenIDEA fork's develop onto the newest upstream release, runs the local gates and Fork CI, then moves develop and releases when the rebase was CLEAN or MECHANICAL, or MANUAL that passed its own audit and independent review outside the paths FORK.md reserves for the user; otherwise leaves a PR for the user. Use when the "OpenIDEA fork 自動 rebase" Orca automation fires, or when the user asks to run or resume that pipeline.
 ---
 
 # OpenIDEA fork 自動 rebase
@@ -9,11 +9,11 @@ description: Unattended pipeline that rebases the OpenIDEA fork's develop onto t
 
 ## 範圍
 
-只做一件事：把 develop 搬到上游最新 release，閘門全過而且是 CLEAN 或 MECHANICAL 就移動 develop 並發版。MANUAL 的照樣盡力解完、跑完閘門，但不移動 develop，留 PR 給使用者。慢沒關係；做不下去就停下來交人，不要為了發版硬修。
+只做一件事：把 develop 搬到上游最新 release，閘門全過而且是 CLEAN 或 MECHANICAL 就移動 develop 並發版。MANUAL 的照樣盡力解完、跑完閘門，再做第 3b 步的自審：通過就同樣移動 develop 並發版，沒通過才留 PR 給使用者。使用者要的是「不是有衝突就問我」：判斷得了的自己判斷、自己找人審，只把 FORK.md 保留給使用者的東西交回。慢沒關係；做不下去就停下來交人，不要為了發版硬修。
 
 不處理，只列進第 7 步通知：這次沒碰到的既有問題、功能改進與重構、實機 UI 測試。
 
-變數：`SKILL_DIR`＝本檔所在目錄；`MAIN`＝Orca 為這次 run 開的 worktree（開頭 `pwd -P` 記下）；`RUN`＝`date -u +%Y%m%dT%H%M%SZ`，開頭記一次，暫時 worktree 一律叫 `../ar-$RUN-<名字>`；`vNEW`、`vOLD`、`OLD_DEVELOP`、`PR` 在第 0 步定義。寫進指令時代換成實際值；shell 變數後面緊接 `:` 一律寫 `${OLD_DEVELOP}:`（zsh 修飾符）。
+變數：`SKILL_DIR`＝本檔所在目錄；`MAIN`＝Orca 為這次 run 開的 worktree（開頭 `pwd -P` 記下）；`RUN`＝`date -u +%Y%m%dT%H%M%SZ`，開頭記一次，暫時 worktree 一律叫 `../ar-$RUN-<名字>`；`vNEW`、`vOLD`、`OLD_DEVELOP`、`PR` 在第 0 步定義，`UPSTREAM_BASE` 在第 1 步。每次 Bash 呼叫都是新的 shell，變數不會留到下一次呼叫：寫進指令時一律代換成完整 sha 等實際值；shell 變數後面緊接 `:` 一律寫 `${OLD_DEVELOP}:`（zsh 修飾符）。
 
 PR 留言的標記（`<!-- auto-rebase:… -->`）一律放在留言第一行最前面：precheck 只認開頭的標記。
 
@@ -51,16 +51,19 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
 3. `GIT_EDITOR=true git rebase --onto vNEW "$UPSTREAM_BASE"`，單獨跑、看結束碼（不要接 `| tail`）。每次停在衝突，對每個衝突檔照 FORK.md「Rebase conflicts」分類：
    - locale JSON → `python3 "$RESOLVE" locale <檔>`
    - 兩邊都在檔尾加東西的測試檔 → `python3 "$RESOLVE" append <檔>`
+   - 衝突 hunk 只有單行 `import`／`use` → `python3 "$RESOLVE" imports <檔>`（多行 import 清單或夾著程式碼的，腳本會拒絕；它不照 rustfmt 排序，交給 fmt 閘門）
    - `Cargo.lock`、`pnpm-lock.yaml`、`src/bindings.ts` → `git checkout --ours -- <檔>`（rebase 時 ours 是上游），第 4 點重新產生
    - 腳本拒絕（exit 1）或其他任何檔 → MANUAL：保留 fork 功能、採上游新結構自己解；沒把握就 `git rebase --abort`，鎖留著，跳到第 7 步（開 PR、標 needs-human）。
-   - 上游改寫 macOS 專案視窗群組（Tab 或全螢幕）而衝突 → 不是交人的產品決策，照 FORK.md 的 standing decision：abort 後在 vNEW 上先 commit 一個退回上游視窗 commit 的 `revert(macos)`，再把 fork 重放到它上面（模式 MANUAL，照常跑完閘門）。
+   - 上游改寫 macOS 專案視窗群組（Tab 或全螢幕）而衝突 → 不是交人的產品決策，照 FORK.md 的 standing decision：abort 後在 vNEW 上先 commit 一個退回上游視窗 commit 的 `revert(macos)`，再把 fork 重放到它上面（模式 MANUAL，照常跑完閘門；這些檔在 FORK.md「Reserved for the user」，第 3b 步會交人做實機全螢幕檢查，交的是外觀驗收，不是要使用者做決定）。
    - abort 前在 PR 解法表標出哪些解法改到衝突 hunk 以外的地方（把 fork 的程式搬進上游新檔、補上游新呼叫點）：rerere 只重放 hunk，重跑時這些要手動補回並逐項確認（v0.1.39 漏掉 PR 的兩個 ClipCode 動作實作就是這樣）。
+
+   rerere 或 commit 報 `MERGE_RR.lock`（或其他 `.lock`）已存在：多半是別的 session 在共用的 `.git` 上同時做 merge 或 rebase。不要刪鎖檔：等 30 秒重試同一個動作，最多三次；還不行就照「沒把握」交人。因此沒做成的 commit 用原 commit 的 message 與作者補（`git commit -C <原 commit>`），在 PR 說明記一筆（v0.1.47 的 76a9061bd）。
 
    腳本已經 `git checkout --conflict=diff3`（rerere 重放過的也會被重建後重解）；解完 `git add <檔>`、`GIT_EDITOR=true git rebase --continue`。停下來卻沒有衝突檔、index 有東西（rerere 重放了先前的解法，`--continue` 報 staged changes）：檢查 diff 後 `git commit -F "$(git rev-parse --git-path rebase-merge/message)"` 再 continue，記成 rerere 重放。把每個衝突檔、它的類別與 commit 記進 `$MAIN/.rebase-review/conflicts.txt`，PR 說明要用。
 
 4. rebase 完重新產生生成檔（在 Mac mini 上 Rust 一律走 `rust-remote`）：`pnpm install --lockfile-only`；`rust-remote --pull Cargo.lock metadata --format-version 1 > /dev/null`。`src/bindings.ts` 也在這裡重新產生：`rust-remote --pull src/bindings.ts test -p openidea --test export_bindings`（衝突時取上游那邊會丟掉該 commit 帶的 fork 指令，v0.1.40 就是這樣）。有差異就一個 commit `chore(fork): 重新產生 lockfile 與 bindings`（MECHANICAL）。編不過就是 rebase 結果有問題，照第 2 步的規則修。
 5. 模式：沒有衝突、第 4 點沒產生 commit → CLEAN；只有前三類衝突與第 4 點的 commit → MECHANICAL；其餘（自己解的衝突、任何修正 commit）→ MANUAL。
-6. `git push --force fork HEAD:refs/heads/rebase/vNEW`，`git push fork "vNEW^{commit}:refs/heads/ci-base/vNEW"`，開 PR：`gh pr create -R audichuang/openidea --base ci-base/vNEW --head rebase/vNEW --title "[不合併] develop rebase 到 vNEW 的驗證"`，記下 `PR`。body 第一行 `<!-- auto-rebase:old-develop OLD_DEVELOP 的完整 sha -->`，其餘寫：為什麼不合併（develop 由 lease 推送移動）、`develop = vOLD(+上游 commit) + N 個 fork commit → vNEW + …`、模式、每個衝突檔的類別與解法、額外 commit。不加任何 attribution 行。
+6. `git push --force fork HEAD:refs/heads/rebase/vNEW`，`git push fork "vNEW^{commit}:refs/heads/ci-base/vNEW"`，開 PR：`gh pr create -R audichuang/openidea --base ci-base/vNEW --head rebase/vNEW --title "[不合併] develop rebase 到 vNEW 的驗證"`，記下 `PR`。body 第一行 `<!-- auto-rebase:old-develop OLD_DEVELOP 的完整 sha -->`，第二行 `<!-- auto-rebase:upstream-base UPSTREAM_BASE 的完整 sha -->`（第 3b 步與續跑要用），其餘寫：為什麼不合併（develop 由 lease 推送移動）、`develop = vOLD(+上游 commit) + N 個 fork commit → vNEW + …`、模式、每個衝突檔的類別與解法、額外 commit。不加任何 attribution 行。
 
 你寫的 commit：message 繁體中文，不加 Co-Authored-By 或任何 attribution 行。
 
@@ -76,9 +79,45 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
 
 結果看 `Fork CI passed` 這個 job。Linux Rust job 停在 `Bindings are up to date`，代表第 1 步第 4 點產生的 bindings 和 CI 不一致：重新產生、推上 `rebase/vNEW`（修正 commit，模式變 MANUAL）。`Upstream ci.yml unchanged` 紅了代表上游改了 `ci.yml`：照 FORK.md 把改動移植進 `fork-ci.yml` 並更新 pin（修正 commit，模式變 MANUAL）。其他紅的 job 先 `gh run rerun <id> --failed` 一次；再紅就看上游同一個 job 在 vNEW 是否也紅：`gh run list -R l0ng-ai/openidea --workflow ci.yml --commit $(git rev-parse 'vNEW^{commit}')`。上游也紅 → 不擋（PR 說明附兩邊的 run 連結）；上游綠或沒有可比的 run → fork 造成的，照第 2 步的規則修，修完回到第 3 步。
 
+## 3b. 自審（只有 MANUAL）
+
+前提：第 2 步沒有 fork 造成的紅、第 3 步 `Fork CI passed` 綠。上游也紅的 job 不算綠：先照第 4 步那段修（修正 commit 推上去後回第 2、3 步），修不掉才交人。下面每一處「交人」都是照第 4 步「不符合條件」那段留 needs-human（含交回方法），寫明 3b 做到哪、卡在哪，再跳第 7 步。
+
+先在 PR 留言「自審開始」（心跳：3b 加一輪修正可能跑很久，precheck 六小時沒動靜會判鎖過期）。下面的 OB、OT、NB、NT 是佔位字，寫進指令時代換成完整 sha：OB＝UPSTREAM_BASE、OT＝OLD_DEVELOP、NB＝`git rev-parse 'vNEW^{commit}'`、NT＝`git rev-parse HEAD`。每一輪（含修正後重審）開頭都重新取 NT，清單與報告都用這一輪的 NT 重建。
+
+1. **必交人路徑**：下面三份檔案清單的聯集，任何一個落在 FORK.md「Reserved for the user」的路徑就交人，留言寫明是哪個路徑、為什麼要人看。
+   - 手動碰過的檔：`conflicts.txt` 裡 MANUAL 類的檔，加上 `git range-diff --no-color OB..OT NB..NT` 裡 `>`（新增的修正 commit）、`<`（被丟掉的 commit）、+/- 行有變的 `!` commit 改到的檔（不帶 `-s`：要看內層 diff 才分得出 +/- 行有變還是只有 context；對帳腳本的報告也列了這份）（`git show --format= --name-status <sha>`，rename 的來源與目的路徑都算）。
+   - 上游這次改到的視窗 chrome：`git diff --name-status OB NB` 落在保留清單第一項（macOS 視窗 chrome）的檔，rename 的來源與目的路徑都算（上游把保留檔搬走也要人看，FORK.md 的清單跟著更新）。上游自己改了它，沒有衝突也要實機看；上游改其他保留路徑不算。
+   - 會削弱閘門的修正：修正 commit 改了 `.config/nextest.toml`、`fork-ci.yml` 裡的測試 filter 或 skip，或刪掉、`#[ignore]`、`.skip` 了測試。同樣交人。純資源設定（磁碟、逾時、runner）不在此列，由審查者看。
+2. **對帳腳本**：同一個 Bash 呼叫裡取出並執行，取不到或是空檔就交人：
+   ```sh
+   AUDIT=$MAIN/.rebase-review/rebase-audit.py
+   git show fork/develop:scripts/fork/rebase-audit.py > "$AUDIT" && [ -s "$AUDIT" ] || { echo "rebase-audit.py 取不到"; exit 3; }
+   python3 "$AUDIT" --old-base OB --old-tip OT --new-base NB --new-tip NT > "$MAIN/.rebase-review/audit.md"; echo "audit rc=$?"
+   ```
+   結束碼 0 或 1 才有報告，其他（2、traceback、取不到）都交人。報告的每一項（被丟掉的 commit、+/- 行有變的 commit、新增量找不到的 fork 新增行）都要能用 PR 解法表或額外 commit 解釋，逐項寫進 PR 留言「對帳」。解釋不了的就是 finding。
+3. **獨立審查**：用 Agent 工具派一個全新 context 的審查者（general-purpose），給它：
+   - `MAIN` 的路徑、四個完整 sha、`FORK.md`、`audit.md`。
+   - **不給 PR 的解法表或你的結論**，拿到聲稱的解法就會順著確認。
+
+   請它找下面三類問題，每項附 `檔案:行` 與證據，沒有就明說沒有：
+   - fork 功能在新結構裡掉了或接錯：搬到新檔的 hunk、動態 import、事件與設定的接線。
+   - 上游新行為被 fork 蓋掉。
+   - 只在執行期才會壞的地方。
+
+   範圍限這次 rebase 的變化（`git range-diff`、衝突檔，以及 OB..NB 上游的改動是否讓沒改的 fork 呼叫、事件、設定失效），不審 OT 裡本來就壞的東西。沒跑起來或沒有結果就交人。
+
+4. **Codex 兜底**：先留心跳留言。用 codex skill 跑 adversarial review，`--base` 是 NB。focus 寫「只看這次 rebase 手解的檔、被丟掉與新增的 commit；OLD_DEVELOP 原本就有的 fork 程式不在範圍」，並列出第 1 點的手動檔清單。Codex 跑不起來或沒有結果就交人，不能跳過。
+5. **裁定**：
+   - **既有問題**：只有能證明同一個失敗在 OT 上就存在（rebase 前就壞），才只列進第 7 步通知的細節，不擋，也不在這裡修（「範圍」那段）。fork 程式沒改不等於沒事：上游換了它依賴的結構、事件或設定（v0.1.47 拆 GitLog 後，`gitGraphBridge.ts` 原封不動的動態 import 就失效了），這類算這次的 finding。
+   - **其餘 finding**：能用證據證明不成立的，寫進留言駁回；成立的就修（修正 commit），修完回第 2、3 步重跑閘門與 CI，再從本步**第 1 點**重審一次。修正 commit 也可能碰到保留路徑，所以要從第 1 點開始。
+   - **通過**：三者都沒有剩下的 finding，對帳項目也都解釋了。
+   - **交人**：第二輪還有成立的 finding，或你判斷不了。needs-human 留言列出 finding 與你的看法。
+6. 通過 → 確認 `git rev-parse HEAD` 等於這一輪審過的 NT（不等就回第 1 點），PR 留言第一行 `<!-- auto-rebase:self-reviewed <NT> -->`，下面寫三者的結果摘要與「未實機測試」，接第 4 步。這個標記只是稽核紀錄，precheck 不讀。run 在這之後、推 develop 之前死掉的話，鎖過期後會從頭重來。
+
 ## 4. 移動 develop
 
-條件全部成立才移動：模式是 CLEAN 或 MECHANICAL、第 2 步沒有 fork 造成的紅、第 3 步 `Fork CI passed` 綠。上游也紅的 job 不算綠：上游已修就搬它的修正，否則修測試或照 #252 加 filter 並開 issue，都是修正 commit（模式變 MANUAL）。從第 0 步 approved 進來的，使用者的核可取代模式條件。
+條件全部成立才移動：模式是 CLEAN 或 MECHANICAL（或 MANUAL 而第 3b 步通過）、第 3b 步第 1 點的保留路徑檢查沒有命中（CLEAN、MECHANICAL 也要做這一點：上游改了視窗 chrome，沒衝突也要人實機看；從第 0 步 approved 進來的不用）、第 2 步沒有 fork 造成的紅、第 3 步 `Fork CI passed` 綠。上游也紅的 job 不算綠：上游已修就搬它的修正，否則修測試或照 #252 加 filter 並開 issue，都是修正 commit（模式變 MANUAL）。推上去後回第 2、3 步，再進第 3b 步（加 filter 屬於削弱閘門，3b 會交人）。從第 0 步 approved 進來的不做這段修正：PR 說明已列為上游也紅、使用者核可過的 job 照第 0 步的規則放行，推修正 commit 會讓核可作廢。從第 0 步 approved 進來的，使用者的核可取代模式條件。
 
 `git rev-parse fork/develop` 已經等於 HEAD（使用者自己移過，或前一次 run 推完還沒留言就死了）→ 不推，直接留 develop-moved 留言。否則：
 
@@ -90,7 +129,7 @@ lease 失敗（develop 在這期間合進了別的 PR）→ HEAD 不在 `fork/de
 
 develop 一移動（含已在 HEAD 不重推的情況）就列出這次 rebase 帶進 develop 的 workflow：`git diff --diff-filter=A --name-only OLD_DEVELOP <develop sha> -- .github/workflows/`，`<develop sha>` 在這裡是 HEAD。兩端都用 sha、不用 vOLD／vNEW：tag 可變（上游改過 v0.1.37 的 tag，第 0 步會強制更新 tags），恢復時重新解析會漏列。`gh workflow list -R audichuang/openidea --all --json path,state,name` 裡 path 在這份清單、state 是 active 的，照 FORK.md 馬上 `gh workflow disable`，寫進通知。只比對這份路徑清單：fork 自己的 workflow（包括已刪分支留下的 `zz-*` 註冊）也是 active、名稱也不是 Fork CI，用名稱篩會誤停。`pull_request_target` 從 PR 的 base 分支讀 workflow，develop 一動，下一個對 develop 開的 PR 就會觸發它（v0.1.35 的 `PR check` 幾秒內就在 PR 上貼了 needs-info）。清單裡還沒出現的，第 6 步移動 main 後再查一次。接第 5 步。
 
-不符合條件（MANUAL，或有修不掉的紅）→ 不移動，PR 留言 `<!-- auto-rebase:needs-human -->` 加上要使用者看什麼，最後一段固定寫交回方法：看完沒問題就另留一則第一行是 `<!-- auto-rebase:approved <HEAD 完整 sha> -->` 的留言，下一次排程（每小時 :37）會移動 develop 並發版。不要給使用者手動 lease 推送或發版的指令。跳第 7 步。
+不符合條件（MANUAL 而自審沒通過或碰到必交人路徑，或有修不掉的紅）→ 不移動，PR 留言 `<!-- auto-rebase:needs-human -->` 加上要使用者看什麼（自審做到哪、卡在哪），最後一段固定寫交回方法：看完沒問題就另留一則第一行是 `<!-- auto-rebase:approved <HEAD 完整 sha> -->` 的留言，下一次排程（每小時 :37）會移動 develop 並發版。不要給使用者手動 lease 推送或發版的指令。跳第 7 步。
 
 ## 5. 對 develop 開著的 PR
 
@@ -103,7 +142,7 @@ develop 一移動（含已在 HEAD 不重推的情況）就列出這次 rebase �
    - 第一行：`基於上游 vNEW（上一版基於 vOLD）`
    - 上游這次的重點：讀 `gh release view <tag> -R l0ng-ai/openidea --json body` 裡 vOLD 之後到 vNEW 的每一版，挑使用者看得到的改動，每項一行
    - fork 這次的改動：拿 `git log --format=%s vNEW..HEAD` 和上一個 fork release tag 的 `git log --format=%s <它的上游基底>..<tag>` 比，標題是新的才列；都沒有就寫「fork 功能無變更，只跟上上游」
-   - 這次 rebase 的模式與衝突一句話
+   - 這次 rebase 的模式與衝突一句話；第 3b 步放行的寫「MANUAL，自審通過，未實機測試」
 3. 移動 main 並推 annotated tag，同一次推送：
    ```sh
    old=$(git ls-remote fork refs/heads/main | cut -f1)
@@ -138,7 +177,7 @@ PY
 
 使用者在手機上看推播，嫌逐項列出太複雜。body 最多 4 行、每行一件事，不寫 sha、run id、衝突細節：
 
-1. 結果一句：跟上哪一版上游、模式；沒發版就寫為什麼（MANUAL、哪一步紅、lease 失敗）
+1. 結果一句：跟上哪一版上游、模式（自審放行的寫「MANUAL，自審通過，未實機測試」）；沒發版就寫為什麼（必交人路徑、自審 finding、哪一步紅、lease 失敗）
 2. 只有使用者能做的事（有才寫，例如看 PR、處理第 0 步沒刪的 worktree）。對 develop 開著的 PR 已在 PR 上留言，不寫
 3. 一個連結：發版成功給 release，否則給 PR
 4. 發版成功時固定寫：`app 下次啟動會提示更新，按更新即可`
@@ -150,6 +189,8 @@ PY
 https://github.com/audichuang/openidea/releases/tag/v0.1.41-fork.1
 app 下次啟動會提示更新，按更新即可
 ```
+
+閘門與 CI 的狀態照實寫：有「上游也紅」或排除不擋的項目時，不寫「都綠」「全過」，寫「N 個和上游一樣紅」（v0.1.47 的推播說閘門都綠，其實遠端 nextest 有 2 個和上游一樣的紅）。
 
 細節（衝突、閘門與 CI、重跑過或上游也紅的 job、develop 有沒有移動、對 develop 開著的 PR、沒刪的 worktree）寫在 PR 留言與對話裡。前面各步說「列進通知」「寫進通知」的，也寫在這些細節裡，只有要使用者動手的才進 Bark。最後在對話裡印出 Bark 的內容，再列這些細節。
 
