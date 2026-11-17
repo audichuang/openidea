@@ -151,6 +151,17 @@ jobs:
         run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+      # What the Dev Drive holds at the end of the job (target/ only grows), for sizing it (#343).
+      - name: Dev Drive usage (Windows)
+        if: runner.os == 'Windows' && !cancelled()
+        shell: pwsh
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
+        run: |
+          $v = Get-Volume -DriveLetter $env:DEV_DRIVE.Substring(0, 1)
+          $t = (Get-ChildItem -LiteralPath target -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+          $line = "{0} used {1:N1} of {2:N1} GB, {3:N1} GB free; target {4:N1} GB" -f $env:DEV_DRIVE, (($v.Size - $v.SizeRemaining) / 1GB), ($v.Size / 1GB), ($v.SizeRemaining / 1GB), ($t / 1GB)
+          Write-Output "::notice title=Dev Drive::$line"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Dev Drive: $line"
 
   test:
     name: Rust tests (${{ matrix.os }}${{ matrix.partition && format(' {0}', matrix.partition) || '' }})
@@ -295,6 +306,17 @@ jobs:
       - name: Bindings and command snapshot are up to date
         if: runner.os == 'Linux'
         run: git diff --exit-code src/bindings.ts src-tauri/tests/commands.snap
+      # What the Dev Drive holds at the end of the job (target/ only grows), for sizing it (#343).
+      - name: Dev Drive usage (Windows)
+        if: runner.os == 'Windows' && !cancelled()
+        shell: pwsh
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
+        run: |
+          $v = Get-Volume -DriveLetter $env:DEV_DRIVE.Substring(0, 1)
+          $t = (Get-ChildItem -LiteralPath target -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+          $line = "{0} used {1:N1} of {2:N1} GB, {3:N1} GB free; target {4:N1} GB" -f $env:DEV_DRIVE, (($v.Size - $v.SizeRemaining) / 1GB), ($v.Size / 1GB), ($v.SizeRemaining / 1GB), ($t / 1GB)
+          Write-Output "::notice title=Dev Drive::$line"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Dev Drive: $line"
 
   server:
     name: Remote server (linux musl)
