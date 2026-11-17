@@ -6401,6 +6401,9 @@ export type GitSettings = {
 	incomingCheck?: string,
 	/**  Minutes between background checks for incoming commits. */
 	incomingCheckInterval?: number,
+	/**  Fetch every repository of the project in the background every `auto_fetch_minutes`. */
+	autoFetch?: boolean,
+	autoFetchMinutes?: number,
 	/**  Branch name globs, `;`/`,`-separated; force push to them is prohibited. */
 	protectedBranches?: string,
 	/**  Initial state of Commit Options › Sign-off Commit. */
@@ -6907,8 +6910,6 @@ export type IdeEvent =
 { type: "dbSourcesChanged" } | { type: "mcpRequest"; id: number; request: McpUiRequest } | { type: "mcpRequestClosed"; id: number } | 
 /**  Project window membership or selection changed. */
 { type: "windowGroupsChanged" } | 
-/**  A window entered or left full screen, itself or as a member of a full-screen window group. */
-{ type: "windowFullscreenChanged" } | 
 /**
  *  This remote window's connection to its host ended on its own (network loss, the host or
  *  its server went away); the window's project is unreachable until it reconnects.
