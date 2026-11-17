@@ -126,7 +126,7 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
   - 會開對話框的呼叫不要 await。點對話框按鈕寫成 `setTimeout(() => btn.click(), 0)`，不然 bridge-js 回 `null`。
 - bridge 狀態用 `node scripts/dev-status.ts` 讀：`pnpm -s` 會多印一行，不是純 JSON。
 - 兩個 pid 都要記：
-  - `DEV`：背景 `pnpm dev:app` 的 pid，收尾用。
+  - `DEV`：`pnpm dev:app` 的 pid，收尾用。用 shell 的 `&` 啟動、`echo DEV=$!` 取得（Bash 工具的背景模式拿不到 pid；`&` 啟動的程序在這次呼叫結束後仍會繼續跑）。
   - `APP`：`pgrep -f "^$MAIN/target/debug/openidea"`，osascript 和 cliclick 用。
 
 真實輸入的寫法（osascript 不能把按鍵送給指定 pid，只能先讓它到最前面）：
@@ -137,28 +137,28 @@ osascript -e 'tell application "System Events" to keystroke "f" using {control d
 osascript -e "tell application \"System Events\" to tell (first process whose unix id is $APP) to get {name, position, size, value of attribute \"AXFullScreen\"} of window 1"
 ```
 
-每次 osascript 或 cliclick 之前先跑 `front`，讀回的 pid 不是 `APP` 就不送。
+每次 osascript、cliclick 或 screencapture 之前先跑 `front`，讀回的 pid 不是 `APP` 就不送。
 
 1. **心跳與啟動**：
    - PR 留言「視窗 chrome 實機檢查開始（本機編譯約 10 分鐘）」。
    - `pgrep -fl target/debug/openidea` 有別的 worktree 的 dev app 在跑，就交人並寫明 pid 與路徑：代表別人正在用真實輸入，不要搶。
-   - 背景跑 `PATH="$HOME/.cargo/bin:$PATH" pnpm dev:app > "$S/dev.log" 2>&1`。
-   - 也在背景等：`until node scripts/dev-status.ts 2>/dev/null | grep -q '"port"' || grep -q '^error' "$S/dev.log"; do sleep 10; done`，最多 30 分鐘。
+   - `mkdir -p "$S"; cd "$MAIN"; PATH="$HOME/.cargo/bin:$PATH" pnpm dev:app > "$S/dev.log" 2>&1 & echo DEV=$!`（debug 設定照全域 `~/.cargo/config.toml`，不另外覆寫）。
+   - 在背景等，最多 30 分鐘：`end=$((SECONDS+1800)); until node scripts/dev-status.ts 2>/dev/null | grep -q '"port"'; do perl -pe 's/\e\[[0-9;]*m//g' "$S/dev.log" | grep -q '^error' && break; [ $SECONDS -gt $end ] && break; sleep 10; done`（cargo 的輸出帶色碼，先去掉再比對）。
    - 編不過或逾時，代表 rebase 結果有問題，交人並附 `$S/dev.log` 尾段。
 2. **preflight**：
    - osascript 讀得到 frontmost 程序；`cliclick p:.` 成功。
-   - `screencapture -x` 的像素等於螢幕點大小乘 backing scale（Mac mini：1920×1080 點，3840×2160 像素）。
+   - `screencapture -x` 的像素等於螢幕點大小乘 backing scale。點大小用 `osascript -e 'tell application "Finder" to get bounds of window of desktop'` 讀（Mac mini：1920×1080 點，3840×2160 像素）。
    - 用 `sips -Z 800` 縮小後 Read 看一眼，不是全黑（螢幕鎖定或休眠）。
    - 任何一項不過就交人，寫明是哪一項：輔助使用或螢幕錄製權限只有使用者能給。
 3. **螢幕是使用者的桌面**：Mac mini 同時開著使用者的其他 app，包括密碼管理器、系統對話框和常駐的通知。
    - 截圖只存在 `$S/`，Read 看完就算，不上傳、不貼進 PR、Bark 或任何對外的地方。
    - 別的 app 的對話框和通知不要動。
-   - 只看要用到的區域：要點的位置，以及視窗頂端到 tab row 底部那一條。點擊位置挑沒被蓋住的地方。
+   - 只看要用到的區域：要點的位置，以及視窗頂端到 tab row 底部那一條。裁切用 `sips -c <高> <寬> --cropOffset <y> <x> in.png --out strip.png`，單位是像素（點×2）。offset 不可以是 0，0 會被當成置中裁切，所以至少寫 1。點擊位置挑沒被蓋住的地方。
    - 那一條只要有沒被蓋住的一段看得到，就能判斷有沒有原生 tab bar：它會橫跨整個視窗寬。
    - 要點的位置或整條都被蓋住：等 30 秒重拍一次，還是蓋住就交人，寫明被什麼蓋住，但不寫內容。
-4. **fixture**：`$S/tabs/{alpha,beta,gamma}` 三個 `git init` 目錄，各有一個 commit。
-   - alpha：在 `main` 視窗呼叫 `import("/src/features/app/windows.ts").then(m => m.openProjectInWindow("<alpha>", true))`，接著點信任對話框的 `Trust Project`。
-   - beta：在 alpha 的視窗（`project-N`，從 `dev:status` 取）呼叫 `import("/src/features/app/windows.ts").then(m => { m.openProjectWithPolicy("<beta>"); })`，不要 await。接著依序點 Open Project 對話框的 `New Tab` 和 `Trust Project`。
+4. **fixture**：`$S/tabs/{alpha,beta,gamma}` 三個 `git init` 目錄，各有一個 commit（`git -c user.name=ar -c user.email=ar@localhost commit --allow-empty -m init`）。
+   - alpha：在 `main` 視窗呼叫 `import("/src/features/app/windows.ts").then(m => { m.openProjectInWindow("<alpha>", true); })`，不要 await：它要等信任才會結束，await 會讓 bridge-js 逾時。信任對話框出現在 `main`，在那裡點 `Trust Project`。
+   - beta：在 alpha 的視窗（`project-N`，從 `dev:status` 取）呼叫 `import("/src/features/app/windows.ts").then(m => { m.openProjectWithPolicy("<beta>"); })`，不要 await。Open Project 對話框和信任對話框都出現在呼叫的那個視窗，依序點 `New Tab` 和 `Trust Project`。
    - 沒出現 Open Project 對話框：dev 資料夾的 `general.openProjectIn` 不是 ask。用 fork-verify 的 `settingsSet` 設成 `"ask"` 再開。
 5. **檢查**：每一項記下量測值，任何一項不符就是 FAIL。tab row 每個視窗各畫一份，而且都把自己標成 selected，不能拿 DOM 的 `[selected]` 判斷切換。
    - a. 視窗模式。
@@ -174,8 +174,8 @@ osascript -e "tell application \"System Events\" to tell (first process whose un
      - 再點工具列裡的分支按鈕（`header[class*=_bar_]` 裡的分支名），從 DOM 讀到 `aria-expanded="true"`。
      - 指標的 y 至少 10，碰到螢幕頂端會叫出選單列。實測 y=20 可以點到。
      - 接著送 `key code 53` 關掉選單。
-   - d. cliclick 點進頁面中央，再送 `key code 53`（Escape）。`AXFullScreen` 仍是 true。
-   - e. 用 beta 那個寫法，從目前顯示的視窗把 gamma 以 New Tab 加入。5 秒內 window 1 的 frame 自己變成螢幕大小，tab row 有 3 個 tab。
+   - d. cliclick 點編輯區裡沒被蓋住的一點，從 DOM 確認 `document.hasFocus()` 是 true，再送 `key code 53`（Escape）。`AXFullScreen` 仍是 true。
+   - e. 用 beta 那個寫法，從目前顯示的視窗把 gamma 以 New Tab 加入。從點 `Trust Project` 起每秒讀一次 window 1，5 秒內名稱是 gamma、frame 等於螢幕大小，tab row 有 3 個 tab。第一筆就是螢幕大小也算過：要抓的退化是停在 1440×900。
    - f. 送 ⌃⌘F 退出。window 1 回到 a 記下的 frame，不是可見區域（Mac mini 是 0,30 1920×960）。
 6. **結果**：
    - 全部 PASS：確認 `git rev-parse HEAD` 等於 NT（不等就重做這一步），PR 留言第一行寫 `<!-- auto-rebase:chrome-verified <NT> -->`，下面寫 a～f 每項的量測值，再列沒測的項目：
@@ -192,7 +192,7 @@ osascript -e "tell application \"System Events\" to tell (first process whose un
    - 停掉 `DEV` 的整棵程序樹（pnpm、tauri、Vite、cargo、app），不用 `pkill` 程序名：`tree() { for c in $(pgrep -P "$1"); do tree "$c"; done; echo "$1"; }; kill $(tree DEV)`（DEV 換成 pid）。
    - `node scripts/dev-status.ts` 確認沒有 bridge、`pgrep -f "^$MAIN/target/debug/openidea"` 沒有輸出；還有殘留就對那些 pid 再 `kill`。
    - `rm -rf "$S"`，截圖一起刪。
-   - 刪 dev 資料夾 `~/Library/Application Support/<dev:status 回報的 identifier>/`。
+   - 刪 `~/Library/Application Support/<dev:status 回報的 identifier>/` 和 `~/Library/Caches/<同一個 identifier>/`。
    - 先量 `$MAIN/target` 再刪。
    - `~/.cargo/targets/` 下的 openidea 專案快取與 `shared-deps` 各自量：任一個超過 6 GiB，就在 `MAIN` 跑 `PATH="$HOME/.cargo/bin:$PATH" cargo build --offline --locked -p ide-core --bins` 觸發 GC。
    - 清理前後的容量寫進第 7 步的細節。
