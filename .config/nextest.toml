@@ -3,7 +3,11 @@
 # and a JDK on PATH; maven_runner_jre_overrides_the_project_jdk fails there on
 # upstream's v0.1.39 tag as well, and
 # tool_installs_resolve_project_relative_sdks_and_leave_path_fallback_unconfigured
-# finds the host's Go on PATH (fails on upstream's v0.1.40 tag there too).
+# finds the host's Go on PATH (fails on upstream's v0.1.40 tag there too);
+# jar_application_runs_on_the_project_jdk_unless_a_jre_is_chosen finds the host's
+# mise JDK on PATH, and ide-jvm-attach's connect_before_gives_up_on_a_full_backlog
+# hits the host's open-file limit (`Too many open files`); both fail on upstream's
+# v0.1.47 tag there too (#330).
 # CI uses the default profile and runs everything.
 [profile.ubuntu-remote]
 default-filter = """
@@ -13,6 +17,8 @@ not (
   | (package(ide-sdk) & test(=tests::project_jdk_and_maven_settings))
   | (package(ide-sdk) & test(=tests::maven_runner_jre_overrides_the_project_jdk))
   | (package(ide-sdk) & test(=tests::tool_installs_resolve_project_relative_sdks_and_leave_path_fallback_unconfigured))
+  | (package(ide-sdk) & test(=tests::jar_application_runs_on_the_project_jdk_unless_a_jre_is_chosen))
+  | (package(ide-jvm-attach) & test(=socket::tests::connect_before_gives_up_on_a_full_backlog))
 )
 """
 
