@@ -76,9 +76,12 @@ After a rebase, check the three places where upstream's tests can't see the fork
 
 The unattended rebase reviews MANUAL resolutions itself (below), except when a hand-resolved conflict or a fix commit touches these paths. They need the real app on the user's screens or a decision outside this repo, so the lock waits for the user:
 
-- macOS window chrome and project window groups: `src-tauri/src/{macos,window_groups,titlebar}.rs`, `src/workbench/WindowGroupTabs.*`, `src/workbench/TitleBar.*` (the real fullscreen Space check below; AppKit chrome is invisible to every automated test).
+- macOS window chrome and project window groups: `src-tauri/src/{macos,window_groups,titlebar}.rs`, `src/workbench/WindowGroupTabs.*`, `src/workbench/TitleBar.*` (the real fullscreen Space check above; AppKit chrome is invisible to every automated test).
 - The ClipCode format: `crates/ide-clip/**`, `docs/clipcode/**` (a four-repo contract, "Platform scope").
 - The update chain: `src-tauri/src/fork_updater.rs`, `.github/workflows/fork-release.yml`, `.github/actions/fork-release-setup/**` (a broken updater cannot fix itself on the user's three machines).
+- Anything that weakens the gate: a fix commit that changes `.config/nextest.toml`, adds a test filter or skip to `fork-ci.yml`, or deletes, ignores or skips a test (the review would otherwise accept a green CI the fix itself produced).
+
+Upstream's own changes to the window-chrome paths count too, conflict or not, and so does a dropped fork commit that touched any of these paths.
 
 ## Unattended rebase
 
