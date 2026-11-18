@@ -22,6 +22,25 @@ skip() {
   fi
   exit 1
 }
+# Why: a tag's fork-release runs the workflow at the tag's commit, so a release that failed on the workflow itself
+# (v0.1.48-fork.1, #354) only ships as a new fork.N once a fix moved develop past the tag (#355). Exits 0 to start
+# the run when that is the state; returns otherwise.
+release_failed_past() {
+  local tags tip last published rel ci
+  tags=$(git ls-remote --tags fork "refs/tags/${1}-fork.*") || skip "git ls-remote fork tags failed"
+  tip=$(git rev-parse fork/develop)
+  last=$(sed -n 's#.*refs/tags/\(.*-fork\.[0-9]*\)$#\1#p' <<<"$tags" | sort -V | tail -1)
+  [ -n "$last" ] || return 0
+  ! grep -q "^$tip" <<<"$tags" || return 0
+  published=$(gh release list -R audichuang/openidea --limit 30 --json tagName --jq '.[].tagName') || skip "gh release list failed"
+  ! grep -qx "$last" <<<"$published" || return 0
+  rel=$(gh run list -R audichuang/openidea --workflow fork-release.yml --branch "$last" --json status,conclusion --jq '.[0] // empty | "\(.status) \(.conclusion)"') || skip "gh run list failed"
+  [ "$rel" = "completed failure" ] || return 0
+  ci=$(gh run list -R audichuang/openidea --workflow fork-ci.yml --branch develop --commit "$tip" --json status,conclusion --jq '.[0] // empty | "\(.status) \(.conclusion)"') || skip "gh run list failed"
+  [ "$ci" = "completed success" ] || return 0
+  echo "release failed: $last failed and develop moved past it to ${tip:0:9} with green Fork CI"
+  exit 0
+}
 cd "$HOME/Project/openidea"
 git fetch -q fork develop || skip "git fetch fork failed"
 git fetch -q origin --no-tags '+refs/tags/v*:refs/tags/v*' || skip "git fetch origin tags failed"
@@ -60,23 +79,8 @@ if [ -n "$lock" ]; then
     echo "approved by the user: $branch at $approved"
     exit 0
   fi
-  # Why: a tag's fork-release runs the workflow at the tag's commit, so a release that failed on the workflow
-  # itself (v0.1.48-fork.1, #354) only ships as a new fork.N once a fix moved develop past the tag (#355).
   if [ "$moved" != 0 ] && [ "$base" = "$held" ]; then
-    tags=$(git ls-remote --tags fork "refs/tags/${held}-fork.*") || skip "git ls-remote fork tags failed"
-    tip=$(git rev-parse fork/develop)
-    last=$(sed -n 's#.*refs/tags/\(.*-fork\.[0-9]*\)$#\1#p' <<<"$tags" | sort -V | tail -1)
-    if [ -n "$last" ] && ! grep -q "^$tip" <<<"$tags"; then
-      published=$(gh release list -R audichuang/openidea --limit 30 --json tagName --jq '.[].tagName') || skip "gh release list failed"
-      if ! grep -qx "$last" <<<"$published"; then
-        rel=$(gh run list -R audichuang/openidea --workflow fork-release.yml --branch "$last" --json status,conclusion --jq '.[0] // empty | "\(.status) \(.conclusion)"') || skip "gh run list failed"
-        ci=$(gh run list -R audichuang/openidea --workflow fork-ci.yml --branch develop --commit "$tip" --json status,conclusion --jq '.[0] // empty | "\(.status) \(.conclusion)"') || skip "gh run list failed"
-        if [ "$rel" = "completed failure" ] && [ "$ci" = "completed success" ]; then
-          echo "release failed: $last failed and develop moved past it to ${tip:0:9} with green Fork CI"
-          exit 0
-        fi
-      fi
-    fi
+    release_failed_past "$held"
   fi
   # Why moved first: once develop moved, a release is running (or died) whatever earlier comments say.
   if [ "$waiting" = 0 ] || [ "$moved" != 0 ]; then
@@ -99,7 +103,10 @@ if [ "$base" = "$newest" ]; then
   # Why: the newer-release check below never fires again for a base develop already sits on, so a manual rebase
   # that skipped the release left v0.1.46 unreleased in silence (2026-11-17).
   tags=$(git ls-remote --tags fork "refs/tags/${base}-fork.*") || skip "git ls-remote fork tags failed"
-  [ -z "$tags" ] || exit 1
+  if [ -n "$tags" ]; then
+    release_failed_past "$base"
+    exit 1
+  fi
   tip=$(git rev-parse fork/develop)
   ci=$(gh run list -R audichuang/openidea --workflow fork-ci.yml --branch develop --commit "$tip" --json status,conclusion --jq '.[0] // empty | "\(.status) \(.conclusion)"') || skip "gh run list failed"
   case $ci in

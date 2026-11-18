@@ -33,7 +33,7 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
   - PR 開著、有 `<!-- auto-rebase:needs-human -->` 留言、沒有符合上一條的 approved（precheck 只在它過時才讓你跑到這：上游出了更新的 release，或 develop 已經在 vX）→ **收鎖**：`rebase/vX` 的 tip 不在 `fork/develop` 或 `fork/backup/*` 上就先 `git push fork "fork/rebase/vX:refs/heads/backup/rebase-vX-$RUN"`；PR 留言說明原因後 `gh pr close`，刪 fork 的 `rebase/vX` 與 `ci-base/vX`。然後重新判斷：vNEW == vOLD 就結束、不推通知；否則 NEW。
   - 其他（precheck 判定鎖過期：前一次 run 死了）→ 同樣先備份不在 develop／backup 上的 tip、關 PR（有的話）、刪兩條分支，當 NEW 從頭來。不續跑半途的 rebase：從頭重來比較可靠。
 - 沒有 `rebase/*` 且 vNEW == vOLD：
-  - `git ls-remote --tags fork "refs/tags/vNEW-fork.*"` 有東西 → 結束，不推通知。
+  - `git ls-remote --tags fork "refs/tags/vNEW-fork.*"` 有東西 → 結束，不推通知。例外是上一條說的發版失敗：最新的 `vNEW-fork.N` tag 沒有已發布的 Release、它的 fork-release run 是 completed failure、`fork/develop` 已越過它而 develop push Fork CI `Fork CI passed` 成功（precheck 印 `release failed: …`）→ 照下面的 **RELEASE** 發 `fork/develop`，N 加一，舊 tag 不刪也不移。發版失敗的 run 自己收了鎖時就是這個狀態。
   - 沒有 → **RELEASE**：develop 已在 vNEW 卻從沒發過 vNEW 的版（有人手動 rebase 後沒發，或前一次 run 移動 develop 後、打 tag 前死了）。發的 sha＝`git rev-parse fork/develop`；先確認它的 develop push Fork CI（`gh run list -R audichuang/openidea --workflow fork-ci.yml --branch develop --commit <sha>`）`Fork CI passed` 成功（precheck 只在綠的時候放行；跑這步時又變了就跳第 7 步通知原因）。沒有 PR、不做第 1～5 步，直接第 6 步；vOLD 取上一個 fork release tag 的上游基底（`git describe --tags --abbrev=0 --match 'v*-fork.*' fork/main`，去掉 `-fork.N`），workflow 清單用上一個 fork release tag 當 OLD_DEVELOP，release notes 的模式寫「develop 已由手動 rebase 搬到 vNEW」，第 6 步第 5 點沒有 PR 可留言。
 - 否則 **NEW**：`OLD_DEVELOP=$(git rev-parse fork/develop)`。
 
