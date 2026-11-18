@@ -4,7 +4,6 @@
 //! clipboard; these commands build the text and plan / apply a paste of it.
 
 use crate::Host;
-use crate::rpc::Dispatcher;
 use ide_clip::commits::CommitNonTextOptions;
 use ide_clip::commits::{self, CommitsPayload, FilePlan, ReplaySkipReason};
 use ide_clip::gitrun::RunOptions;
@@ -17,6 +16,7 @@ use ide_clip::transfer::{
     SKIPPED_PATHS_SHOWN, TransferError, TransferImportPlan, WalkRefusals, changed_items, copy_selection_detailed,
     selection_from_paths_or_refused,
 };
+use ide_command::command;
 use ide_core::{IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -1365,19 +1365,25 @@ pub fn paste_branch_series(repo: &Path, text: &str, name: &str, on_head: bool) -
 // ---------------------------------------------------------------------------
 // Commands
 
+/// The clipboard text for `source` (file or commit payload); the UI writes it. `non_text`
+/// `Exclude` still reports the non-text files found, for the dialog that asks before `Include`.
+#[command(trust = trusted)]
 pub async fn clip_copy(
     host: &Host,
     window: &str,
     source: ClipCopySource,
-    non_text: ClipNonTextMode,
+    #[default] non_text: ClipNonTextMode,
 ) -> IdeResult<ClipCopyResult> {
     let project = host.project(window)?;
     let settings = clip_settings(&project.settings.effective().vcs.clip_code);
     blocking(move || copy_in_with(&project.root, &project.content_roots(), source, &settings, non_text)).await
 }
 
-/// `dest` defaults to the project root; `repo` (the selected repository) is where
-/// a commit payload replays.
+/// Plans pasting `text`: files restore under `dest` (default: the project root),
+/// commits replay into `repo` (the selected repository; default: `dest`'s). Nothing
+/// is written; `repos` take the `<repo>/` prefixes of a payload copied from several
+/// repositories.
+#[command(trust = trusted)]
 pub async fn clip_paste_preview(
     host: &Host,
     window: &str,
@@ -1399,6 +1405,8 @@ pub async fn clip_paste_preview(
     .await
 }
 
+/// Writes the preview `apply.id` as confirmed.
+#[command(trust = trusted)]
 pub async fn clip_paste_apply(host: &Host, window: &str, apply: ClipPasteApply) -> IdeResult<ClipPasteResult> {
     host.require_trust(window)?;
     let project = host.project(window)?;
@@ -1413,6 +1421,9 @@ pub async fn clip_paste_apply(host: &Host, window: &str, apply: ClipPasteApply) 
     Ok(result)
 }
 
+/// What the open preview `id`'s file `index` (of kind `action`) writes and what the
+/// destination holds now, for the dialog's content pane.
+#[command(trust = trusted)]
 pub async fn clip_paste_preview_file(
     host: &Host,
     window: &str,
@@ -1424,6 +1435,8 @@ pub async fn clip_paste_preview_file(
     blocking(move || paste_preview_file(id, &action, index)).await
 }
 
+/// ClipCode for VS Code's Copy Branch Commits: `branch` since its fork point (or `full` history) as an mbox.
+#[command(trust = trusted)]
 pub async fn clip_copy_branch_series(
     host: &Host,
     window: &str,
@@ -1436,6 +1449,8 @@ pub async fn clip_copy_branch_series(
     blocking(move || copy_branch_series(&repo, &branch, base.as_deref(), full)).await
 }
 
+/// Paste Branch Commits: restores an mbox as the new branch `name` (`git am --3way`).
+#[command(trust = trusted)]
 pub async fn clip_paste_branch_series(
     host: &Host,
     window: &str,
@@ -1451,36 +1466,15 @@ pub async fn clip_paste_branch_series(
     Ok(result)
 }
 
-pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("clip_copy_branch_series", |c| async move {
-        clip_copy_branch_series(&c.host, &c.window, c.arg("repo")?, c.arg("branch")?, c.arg("base")?, c.arg("full")?)
-            .await
-    });
-    d.add("clip_paste_branch_series", |c| async move {
-        clip_paste_branch_series(&c.host, &c.window, c.arg("repo")?, c.arg("text")?, c.arg("name")?, c.arg("onHead")?)
-            .await
-    });
-    d.add("clip_copy", |c| async move {
-        let non_text: Option<ClipNonTextMode> = c.arg("nonText")?;
-        clip_copy(&c.host, &c.window, c.arg("source")?, non_text.unwrap_or_default()).await
-    });
-    d.add("clip_paste_preview", |c| async move {
-        clip_paste_preview(
-            &c.host,
-            &c.window,
-            c.arg("text")?,
-            c.arg("dest")?,
-            c.arg("repo")?,
-            c.arg("adjustPaths")?,
-            c.arg("repos")?,
-        )
-        .await
-    });
-    d.add("clip_paste_preview_file", |c| async move {
-        clip_paste_preview_file(&c.host, &c.window, c.arg("id")?, c.arg("action")?, c.arg("index")?).await
-    });
-    d.add("clip_paste_apply", |c| async move { clip_paste_apply(&c.host, &c.window, c.arg("apply")?).await });
-}
+ide_command::domain!(
+    clip:
+    clip_copy,
+    clip_copy_branch_series,
+    clip_paste_apply,
+    clip_paste_branch_series,
+    clip_paste_preview,
+    clip_paste_preview_file,
+);
 
 #[cfg(test)]
 mod tests {
