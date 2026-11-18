@@ -3,6 +3,7 @@
 //! outlives its command's reply ends only when its last sender goes.
 
 use ide_core::NullSink;
+use ide_host::catalogue::TrustClass;
 use ide_host::ops::Emit;
 use ide_host::rpc::{self, ChannelEndMessage, ChannelMessage, Dispatcher, Invoke};
 use ide_host::{Host, HostConfig};
@@ -61,19 +62,19 @@ fn host(tmp: &tempfile::TempDir) -> Arc<Host> {
 
 async fn serve(host: Arc<Host>, held: Held) -> (Peer, Receiver<Seen>) {
     let mut d = Dispatcher::default();
-    d.add("finite", |c| async move {
+    d.add("finite", TrustClass::Trusted, |c| async move {
         let emit = c.channel::<u32>("onEvent")?;
         let again = c.channel::<u32>("onEvent")?;
         emit(1);
         again(2);
         Ok(())
     })
-    .add("ignores", |_| async move { Ok(()) })
-    .add("fails", |c| async move {
+    .add("ignores", TrustClass::Trusted, |_| async move { Ok(()) })
+    .add("fails", TrustClass::Trusted, |c| async move {
         let _emit = c.channel::<u32>("onEvent")?;
         Err::<(), _>(ide_core::IdeError::invalid("no"))
     })
-    .add("stream", move |c| {
+    .add("stream", TrustClass::Trusted, move |c| {
         let held = held.clone();
         async move {
             let emit = c.channel::<u32>("onEvent")?;

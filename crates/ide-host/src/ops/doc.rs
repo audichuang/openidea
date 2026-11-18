@@ -70,8 +70,9 @@ pub async fn doc_save(host: &Host, window: &str, doc: DocId) -> IdeResult<()> {
     host.debugger.refresh_source_mirrors(host.owner_window(window)).await
 }
 
-/// Implicit save (focus loss, tab switch); `false` when the file changed on disk and was kept.
-pub async fn autosave(host: &Host, window: &str, doc: DocId) -> IdeResult<bool> {
+/// Implicit save; `false` when the file changed on disk since the editor read it and was kept.
+#[command(trust = trusted)]
+pub async fn doc_autosave(host: &Host, window: &str, doc: DocId) -> IdeResult<bool> {
     let project = host.project(window)?;
     let saved = host.blocking(move || project.documents.autosave(doc)).await?;
     host.debugger.refresh_source_mirrors(host.owner_window(window)).await?;
@@ -112,6 +113,7 @@ mod tests;
 
 ide_command::domain!(
     doc:
+    doc_autosave,
     doc_close,
     doc_edit,
     doc_open,
