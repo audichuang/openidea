@@ -78,7 +78,7 @@ jobs:
       - uses: actions/checkout@v5
       - run: |
           # Port upstream's ci.yml edits into this file, then update the pin.
-          pin=2de2e8eb0e32645b06150da4e99ff900d2c6218ac57f559b24b4b1caa9f47637
+          pin=7a0b480ce10ea8609df0892cd5842399e3c6c38c5128d5ad8c80bddf1c267f6f
           sha=$(sha256sum .github/workflows/ci.yml | cut -d' ' -f1)
           [ "$sha" = "$pin" ] || { echo "::error::upstream ci.yml changed ($sha); port it into fork-ci.yml and update the pin"; exit 1; }
 
@@ -276,6 +276,9 @@ jobs:
       # --timings: per-crate build times in target/cargo-timings, uploaded below.
       - run: cargo nextest run --workspace --no-fail-fast --timings ${{ matrix.partition && format('--partition slice:{0}', matrix.partition) || '' }} ${{ matrix.threads && format('--test-threads {0}', matrix.threads) || '' }} ${{ matrix.filter && format('-E ''{0}''', matrix.filter) || '' }}
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+      # nextest skips doctests; ide-command's are its compile-fail tests (upstream's ci.yml).
+      - if: runner.os == 'Linux'
+        run: cargo test --doc -p ide-command
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
