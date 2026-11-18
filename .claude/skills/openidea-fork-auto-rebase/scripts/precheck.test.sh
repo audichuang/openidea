@@ -106,4 +106,8 @@ RELRUN="completed failure" TIP=def check "release failed, develop on the tag" 1 
 RELRUN="completed failure" DEVCI="in_progress " check "release failed, develop CI running" 1 0 v0.1.35 v0.1.35 v0.1.35 "1 1" 1
 RELRUN="completed failure" RELEASED=v0.1.35-fork.1 check "release failed, but that tag is published" 1 0 v0.1.35 v0.1.35 v0.1.35 "1 1" 1
 RELRUN="in_progress " check "release running, develop moved past"          1 0 v0.1.35 v0.1.35 v0.1.35 "1 1" 1
+RELRUN="completed failure" check "no lock, release failed, develop moved past" 0 0 v0.1.35 v0.1.35 "" ""
+RELRUN="completed failure" TIP=def check "no lock, release failed, develop on the tag" 1 0 v0.1.35 v0.1.35 "" ""
+RELRUN="completed failure" DEVCI="completed failure" check "no lock, release failed, develop CI red" 1 0 v0.1.35 v0.1.35 "" ""
+check "no lock, released"                    1 0 v0.1.35 v0.1.35 "" ""
 exit "$failed"
