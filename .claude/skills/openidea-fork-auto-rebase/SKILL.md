@@ -79,6 +79,8 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
 
 `git push --force fork HEAD:refs/heads/rebase/vNEW` 觸發 Fork CI（`fork-ci.yml` 對 `rebase/**` 的 push 也會跑）。用 `gh run list -R audichuang/openidea --workflow fork-ci.yml --branch rebase/vNEW --json databaseId,headSha` 找 `headSha` 等於 HEAD 的 run，`gh-wait run <id> -R audichuang/openidea` 等它（不用 `gh run watch`、不輪詢）。
 
+`fork-ci.yml` 裡註解標 #252 的 filter（上游也紅而加的），對照上游 NB 的同一個 job：上游已經綠的，在 #252 留言列出可以拿掉的條目和上游 run，寫進第 7 步細節。這一輪不拿掉：拿掉後 fork 紅了，要放回去又是削弱閘門。之後由一般 PR 拿掉。
+
 結果看 `Fork CI passed` 這個 job。Linux Rust job 停在 `Bindings are up to date`，代表第 1 步第 4 點產生的 bindings 和 CI 不一致：重新產生、推上 `rebase/vNEW`（修正 commit，模式變 MANUAL）。`Upstream ci.yml unchanged` 紅了代表上游改了 `ci.yml`：照 FORK.md 把改動移植進 `fork-ci.yml` 並更新 pin（修正 commit，模式變 MANUAL）。其他紅的 job 先 `gh run rerun <id> --failed` 一次；再紅就看上游同一個 job 在 vNEW 是否也紅：`gh run list -R l0ng-ai/openidea --workflow ci.yml --commit $(git rev-parse 'vNEW^{commit}')`。上游也紅 → 不擋（PR 說明附兩邊的 run 連結）；上游綠或沒有可比的 run → fork 造成的，照第 2 步的規則修，修完回到第 3 步。
 
 ## 3b. 自審（只有 MANUAL）
@@ -91,6 +93,14 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
    - 手動碰過的檔：`conflicts.txt` 裡 MANUAL 類的檔，加上 `git range-diff --no-color OB..OT NB..NT` 裡 `>`（新增的修正 commit）與 `<`（被丟掉的 commit）改到的所有檔（`git show --format= --name-status <sha>`，rename 的來源與目的路徑都算），以及 `!` commit 裡 +/- 行有變的檔。`!` 的算到檔案，不算整個 commit：取第 2 點對帳報告「`!` with different +/- lines」在每個 commit 底下列的檔（所以先跑第 2 點）。同一個 commit 裡 rebase 前後 +/- 行相同的檔不算：v0.1.48 有 ClipCode 的 commit 只是 `Cargo.lock` 與註冊行變了，`crates/ide-clip/**` 逐位元組沒變，照 commit 算會誤判成碰到 ClipCode。
    - 上游這次改到的視窗 chrome：`git diff --name-status OB NB` 落在保留清單第一項（macOS 視窗 chrome）的檔，rename 的來源與目的路徑都算（上游把保留檔搬走也要人看，FORK.md 的清單跟著更新）。上游自己改了它，沒有衝突也要實機看（第 3c 步）；上游改其他保留路徑不算。
    - 會削弱閘門的修正：修正 commit 改了 `.config/nextest.toml`、`fork-ci.yml` 裡的測試 filter 或 skip，或刪掉、`#[ignore]`、`.skip` 了測試。同樣交人。純資源設定（磁碟、逾時、runner）不在此列，由審查者看。
+     - 例外：**上游也紅的測試**。上游沒有修正可搬時，照 #252 加 filter 不交人，但下面每一條都要成立。證據只能來自上游自己在 NB 的 CI，不能來自這次的修正：
+       - 上游 `ci.yml` 在 NB 的 run（第 3 步那條 `gh run list -R l0ng-ai/openidea --workflow ci.yml --commit <NB>`）裡，同一個 job 也是紅的。
+       - fork 的 job 重跑一次（第 3 步）後仍紅。
+       - fork 失敗的測試全都在上游那個 job 的失敗清單裡，而且失敗位置或訊息主體相同，只有名字相同不算。fork 多紅一個，就照「其餘 finding」修或交人：fork 自己弄壞的不能躲在上游的紅後面。
+       - 是測試失敗。編不過、job 沒跑起來、逾時被取消都不算。
+       - filter 只寫完整測試名（nextest `test(=…)`、Playwright 的 spec 與標題），只套在紅的那個平台的 job。註解寫上游 run 的連結，並開 issue 或在 #252 留言（測試名、兩邊 run、失敗訊息）。
+
+       第 3 點的獨立審查者另外核對這項：只給它 fork 與上游的兩個 run id，以及 filter 的 diff，不給你整理的清單；請它確認上面每一條。不成立就交人。PR 留言、release notes 與 Bark 寫「N 個上游也紅的測試已加 filter（#…）」。
 2. **對帳腳本**：同一個 Bash 呼叫裡取出並執行，取不到或是空檔就交人：
    ```sh
    AUDIT=$MAIN/.rebase-review/rebase-audit.py
@@ -153,7 +163,7 @@ osascript -e "tell application \"System Events\" to tell (first process whose un
 
 1. **心跳與啟動**：
    - PR 留言「視窗 chrome 實機檢查開始（本機編譯約 10 分鐘）」。
-   - `pgrep -fl target/debug/openidea` 有別的 worktree 的 dev app 在跑，就交人並寫明 pid 與路徑：代表別人正在用真實輸入，不要搶。
+   - `pgrep -fl target/debug/openidea` 有別的 worktree 的 dev app 在跑，代表別人可能正在用真實輸入，不要搶，也不要停它：每 5 分鐘再查一次，最多等 60 分鐘，每 20 分鐘在 PR 留一則心跳（寫 pid 與路徑）。60 分鐘後還在才交人。agent 與使用者常開 dev app，整點的 run 撞上就交人，等於把這一輪丟回給使用者。
    - `mkdir -p "$S"; cd "$MAIN"; PATH="$HOME/.cargo/bin:$PATH" pnpm dev:app > "$S/dev.log" 2>&1 & echo DEV=$!`（debug 設定照全域 `~/.cargo/config.toml`，不另外覆寫）。
    - 在背景等，最多 30 分鐘：`end=$((SECONDS+1800)); until node scripts/dev-status.ts 2>/dev/null | grep -q '"port"'; do perl -pe 's/\e\[[0-9;]*m//g' "$S/dev.log" | grep -q '^error' && break; [ $SECONDS -gt $end ] && break; sleep 10; done`（cargo 的輸出帶色碼，先去掉再比對）。
    - 編不過或逾時，代表 rebase 結果有問題，交人並附 `$S/dev.log` 尾段。
@@ -217,7 +227,7 @@ osascript -e "tell application \"System Events\" to tell (first process whose un
 
 CLEAN、MECHANICAL 先做第 3b 步第 1 點的保留路徑檢查：命中的全是視窗 chrome，就先做第 3c 步再回來；命中其他保留項就交人（下面「不符合條件」那段）。
 
-條件全部成立才移動：模式是 CLEAN 或 MECHANICAL（或 MANUAL 而第 3b 步通過）、第 3b 步第 1 點的保留路徑檢查沒有命中，或命中的全是視窗 chrome 而第 3c 步留了這一輪 NT（＝HEAD）的 chrome-verified（CLEAN、MECHANICAL 也要做這一點：上游改了視窗 chrome，沒衝突也要實機看；從第 0 步 approved 進來的不用）、第 2 步沒有 fork 造成的紅、第 3 步 `Fork CI passed` 綠。上游也紅的 job 不算綠：上游已修就搬它的修正，否則修測試或照 #252 加 filter 並開 issue，都是修正 commit（模式變 MANUAL）。推上去後回第 2、3 步，再進第 3b 步（加 filter 屬於削弱閘門，3b 會交人）。從第 0 步 approved 進來的不做這段修正：PR 說明已列為上游也紅、使用者核可過的 job 照第 0 步的規則放行，推修正 commit 會讓核可作廢。從第 0 步 approved 進來的，使用者的核可取代模式條件。
+條件全部成立才移動：模式是 CLEAN 或 MECHANICAL（或 MANUAL 而第 3b 步通過）、第 3b 步第 1 點的保留路徑檢查沒有命中，或命中的全是視窗 chrome 而第 3c 步留了這一輪 NT（＝HEAD）的 chrome-verified（CLEAN、MECHANICAL 也要做這一點：上游改了視窗 chrome，沒衝突也要實機看；從第 0 步 approved 進來的不用）、第 2 步沒有 fork 造成的紅、第 3 步 `Fork CI passed` 綠。上游也紅的 job 不算綠：上游已修就搬它的修正，否則修測試或照 #252 加 filter 並開 issue，都是修正 commit（模式變 MANUAL）。推上去後回第 2、3 步，再進第 3b 步（加 filter 屬於削弱閘門，只有符合第 3b 步第 1 點「上游也紅的測試」例外時不交人）。從第 0 步 approved 進來的不做這段修正：PR 說明已列為上游也紅、使用者核可過的 job 照第 0 步的規則放行，推修正 commit 會讓核可作廢。從第 0 步 approved 進來的，使用者的核可取代模式條件。
 
 `git rev-parse fork/develop` 已經等於 HEAD（使用者自己移過，或前一次 run 推完還沒留言就死了）→ 不推，直接留 develop-moved 留言。否則：
 
