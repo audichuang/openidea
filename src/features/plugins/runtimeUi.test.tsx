@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import type { RemoteSession } from "@/bindings";
+import { commands } from "@/platform/ipc";
 import { useRemote } from "@/platform/remote";
 import { MessagesHost } from "@/workbench/messages";
 import { createMemoryPluginsBackend, setPluginsBackend, type PluginsBackend } from "./backend";
@@ -136,6 +137,19 @@ describe("clipboard reads for a plugin command", () => {
     await vi.waitFor(() =>
       expect(answerClipboard).toHaveBeenCalledWith("3", { kind: "failed", message: "Read permission denied." }),
     );
+  });
+
+  it("gives the names of copied files as the text, as the system's text holds them", async () => {
+    vi.stubGlobal("__TAURI_INTERNALS__", {});
+    vi.spyOn(commands, "clipboardText").mockResolvedValue({ status: "ok", data: "" });
+    vi.spyOn(commands, "clipboardFileList").mockResolvedValue({ status: "ok", data: ["/p/a b.txt", "/p/src"] });
+    vi.spyOn(commands, "clipboardImageDataUrl").mockResolvedValue({ status: "ok", data: null });
+    request("6");
+    await vi.waitFor(() =>
+      expect(answerClipboard).toHaveBeenCalledWith("6", { kind: "content", text: "a b.txt\nsrc", png: null }),
+    );
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   it("reads for a remote plugin only after the user allows it", async () => {
