@@ -114,6 +114,8 @@ function PageTabs() {
               showContextMenu(e, [
                 {
                   label: "Move Tab to New Window",
+                  // macOS (AppKit tab group): only the shown tab moves out, as before upstream's per-tab arrows.
+                  disabled: mac && !tab.current ? true : undefined,
                   run: () => executeAction("window.detachTab", tab.label),
                 },
                 { kind: "separator" },
@@ -167,13 +169,15 @@ function PageTabs() {
               title={tx`Close ${tab.name}`}
               onClick={() => run(executeAction("window.closeTab", tab.label))}
             />
-            <IconButton
-              icon="external-link"
-              size="small"
-              className={styles.detach}
-              title={tx`Move ${tab.name} to New Window`}
-              onClick={() => run(executeAction("window.detachTab", tab.label))}
-            />
+            {!mac && (
+              <IconButton
+                icon="external-link"
+                size="small"
+                className={styles.detach}
+                title={tx`Move ${tab.name} to New Window`}
+                onClick={() => run(executeAction("window.detachTab", tab.label))}
+              />
+            )}
           </div>
         ))}
       </div>
