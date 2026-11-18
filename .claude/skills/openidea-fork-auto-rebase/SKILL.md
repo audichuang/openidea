@@ -9,7 +9,7 @@ description: Unattended pipeline that rebases the OpenIDEA fork's develop onto t
 
 ## 範圍
 
-只做一件事：把 develop 搬到上游最新 release，閘門全過而且是 CLEAN 或 MECHANICAL 就移動 develop 並發版。MANUAL 的照樣盡力解完、跑完閘門，再做第 3b 步的自審：通過就同樣移動 develop 並發版，沒通過才留 PR 給使用者。使用者要的是「不是有衝突就問我」：判斷得了的自己判斷、自己找人審；視窗 chrome 由第 3c 步在本機實機檢查，只把 FORK.md 保留給使用者的其他東西和檢查沒過的交回。慢沒關係；做不下去就停下來交人，不要為了發版硬修。
+只做一件事：把 develop 搬到上游最新 release，閘門全過而且是 CLEAN 或 MECHANICAL 就移動 develop 並發版。MANUAL 的照樣盡力解完、跑完閘門，再做第 3b 步的自審：通過就同樣移動 develop 並發版，沒通過才留 PR 給使用者。使用者要的是「不是有衝突就問我」：判斷得了的自己判斷、自己找人審；不擋使用的 finding 開 issue 列為已知問題（第 3b 步第 5 點）；視窗 chrome 由第 3c 步在本機實機檢查，只把 FORK.md 保留給使用者的其他東西和檢查沒過的交回。交回時只留使用者才能決定或才做得到的事。慢沒關係；做不下去就停下來交人，不要為了發版硬修。
 
 不處理，只列進第 7 步通知：這次沒碰到的既有問題、功能改進與重構、第 3c 步以外的實機 UI 測試。
 
@@ -86,7 +86,7 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
 先在 PR 留言「自審開始」（心跳：3b 加一輪修正可能跑很久，precheck 六小時沒動靜會判鎖過期）。下面的 OB、OT、NB、NT 是佔位字，寫進指令時代換成完整 sha：OB＝UPSTREAM_BASE、OT＝OLD_DEVELOP、NB＝`git rev-parse 'vNEW^{commit}'`、NT＝`git rev-parse HEAD`。每一輪（含修正後重審）開頭都重新取 NT，清單與報告都用這一輪的 NT 重建。
 
 1. **必交人路徑**：下面三份檔案清單的聯集，任何一個落在 FORK.md「Reserved for the user」的路徑就交人，留言寫明是哪個路徑、為什麼要人看。例外：命中的全是保留清單第一項（視窗 chrome）時不交人，記下命中的檔，其餘各點照做，通過後接第 3c 步實機檢查。
-   - 手動碰過的檔：`conflicts.txt` 裡 MANUAL 類的檔，加上 `git range-diff --no-color OB..OT NB..NT` 裡 `>`（新增的修正 commit）、`<`（被丟掉的 commit）、+/- 行有變的 `!` commit 改到的檔（不帶 `-s`：要看內層 diff 才分得出 +/- 行有變還是只有 context；對帳腳本的報告也列了這份）（`git show --format= --name-status <sha>`，rename 的來源與目的路徑都算）。
+   - 手動碰過的檔：`conflicts.txt` 裡 MANUAL 類的檔，加上 `git range-diff --no-color OB..OT NB..NT` 裡 `>`（新增的修正 commit）與 `<`（被丟掉的 commit）改到的所有檔（`git show --format= --name-status <sha>`，rename 的來源與目的路徑都算），以及 `!` commit 裡 +/- 行有變的檔。`!` 的算到檔案，不算整個 commit：取第 2 點對帳報告「`!` with different +/- lines」在每個 commit 底下列的檔（所以先跑第 2 點）。同一個 commit 裡 rebase 前後 +/- 行相同的檔不算：v0.1.48 有 ClipCode 的 commit 只是 `Cargo.lock` 與註冊行變了，`crates/ide-clip/**` 逐位元組沒變，照 commit 算會誤判成碰到 ClipCode。
    - 上游這次改到的視窗 chrome：`git diff --name-status OB NB` 落在保留清單第一項（macOS 視窗 chrome）的檔，rename 的來源與目的路徑都算（上游把保留檔搬走也要人看，FORK.md 的清單跟著更新）。上游自己改了它，沒有衝突也要實機看（第 3c 步）；上游改其他保留路徑不算。
    - 會削弱閘門的修正：修正 commit 改了 `.config/nextest.toml`、`fork-ci.yml` 裡的測試 filter 或 skip，或刪掉、`#[ignore]`、`.skip` 了測試。同樣交人。純資源設定（磁碟、逾時、runner）不在此列，由審查者看。
 2. **對帳腳本**：同一個 Bash 呼叫裡取出並執行，取不到或是空檔就交人：
@@ -110,14 +110,24 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
 4. **Codex 兜底**：先留心跳留言。用 codex skill 跑 adversarial review，`--base` 是 NB。focus 寫「只看這次 rebase 手解的檔、被丟掉與新增的 commit；OLD_DEVELOP 原本就有的 fork 程式不在範圍」，並列出第 1 點的手動檔清單。Codex 跑不起來或沒有結果就交人，不能跳過。
 5. **裁定**：
    - **既有問題**：只有能證明同一個失敗在 OT 上就存在（rebase 前就壞），才只列進第 7 步通知的細節，不擋，也不在這裡修（「範圍」那段）。fork 程式沒改不等於沒事：上游換了它依賴的結構、事件或設定（v0.1.47 拆 GitLog 後，`gitGraphBridge.ts` 原封不動的動態 import 就失效了），這類算這次的 finding。
+   - **已知問題**：成立、但不值得為它擋住發版的 finding。下面每一條都要成立，並各附一句證據寫進留言；任何一條說不出證據就不適用：
+     - 不是回歸：OT 上使用者能用的行為沒有變差。典型是上游這一版的新功能在 fork 上不完整。rebase 前能用、現在壞掉或變差的一律不適用。
+     - 不遺失或損壞資料、不當機、不卡住 UI。
+     - 不放寬 trust、權限或其他安全檢查。
+     - 不在 FORK.md「Reserved for the user」的路徑上。
+     - 根治要動結構（新 IPC 指令、跨 crate 介面、bindings），不是幾行修正。幾行修得掉的照「其餘 finding」修。
+     - 審查者與 Codex 都沒有把它評為 high 或 blocking。
+
+     動作：`gh issue create -R audichuang/openidea` 開 fork issue（現象、原因、影響、修法、來源 PR），issue 編號寫進 self-reviewed 留言、release notes 的「已知問題」和第 7 步的細節。不算剩下的 finding，不擋，也不用為它再審一輪（v0.1.48 的 #350：外掛讀剪貼簿在檔案加文字的混合格式下只拿到檔名；沒有這個出口時整輪交人）。
+
    - **其餘 finding**：能用證據證明不成立的，寫進留言駁回；成立的就修（修正 commit），修完回第 2、3 步重跑閘門與 CI，再從本步**第 1 點**重審一次。修正 commit 也可能碰到保留路徑，所以要從第 1 點開始。
-   - **通過**：三者都沒有剩下的 finding，對帳項目也都解釋了。
-   - **交人**：第二輪還有成立的 finding，或你判斷不了。needs-human 留言列出 finding 與你的看法。
+   - **通過**：三者都沒有剩下的 finding（列為已知問題的不算），對帳項目也都解釋了。
+   - **交人**：第二輪還有成立、又不符合已知問題條件的 finding，或你判斷不了。needs-human 留言列出 finding 與你的看法。交人前，第 1 點命中的全是視窗 chrome（沒有命中其他保留項）、閘門與 Fork CI 也是綠的，就先做第 3c 步：使用者核可的是這個 NT，chrome 不該留給他在實機看。3c 的結果（chrome-verified 或失敗的那一項）寫進 needs-human。
 6. 通過 → 確認 `git rev-parse HEAD` 等於這一輪審過的 NT（不等就回第 1 點），PR 留言第一行 `<!-- auto-rebase:self-reviewed <NT> -->`，下面寫三者的結果摘要，接第 3c 步（第 1 點有視窗 chrome 命中時）或第 4 步。這個標記只是稽核紀錄，precheck 不讀。run 在這之後、推 develop 之前死掉的話，鎖過期後會從頭重來。
 
 ## 3c. 視窗 chrome 實機檢查（任何模式）
 
-時機：第 3b 步第 1 點的保留路徑檢查（CLEAN、MECHANICAL 在第 4 步也做這一點）命中的**全是**保留清單第一項（macOS 視窗 chrome），而且 MANUAL 的 3b 其餘各點都已通過。命中其他保留項就照舊交人，不做這步；從第 0 步 approved 進來的也不做。這是整個 skill 唯一在本機編 app、開 app 的地方。量測綁定這一輪的 NT：之後 HEAD 有任何變動（修正 commit）就重做這一步。
+時機：第 3b 步第 1 點的保留路徑檢查（CLEAN、MECHANICAL 在第 4 步也做這一點）命中的**全是**保留清單第一項（macOS 視窗 chrome），而且 MANUAL 的 3b 其餘各點都已通過，或 3b 正要為了和視窗 chrome 無關的理由交人（第 3b 步第 5 點「交人」：這時做完照樣交人，不接第 4 步的移動）。命中其他保留項就照舊交人，不做這步；從第 0 步 approved 進來的也不做。這是整個 skill 唯一在本機編 app、開 app 的地方。量測綁定這一輪的 NT：之後 HEAD 有任何變動（修正 commit）就重做這一步。
 
 先讀 fork-verify（`.agents/skills/fork-verify/SKILL.md` 的 Launch、Native AppKit、Cleanup，以及 `features/window-tabs.md`）。和它不同的地方以這裡為準：
 
@@ -183,11 +193,11 @@ osascript -e "tell application \"System Events\" to tell (first process whose un
      - 選單列在全螢幕顯示（要改全域 `defaults`，排程不改）
      - 瀏海螢幕
      - 寬視窗存檔加入全螢幕群組（#71）
-     - tab 拖曳排序、Move Tab to New Window
+     - tab 拖曳排序、Move Tab to New Window（全螢幕群組裡移出的視窗退不出全螢幕是既有問題 #352；要加測就放在 f 之後，不然 f 的狀態會亂掉）
      - 關 tab、關整組與未存檔提示（#194、#207、#209）
      - 重啟後還原群組
 
-     然後接第 4 步。
+     然後接第 4 步（3b 交人前來做的，回去留 needs-human，寫「視窗 chrome 已實測」）。
 
    - 任何 FAIL：交人，附 a～f 的量測值和失敗的那一項。保留路徑不自己修。
 7. **收尾**：PASS、FAIL、中途交人都要做，每個出口都跑。
@@ -217,7 +227,7 @@ lease 失敗（develop 在這期間合進了別的 PR）→ HEAD 不在 `fork/de
 
 develop 一移動（含已在 HEAD 不重推的情況）就列出這次 rebase 帶進 develop 的 workflow：`git diff --diff-filter=A --name-only OLD_DEVELOP <develop sha> -- .github/workflows/`，`<develop sha>` 在這裡是 HEAD。兩端都用 sha、不用 vOLD／vNEW：tag 可變（上游改過 v0.1.37 的 tag，第 0 步會強制更新 tags），恢復時重新解析會漏列。`gh workflow list -R audichuang/openidea --all --json path,state,name` 裡 path 在這份清單、state 是 active 的，照 FORK.md 馬上 `gh workflow disable`，寫進通知。只比對這份路徑清單：fork 自己的 workflow（包括已刪分支留下的 `zz-*` 註冊）也是 active、名稱也不是 Fork CI，用名稱篩會誤停。`pull_request_target` 從 PR 的 base 分支讀 workflow，develop 一動，下一個對 develop 開的 PR 就會觸發它（v0.1.35 的 `PR check` 幾秒內就在 PR 上貼了 needs-info）。清單裡還沒出現的，第 6 步移動 main 後再查一次。接第 5 步。
 
-不符合條件（MANUAL 而自審沒通過、碰到必交人路徑、第 3c 步沒過或做不了，或有修不掉的紅）→ 不移動，PR 留言 `<!-- auto-rebase:needs-human -->` 加上要使用者看什麼（自審做到哪、卡在哪），最後一段固定寫交回方法：看完沒問題就另留一則第一行是 `<!-- auto-rebase:approved <HEAD 完整 sha> -->` 的留言，下一次排程（每小時 :37）會移動 develop 並發版。不要給使用者手動 lease 推送或發版的指令。跳第 7 步。
+不符合條件（MANUAL 而自審沒通過、碰到必交人路徑、第 3c 步沒過或做不了，或有修不掉的紅）→ 不移動，PR 留言 `<!-- auto-rebase:needs-human -->` 加上要使用者看什麼（自審做到哪、卡在哪），只寫使用者才能決定或才做得到的事：要他看的每一項都說明為什麼排程自己做不了（保留路徑、權限、判斷不了的產品取捨）。這份 skill 或流程本身的缺口（規則沒有出口、字面和實際對不上）不拿來問使用者：照比較保守的判讀做完這一輪，`gh issue create -R audichuang/openidea` 開 issue 記下缺口與這次採用的判讀，編號寫進細節。最後一段固定寫交回方法：看完沒問題就另留一則第一行是 `<!-- auto-rebase:approved <HEAD 完整 sha> -->` 的留言，下一次排程（每小時 :37）會移動 develop 並發版。不要給使用者手動 lease 推送或發版的指令。跳第 7 步。
 
 ## 5. 對 develop 開著的 PR
 
@@ -230,6 +240,7 @@ develop 一移動（含已在 HEAD 不重推的情況）就列出這次 rebase �
    - 第一行：`基於上游 vNEW（上一版基於 vOLD）`
    - 上游這次的重點：讀 `gh release view <tag> -R l0ng-ai/openidea --json body` 裡 vOLD 之後到 vNEW 的每一版，挑使用者看得到的改動，每項一行
    - fork 這次的改動：拿 `git log --format=%s vNEW..HEAD` 和上一個 fork release tag 的 `git log --format=%s <它的上游基底>..<tag>` 比，標題是新的才列；都沒有就寫「fork 功能無變更，只跟上上游」
+   - 第 3b 步列為已知問題的，每個一行，附 issue 編號；沒有就不寫這段
    - 這次 rebase 的模式與衝突一句話；第 3b 步放行的寫「MANUAL，自審通過」；有第 3c 步的接「視窗 chrome 已在 Mac mini 實測（瀏海螢幕未測）」，沒有的接「未實機測試」
 3. 移動 main 並推 annotated tag，同一次推送：
    ```sh
