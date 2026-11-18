@@ -492,25 +492,6 @@ mod imp {
         }
     }
 
-    /// A copy of the clipboard's `format` block. Must run with the clipboard open.
-    fn global_bytes(format: u32) -> Option<Vec<u8>> {
-        // SAFETY: as in `files`; `GlobalSize` bounds the bytes read and the
-        // block stays owned by the clipboard.
-        unsafe {
-            let memory = GetClipboardData(format);
-            if memory.is_null() {
-                return None;
-            }
-            let data = GlobalLock(memory) as *const u8;
-            if data.is_null() {
-                return None;
-            }
-            let bytes = std::slice::from_raw_parts(data, GlobalSize(memory)).to_vec();
-            GlobalUnlock(memory);
-            Some(bytes)
-        }
-    }
-
     pub fn image() -> Option<Option<super::Image>> {
         if has_files() {
             return Some(None);
@@ -522,9 +503,9 @@ mod imp {
         }
         // Snipping Tool, browsers and Office also put a PNG; plain bitmaps only a DIB.
         let image = if png != 0 && (unsafe { IsClipboardFormatAvailable(png) }) != 0 {
-            global_bytes(png).map(|data| super::Image { mime: "image/png", data })
+            read_block(png).map(|data| super::Image { mime: "image/png", data })
         } else if (unsafe { IsClipboardFormatAvailable(CF_DIB) }) != 0 {
-            global_bytes(CF_DIB)
+            read_block(CF_DIB)
                 .and_then(|dib| super::dib_to_bmp(&dib))
                 .map(|data| super::Image { mime: "image/bmp", data })
         } else {
