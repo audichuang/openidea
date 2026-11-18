@@ -32,6 +32,7 @@ pub async fn window_open_project(
 /// [`window_open_project`] into a new tab of this window's group ("Open project in: New tab");
 /// a plain new window when this window has no local project. Remote projects don't join tab
 /// groups: a group saves and restores local project paths only.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn window_open_project_tab(
@@ -304,6 +305,7 @@ pub fn window_complete_launch(window: WebviewWindow, windows: State<'_, WindowsS
 
 /// Whether this window records the project reopened on the next launch: `main` while it is
 /// open, then a window left when it closed (told by `openidea://session-owner`).
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub fn window_owns_session(window: WebviewWindow, windows: State<'_, WindowsState>) -> bool {
@@ -311,6 +313,7 @@ pub fn window_owns_session(window: WebviewWindow, windows: State<'_, WindowsStat
 }
 
 /// This window is done with the launch it took: its project opened, failed to, or was cancelled.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub fn window_launch_settled(window: WebviewWindow, windows: State<'_, WindowsState>, state: State<'_, AppState>) {
@@ -982,6 +985,7 @@ ide_command::desktop_domain!(
     window_complete_launch,
     window_cycle,
     window_flash_taskbar,
+    window_launch_settled,
     window_new,
     window_open_comparison,
     window_open_deployment,
@@ -990,9 +994,11 @@ ide_command::desktop_domain!(
     window_open_file_in_new_window,
     window_open_files,
     window_open_project,
+    window_open_project_tab,
     window_open_projects,
     window_open_remote,
     window_open_settings,
+    window_owns_session,
     window_set_smooth_scrolling,
     window_set_titlebar_height,
     window_take_launch,
