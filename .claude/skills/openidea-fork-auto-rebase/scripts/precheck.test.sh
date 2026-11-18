@@ -13,6 +13,9 @@ check() {
   local comments=${COMMENTS:-}
   # FORKTAG: fork release tags of the base (default: released); DEVCI: "status conclusion" of develop's tip Fork CI.
   local forktag=${FORKTAG-x} devci=${DEVCI:-completed success}
+  # RELRUN: "status conclusion" of the newest fork tag's fork-release run; RELEASED: published release tags;
+  # TIP: develop's tip (the fake fork tag points at def).
+  local relrun=${RELRUN:-in_progress } released=${RELEASED:-} tip=${TIP:-0123456789abcdef}
   local t
   t=$(mktemp -d)
   mkdir -p "$t/Project/openidea" "$t/bin" "$t/.config/fork-automation" "$t/.cache/fork-automation"
@@ -24,7 +27,7 @@ case "\$1" in
   ls-remote)
     if [ "\$2" = --tags ]; then [ -z "$forktag" ] || printf 'def\trefs/tags/$base-fork.1\n'
     else [ -z "$held" ] || printf 'abc\trefs/heads/rebase/$held\n'; fi ;;
-  rev-parse) echo 0123456789abcdef ;;
+  rev-parse) echo $tip ;;
 esac
 EOF
   cat > "$t/bin/gh" <<EOF
@@ -32,7 +35,9 @@ EOF
 [ "$fail" != fail ] || exit 1
 case "\$*" in
   *releases/latest*) echo $newest ;;
+  *fork-release.yml*) echo "$relrun" ;;
   *"run list"*) echo "$devci" ;;
+  *"release list"*) [ -z "$released" ] || echo "$released" ;;
   *commits/*) echo $(iso_ago "$age") ;;
   *"pr list"*) echo "7 $(iso_ago "$age")" ;;
   *"pr view"*)
@@ -96,4 +101,9 @@ FORKTAG= check "same release, never released, CI green" 0 0 v0.1.46 v0.1.46 "" "
 FORKTAG= DEVCI="in_progress " check "same release, never released, CI running" 1 0 v0.1.46 v0.1.46 "" ""
 FORKTAG= DEVCI="completed failure" check "same release, never released, CI red" 1 0 v0.1.46 v0.1.46 "" ""
 FORKTAG= DEVCI="completed failure" check "never released, CI red 7 h" 1 1 v0.1.46 v0.1.46 "" "" 1 "" 7
+RELRUN="completed failure" check "release failed, develop moved past"        0 0 v0.1.35 v0.1.35 v0.1.35 "1 1" 1
+RELRUN="completed failure" TIP=def check "release failed, develop on the tag" 1 0 v0.1.35 v0.1.35 v0.1.35 "1 1" 1
+RELRUN="completed failure" DEVCI="in_progress " check "release failed, develop CI running" 1 0 v0.1.35 v0.1.35 v0.1.35 "1 1" 1
+RELRUN="completed failure" RELEASED=v0.1.35-fork.1 check "release failed, but that tag is published" 1 0 v0.1.35 v0.1.35 v0.1.35 "1 1" 1
+RELRUN="in_progress " check "release running, develop moved past"          1 0 v0.1.35 v0.1.35 v0.1.35 "1 1" 1
 exit "$failed"
