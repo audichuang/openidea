@@ -3,7 +3,8 @@
 # no run holds the fork's rebase/* lock, when a held lock went stale (a run died; the skill's step 0 handles it), or
 # when a lock left for the user is obsolete (a newer release, or develop already on its version; step 0 retires it),
 # or when develop already sits on the newest release but the fork never released it and develop's Fork CI is green
-# (develop moved by hand, or a run died between moving develop and tagging; the skill's RELEASE mode).
+# (develop moved by hand, or a run died between moving develop and tagging; the skill's RELEASE mode), or when a
+# moved lock's release failed and develop has since moved past its tag (the skill releases the next fork.N).
 set -euo pipefail
 name="OpenIDEA fork 自動 rebase"
 trap 'rc=$?; m="precheck failed (exit $rc) at line $LINENO: $BASH_COMMAND"; echo "$m" >&2; "$HOME/.config/fork-automation/precheck-alert.sh" "$name" "$m" || true' ERR
@@ -20,6 +21,25 @@ skip() {
     "$HOME/.config/fork-automation/precheck-alert.sh" "$name" "precheck 連續 6 小時以上失敗：$1" || true
   fi
   exit 1
+}
+# Why: a tag's fork-release runs the workflow at the tag's commit, so a release that failed on the workflow itself
+# (v0.1.48-fork.1, #354) only ships as a new fork.N once a fix moved develop past the tag (#355). Exits 0 to start
+# the run when that is the state; returns otherwise.
+release_failed_past() {
+  local tags tip last published rel ci
+  tags=$(git ls-remote --tags fork "refs/tags/${1}-fork.*") || skip "git ls-remote fork tags failed"
+  tip=$(git rev-parse fork/develop)
+  last=$(sed -n 's#.*refs/tags/\(.*-fork\.[0-9]*\)$#\1#p' <<<"$tags" | sort -V | tail -1)
+  [ -n "$last" ] || return 0
+  ! grep -q "^$tip" <<<"$tags" || return 0
+  published=$(gh release list -R audichuang/openidea --limit 30 --json tagName --jq '.[].tagName') || skip "gh release list failed"
+  ! grep -qx "$last" <<<"$published" || return 0
+  rel=$(gh run list -R audichuang/openidea --workflow fork-release.yml --branch "$last" --json status,conclusion --jq '.[0] // empty | "\(.status) \(.conclusion)"') || skip "gh run list failed"
+  [ "$rel" = "completed failure" ] || return 0
+  ci=$(gh run list -R audichuang/openidea --workflow fork-ci.yml --branch develop --commit "$tip" --json status,conclusion --jq '.[0] // empty | "\(.status) \(.conclusion)"') || skip "gh run list failed"
+  [ "$ci" = "completed success" ] || return 0
+  echo "release failed: $last failed and develop moved past it to ${tip:0:9} with green Fork CI"
+  exit 0
 }
 cd "$HOME/Project/openidea"
 git fetch -q fork develop || skip "git fetch fork failed"
@@ -59,6 +79,9 @@ if [ -n "$lock" ]; then
     echo "approved by the user: $branch at $approved"
     exit 0
   fi
+  if [ "$moved" != 0 ] && [ "$base" = "$held" ]; then
+    release_failed_past "$held"
+  fi
   # Why moved first: once develop moved, a release is running (or died) whatever earlier comments say.
   if [ "$waiting" = 0 ] || [ "$moved" != 0 ]; then
     if [ "$age" -gt 21600 ]; then
@@ -80,7 +103,10 @@ if [ "$base" = "$newest" ]; then
   # Why: the newer-release check below never fires again for a base develop already sits on, so a manual rebase
   # that skipped the release left v0.1.46 unreleased in silence (2026-11-17).
   tags=$(git ls-remote --tags fork "refs/tags/${base}-fork.*") || skip "git ls-remote fork tags failed"
-  [ -z "$tags" ] || exit 1
+  if [ -n "$tags" ]; then
+    release_failed_past "$base"
+    exit 1
+  fi
   tip=$(git rev-parse fork/develop)
   ci=$(gh run list -R audichuang/openidea --workflow fork-ci.yml --branch develop --commit "$tip" --json status,conclusion --jq '.[0] // empty | "\(.status) \(.conclusion)"') || skip "gh run list failed"
   case $ci in
