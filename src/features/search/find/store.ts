@@ -255,7 +255,13 @@ export function resolveFindScope(o: FindOptions, inputs: ScopeInputs): SearchSco
   if (o.scopeTab === "directory" && o.directory.trim())
     return { kind: "directory", path: resolveDirectory(o.directory, root) };
   if (o.scopeTab === "module")
-    return o.module && root ? { kind: "directory", path: resolveDirectory(o.module, root) } : { kind: "project" };
+    // Module names are directory names: kept verbatim, unlike a typed directory (no trimming).
+    return o.module && root
+      ? {
+          kind: "directory",
+          path: o.module.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(o.module) ? o.module : `${root}/${o.module}`,
+        }
+      : { kind: "project" };
   if (o.scopeTab !== "scope") return { kind: "project" };
   const custom = customScopeName(o.namedScope);
   if (custom !== null) {
