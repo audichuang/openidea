@@ -3,7 +3,8 @@
 # no run holds the fork's rebase/* lock, when a held lock went stale (a run died; the skill's step 0 handles it), or
 # when a lock left for the user is obsolete (a newer release, or develop already on its version; step 0 retires it),
 # or when develop already sits on the newest release but the fork never released it and develop's Fork CI is green
-# (develop moved by hand, or a run died between moving develop and tagging; the skill's RELEASE mode).
+# (develop moved by hand, or a run died between moving develop and tagging; the skill's RELEASE mode), or when a
+# moved lock's release failed and develop has since moved past its tag (the skill releases the next fork.N).
 set -euo pipefail
 name="OpenIDEA fork 自動 rebase"
 trap 'rc=$?; m="precheck failed (exit $rc) at line $LINENO: $BASH_COMMAND"; echo "$m" >&2; "$HOME/.config/fork-automation/precheck-alert.sh" "$name" "$m" || true' ERR
@@ -58,6 +59,24 @@ if [ -n "$lock" ]; then
   if [ "$waiting" != 0 ] && [ "$moved" = 0 ] && [ "$approved" = "${lock%%[[:space:]]*}" ]; then
     echo "approved by the user: $branch at $approved"
     exit 0
+  fi
+  # Why: a tag's fork-release runs the workflow at the tag's commit, so a release that failed on the workflow
+  # itself (v0.1.48-fork.1, #354) only ships as a new fork.N once a fix moved develop past the tag (#355).
+  if [ "$moved" != 0 ] && [ "$base" = "$held" ]; then
+    tags=$(git ls-remote --tags fork "refs/tags/${held}-fork.*") || skip "git ls-remote fork tags failed"
+    tip=$(git rev-parse fork/develop)
+    last=$(sed -n 's#.*refs/tags/\(.*-fork\.[0-9]*\)$#\1#p' <<<"$tags" | sort -V | tail -1)
+    if [ -n "$last" ] && ! grep -q "^$tip" <<<"$tags"; then
+      published=$(gh release list -R audichuang/openidea --limit 30 --json tagName --jq '.[].tagName') || skip "gh release list failed"
+      if ! grep -qx "$last" <<<"$published"; then
+        rel=$(gh run list -R audichuang/openidea --workflow fork-release.yml --branch "$last" --json status,conclusion --jq '.[0] // empty | "\(.status) \(.conclusion)"') || skip "gh run list failed"
+        ci=$(gh run list -R audichuang/openidea --workflow fork-ci.yml --branch develop --commit "$tip" --json status,conclusion --jq '.[0] // empty | "\(.status) \(.conclusion)"') || skip "gh run list failed"
+        if [ "$rel" = "completed failure" ] && [ "$ci" = "completed success" ]; then
+          echo "release failed: $last failed and develop moved past it to ${tip:0:9} with green Fork CI"
+          exit 0
+        fi
+      fi
+    fi
   fi
   # Why moved first: once develop moved, a release is running (or died) whatever earlier comments say.
   if [ "$waiting" = 0 ] || [ "$moved" != 0 ]; then
