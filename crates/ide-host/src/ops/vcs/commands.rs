@@ -743,6 +743,7 @@ pub async fn vcs_block_history(
     result
 }
 
+#[command(trust = always)]
 pub async fn vcs_block_history_summary(
     host: &Host,
     window: &str,
@@ -764,9 +765,9 @@ pub async fn vcs_block_history_summary(
     result
 }
 
-/// [`vcs_block_history_summary`] in two steps: `on_first` gets the anchor and the first
-/// few revisions with diffs as soon as Git has them; the full revision list is returned.
-/// Cancelling `request` stops both Git processes.
+/// History for Selection with the first rows early: `on_first` gets the anchor and the
+/// first few revisions with diffs, then the full revision list is returned.
+#[command(trust = always)]
 pub async fn vcs_block_history_streamed(
     host: &Host,
     window: &str,
@@ -798,6 +799,7 @@ pub async fn vcs_block_history_streamed(
     result
 }
 
+#[command(trust = always)]
 pub async fn vcs_block_history_revisions(
     host: &Host,
     window: &str,
@@ -819,8 +821,8 @@ pub async fn vcs_block_history_revisions(
     result
 }
 
-/// Every revision's spot, in chunks while Git walks the history (see
-/// [`Repo::block_history_spots`]). Cancelling `request` stops Git.
+/// Where each revision's diff starts, in chunks while Git walks the history.
+#[command(trust = always)]
 pub async fn vcs_block_history_spots(
     host: &Host,
     window: &str,
@@ -843,7 +845,8 @@ pub async fn vcs_block_history_spots(
     result
 }
 
-/// The diffs of up to four revisions read from their spots ([`Repo::block_history_revisions_at`]).
+/// The diffs of up to four revisions, each read starting at its own commit.
+#[command(trust = always)]
 pub async fn vcs_block_history_revisions_at(
     host: &Host,
     window: &str,
@@ -3273,6 +3276,11 @@ ide_command::domain!(
     vcs_apply_mapped_patch,
     vcs_blame,
     vcs_block_history,
+    vcs_block_history_revisions,
+    vcs_block_history_revisions_at,
+    vcs_block_history_spots,
+    vcs_block_history_streamed,
+    vcs_block_history_summary,
     vcs_branch_info,
     vcs_check_incoming,
     vcs_branches,
