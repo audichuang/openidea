@@ -24,7 +24,7 @@ export async function readClipboardPlainText(): Promise<string> {
 /** The clipboard's image as base64 PNG, read natively; null when it holds none or outside the desktop app. */
 export async function readClipboardPng(): Promise<string | null> {
   if (!isTauri()) return null;
-  const url = await call(commands.clipboardImage());
+  const url = await call(commands.clipboardImageDataUrl());
   return url ? url.slice(url.indexOf(",") + 1) : null;
 }
 
