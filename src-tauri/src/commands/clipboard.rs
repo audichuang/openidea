@@ -187,6 +187,7 @@ ide_command::desktop_domain!(
     clipboard_has_files,
     clipboard_has_image,
     clipboard_image,
+    clipboard_image_data_url,
     clipboard_set_file_list,
     clipboard_text,
     clipboard_write_text,
