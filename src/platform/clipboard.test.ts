@@ -113,7 +113,7 @@ describe("clipboard writes", () => {
 
 describe("clipboard image", () => {
   it("is the PNG's base64, without the data URL prefix", async () => {
-    const image = vi.spyOn(commands, "clipboardImage");
+    const image = vi.spyOn(commands, "clipboardImageDataUrl");
     image.mockResolvedValue({ status: "ok", data: "data:image/png;base64,iVBORw0KGgo=" });
     expect(await readClipboardPng()).toBe("iVBORw0KGgo=");
     image.mockResolvedValue({ status: "ok", data: null });
@@ -124,7 +124,7 @@ describe("clipboard image", () => {
 
   it("is none outside the desktop app", async () => {
     vi.unstubAllGlobals();
-    const image = vi.spyOn(commands, "clipboardImage");
+    const image = vi.spyOn(commands, "clipboardImageDataUrl");
     expect(await readClipboardPng()).toBeNull();
     expect(image).not.toHaveBeenCalled();
   });
