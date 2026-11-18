@@ -116,12 +116,12 @@ mod tests;
 
 ide_command::domain!(
     doc:
+    doc_autosave,
     doc_close,
     doc_edit,
     doc_open,
     doc_open_untitled,
     doc_save,
-    doc_autosave,
     doc_save_all,
     doc_save_as,
     doc_snapshot,
