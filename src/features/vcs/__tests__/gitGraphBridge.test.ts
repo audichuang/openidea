@@ -4,10 +4,14 @@
  * or the state the graph reuses; fix `gitGraphBridge.ts`, not the graph.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Branch, Commit } from "@/bindings";
+import type { Branch, Commit, FileStatus } from "@/bindings";
 import type { MenuItem } from "@/ui";
 
 const upstream = { name: null as string | null, outgoing: [] as string[] };
+/** Repository roots the backend reports, with the operation each stopped in. */
+const backend = {
+  roots: [] as Array<{ root: string; operation: string | null }>,
+};
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -27,6 +31,13 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
           data: { head: "main", headCommit: "a", upstream: upstream.name, ahead: 0, behind: 0, operation: null },
         }),
       vcsConfigGet: () => Promise.resolve({ status: "ok", data: null }),
+      vcsRoots: () =>
+        Promise.resolve({
+          status: "ok",
+          data: backend.roots.map((r) => ({ ...r, head: "main", headCommit: "a" })),
+        }),
+      vcsStatus: () => Promise.resolve({ status: "ok", data: [] }),
+      vcsBranches: () => Promise.resolve({ status: "ok", data: [] }),
     },
   };
 });
@@ -40,6 +51,31 @@ const openInput = vi.fn();
 vi.mock("@/workbench/contributions", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/workbench/contributions")>();
   return { ...real, editorService: () => ({ openInput }) };
+});
+
+const controlOperation = vi.fn();
+vi.mock("../operations", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../operations")>();
+  return {
+    ...real,
+    controlOperation: (control: string, expected: string | null, root?: string) =>
+      controlOperation(control, expected, root),
+  };
+});
+const showConflictsDialog = vi.fn();
+vi.mock("../conflictsUi", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../conflictsUi")>();
+  return { ...real, showConflictsDialog: () => showConflictsDialog(useVcs.getState().repo) };
+});
+const stashChanges = vi.fn();
+const showRollbackDialog = vi.fn();
+vi.mock("../changeOps", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../changeOps")>();
+  return {
+    ...real,
+    stashChanges: (paths: readonly string[], repo: string | null) => stashChanges(paths, repo),
+    showRollbackDialog: (files: FileStatus[]) => showRollbackDialog(files.map((f) => f.path)),
+  };
 });
 
 const chooseMany = vi.fn();
@@ -97,6 +133,7 @@ let dispose: () => void;
 beforeEach(() => {
   upstream.name = null;
   upstream.outgoing = [];
+  backend.roots = [{ root: REPO, operation: null }];
   dispose = activate();
   useVcs.setState({
     available: true,
@@ -253,6 +290,58 @@ describe("git graph bridge", () => {
 
   it("offers apply, pop, unstash and drop for a stash", () => {
     expect(labels(bridge().stashMenu(0, "wip", REPO))).toEqual(["Apply", "Pop", "Unstash…", "Drop"]);
+  });
+
+  describe("with the graph on another repository than the selected one (#367)", () => {
+    const [APP, LIB] = ["/work/app", "/work/lib"];
+    const changed = (path: string): FileStatus => ({
+      path,
+      relPath: path.split("/").pop()!,
+      staged: null,
+      unstaged: "modified",
+      renamedFrom: null,
+    });
+
+    beforeEach(() => {
+      backend.roots = [
+        { root: APP, operation: null },
+        { root: LIB, operation: "rebase" },
+      ];
+      useVcs.setState({
+        root: APP,
+        roots: [APP, LIB],
+        repo: APP,
+        status: [changed(`${APP}/a.ts`), changed(`${LIB}/b.ts`)],
+      });
+    });
+
+    it("continues and aborts the graph repository's operation", async () => {
+      await bridge().controlOperation(LIB, "continue", "rebase");
+      expect(controlOperation).toHaveBeenLastCalledWith("continue", "rebase", LIB);
+      expect(useVcs.getState().repo).toBe(LIB);
+      useVcs.setState({ repo: APP });
+      await bridge().controlOperation(LIB, "abort", "rebase");
+      expect(controlOperation).toHaveBeenLastCalledWith("abort", "rebase", LIB);
+    });
+
+    it("opens the conflicts dialog and the Git Log on the graph's repository", async () => {
+      await bridge().resolveConflicts(LIB);
+      expect(showConflictsDialog).toHaveBeenLastCalledWith(LIB);
+      useVcs.setState({ repo: APP });
+      const showLog = vi.fn(() => useVcs.getState().repo);
+      const off = registerActions([{ id: "vcs.showLog", title: "Show Git Log", run: () => void showLog() }]);
+      await bridge().showLog(LIB);
+      off();
+      expect(showLog).toHaveReturnedWith(LIB);
+    });
+
+    it("stashes and rolls back the graph repository's changes, leaving the selection alone", () => {
+      bridge().stashChanges(LIB);
+      expect(stashChanges).toHaveBeenLastCalledWith([], LIB);
+      bridge().rollback(LIB);
+      expect(showRollbackDialog).toHaveBeenLastCalledWith([`${LIB}/b.ts`]);
+      expect(useVcs.getState().repo).toBe(APP);
+    });
   });
 
   it("offers checkout and new branch for a tag", async () => {

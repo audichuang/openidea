@@ -149,7 +149,7 @@ export function CommitList(p: CommitListProps) {
     const bridge = gitGraphBridge();
     if (!bridge) return;
     let items: MenuItem[];
-    if (entry.kind === "working") items = workingMenu();
+    if (entry.kind === "working") items = workingMenu(p.repo);
     else if (entry.kind === "stash") items = bridge.stashMenu(entry.stash.index, entry.stash.message, p.repo);
     else {
       const selection = selectedSet.has(entry.id)

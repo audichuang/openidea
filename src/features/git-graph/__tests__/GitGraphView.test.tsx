@@ -154,6 +154,11 @@ const bridge = {
   openRevisionDiff: vi.fn(async () => {}),
   copyRange: vi.fn(async () => true),
   stashMenu: vi.fn(() => [{ label: "Apply" }, { label: "Pop", run: popStash }] as MenuItem[]),
+  controlOperation: vi.fn(async () => {}),
+  resolveConflicts: vi.fn(async () => {}),
+  stashChanges: vi.fn(),
+  rollback: vi.fn(),
+  showLog: vi.fn(async () => {}),
   mergeIntoCurrent: vi.fn(async () => {}),
   rebaseCurrentOnto: vi.fn(async () => {}),
   runOp: <T,>(_title: string, fn: () => Promise<T>): Promise<T | undefined> => fn(),
@@ -516,6 +521,40 @@ describe("Git Graph pseudo rows and panels", () => {
     } finally {
       off();
     }
+  });
+
+  it("continues, aborts, stashes, rolls back and shows the log of the toolbar's repository (#367)", async () => {
+    const roots = ["/work/app", "/work/lib"];
+    const lib = roots[1]!;
+    state = { ...state, roots, repo: roots[0]!, heads: { [lib]: state.heads[REPO]! }, operations: { [lib]: "rebase" } };
+    useGraphView.setState({ repo: lib });
+    graphWorkingState.mockImplementation(() => ok({ staged: 0, unstaged: 1, untracked: 0, conflicted: 0 }));
+    render(<GitGraphEditor />);
+    await screen.findByText("Uncommitted Changes");
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(bridge.controlOperation).toHaveBeenLastCalledWith(lib, "continue", "rebase");
+    fireEvent.click(screen.getByRole("button", { name: "Abort" }));
+    expect(bridge.controlOperation).toHaveBeenLastCalledWith(lib, "abort", "rebase");
+    fireEvent.click(screen.getByRole("button", { name: "Show Git Log" }));
+    expect(bridge.showLog).toHaveBeenCalledWith(lib);
+    fireEvent.click(document.querySelector<HTMLElement>('[data-entry="*working*"]')!);
+    fireEvent.click(await screen.findByRole("button", { name: "Stash Changes…" }));
+    expect(bridge.stashChanges).toHaveBeenCalledWith(lib);
+    fireEvent.click(screen.getByRole("button", { name: "Rollback…" }));
+    expect(bridge.rollback).toHaveBeenCalledWith(lib);
+    // The row's own menu does the same.
+    fireEvent.contextMenu(document.querySelector<HTMLElement>('[data-entry="*working*"]')!);
+    await waitFor(() => expect(showContextMenu).toHaveBeenCalled());
+    const items = showContextMenu.mock.calls.at(-1)![1] as Array<{ label?: string; run?: () => void }>;
+    items.find((i) => i.label === "Stash Changes…")!.run!();
+    items.find((i) => i.label === "Rollback…")!.run!();
+    expect(bridge.stashChanges).toHaveBeenCalledTimes(2);
+    expect(bridge.rollback).toHaveBeenCalledTimes(2);
+
+    state = { ...state, operations: { [lib]: "merge" } };
+    await act(async () => listeners.forEach((fn) => fn()));
+    fireEvent.click(screen.getByRole("button", { name: "Resolve Conflicts…" }));
+    expect(bridge.resolveConflicts).toHaveBeenCalledWith(lib);
   });
 });
 
