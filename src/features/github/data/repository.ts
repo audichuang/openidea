@@ -219,9 +219,10 @@ export function trackConnectedUpstream(): () => void {
     void call(commands.vcsBranchInfo(root))
       .catch(() => null)
       .then((b) => {
-        if (mine !== seq) return;
+        // A failed read stays `loading`: asked again at the next VCS refresh, not at each store change.
+        if (mine !== seq || !b) return;
         loading = null;
-        if (b) useConnectedUpstream.setState({ value: { root, head: b.head, upstream: b.upstream } });
+        useConnectedUpstream.setState({ value: { root, head: b.head, upstream: b.upstream } });
       });
   };
   const sync = (reload: boolean) => {
