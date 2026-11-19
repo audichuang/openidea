@@ -141,12 +141,7 @@ class BlameMarker extends GutterMarker {
 }
 
 const spacer = new BlameMarker(
-  {
-    commit: "ffffffff",
-    author: "Mmmmmmmm",
-    timeMs: Date.UTC(2020, 11, 28),
-    summary: "",
-  },
+  { commit: "ffffffff", author: "Mmmmmmmm", timeMs: Date.UTC(2020, 11, 28), summary: "" },
   1,
 );
 
@@ -156,11 +151,7 @@ type AnnotateColumn = (typeof COLUMNS)[number];
 type AnnotateColumns = Record<AnnotateColumn, boolean>;
 
 const COLUMNS_KEY = "openidea.vcs.annotateColumns";
-const DEFAULT_COLUMNS: AnnotateColumns = {
-  date: true,
-  author: true,
-  revision: false,
-};
+const DEFAULT_COLUMNS: AnnotateColumns = { date: true, author: true, revision: false };
 
 export function readAnnotateColumns(): AnnotateColumns {
   try {
@@ -196,9 +187,7 @@ function setAnnotateColumn(column: AnnotateColumn, shown: boolean) {
 
 /** Hides the columns turned off in Options, here and in editors annotated before the change. */
 const annotateColumns = ViewPlugin.define(
-  (view) => ({
-    destroy: useAnnotateColumns.subscribe(() => view.dispatch({})),
-  }),
+  (view) => ({ destroy: useAnnotateColumns.subscribe(() => view.dispatch({})) }),
   {
     provide: () =>
       EditorView.editorAttributes.of(() => {
@@ -209,11 +198,7 @@ const annotateColumns = ViewPlugin.define(
   },
 );
 
-const COLUMN_LABELS: Record<AnnotateColumn, string> = {
-  date: "Date",
-  author: "Author",
-  revision: "Revision",
-};
+const COLUMN_LABELS: Record<AnnotateColumn, string> = { date: "Date", author: "Author", revision: "Revision" };
 
 function optionsMenu() {
   const c = useAnnotateColumns.getState();
@@ -318,19 +303,10 @@ async function setColorMode(mode: AnnotateColors) {
 }
 
 const blameTheme = EditorView.baseTheme({
-  ".cm-vcs-blame": {
-    cursor: "pointer",
-    borderRight: "1px solid var(--border)",
-  },
-  ".cm-vcs-blame .cm-gutterElement": {
-    padding: "0",
-    display: "flex",
-    alignItems: "stretch",
-  },
+  ".cm-vcs-blame": { cursor: "pointer", borderRight: "1px solid var(--border)" },
+  ".cm-vcs-blame .cm-gutterElement": { padding: "0", display: "flex", alignItems: "stretch" },
   ...colorClasses,
-  ".cm-vcs-blame .cm-vcs-blame-colored .cm-vcs-blame-line": {
-    color: "var(--fg-emphasis)",
-  },
+  ".cm-vcs-blame .cm-vcs-blame-colored .cm-vcs-blame-line": { color: "var(--fg-emphasis)" },
   ".cm-vcs-blame-line": {
     flex: "1",
     display: "inline-flex",
@@ -342,10 +318,7 @@ const blameTheme = EditorView.baseTheme({
     fontSize: "var(--fs-small)",
     whiteSpace: "nowrap",
   },
-  ".cm-vcs-blame-date": {
-    minWidth: "10ch",
-    fontVariantNumeric: "tabular-nums",
-  },
+  ".cm-vcs-blame-date": { minWidth: "10ch", fontVariantNumeric: "tabular-nums" },
   ".cm-vcs-blame-author": { minWidth: "9ch" },
   ".cm-vcs-blame-revision": { fontFamily: "var(--font-mono)" },
   "&.cm-vcs-blame-hide-date .cm-vcs-blame-date, &.cm-vcs-blame-hide-author .cm-vcs-blame-author, &.cm-vcs-blame-hide-revision .cm-vcs-blame-revision":
@@ -393,9 +366,7 @@ class BlameInteraction implements PluginValue {
     scheduleCloseBlamePopup();
   };
   constructor(private readonly view: EditorView) {
-    this.view.scrollDOM.addEventListener("scroll", this.onScroll, {
-      passive: true,
-    });
+    this.view.scrollDOM.addEventListener("scroll", this.onScroll, { passive: true });
     this.view.dom.addEventListener("mouseout", this.onLeave);
   }
   update(u: ViewUpdate) {
@@ -491,10 +462,7 @@ function blameExtension(lines: BlameLine[], path: string, live: boolean): Extens
                 })),
               },
               { kind: "separator" as const },
-              {
-                label: "Close Annotations",
-                run: () => setAnnotations(view, null, path, false),
-              },
+              { label: "Close Annotations", run: () => setAnnotations(view, null, path, false) },
             ]);
             return true;
           },
@@ -516,9 +484,7 @@ export function annotationsShown(view: EditorView): boolean {
 
 function setAnnotations(view: EditorView, lines: BlameLine[] | null, path: string, live: boolean) {
   if (!lines) closeBlamePopup(view);
-  view.dispatch({
-    effects: blameCompartment.reconfigure(lines ? blameExtension(lines, path, live) : []),
-  });
+  view.dispatch({ effects: blameCompartment.reconfigure(lines ? blameExtension(lines, path, live) : []) });
 }
 
 /**
