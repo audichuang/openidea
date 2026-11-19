@@ -78,6 +78,8 @@ export function syncMergeScroll(views: Record<MergePane, EditorView>): () => voi
   };
 
   const echoes = new ScrollEchoes<MergePane>();
+  /** Where a passed-on wheel left a pane: past where the pane the wheel was over maps it. */
+  const passed = new Map<MergePane, number>();
   /** Where `to` scrolls to match `from`, anchored a third down the pane. */
   const followTop = (from: MergePane, to: MergePane) => {
     const master = views[from];
@@ -90,6 +92,7 @@ export function syncMergeScroll(views: Record<MergePane, EditorView>): () => voi
   const follow = (from: MergePane) => {
     for (const to of PANES) {
       if (to === from) continue;
+      passed.delete(to);
       const el = views[to].scrollDOM;
       const top = followTop(from, to);
       if (Math.abs(el.scrollTop - top) < 1) continue;
@@ -105,8 +108,9 @@ export function syncMergeScroll(views: Record<MergePane, EditorView>): () => voi
    * A wheel over `side` that `side` cannot follow scrolls another pane, as in the two-pane diff
    * (`UnalignedPanes.passOn`): otherwise the end of a longer pane is reachable only with the
    * pointer over that pane. "also": `side` is at its end and a pane that can still scroll does;
-   * "instead": a pane went past where `side` maps it and scrolls back first, so `side` must not
-   * move (it would pull that pane back in one jump).
+   * "instead": a pane such a wheel took past where `side` maps it scrolls back first, so `side`
+   * must not move (it would pull that pane back in one jump). A pane that is elsewhere for another
+   * reason, such as lines only it has above the others' first one, does not hold the wheel back.
    *
    * Over a side, one pane takes the wheel (the result first) and the others follow it. Over the
    * result, both sides take it and neither follows the other: a side past the result's end maps
@@ -122,12 +126,16 @@ export function syncMergeScroll(views: Record<MergePane, EditorView>): () => voi
         const el = views[to].scrollDOM;
         const before = el.scrollTop;
         el.scrollBy(0, dy);
-        if (apart && el.scrollTop !== before) echoes.mark(to, el.scrollTop);
+        if (el.scrollTop === before) continue;
+        passed.set(to, el.scrollTop);
+        if (apart) echoes.mark(to, el.scrollTop);
       }
     };
     const past = RECEIVERS[side].filter((to) => {
+      if (!passed.has(to)) return false;
       const top = views[to].scrollDOM.scrollTop;
       const mapped = followTop(side, to);
+      if (Math.abs(top - mapped) <= 1) passed.delete(to);
       return dy < 0 ? top > mapped + 1 : top < mapped - 1;
     });
     if (past.length) {
@@ -144,6 +152,9 @@ export function syncMergeScroll(views: Record<MergePane, EditorView>): () => voi
   const offs = PANES.map((pane) => {
     const el = views[pane].scrollDOM;
     const onScroll = () => {
+      // Scrolled by the user since the wheel that was passed on to it.
+      const left = passed.get(pane);
+      if (left !== undefined && Math.abs(el.scrollTop - left) > 1) passed.delete(pane);
       if (!echoes.take(pane, el.scrollTop)) follow(pane);
     };
     const onWheel = (e: WheelEvent) => {
