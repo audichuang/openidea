@@ -18,7 +18,7 @@ import {
   type BranchTreeNode,
 } from "../branches";
 import { branchMenu, inRepo, mergedBranchMenu, showTagContextMenu } from "../branchMenu";
-import { canDeleteBranch, loadFavoriteBranches, useFavoriteBranches } from "../branchOps";
+import { canDeleteBranch, useFavoriteBranchNames } from "../branchOps";
 import { BranchSync } from "../BranchSync";
 import { summarizeBranchSync, type BranchSyncSummary } from "../branchSyncState";
 import { FetchButton } from "../FetchButton";
@@ -141,11 +141,10 @@ export function BranchesPanel() {
   const branchesLoaded = useVcs((s) => s.branchesLoaded);
   const remoteBusy = useVcs((s) => s.remoteBusy);
   const current = useVcs((s) => s.branch?.head ?? null);
-  const favorites = useFavoriteBranches((s) => s.names);
+  const favorites = useFavoriteBranchNames(repositories.length === 1 ? repositories[0] : undefined);
   const filterBranches = filters.branches;
   const [query, setQuery] = useState("");
   const [tags, setTags] = useState<string[]>([]);
-  useEffect(() => loadFavoriteBranches(), [root]);
   // Branches reload when refs move (fetch, new tag…): the tags are re-read with them.
   useEffect(() => {
     let live = true;
@@ -439,6 +438,7 @@ export function BranchesPanel() {
                     headCommit: repo ? (useVcs.getState().heads[repo]?.headCommit ?? null) : undefined,
                     existingWorktree: worktreeFor(repo ?? currentRepository, n.branch.name),
                     branches: (repo ? allBranches[repo] : undefined) ?? branches,
+                    repo,
                   },
                 )
               : n?.kind === "remote" || (n?.kind === "group" && n.key.endsWith("g:remote"))
