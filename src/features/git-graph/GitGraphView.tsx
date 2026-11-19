@@ -12,7 +12,7 @@ import { buildEntries, layoutInput, selectedEntries } from "./entries";
 import { BisectBanner } from "./panels";
 import { PrView } from "./PrView";
 import { Toolbar } from "./Toolbar";
-import { useGraphView } from "./viewState";
+import { branchFilterOf, useGraphView } from "./viewState";
 import styles from "./GitGraph.module.css";
 
 /** Remotes and the bisect state of `repo`, refreshed with the vcs state. */
@@ -43,7 +43,8 @@ export function GitGraphEditor() {
   const set = useGraphView.setState;
   const activeRepo =
     view.repo && repoState.roots.includes(view.repo) ? view.repo : (repoState.repo ?? repoState.roots[0] ?? null);
-  const { branchFilter, showRemotes, query, matchIndex } = view;
+  const { showRemotes, query, matchIndex } = view;
+  const branchFilter = branchFilterOf(view, activeRepo);
   const filters = useMemo<GraphFilters>(() => ({ branches: branchFilter, showRemotes }), [branchFilter, showRemotes]);
   const data = useGraphData(activeRepo, filters, repoState.version);
   const extras = useGraphExtras(activeRepo, repoState.version);
@@ -90,7 +91,7 @@ export function GitGraphEditor() {
         onRepo={(repo) => set({ repo })}
         branches={data.branches}
         branchFilter={branchFilter}
-        onBranchFilter={(b) => set({ branchFilter: b })}
+        onBranchFilter={(b) => set((s) => ({ branchFilter: { ...s.branchFilter, [activeRepo]: b } }))}
         showRemotes={showRemotes}
         onShowRemotes={(v) => set({ showRemotes: v })}
         query={query}
@@ -138,11 +139,16 @@ export function GitGraphEditor() {
             <SplitPanel id="details" defaultSize="35%" minSize="10%">
               <BottomPane
                 panel={view.panel}
-                onPanel={(panel) => set({ panel, ...(panel === "tree" ? { treeRev: null } : {}) })}
+                onPanel={(panel) =>
+                  set((s) => ({
+                    panel,
+                    ...(panel === "tree" ? { treeRev: { ...s.treeRev, [activeRepo]: null } } : {}),
+                  }))
+                }
                 entries={selectedRows}
                 repo={activeRepo}
                 version={repoState.version}
-                treeRev={view.treeRev}
+                treeRev={view.treeRev[activeRepo] ?? null}
                 onJump={jumpTo}
                 remoteBranches={remoteBranches}
               />
