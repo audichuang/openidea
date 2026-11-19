@@ -1467,6 +1467,7 @@ type StashNode = { key: string; stash: StashEntry; change?: LogChange };
 
 const stashKey = (s: StashEntry) => `${s.repo}:${s.index}:${s.id}`;
 const STASH_PREVIEW_DELAY = 120;
+const NO_STASHES: StashEntry[] = [];
 
 /** A stash's changes against the commit it was made on, as Git Log changes (diffs, line counts). */
 async function stashFileChanges(stash: StashEntry): Promise<LogChange[]> {
@@ -1482,16 +1483,20 @@ export function StashesPanel() {
   const [tick, setTick] = useState(0);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const request = useMemo(() => ({ repos, repo, version, tick }), [repos, repo, version, tick]);
+  // The repositories listed: their last list stays up while a refresh of the same ones loads.
+  const scope = (repos.length ? repos : [repo]).join("\u0000");
   const [result, setResult] = useState<{
     request: typeof request;
+    scope: string;
     stashes: StashEntry[];
     error: string | null;
   } | null>(null);
   const [files, setFiles] = useState<ReadonlyMap<string, LogChange[]>>(new Map());
   const previewTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const loaded = result?.request === request;
-  const stashes = loaded ? result.stashes : [];
-  const error = loaded ? result.error : null;
+  const shown = result?.scope === scope ? result : null;
+  const stashes = shown?.stashes ?? NO_STASHES;
+  const error = shown?.error ?? null;
   useEffect(() => {
     let live = true;
     void Promise.all(
@@ -1500,15 +1505,20 @@ export function StashesPanel() {
       ),
     )
       .then((lists) => {
-        if (live) setResult({ request, stashes: lists.flat(), error: null });
+        if (!live) return;
+        const next = lists.flat();
+        setResult((prev) => {
+          const same = prev?.scope === scope && JSON.stringify(prev.stashes) === JSON.stringify(next);
+          return { request, scope, stashes: same ? prev.stashes : next, error: null };
+        });
       })
       .catch((e) => {
-        if (live) setResult({ request, stashes: [], error: String(e) });
+        if (live) setResult({ request, scope, stashes: NO_STASHES, error: String(e) });
       });
     return () => {
       live = false;
     };
-  }, [request]);
+  }, [request, scope]);
   useEffect(() => () => clearTimeout(previewTimer.current), []);
   const roots = useMemo<StashNode[]>(() => stashes.map((stash) => ({ key: stashKey(stash), stash })), [stashes]);
   const childrenOf = (node: StashNode): StashNode[] | undefined =>
@@ -1527,7 +1537,8 @@ export function StashesPanel() {
     return childrenOf(root)?.find((n) => n.key === key);
   };
   const selectedNode = nodeOf(selectedKey);
-  const current = selectedNode?.stash ?? stashes[0];
+  // A list being refreshed may hold indexes Git has since moved: no actions on it until it is back.
+  const current = loaded ? (selectedNode?.stash ?? stashes[0]) : undefined;
   const showDiff = (node: StashNode, preview: boolean) => {
     const chain = files.get(stashKey(node.stash)) ?? [];
     if (node.change) void showChangesDiff([node.change], preview, chain).catch(() => undefined);
@@ -1590,7 +1601,7 @@ export function StashesPanel() {
           rowHeight={22}
           aria-label="Stashes"
           className={styles.stashList}
-          empty={<span className={styles.empty}>{error ?? (loaded ? tx("No stashes") : tx("Loading…"))}</span>}
+          empty={<span className={styles.empty}>{error ?? (shown ? tx("No stashes") : tx("Loading…"))}</span>}
           onSelectionChange={(sel) => {
             const key = [...sel][0] ?? null;
             setSelectedKey(key);
@@ -1604,6 +1615,7 @@ export function StashesPanel() {
           onContextMenu={(n, _sel, e) => {
             if (!n) return;
             e.preventDefault();
+            if (!loaded) return;
             setSelectedKey(n.key);
             const s = n.stash;
             showContextMenu(e, [
