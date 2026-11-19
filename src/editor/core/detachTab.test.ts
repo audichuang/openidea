@@ -9,6 +9,7 @@ import { ask } from "@/workbench/messages";
 import type * as Messages from "@/workbench/messages";
 import { registerEditorKind, type EditorDocumentLifecycle } from "@/workbench/contributions";
 import * as light from "./openLightweightEditor";
+import { forkDetach } from "./forkDetach";
 
 vi.mock("@/workbench/messages", async (original) => ({
   ...(await original<typeof Messages>()),
@@ -40,8 +41,10 @@ beforeEach(() => {
     data: { kind: "opened", label: "second" },
   });
   vi.spyOn(light, "openLightweightEditor").mockResolvedValue();
+  forkDetach.lightweight = true;
 });
 afterEach(() => {
+  forkDetach.lightweight = false;
   ctrl?.stop();
   unregister?.();
   unregister = undefined;
