@@ -19,14 +19,13 @@ import {
   mergeInRepos,
   newBranchInRepos,
   rebaseInRepos,
-  loadFavoriteBranches,
+  favoriteBranches,
   mergeIntoCurrent,
   newBranch,
   rebaseOnto,
   renameBranch,
   toggleFavoriteBranch,
   updateBranch,
-  useFavoriteBranches,
 } from "./branchOps";
 import { showCompareBranches } from "./CompareBranches";
 import { showDiffWithWorkingTree } from "./operations";
@@ -53,18 +52,21 @@ export function branchMenu(
   current: string | null,
   done: () => void = () => {},
   selected: readonly { repo?: string; branch?: Branch }[] = [],
+  /** The branch's repository when it is not the selected one (its favorites are its own). */
+  repo?: string,
+  /** That repository's branches, when it is not the selected one. */
+  branches?: readonly Branch[],
 ): MenuItem[] {
   const run = (fn: () => unknown) => () => {
     done();
     void fn();
   };
   const cur = current ?? "HEAD";
-  loadFavoriteBranches();
-  const favorite = isFavoriteBranch(b, useFavoriteBranches.getState().names);
+  const favorite = isFavoriteBranch(b, favoriteBranches(repo));
   const favoriteItem: MenuItem = {
     label: favorite ? "Remove from Favorites" : "Add to Favorites",
     icon: "star",
-    run: run(() => toggleFavoriteBranch(b)),
+    run: run(() => toggleFavoriteBranch(b, repo, branches)),
   };
   const history: MenuItem = {
     label: "Show History",
