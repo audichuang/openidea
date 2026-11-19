@@ -140,7 +140,7 @@ it("keeps the favorites marked when there was one list per project, until a repo
 
 it("keeps a repository's favorites from when it was opened as a project itself, with the project's", async () => {
   localStorage.setItem(PROJECT_FAVORITES, JSON.stringify(["dev"]));
-  localStorage.setItem(`${PROJECT_FAVORITES}/b`, JSON.stringify(["only-b", "dev"]));
+  localStorage.setItem(`${PROJECT_FAVORITES}/b`, JSON.stringify(["only-b"]));
   expect(favoriteBranches("/p/b")).toEqual(["only-b", "dev"]);
   expect(favoriteBranches("/p/a")).toEqual(["dev"]);
 
@@ -154,7 +154,7 @@ it("keeps a repository's favorites from when it was opened as a project itself, 
   // The repository's own list starts from both earlier lists, which stay as they were.
   expect(JSON.parse(localStorage.getItem("openidea.vcs.favoriteBranches.v2:/p/b")!)).toEqual(["only-b"]);
   expect(JSON.parse(localStorage.getItem(PROJECT_FAVORITES)!)).toEqual(["dev"]);
-  expect(JSON.parse(localStorage.getItem(`${PROJECT_FAVORITES}/b`)!)).toEqual(["only-b", "dev"]);
+  expect(JSON.parse(localStorage.getItem(`${PROJECT_FAVORITES}/b`)!)).toEqual(["only-b"]);
 });
 
 it("stars another repository's branch found by the search with that repository's favorites", async () => {
