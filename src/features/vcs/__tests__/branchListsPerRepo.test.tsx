@@ -137,3 +137,41 @@ it("keeps the favorites marked when there was one list per project, until a repo
   expect(favoriteBranches("/p/a")).toEqual(["dev", "only-a"]);
   expect(JSON.parse(localStorage.getItem(PROJECT_FAVORITES)!)).toEqual(["dev", "only-a"]);
 });
+
+it("keeps a repository's favorites from when it was opened as a project itself, with the project's", async () => {
+  localStorage.setItem(PROJECT_FAVORITES, JSON.stringify(["dev"]));
+  localStorage.setItem(`${PROJECT_FAVORITES}/b`, JSON.stringify(["only-b", "dev"]));
+  expect(favoriteBranches("/p/b")).toEqual(["only-b", "dev"]);
+  expect(favoriteBranches("/p/a")).toEqual(["dev"]);
+
+  const list = await openPopup();
+  const submenu = await openRepoSubmenu(list, "b");
+  const dev = within(submenu)
+    .getAllByRole("option")
+    .find((o) => o.textContent === "dev")!;
+  fireEvent.click(within(dev).getByRole("button", { name: "Remove from Favorites" }));
+
+  // The repository's own list starts from both earlier lists, which stay as they were.
+  expect(JSON.parse(localStorage.getItem("openidea.vcs.favoriteBranches.v2:/p/b")!)).toEqual(["only-b"]);
+  expect(JSON.parse(localStorage.getItem(PROJECT_FAVORITES)!)).toEqual(["dev"]);
+  expect(JSON.parse(localStorage.getItem(`${PROJECT_FAVORITES}/b`)!)).toEqual(["only-b", "dev"]);
+});
+
+it("stars another repository's branch found by the search with that repository's favorites", async () => {
+  localStorage.setItem("openidea.vcs.favoriteBranches.v2:/p/b", JSON.stringify(["dev"]));
+  const list = await openPopup();
+  fireEvent.change(screen.getByLabelText("Search for branches, actions, repositories"), {
+    target: { value: "dev" },
+  });
+  const devOf = (repo: string) =>
+    within(list)
+      .getAllByRole("option")
+      .find((o) => o.querySelector(`[data-row-key="branch:/p/${repo}:local:dev"]`))!;
+  await waitFor(() => expect(devOf("b")).toBeTruthy());
+  expect(within(devOf("a")).getByRole("button", { name: "Add to Favorites" })).toBeInTheDocument();
+
+  fireEvent.click(within(devOf("b")).getByRole("button", { name: "Remove from Favorites" }));
+  expect(within(devOf("b")).getByRole("button", { name: "Add to Favorites" })).toBeInTheDocument();
+  expect(favoriteBranches("/p/b")).toEqual([]);
+  expect(favoriteBranches("/p/a")).toBeNull();
+});
