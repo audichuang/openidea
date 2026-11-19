@@ -82,6 +82,8 @@ describe("Git Log branches pane", () => {
     ],
     [["/A"], ["/A", "/X"], [null, "var(--project-color-2)"]],
   ])("keeps repository colors consistent for workspace %j and log scope %j", (workspace, repositories, colors) => {
+    // Repository rows (and their swatches) are drawn when the pane groups by repository.
+    localStorage.setItem("openidea.vcs.branchesPane.groupByRepository", "true");
     useVcs.setState({ roots: workspace });
     useGitLog.setState({
       shownLog: "scoped",
@@ -96,6 +98,7 @@ describe("Git Log branches pane", () => {
       const swatch = row.querySelector<HTMLElement>('span[style*="background"]');
       expect(swatch?.style.background ?? null).toBe(colors[index]);
     }
+    localStorage.removeItem("openidea.vcs.branchesPane.groupByRepository");
   });
 
   it("offers Manage Remotes… on the Remote node and on each remote, like IDEA", async () => {

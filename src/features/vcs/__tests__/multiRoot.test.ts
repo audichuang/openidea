@@ -234,7 +234,7 @@ describe("multi-root Git log", () => {
         branches: [branch("main"), branch("origin/main", true)],
         tags: ["v1"],
       })),
-      [],
+      () => [],
     );
     for (const group of roots.filter((r) => r.kind === "group")) {
       expect(group.children?.map((c) => c.label)).toEqual(["front", "back"]);
@@ -243,6 +243,27 @@ describe("multi-root Git log", () => {
       expect(children.map((c) => c.repo)).toEqual(["/project/front", "/project/back"]);
     }
   });
+});
+
+it("marks each repository's branches with that repository's own favorites", () => {
+  const roots = buildRepositoryBranchTree(
+    ["front", "back"].map((name) => ({
+      root: `/project/${name}`,
+      name,
+      branches: [branch("main"), branch("dev")],
+      tags: [],
+    })),
+    (root) => (root === "/project/front" ? ["dev"] : null),
+  );
+  const local = roots.find((r) => r.key === "g:local")!;
+  const favorites = (repo: string) =>
+    local
+      .children!.find((r) => r.repo === repo)!
+      .children!.filter((n) => n.favorite)
+      .map((n) => n.label);
+  expect(favorites("/project/front")).toEqual(["dev"]);
+  // No list of its own: the defaults.
+  expect(favorites("/project/back")).toEqual(["main"]);
 });
 
 describe("Git log background refresh", () => {
