@@ -21,6 +21,7 @@ const vcsCommitFiles = vi.fn();
 const vcsMergeBase = vi.fn();
 const vcsDiffRevisions = vi.fn();
 const graphStashes = vi.fn();
+const graphTree = vi.fn();
 const graphWorkingState = vi.fn();
 const popStash = vi.fn();
 vi.mock("@/platform/ipc", async (importOriginal) => {
@@ -37,6 +38,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       vcsDiffRevisions: (repo: string, from: string, to: string) => vcsDiffRevisions(repo, from, to),
       vcsRemotes: () => Promise.resolve({ status: "ok", data: [] }),
       graphStashes: (repo: string) => graphStashes(repo),
+      graphTree: (repo: string, rev: string) => graphTree(repo, rev),
       graphWorkingState: (repo: string) => graphWorkingState(repo),
       graphAuthorStats: () =>
         Promise.resolve({ status: "ok", data: [{ name: "Ann", email: "ann@example.com", commits: 3 }] }),
@@ -180,6 +182,7 @@ beforeEach(() => {
   vcsTags.mockImplementation(() => ok(["v1"]));
   vcsCommitFiles.mockImplementation(() => ok([{ path: "src/app.ts", kind: "modified", oldPath: null }]));
   graphStashes.mockImplementation(() => ok([]));
+  graphTree.mockImplementation(() => ok([{ path: "src/app.ts", kind: "blob", size: 12 }]));
   graphWorkingState.mockImplementation(() => ok({ staged: 0, unstaged: 0, untracked: 0, conflicted: 0 }));
   withdraw = provideGitGraphBridge(bridge);
   useGraphView.setState(initialGraphView());
@@ -277,17 +280,17 @@ describe("Git Graph view", () => {
       undefined,
     );
     fireEvent.click(screen.getByRole("button", { name: "pick main" }));
-    expect(useGraphView.getState().branchFilter).toEqual(["main"]);
+    expect(useGraphView.getState().branchFilter).toEqual({ [REPO]: ["main"] });
     expect(screen.queryByRole("dialog", { name: "Branch filter" })).toBeNull();
     // Picking a selected branch again takes it out of the filter.
     fireEvent.click(button);
     fireEvent.click(await screen.findByRole("button", { name: "pick main" }));
-    expect(useGraphView.getState().branchFilter).toEqual([]);
+    expect(useGraphView.getState().branchFilter[REPO]).toEqual([]);
     fireEvent.click(button);
     fireEvent.click(await screen.findByRole("button", { name: "pick many" }));
-    expect(useGraphView.getState().branchFilter).toEqual(["HEAD", "origin/main"]);
+    expect(useGraphView.getState().branchFilter[REPO]).toEqual(["HEAD", "origin/main"]);
     fireEvent.click(screen.getByRole("button", { name: "Show All Branches" }));
-    expect(useGraphView.getState().branchFilter).toEqual([]);
+    expect(useGraphView.getState().branchFilter[REPO]).toEqual([]);
     const remotes = screen.getByRole("button", { name: "Show Remote Branches" });
     expect(remotes.getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(remotes);
@@ -362,6 +365,38 @@ describe("Git Graph pseudo rows and panels", () => {
     await screen.findByText("subject a");
     fireEvent.click(screen.getByRole("tab", { name: "Statistics" }));
     expect(await screen.findByText("Commits: 3, authors: 1")).toBeTruthy();
+  });
+
+  it("keeps the branch filter and the File Tree revision of each repository apart (#379)", async () => {
+    const [app, lib] = ["/work/app", "/work/lib"];
+    const head = state.heads[REPO]!;
+    state = { ...state, roots: [app, lib], repo: app, heads: { [app]: head, [lib]: head } };
+    const rev = "b".padEnd(40, "0");
+    const lastLog = () => vcsLog.mock.calls.at(-1) as [string, { branches: string[] }];
+    render(<GitGraphEditor />);
+    await screen.findByText("subject a");
+    fireEvent.click(screen.getByRole("button", { name: "Branches" }));
+    fireEvent.click(await screen.findByRole("button", { name: "pick main" }));
+    await waitFor(() => expect(lastLog()).toEqual([app, expect.objectContaining({ branches: ["main"] })]));
+    fireEvent.contextMenu(rowOf("subject b"));
+    await waitFor(() => expect(showContextMenu).toHaveBeenCalled());
+    const items = showContextMenu.mock.calls.at(-1)![1] as MenuItem[];
+    const showFiles = items.find((i) => "label" in i && i.label === "Show Files at Revision");
+    act(() => (showFiles as { run: () => void }).run());
+    await waitFor(() => expect(graphTree).toHaveBeenCalledWith(app, rev));
+
+    // The other repository starts unfiltered and lists no revision of the first one.
+    act(() => useGraphView.setState({ repo: lib }));
+    await waitFor(() => expect(lastLog()).toEqual([lib, expect.objectContaining({ branches: [] })]));
+    expect(screen.getByRole("button", { name: "Branches" }).textContent).toBe("All branches");
+    expect(await screen.findByText("Select a commit")).toBeTruthy();
+    expect(graphTree).not.toHaveBeenCalledWith(lib, expect.anything());
+
+    // Back on the first one, its filter and revision are as they were left.
+    act(() => useGraphView.setState({ repo: app }));
+    await waitFor(() => expect(lastLog()).toEqual([app, expect.objectContaining({ branches: ["main"] })]));
+    expect(screen.getByRole("button", { name: "Branches" }).textContent).toBe("main");
+    expect(await screen.findByText("1 files")).toBeTruthy();
   });
 
   it("filters the repository dropdown by typing and picks with Enter", async () => {
