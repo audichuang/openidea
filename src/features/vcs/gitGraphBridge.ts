@@ -18,14 +18,21 @@ import { repoColor } from "./model";
 import { repositoryPath } from "./repositoryPaths";
 import { toLogChanges } from "./logChanges";
 import { refLabels } from "./logOptions";
-import { focusRepo, useVcs } from "./store";
+import { currentRepo, focusRepo, repoOf, useVcs } from "./store";
 import { mergeIntoCurrent, rebaseOnto } from "./branchOps";
-import { applyStash, dropStash, showUnstashDialog } from "./changeOps";
+import {
+  applyStash,
+  dropStash,
+  rollbackCandidates,
+  showRollbackDialog,
+  showUnstashDialog,
+  stashChanges,
+} from "./changeOps";
 import { runOp } from "./ops";
 import { confirmDialog, promptText } from "./dialogs";
 import { GraphBranchFilterPopup } from "./gitGraphBranchFilter";
 import { call, commands } from "@/platform/ipc";
-import { getAction } from "@/platform/actions";
+import { executeAction, getAction } from "@/platform/actions";
 
 /** The Git Log changes menu's ClipCode entry reads the log's selection; point it at the graph's. */
 export function retargetClipItems(items: MenuItem[], commits: GraphCommit[]): MenuItem[] {
@@ -221,6 +228,27 @@ export function createGitGraphBridge(): GitGraphBridge {
         { kind: "separator" },
         { label: "Drop", danger: true, icon: "trash", run: () => void dropStash(index, message, repo) },
       ];
+    },
+    // These read the selected repository's operation, so `repo` is selected first, as `inRepo` does.
+    async controlOperation(repo, control) {
+      const { controlOperation } = await import("./operations");
+      await focusRepo(repo);
+      if (currentRepo() === repo) await controlOperation(control);
+    },
+    async resolveConflicts(repo) {
+      const { showConflictsDialog } = await import("./conflictsUi");
+      await focusRepo(repo);
+      if (currentRepo() === repo) showConflictsDialog();
+    },
+    stashChanges(repo) {
+      void stashChanges([], repo);
+    },
+    rollback(repo) {
+      showRollbackDialog(rollbackCandidates().filter((f) => repoOf(f.path) === repo));
+    },
+    async showLog(repo) {
+      await focusRepo(repo);
+      if (currentRepo() === repo) await executeAction("vcs.showLog");
     },
     async mergeIntoCurrent(branch, repo) {
       await focusRepo(repo);
