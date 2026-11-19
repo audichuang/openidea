@@ -54,7 +54,11 @@ vi.mock("@/workbench/contributions", async (importOriginal) => {
 const controlOperation = vi.fn();
 vi.mock("../operations", async (importOriginal) => {
   const real = await importOriginal<typeof import("../operations")>();
-  return { ...real, controlOperation: (control: string) => controlOperation(control, useVcs.getState().repo) };
+  return {
+    ...real,
+    controlOperation: (control: string, expected: string | null, root?: string) =>
+      controlOperation(control, expected, root),
+  };
 });
 const showConflictsDialog = vi.fn();
 vi.mock("../conflictsUi", async (importOriginal) => {
@@ -83,6 +87,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { gitGraphBridge, type GraphCommit } from "@/workbench/gitGraphBridge";
 import { activate, retargetClipItems } from "../gitGraphBridge";
 import { useVcs } from "../store";
+import { closeLogTab, emptyFilters, openLogTab, selectGitTab, useGitLog } from "../logStore";
 import { useFavoriteBranches } from "../branchOps";
 import { registerActions } from "@/platform/actions";
 
@@ -310,11 +315,25 @@ describe("git graph bridge", () => {
     });
 
     it("continues and aborts the graph repository's operation", async () => {
-      await bridge().controlOperation(LIB, "continue");
-      expect(controlOperation).toHaveBeenLastCalledWith("continue", LIB);
+      await bridge().controlOperation(LIB, "continue", "rebase");
+      expect(controlOperation).toHaveBeenLastCalledWith("continue", "rebase", LIB);
+      expect(useVcs.getState().repo).toBe(LIB);
       useVcs.setState({ repo: APP });
-      await bridge().controlOperation(LIB, "abort");
-      expect(controlOperation).toHaveBeenLastCalledWith("abort", LIB);
+      await bridge().controlOperation(LIB, "abort", "rebase");
+      expect(controlOperation).toHaveBeenLastCalledWith("abort", "rebase", LIB);
+    });
+
+    it("shows the graph's repository in a main Git Log filtered to another one", async () => {
+      // As `vcs.showLog` without a branch or a path: the main Log, with the filters it has.
+      const off = registerActions([{ id: "vcs.showLog", title: "Show Git Log", run: () => selectGitTab("log") }]);
+      useGitLog.setState({ filters: { ...emptyFilters(), repositories: [APP] } });
+      const tab = openLogTab("branch", "feature");
+      expect(useGitLog.getState().shownLog).toBe(tab);
+      await bridge().showLog(LIB);
+      off();
+      expect(useGitLog.getState().shownLog).toBe("log");
+      expect(useGitLog.getState().filters.repositories).toEqual([LIB]);
+      closeLogTab(tab);
     });
 
     it("opens the conflicts dialog and the Git Log on the graph's repository", async () => {
