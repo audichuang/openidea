@@ -21,14 +21,13 @@ import {
   newBranchInRepos,
   rebaseInRepos,
   renameInRepos,
-  loadFavoriteBranches,
+  favoriteBranches,
   mergeIntoCurrent,
   newBranch,
   rebaseOnto,
   renameBranch,
   toggleFavoriteBranch,
   updateBranches,
-  useFavoriteBranches,
 } from "./branchOps";
 import { showCompareBranches } from "./CompareBranches";
 import { showDiffWithWorkingTree } from "./operations";
@@ -51,13 +50,13 @@ async function pullInto(remoteBranch: string, rebase: boolean) {
 
 type Run = (fn: () => unknown) => () => void;
 
-function favoriteMenuItem(b: Branch, run: Run): MenuItem {
-  loadFavoriteBranches();
-  const favorite = isFavoriteBranch(b, useFavoriteBranches.getState().names);
+/** `repo`: the branch's repository when it is not the selected one (its favorites are its own). */
+function favoriteMenuItem(b: Branch, run: Run, repo?: string): MenuItem {
+  const favorite = isFavoriteBranch(b, favoriteBranches(repo));
   return {
     label: favorite ? "Remove from Favorites" : "Add to Favorites",
     icon: "star",
-    run: run(() => toggleFavoriteBranch(b)),
+    run: run(() => toggleFavoriteBranch(b, repo)),
   };
 }
 
@@ -71,13 +70,15 @@ export function branchMenu(
   current: string | null,
   done: () => void = () => {},
   selected: readonly { repo?: string; branch?: Branch }[] = [],
+  /** The branch's repository when it is not the selected one (its favorites are its own). */
+  repo?: string,
 ): MenuItem[] {
   const run = (fn: () => unknown) => () => {
     done();
     void fn();
   };
   const cur = current ?? "HEAD";
-  const favoriteItem = favoriteMenuItem(b, run);
+  const favoriteItem = favoriteMenuItem(b, run, repo);
   // Update Selected acts on every selected local branch, each in its own repository.
   const update: MenuItem =
     selected.filter((t) => t.branch && !t.branch.remote).length > 1
