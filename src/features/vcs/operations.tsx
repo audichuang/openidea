@@ -107,9 +107,13 @@ const UNSTAGED_CHANGES_PREVENT_REBASE = "There are unstaged changes in tracked f
  * a rebase held up by unstaged changes, Stage and Retry (stages the tracked files'
  * changes and continues) and Show Files.
  */
-export function stoppedActions(op: InProgress, message: string): Array<{ label: string; run: () => void }> {
-  if (!inProgress()) return [];
-  const abort = { label: "Abort", run: () => void controlOperation("abort", op) };
+export function stoppedActions(
+  op: InProgress,
+  message: string,
+  root?: string,
+): Array<{ label: string; run: () => void }> {
+  if (!operationIn(root)) return [];
+  const abort = { label: "Abort", run: () => void controlOperation("abort", op, root) };
   if (op !== "rebase" || !message.includes(UNSTAGED_CHANGES_PREVENT_REBASE)) return [abort];
   return [
     {
@@ -122,8 +126,9 @@ export function stoppedActions(op: InProgress, message: string): Array<{ label: 
             success: "Rebase continued",
             failure: tx`${controlLabel(op, "continue")} failed`,
             onError: conflictsInstead,
-            errorActions: (m) => stoppedActions(op, m),
+            errorActions: (m) => stoppedActions(op, m, root),
           },
+          root,
         ),
     },
     { label: "Show Files", run: () => showLocalChanges() },
@@ -162,16 +167,26 @@ function noneInProgress(op: InProgress): string {
   }
 }
 
+/** The operation stopped in `root`; without one, in the selected repository. */
+function operationIn(root: string | undefined): InProgress | null {
+  return root ? inProgress(useVcs.getState().operations[root] ?? null) : inProgress();
+}
+
 /**
  * Continue / Skip / Abort of the operation in progress. `expected` restricts the
- * action to one kind (e.g. Git › Continue Rebase).
+ * action to one kind (e.g. Git › Continue Rebase). `root` names the repository (the Git
+ * Graph's own); without it the one selected once the status refreshed.
  */
-export async function controlOperation(control: "continue" | "skip" | "abort", expected: InProgress | null = null) {
+export async function controlOperation(
+  control: "continue" | "skip" | "abort",
+  expected: InProgress | null = null,
+  root?: string,
+) {
   await refreshNow();
-  const op = inProgress();
+  const op = operationIn(root);
   if (!op || (expected && op !== expected)) return notInProgress(expected);
   // Only the selected repository's conflicts block it (others may be in their own merge).
-  const repo = currentRepo();
+  const repo = root ?? currentRepo();
   const conflicts = conflictedFiles().filter((f) => !repo || repoOf(f.path) === repo);
   if (control === "continue" && conflicts.length) {
     notifications().notify({ group: "vcs", level: "warning", title: "Resolve all conflicts before continuing" });
@@ -219,8 +234,9 @@ export async function controlOperation(control: "continue" | "skip" | "abort", e
       success,
       failure: tx`${controlLabel(op, control)} failed`,
       onError: control === "abort" ? undefined : conflictsInstead,
-      errorActions: control === "abort" ? undefined : (message) => stoppedActions(op, message),
+      errorActions: control === "abort" ? undefined : (message) => stoppedActions(op, message, root),
     },
+    root,
   );
   // A rebase that continued and stopped again (next conflict) is reported by the conflicts listener.
   await refreshNow();
