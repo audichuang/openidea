@@ -592,7 +592,9 @@ export function registerVcsActions(): () => void {
         if (arg && typeof arg === "object" && "remote" in arg && typeof arg.remote === "string") {
           await runRemote({ op: "fetchRemote", remote: arg.remote }, arg.remote, [operationRepo(arg)]);
         } else {
-          await runRemote({ op: "fetch" }, undefined, allRepos());
+          // Every repository, as in IDEA, unless the caller names one (Git Graph's toolbar).
+          const repo = arg && typeof arg === "object" && "repo" in arg ? (arg as { repo: string | null }).repo : null;
+          await runRemote({ op: "fetch" }, undefined, repo ? [repo] : allRepos());
         }
       },
     },
