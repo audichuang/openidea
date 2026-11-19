@@ -402,6 +402,9 @@ export class DocModel {
     this.slots.delete(slot);
     if (this.lastFocused === slot) this.lastFocused = null;
     if (!this.inUse()) this.manager.release(this);
+    // The handoff covered only the tab that moved: with another tab still showing the document,
+    // its later release saves or keeps the changes as usual.
+    else this.handoffRelease = false;
   }
 
   attach(target: DocAttachmentTarget) {
