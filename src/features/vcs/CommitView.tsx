@@ -1465,7 +1465,8 @@ function CommitPanel({ included }: { included: number }) {
 type StashEntry = Stash & { repo: string | null };
 type StashNode = { key: string; stash: StashEntry; change?: LogChange };
 
-const stashKey = (s: StashEntry) => `${s.repo}:${s.index}:${s.id}`;
+/** By stash commit, not `stash@{n}`: the index moves whenever a stash is pushed or dropped. */
+const stashKey = (s: StashEntry) => `${s.repo}:${s.id}`;
 const STASH_PREVIEW_DELAY = 120;
 const NO_STASHES: StashEntry[] = [];
 
@@ -1530,15 +1531,17 @@ export function StashesPanel() {
     const changes = await stashFileChanges(node.stash).catch(() => []);
     setFiles((prev) => new Map(prev).set(node.key, changes));
   };
+  const rootOf = (key: string) => roots.find((r) => key === r.key || key.startsWith(`${r.key}\u0000`));
   const nodeOf = (key: string | null): StashNode | undefined => {
     if (!key) return undefined;
-    const root = roots.find((r) => key === r.key || key.startsWith(`${r.key}\u0000`));
+    const root = rootOf(key);
     if (!root || key === root.key) return root;
     return childrenOf(root)?.find((n) => n.key === key);
   };
-  const selectedNode = nodeOf(selectedKey);
   // A list being refreshed may hold indexes Git has since moved: no actions on it until it is back.
-  const current = loaded ? (selectedNode?.stash ?? stashes[0]) : undefined;
+  // The selected stash is looked up in the latest list for its current index; one that is gone
+  // leaves nothing to act on, rather than whichever stash is now first.
+  const current = !loaded ? undefined : selectedKey ? rootOf(selectedKey)?.stash : stashes[0];
   const showDiff = (node: StashNode, preview: boolean) => {
     const chain = files.get(stashKey(node.stash)) ?? [];
     if (node.change) void showChangesDiff([node.change], preview, chain).catch(() => undefined);
