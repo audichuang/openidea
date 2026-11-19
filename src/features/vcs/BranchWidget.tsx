@@ -199,8 +199,13 @@ const POPUP_ACTIONS: PopupAction[] = [
   { id: "vcs.checkoutRevision", label: "Checkout Tag or Revision…", icon: "branch", group: "branch" },
 ];
 
-/** A single repository's own entries (its submenu in the popup with several repositories). */
-const REPO_ACTIONS: PopupAction[] = [
+/**
+ * A single repository's own entries (its submenu in the popup with several repositories).
+ * Update and Push… act on that repository alone, as they do in its current branch's menu.
+ */
+const repoActions = (root: string): PopupAction[] => [
+  { id: "vcs.update", label: "Update", icon: "git-pull", group: "sync", arg: { repo: root }, hideShortcut: true },
+  { id: "vcs.push", label: "Push…", icon: "git-push", group: "sync", arg: { repo: root }, hideShortcut: true },
   { id: "vcs.newBranch", label: "New Branch…", icon: "plus", group: "branch" },
   { id: "vcs.newWorktree", label: "New Worktree…", icon: "folder", group: "branch" },
   { id: "vcs.checkoutRevision", label: "Checkout Tag or Revision…", icon: "branch", group: "branch" },
@@ -746,6 +751,8 @@ function MultiRepoPanel({
     setRepoMenu(null);
     searchRef.current?.focus();
   };
+  const repoMenuRoot = repoMenu?.root;
+  const repoMenuActions = useMemo(() => (repoMenuRoot ? repoActions(repoMenuRoot) : []), [repoMenuRoot]);
 
   useEffect(() => loadFavoriteBranches(), []);
   // Every repository's branches (common ones, submenus, search); refreshed after operations.
@@ -997,7 +1004,7 @@ function MultiRepoPanel({
             key={repoMenu.root}
             root={repoMenu.root}
             fallback={all[repoMenu.root]}
-            actions={REPO_ACTIONS}
+            actions={repoMenuActions}
             worktreeFor={worktreeFor}
             onClose={closeAll}
             onBack={closeRepoMenu}
@@ -1094,7 +1101,7 @@ function BranchRowView({
   );
   const indent = "depth" in row ? branchIndent(row.depth) : undefined;
   if (row.type === "action") {
-    const keys = shortcutLabel(row.action.id);
+    const keys = row.action.hideShortcut ? undefined : shortcutLabel(row.action.id);
     return (
       <span className={styles.row} data-row-key={row.key}>
         {row.action.checked === false ? (
