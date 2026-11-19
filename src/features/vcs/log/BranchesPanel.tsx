@@ -17,7 +17,7 @@ import {
   type BranchTreeNode,
 } from "../branches";
 import { branchMenu, inRepo, mergedBranchMenu, tagMenu } from "../branchMenu";
-import { canDeleteBranch, useFavoriteBranchNames } from "../branchOps";
+import { canDeleteBranch, favoriteBranches, useFavoriteBranches, useFavoriteBranchNames } from "../branchOps";
 import { BranchSync } from "../BranchSync";
 import styles from "../GitLog.module.css";
 import { LogIdContext } from "../logContext";
@@ -113,6 +113,12 @@ export function BranchesPanel() {
   const branchesLoaded = useVcs((s) => s.branchesLoaded);
   const current = useVcs((s) => s.branch?.head ?? null);
   const favorites = useFavoriteBranchNames(repositories.length === 1 ? repositories[0] : undefined);
+  const editedFavorites = useFavoriteBranches((s) => s.byRepo);
+  // Several repositories are listed together: each one's branches carry its own favorites.
+  const favoritesOf = useCallback(
+    (repo: string) => (editedFavorites[repo] !== undefined ? editedFavorites[repo] : favoriteBranches(repo)),
+    [editedFavorites],
+  );
   const filterBranches = filters.branches;
   const [query, setQuery] = useState("");
   const [tags, setTags] = useState<string[]>([]);
@@ -151,7 +157,7 @@ export function BranchesPanel() {
       tags: allTags[repo] ?? [],
     }));
     return grouped
-      ? buildRepositoryBranchTree(list, favorites)
+      ? buildRepositoryBranchTree(list, favoritesOf)
       : buildMergedBranchTree(list, favorites, currentRepository);
   }, [
     repositories,
@@ -164,6 +170,7 @@ export function BranchesPanel() {
     grouped,
     currentRepository,
     scopedRepo,
+    favoritesOf,
   ]);
   /** A merged ref acts in each repository that has it, with that repository's own branch. */
   const expand = useCallback(
@@ -224,7 +231,8 @@ export function BranchesPanel() {
     return () => useBranchesPane.setState({ selected: [] });
   }, [targets, active]);
   const target = targets[0] ?? undefined;
-  const favorite = !!target?.branch && isFavoriteBranch(target.branch, favorites);
+  const favorite =
+    !!target?.branch && isFavoriteBranch(target.branch, target.repo ? favoritesOf(target.repo) : favorites);
   const onKeyDownCapture = (e: KeyboardEvent<HTMLDivElement>) => {
     if ((e.key !== "c" && e.key !== "C") || !hasPrimaryModifier(e) || e.altKey || e.shiftKey) return;
     // The branch search keeps the browser's own copy.
