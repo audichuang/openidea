@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const data = vi.hoisted(() => {
   const branch = (name: string, current = false) => ({
@@ -36,8 +36,13 @@ vi.mock("@/platform/ipc", async (original) => {
 
 import { BranchesPopupHost, showBranchesPopup, useBranchesPopup } from "../BranchWidget";
 import { favoriteBranches, useFavoriteBranches } from "../branchOps";
+import { BranchesPanel } from "../log/BranchesPanel";
+import { registerLogPaneActions } from "../logPaneActions";
+import { emptyFilters, useGitLog } from "../logStore";
 import { useVcs } from "../store";
+import { setContext } from "@/platform/context";
 import { useProject } from "@/platform/project";
+import { hideContextMenu, useContextMenuStore } from "@/ui/Menu";
 
 const RECENT = "openidea.vcs.recentBranches:";
 const PROJECT_FAVORITES = "openidea.vcs.favoriteBranches:/p";
@@ -174,4 +179,68 @@ it("stars another repository's branch found by the search with that repository's
   expect(within(devOf("b")).getByRole("button", { name: "Add to Favorites" })).toBeInTheDocument();
   expect(favoriteBranches("/p/b")).toEqual([]);
   expect(favoriteBranches("/p/a")).toBeNull();
+});
+
+describe("a Git Log tab of a repository that is not the selected one", () => {
+  const B_FAVORITES = "openidea.vcs.favoriteBranches.v2:/p/b";
+  const A_FAVORITES = "openidea.vcs.favoriteBranches.v2:/p/a";
+  let unregister: () => void;
+  let listedInB: (typeof data.branches)[string];
+
+  beforeEach(() => {
+    unregister = registerLogPaneActions();
+    setContext("vcsAvailable", true);
+    listedInB = data.branches["/p/b"]!;
+    // `main` is a favorite by default, until the repository's list is edited.
+    data.branches["/p/b"] = [...listedInB, { ...listedInB[1]!, name: "main" }];
+    useGitLog.setState({
+      filters: emptyFilters(),
+      shownLog: "of-b",
+      logTabs: [{ id: "of-b", kind: "branch", target: "dev", repo: "/p/b" }],
+    });
+  });
+
+  afterEach(() => {
+    unregister();
+    setContext("vcsAvailable", false);
+    hideContextMenu();
+    data.branches["/p/b"] = listedInB;
+    useGitLog.setState({ logTabs: [], shownLog: "log" });
+  });
+
+  async function openPane() {
+    render(<BranchesPanel />);
+    await screen.findByText("only-b");
+  }
+
+  const expectOnlyBEdited = (names: string[]) => {
+    expect(favoriteBranches("/p/b")).toEqual(names);
+    expect(JSON.parse(localStorage.getItem(B_FAVORITES)!)).toEqual(names);
+    expect(favoriteBranches("/p/a")).toBeNull();
+    expect(localStorage.getItem(A_FAVORITES)).toBeNull();
+    // Starring does not move the selection to the tab's repository either.
+    expect(useVcs.getState().repo).toBe("/p/a");
+  };
+
+  it("stars a branch from the toolbar in the tab's repository, not in the selected one", async () => {
+    await openPane();
+    fireEvent.mouseDown(screen.getByText("dev"));
+    fireEvent.click(screen.getByRole("button", { name: "Add to Favorites" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Remove from Favorites" })).toBeInTheDocument());
+    expectOnlyBEdited(["main", "dev"]);
+  });
+
+  it("stars a branch from its context menu in the tab's repository, not in the selected one", async () => {
+    await openPane();
+    fireEvent.contextMenu(screen.getByText("dev"));
+    const add = useContextMenuStore.getState().menu!.items.find((i) => "label" in i && i.label === "Add to Favorites");
+    if (add && "run" in add) add.run?.();
+    expectOnlyBEdited(["main", "dev"]);
+
+    // The entry reads the same list it writes.
+    fireEvent.contextMenu(screen.getByText("dev"));
+    const labels = useContextMenuStore.getState().menu!.items.map((i) => ("label" in i ? i.label : null));
+    expect(labels).toContain("Remove from Favorites");
+  });
 });
