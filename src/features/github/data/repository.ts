@@ -11,10 +11,12 @@
  * remotes come from every git repository of the project (a folder holding several
  * repositories offers each one's), and gh runs in the repository of the connected remote.
  */
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { create } from "zustand";
+import { useShallow } from "zustand/react/shallow";
 import type { GhAvailability, Remote } from "@/platform/ipc";
 import { call, commands, isTauri } from "@/platform/ipc";
+import { useVcs, type RepoHead, type VcsState } from "@/features/vcs/store";
 import { useProject } from "@/platform/project";
 import { errorMessage, setCurrentRepository } from "../api/client";
 import * as api from "../api/requests";
@@ -128,6 +130,132 @@ export const connectedRemotes = (): readonly GHRemote[] => useGhRepository.getSt
 
 /** The local repository of the connection, for gh and git commands (null: the primary one). */
 export const connectedRoot = (): string | null => useGhRepository.getState().connection?.root ?? null;
+
+/** The connected local repository's root path (the primary repository's for a null `connection.root`). */
+export function connectedRepoRoot(vcs: Pick<VcsState, "roots" | "root"> = useVcs.getState()): string | null {
+  return connectedRoot() ?? vcs.roots[0] ?? vcs.root;
+}
+
+type VcsHeads = Pick<VcsState, "roots" | "root" | "repo" | "heads" | "operations" | "branch">;
+
+export interface ConnectedRepoHead extends RepoHead {
+  /** Null until read: the selected repository's comes with the VCS store, another one's is loaded. */
+  upstream: string | null;
+  /** Merge / rebase… in progress there. */
+  operation: string | null;
+}
+
+/** The upstream of `head` in the repository at `root`. */
+interface ConnectedUpstream {
+  root: string;
+  head: string | null;
+  upstream: string | null;
+}
+
+/**
+ * The connected repository's upstream. The VCS store has it for the selected repository only, so
+ * it is kept here while that is another one (`trackConnectedUpstream`).
+ */
+export const useConnectedUpstream = create<{ value: ConnectedUpstream | null }>(() => ({ value: null }));
+
+/** The repository the VCS store's `branch` is read for. */
+const selectedRoot = (vcs: VcsHeads) => vcs.repo ?? vcs.roots[0] ?? vcs.root;
+
+/**
+ * The connected local repository's current branch and HEAD commit. The VCS store's `branch` is
+ * the selected repository's, which may be another one, and lags behind a selection change.
+ */
+export function connectedRepoHead(
+  vcs: VcsHeads = useVcs.getState(),
+  cached: ConnectedUpstream | null = useConnectedUpstream.getState().value,
+): ConnectedRepoHead | null {
+  const root = connectedRepoRoot(vcs);
+  const selected = root === selectedRoot(vcs) ? vcs.branch : null;
+  const own = root ? vcs.heads[root] : undefined;
+  const head = own ?? selected;
+  if (!head) return null;
+  const upstream =
+    selected && selected.head === head.head
+      ? selected.upstream
+      : cached && cached.root === root && cached.head === head.head
+        ? cached.upstream
+        : null;
+  return {
+    head: head.head,
+    headCommit: head.headCommit,
+    upstream,
+    operation: (root ? vcs.operations[root] : null) ?? (own ? null : selected?.operation) ?? null,
+  };
+}
+
+/** `connectedRepoHead` for a component. */
+export function useConnectedRepoHead(): ConnectedRepoHead | null {
+  const root = useGhRepository((s) => s.connection?.root ?? null);
+  const cached = useConnectedUpstream((s) => s.value);
+  const vcs = useVcs(
+    useShallow((s) => ({
+      roots: s.roots,
+      root: s.root,
+      repo: s.repo,
+      heads: s.heads,
+      operations: s.operations,
+      branch: s.branch,
+    })),
+  );
+  // `root` is read from the store inside: a new connection recomputes.
+  return useMemo(() => connectedRepoHead(vcs, cached), [vcs, cached, root]);
+}
+
+/**
+ * Keeps `useConnectedUpstream`: copied from the VCS store while the connected repository is the
+ * selected one, read from git (again after each VCS refresh) while it is not. Returns the disposer.
+ */
+export function trackConnectedUpstream(): () => void {
+  let seq = 0;
+  let loading: string | null = null;
+  const load = (root: string) => {
+    const mine = ++seq;
+    loading = root;
+    void call(commands.vcsBranchInfo(root))
+      .catch(() => null)
+      .then((b) => {
+        // A failed read stays `loading`: asked again at the next VCS refresh, not at each store change.
+        if (mine !== seq || !b) return;
+        loading = null;
+        useConnectedUpstream.setState({ value: { root, head: b.head, upstream: b.upstream } });
+      });
+  };
+  const sync = (reload: boolean) => {
+    const vcs = useVcs.getState();
+    const root = useGhRepository.getState().connection ? connectedRepoRoot(vcs) : null;
+    const cached = useConnectedUpstream.getState().value;
+    if (!root) {
+      seq++;
+      loading = null;
+      if (cached) useConnectedUpstream.setState({ value: null });
+      return;
+    }
+    if (root !== selectedRoot(vcs)) {
+      if (reload || (cached?.root !== root && loading !== root)) load(root);
+      return;
+    }
+    // Until the selected repository's branch is loaded, `branch` is still the previous one's.
+    const { head, upstream } = connectedRepoHead(vcs, null) ?? { head: null, upstream: null };
+    if (vcs.branch?.head !== head) return;
+    seq++;
+    loading = null;
+    if (cached?.root !== root || cached.head !== head || cached.upstream !== upstream)
+      useConnectedUpstream.setState({ value: { root, head, upstream } });
+  };
+  const unsubs = [
+    useVcs.subscribe((s, prev) => sync(s.version !== prev.version)),
+    useGhRepository.subscribe((s, prev) => {
+      if (s.connection !== prev.connection) sync(false);
+    }),
+  ];
+  sync(false);
+  return () => unsubs.forEach((u) => u());
+}
 
 function parseNameWithOwner(s: string | null | undefined): GHRepositoryCoordinates | null {
   const m = s ? /^([^/\s]+)\/([^/\s]+)$/.exec(s) : null;
