@@ -510,7 +510,7 @@ export class UnalignedPanes implements DiffPanes {
    * the end of the longer pane, such as lines deleted at the end of the file, is reachable only
    * with the pointer over that pane (#363). "also": `side` is at that end and the other pane
    * scrolls; "instead": the other pane, which such a wheel took past where `side` maps it,
-   * scrolls back first, so `side` must not move (it would pull the other pane back in one jump).
+   * scrolls back first, up to that position, so `side` must not move (it would pull the other pane back in one jump).
    * A pane that is elsewhere for another reason, such as lines only it has above the other's
    * first one, does not hold the wheel back.
    */
@@ -521,16 +521,17 @@ export class UnalignedPanes implements DiffPanes {
     const to: Side = side === "a" ? "b" : "a";
     const other = this.view(to).scrollDOM;
     const dy = e.deltaMode === 1 ? e.deltaY * view.defaultLineHeight : e.deltaY;
-    const scroll = () => {
+    const scroll = (by = dy) => {
       const before = other.scrollTop;
-      other.scrollBy(0, dy);
+      other.scrollBy(0, by);
       if (other.scrollTop !== before) this.passed[to] = other.scrollTop;
     };
     if (this.passed[to] !== null) {
-      const mapped = this.followTop(side);
-      if (Math.abs(other.scrollTop - mapped) <= 1) this.passed[to] = null;
-      else if (dy < 0 ? other.scrollTop > mapped : other.scrollTop < mapped) {
-        scroll();
+      const left = this.followTop(side) - other.scrollTop;
+      if (Math.abs(left) <= 1) this.passed[to] = null;
+      else if (dy < 0 === left < 0) {
+        // Back no further than where `side` maps it.
+        scroll(dy < 0 ? Math.max(dy, left) : Math.min(dy, left));
         return "instead";
       }
     }
