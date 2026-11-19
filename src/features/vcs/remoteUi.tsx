@@ -674,15 +674,16 @@ function MultiPushDialog({
     if (inspection.needsFetch) return inspection.fetch();
     // Like the single-repository dialog: each forced target is confirmed first (once, when several
     // repositories push to the same one), and declining one pushes nothing.
-    const forced = new Map<string, string[]>();
+    const forced = new Map<string, { target: ForcePushTarget; roots: string[] }>();
     for (const r of force && forceAvailable ? picked : []) {
       const target = targetNameOf(r);
-      const remote = shownRemoteOf(r);
       if (isProtectedBranch(target) || specialTarget(r)) continue;
-      const name = remote ? `${remote}/${target}` : target;
-      forced.set(name, [...(forced.get(name) ?? []), r.root]);
+      // Keyed by the pair: `origin` + `team/feature` is not `origin/team` + `feature`.
+      const pair = { remote: shownRemoteOf(r), target };
+      const key = JSON.stringify([pair.remote, pair.target]);
+      forced.set(key, { target: pair, roots: [...(forced.get(key)?.roots ?? []), r.root] });
     }
-    for (const [target, roots] of forced) if (!(await confirmForcePush(target, roots))) return;
+    for (const { target, roots } of forced.values()) if (!(await confirmForcePush(target, roots))) return;
     if (useProject.getState().project !== project) return;
     const tags = tagOptions.rememberForPush();
     onClose();
@@ -1230,7 +1231,7 @@ function PushDialog({
     if (
       force &&
       forceAvailable &&
-      !(await confirmForcePush(remote ? `${remote}/${target}` : (target ?? ""), [forcePushRepo(repo)]))
+      !(await confirmForcePush({ remote, target: target ?? "" }, [forcePushRepo(repo)]))
     )
       return;
     if (useProject.getState().project !== project) return;
@@ -1409,6 +1410,12 @@ function PushDialog({
   );
 }
 
+/** A force push target: the branch `target` of `remote`. Kept apart, as both names may contain `/`. */
+interface ForcePushTarget {
+  remote: string | null;
+  target: string;
+}
+
 /**
  * Repository root → the targets "Don't warn about this target" was ticked for. `origin/feat` names a
  * different branch in each repository, so the list is per repository; the earlier global list
@@ -1416,20 +1423,31 @@ function PushDialog({
  */
 const SILENT_FORCE_PUSH_KEY = "openidea.vcs.silentForcePushTargets.v2";
 
-function silentForcePushTargets(): Record<string, string[]> {
+const isForcePushTarget = (x: unknown): x is ForcePushTarget =>
+  !!x &&
+  typeof x === "object" &&
+  "remote" in x &&
+  "target" in x &&
+  (x.remote === null || typeof x.remote === "string") &&
+  typeof x.target === "string";
+
+function silentForcePushTargets(): Record<string, ForcePushTarget[]> {
   try {
     const v: unknown = JSON.parse(localStorage.getItem(SILENT_FORCE_PUSH_KEY) ?? "{}");
     if (!v || typeof v !== "object" || Array.isArray(v)) return {};
     return Object.fromEntries(
       Object.entries(v).map(([root, targets]) => [
         root,
-        Array.isArray(targets) ? targets.filter((x): x is string => typeof x === "string") : [],
+        Array.isArray(targets) ? targets.filter(isForcePushTarget) : [],
       ]),
     );
   } catch {
     return {};
   }
 }
+
+const sameForcePushTarget = (a: ForcePushTarget) => (b: ForcePushTarget) =>
+  a.remote === b.remote && a.target === b.target;
 
 /** The root a force push of `repo` is remembered under (`null`: the selected repository). */
 const forcePushRepo = (repo: string | null) => repo ?? currentRepoRoot() ?? "";
@@ -1438,9 +1456,11 @@ const forcePushRepo = (repo: string | null) => repo ?? currentRepoRoot() ?? "";
  * IDEA's force push confirmation, with "Don't warn about this target". `repos` are the repositories
  * pushing to `target`: it is silent only when every one of them was told not to warn.
  */
-async function confirmForcePush(target: string, repos: readonly string[]): Promise<boolean> {
+async function confirmForcePush(to: ForcePushTarget, repos: readonly string[]): Promise<boolean> {
+  const target = to.remote ? `${to.remote}/${to.target}` : to.target;
+  const same = sameForcePushTarget(to);
   const silent = silentForcePushTargets();
-  if (target && repos.length && repos.every((root) => silent[root]?.includes(target))) return true;
+  if (target && repos.length && repos.every((root) => silent[root]?.some(same))) return true;
   const r = await ask({
     title: "Force Push",
     body: tx`You're going to force push to '${target}'. It may overwrite commits at the remote. Are you sure you want to proceed?`,
@@ -1452,7 +1472,7 @@ async function confirmForcePush(target: string, repos: readonly string[]): Promi
   if (r.checked && target) {
     try {
       const next = silentForcePushTargets();
-      for (const root of repos) if (!next[root]?.includes(target)) next[root] = [...(next[root] ?? []), target];
+      for (const root of repos) if (!next[root]?.some(same)) next[root] = [...(next[root] ?? []), to];
       localStorage.setItem(SILENT_FORCE_PUSH_KEY, JSON.stringify(next));
     } catch {
       // Not remembered: the next force push asks again.
