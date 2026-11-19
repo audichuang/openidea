@@ -134,7 +134,7 @@ export interface GitGraphBridge {
   /** Unstash Changes entries for `stash@{index}` of `repo` (apply, pop, the dialog, drop). */
   stashMenu(index: number, message: string, repo: string): MenuItem[];
   /** Continue / Abort of the merge, rebase, cherry-pick or revert `repo` stopped in. */
-  controlOperation(repo: string, control: "continue" | "abort"): Promise<void>;
+  controlOperation(repo: string, control: "continue" | "abort", operation: string): Promise<void>;
   /** The Conflicts dialog, with `repo` selected so it concludes that repository's operation. */
   resolveConflicts(repo: string): Promise<void>;
   /** The Stash Changes dialog starting on `repo`. */
