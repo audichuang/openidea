@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-const mocks = vi.hoisted(() => ({ log: vi.fn() }));
+const mocks = vi.hoisted(() => ({ log: vi.fn(), ask: vi.fn(), remote: vi.fn() }));
 
 const commit = (id: string, summary: string) => ({
   id,
@@ -16,6 +16,18 @@ const commit = (id: string, summary: string) => ({
 
 vi.mock("../DiffEditor", () => ({
   DiffEditor: ({ input }: { input: { path: string } }) => <div>diff view {input.path}</div>,
+}));
+
+vi.mock("@/workbench/messages", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/workbench/messages")>()),
+  ask: mocks.ask,
+}));
+
+vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tauri-apps/api/core")>()),
+  Channel: class {
+    onmessage: (line: string) => void = () => {};
+  },
 }));
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
@@ -38,6 +50,11 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       vcsCommitsChanges: () => ok([{ path: "src/A.java", oldPath: null, kind: "modified", before: "c0", after: "c2" }]),
       vcsCommitFiles: () => ok([{ path: "src/B.java", oldPath: null, kind: "modified" }]),
       vcsHasHook: () => ok(false),
+      vcsRemote: (repo: string | null) => {
+        mocks.remote(repo);
+        return ok(null);
+      },
+      cancelRequest: () => ok(null),
     },
   };
 });
@@ -48,6 +65,9 @@ import { useVcs } from "../store";
 
 beforeEach(() => {
   mocks.log.mockReset();
+  mocks.ask.mockReset();
+  mocks.remote.mockReset();
+  localStorage.clear();
   useVcs.setState({
     root: "/p",
     roots: ["/p"],
@@ -95,4 +115,24 @@ it("shows the selected file's diff under both panes until it is closed or anothe
   fireEvent.click(older);
   expect(await screen.findByText("B.java")).toBeInTheDocument();
   expect(screen.queryByText("src/A.java")).toBeNull();
+});
+
+it("asks again before a force push to the same target name in another repository", async () => {
+  const forcePush = async (root: string) => {
+    useVcs.setState({ root, roots: [root], repo: root });
+    const view = render(<VcsDialogHost />);
+    await act(() => showPushDialog());
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Force (with lease)" }));
+    const before = mocks.remote.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Force Push" }));
+    await waitFor(() => expect(mocks.remote).toHaveBeenCalledTimes(before + 1));
+    view.unmount();
+  };
+  mocks.ask.mockResolvedValue({ button: "force", checked: true });
+  await forcePush("/p");
+  await forcePush("/p");
+  expect(mocks.ask).toHaveBeenCalledTimes(1);
+
+  await forcePush("/q");
+  expect(mocks.ask).toHaveBeenCalledTimes(2);
 });
