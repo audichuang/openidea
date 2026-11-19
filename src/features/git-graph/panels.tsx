@@ -9,21 +9,31 @@ import { EmptyState, Icon, SearchField, Spinner, T } from "@/ui";
 import { bisect } from "./menus";
 import styles from "./GitGraph.module.css";
 
-/** Loads `load()` whenever `key` changes; null while loading. */
-function useLoaded<T>(key: string | null, load: () => Promise<T>): T | null {
+/**
+ * Loads `load()` whenever `key` changes, and again on each `refresh`; null until `key`'s first
+ * result. A refresh keeps showing the last result while it loads, and keeps the same object when
+ * it brought nothing new: every vcs refresh (any file save) reloads.
+ */
+function useLoaded<T>(key: string | null, load: () => Promise<T>, refresh = 0): T | null {
   const [state, setState] = useState<{ key: string | null; value: T } | null>(null);
   useEffect(() => {
     if (key === null) return;
     let live = true;
     load()
-      .then((value) => live && setState({ key, value }))
+      .then(
+        (value) =>
+          live &&
+          setState((prev) =>
+            prev?.key === key && JSON.stringify(prev.value) === JSON.stringify(value) ? prev : { key, value },
+          ),
+      )
       .catch(() => undefined);
     return () => {
       live = false;
     };
     // `load` is recreated each render; `key` names what it loads.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
+  }, [key, refresh]);
   return state && state.key === key ? state.value : null;
 }
 
@@ -36,9 +46,7 @@ export function ReflogPanel({
   version: number;
   onJump: (id: string) => void;
 }) {
-  const entries = useLoaded<GraphReflogEntry[]>(`${repo}\0${version}`, () =>
-    call(commands.graphReflog(repo, "HEAD", 300)),
-  );
+  const entries = useLoaded<GraphReflogEntry[]>(repo, () => call(commands.graphReflog(repo, "HEAD", 300)), version);
   if (!entries) return <Spinner size={14} />;
   if (!entries.length) return <EmptyState title="No reflog entries" className={styles.empty} />;
   return (
@@ -63,7 +71,7 @@ export function ReflogPanel({
 }
 
 export function StatsPanel({ repo, version }: { repo: string; version: number }) {
-  const stats = useLoaded<GraphAuthorStat[]>(`${repo}\0${version}`, () => call(commands.graphAuthorStats(repo)));
+  const stats = useLoaded<GraphAuthorStat[]>(repo, () => call(commands.graphAuthorStats(repo)), version);
   if (!stats) return <Spinner size={14} />;
   if (!stats.length) return <EmptyState title="No commits" className={styles.empty} />;
   const total = stats.reduce((n, s) => n + s.commits, 0);
