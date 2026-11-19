@@ -208,7 +208,8 @@ describe("git blame gutter and commit popup", () => {
     )!;
     fireEvent.contextMenu(edited);
     const items = mocks.menu.mock.calls[0]![1] as { label?: string }[];
-    expect(items.map((i) => i.label)).toEqual(["Close Annotations", "Options"]);
+    // The fork's Colors submenu follows Options.
+    expect(items.map((i) => i.label)).toEqual(["Close Annotations", "Options", "Colors"]);
   });
 });
 
