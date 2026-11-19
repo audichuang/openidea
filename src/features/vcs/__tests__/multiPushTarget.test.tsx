@@ -85,6 +85,7 @@ beforeEach(() => {
   mocks.changes.mockReset();
   mocks.ask.mockReset();
   mocks.ask.mockResolvedValue({ button: "force", checked: false });
+  localStorage.clear();
   notes = [];
   useVcs.setState({ root: "/p", roots: ["/p/a", "/p/b", "/p/c"], repo: "/p/a", remoteBusy: null, available: false });
   provideNotificationService({ notify: (n) => void notes.push(n as Note), expire: () => {} });
@@ -272,4 +273,43 @@ it("does not ask without Force", async () => {
 
   await waitFor(() => expect(mocks.ops).toHaveLength(3));
   expect(mocks.ask).not.toHaveBeenCalled();
+});
+
+async function forcePushFrom(repo: string) {
+  const view = render(<VcsDialogHost />);
+  await act(() => showPushDialog({ repo }));
+  await screen.findByRole("textbox", { name: `Target branch of ${repo.slice(3)}` });
+  fireEvent.click(screen.getByRole("checkbox", { name: "Force (with lease)" }));
+  const before = mocks.ops.length;
+  fireEvent.click(screen.getByRole("button", { name: "Force Push" }));
+  await waitFor(() => expect(mocks.ops).toHaveLength(before + 1));
+  view.unmount();
+}
+
+it("keeps Don't warn about this target to the repository it was ticked in", async () => {
+  mocks.ask.mockResolvedValue({ button: "force", checked: true });
+  await forcePushFrom("/p/a");
+  expect(askedTargets()).toEqual(["origin/feat-x"]);
+
+  // The same repository and target: silent from now on.
+  await forcePushFrom("/p/a");
+  expect(mocks.ask).toHaveBeenCalledTimes(1);
+
+  // origin/feat-x of another repository is another branch: it still asks.
+  mocks.ask.mockResolvedValue({ button: "force", checked: false });
+  await forcePushFrom("/p/b");
+  expect(askedTargets()).toEqual(["origin/feat-x", "origin/feat-x"]);
+
+  // Several repositories to one target: silent only when every one of them is.
+  await openPushDialog();
+  fireEvent.click(screen.getByRole("checkbox", { name: "Force (with lease)" }));
+  fireEvent.click(screen.getByRole("button", { name: "Force Push" }));
+  await waitFor(() => expect(mocks.ops).toHaveLength(6));
+  expect(mocks.ask).toHaveBeenCalledTimes(3);
+});
+
+it("does not take the earlier project-wide silenced targets for any repository", async () => {
+  localStorage.setItem(["openidea", "vcs", "silentForcePushTargets"].join("."), JSON.stringify(["origin/feat-x"]));
+  await forcePushFrom("/p/a");
+  expect(askedTargets()).toEqual(["origin/feat-x"]);
 });
