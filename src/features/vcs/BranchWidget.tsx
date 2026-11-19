@@ -1,6 +1,6 @@
 import { branchesByRepo } from "./multiRoot";
 /** Title bar branch widget (branch name + incoming / outgoing markers) + Branches popup. */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
 import type { Branch } from "@/bindings";
@@ -36,7 +36,14 @@ import {
 } from "./branches";
 import { branchPresentation, extensionPopupActions, useBranchWidgetExtensions } from "./branchWidgetExtensions";
 import { branchMenu, commonBranchMenu, inRepo, tagMenu } from "./branchMenu";
-import { recentBranches, configuredRemoteNames, toggleFavoriteBranch, useFavoriteBranchNames } from "./branchOps";
+import {
+  configuredRemoteNames,
+  favoriteBranches,
+  recentBranches,
+  toggleFavoriteBranch,
+  useFavoriteBranches,
+  useFavoriteBranchNames,
+} from "./branchOps";
 import { inProgress, operationTitle, type InProgress } from "./operations";
 import {
   branchRepositoryRoots,
@@ -722,6 +729,12 @@ function MultiRepoPanel({
   const version = useVcs((s) => s.version);
   // The branches listed below are the current repository's: so are their recents and favorites.
   const favorites = useFavoriteBranchNames(current);
+  const editedFavorites = useFavoriteBranches((s) => s.byRepo);
+  // A search also lists the other repositories' branches: each row carries its own repository's favorites.
+  const favoritesOf = useCallback(
+    (repo: string) => (editedFavorites[repo] !== undefined ? editedFavorites[repo] : favoriteBranches(repo)),
+    [editedFavorites],
+  );
   const recent = useMemo(() => recentBranches(current), [current]);
   const [tags, setTags] = useState<string[]>([]);
   const [query, setQuery] = useState("");
@@ -799,12 +812,13 @@ function MultiRepoPanel({
         actions,
         expanded,
         favorites,
+        favoritesOf,
         current,
         recent,
         tags,
         sync,
       }),
-    [repos, all, query, actions, expanded, favorites, current, recent, tags, options, sync],
+    [repos, all, query, actions, expanded, favorites, favoritesOf, current, recent, tags, options, sync],
   );
   const isSection = (r: RepoRow) => r.type === "section" || r.type === "notice";
   const activeIndex = pickActive(rows, active, isSection, () => preferredRepoRow(rows, query));
