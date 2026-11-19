@@ -52,12 +52,13 @@ async function reportReady(parent: string, result: Omit<EditorReadyResult, "labe
  * window keeps its processes and any copy of the same file it still has open.
  */
 async function settleUnsaved(models: DocModel[], project: string | null): Promise<boolean> {
-  const dirty = models.filter((model) => model.getMeta().dirty);
+  let dirty = models.filter((model) => model.getMeta().dirty);
   if (dirty.length === 0) return true;
   if (useProject.getState().settings?.files?.autoSave !== false) {
     await Promise.all(dirty.map((model) => model.save("auto")));
-    // A file changed on disk keeps the external change and these edits stay unsaved: stay open (#291).
-    return !dirty.some((model) => model.getMeta().dirty);
+    // A file changed on disk keeps the external change (#291): ask about the edits left unsaved.
+    dirty = dirty.filter((model) => model.getMeta().dirty);
+    if (dirty.length === 0) return true;
   }
   const answer = await ask({
     title: t("app.unsaved.title"),
