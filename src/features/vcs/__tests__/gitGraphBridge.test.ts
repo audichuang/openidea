@@ -380,7 +380,7 @@ describe("git graph bridge", () => {
   };
 
   it("offers the Git Log's searchable branch filter, grouped, with the repository's favorites first", () => {
-    useFavoriteBranches.setState({ key: `openidea.vcs.favoriteBranches:${REPO}`, names: ["zeta"] });
+    useFavoriteBranches.setState({ byRepo: { [REPO]: ["zeta"] } });
     const { rows, input, onSelect } = renderFilter(REPO);
     expect(screen.getByText("Local")).toBeTruthy();
     expect(screen.getByText("Remote")).toBeTruthy();
@@ -397,8 +397,8 @@ describe("git graph bridge", () => {
     expect(onSelect).toHaveBeenCalledWith("origin/dev");
   });
 
-  it("uses the default favorites for a repository the vcs feature has not selected", () => {
-    useFavoriteBranches.setState({ key: `openidea.vcs.favoriteBranches:${REPO}`, names: ["zeta"] });
+  it("uses a repository's own favorites, the defaults when it has none", () => {
+    useFavoriteBranches.setState({ byRepo: { [REPO]: ["zeta"] } });
     const { rows } = renderFilter("/other");
     fireEvent.click(screen.getByText("Local"));
     const order = ["main", "alpha", "zeta"].map((n) => rows().indexOf(n));

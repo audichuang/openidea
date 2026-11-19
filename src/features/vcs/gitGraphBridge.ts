@@ -163,7 +163,7 @@ export function createGitGraphBridge(): GitGraphBridge {
     async branchMenu(branch, repo) {
       const { branchMenu, inRepo } = await import("./branchMenu");
       const current = useVcs.getState().heads[repo]?.head ?? null;
-      return inRepo(repo, withActionLabels(branchMenu(branch, current)));
+      return inRepo(repo, withActionLabels(branchMenu(branch, current, undefined, undefined, repo)));
     },
     BranchFilterPopup: GraphBranchFilterPopup,
     async tagMenu(tag, repo) {
