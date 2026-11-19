@@ -36,13 +36,7 @@ import {
 } from "./branches";
 import { branchPresentation, extensionPopupActions, useBranchWidgetExtensions } from "./branchWidgetExtensions";
 import { branchMenu, commonBranchMenu, inRepo, tagMenu } from "./branchMenu";
-import {
-  loadFavoriteBranches,
-  recentBranches,
-  configuredRemoteNames,
-  toggleFavoriteBranch,
-  useFavoriteBranches,
-} from "./branchOps";
+import { recentBranches, configuredRemoteNames, toggleFavoriteBranch, useFavoriteBranchNames } from "./branchOps";
 import { inProgress, operationTitle, type InProgress } from "./operations";
 import {
   branchRepositoryRoots,
@@ -499,15 +493,14 @@ function BranchesPanel({ onClose, actions: baseActions, worktreeFor, root, fallb
     live ? (s.branch?.head ?? null) : root ? (s.heads[root]?.head ?? null) : (s.branch?.head ?? null),
   );
   const [query, setQuery] = useState("");
-  const [recent] = useState(recentBranches);
+  const [recent] = useState(() => recentBranches(root));
   const [active, setActive] = useState(0);
   const { menuFor, setMenuFor, openTagMenu } = useBranchSubmenu();
   const listRef = useRef<HTMLDivElement>(null);
-  const favorites = useFavoriteBranches((s) => s.names);
+  const favorites = useFavoriteBranchNames(root);
   const [tags, setTags] = useState<string[]>([]);
   useEffect(() => {
     if (live) void loadBranches().catch(() => undefined);
-    loadFavoriteBranches();
   }, [root, live]);
   useEffect(() => {
     if (!root || live || fallback) return;
@@ -563,6 +556,7 @@ function BranchesPanel({ onClose, actions: baseActions, worktreeFor, root, fallb
           branches,
           headCommit: root ? (useVcs.getState().heads[root]?.headCommit ?? null) : undefined,
           existingWorktree: worktreeFor(root ?? currentRepo(), row.branch.name),
+          repo: root,
         }),
       ),
       label: tx`Branch ${row.branch.name}`,
@@ -671,7 +665,7 @@ function BranchesPanel({ onClose, actions: baseActions, worktreeFor, root, fallb
           aria-label="Branches"
           className={styles.list}
           empty={<span className={styles.empty}>{loaded ? tx("No matching branches") : tx("Loading…")}</span>}
-          renderItem={(r) => (r.type === "group" ? <GroupRowView row={r} /> : <BranchRowView row={r} repo={root} />)}
+          renderItem={(r) => (r.type === "group" ? <GroupRowView row={r} /> : <BranchRowView row={r} repo={root} branches={branches} />)}
         />
       </div>
       {menuFor && <SubMenu {...menuFor} onClose={() => setMenuFor(null)} />}
@@ -726,8 +720,9 @@ function MultiRepoPanel({
   const heads = useVcs((s) => s.heads);
   const operations = useVcs((s) => s.operations);
   const version = useVcs((s) => s.version);
-  const favorites = useFavoriteBranches((s) => s.names);
-  const [recent] = useState(recentBranches);
+  // The branches listed below are the current repository's: so are their recents and favorites.
+  const favorites = useFavoriteBranchNames(current);
+  const recent = useMemo(() => recentBranches(current), [current]);
   const [tags, setTags] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
@@ -748,7 +743,6 @@ function MultiRepoPanel({
   const repoMenuRoot = repoMenu?.root;
   const repoMenuActions = useMemo(() => (repoMenuRoot ? repoActions(repoMenuRoot) : []), [repoMenuRoot]);
 
-  useEffect(() => loadFavoriteBranches(), []);
   // Every repository's branches (common ones, submenus, search); refreshed after operations.
   useEffect(() => {
     let live = true;
@@ -851,6 +845,7 @@ function MultiRepoPanel({
           branches: all[row.repo.root],
           headCommit: row.repo.headCommit,
           existingWorktree: worktreeFor(row.repo.root, row.branch.name),
+          repo: row.repo.root,
         }),
       );
       setMenuFor({ items, label: tx`Branch ${row.branch.name} of ${row.repo.name}`, el });
@@ -968,6 +963,7 @@ function MultiRepoPanel({
           renderItem={(r) => (
             <RepoRowView
               row={r}
+              branches={all}
               operation={r.type === "repo" ? operations[r.repo.root] : undefined}
               sync={
                 r.type === "common" && !r.branch.remote
@@ -1013,10 +1009,20 @@ function branchIndent(depth: number) {
   return depth ? { paddingInlineStart: `min(${depth * INDENT}px, ${(30 * depth) / (depth + 3)}%)` } : undefined;
 }
 
-function RepoRowView({ row, operation, sync }: { row: RepoRow; operation?: string; sync?: BranchSyncSummary }) {
+function RepoRowView({
+  row,
+  branches,
+  operation,
+  sync,
+}: {
+  row: RepoRow;
+  branches: Record<string, Branch[]>;
+  operation?: string;
+  sync?: BranchSyncSummary;
+}) {
   switch (row.type) {
     case "branch":
-      return <BranchRowView row={row} repo={row.repo.root} />;
+      return <BranchRowView row={row} repo={row.repo.root} branches={branches[row.repo.root]} />;
     case "action":
     case "tag":
       return <BranchRowView row={row} />;
@@ -1083,9 +1089,12 @@ function GroupRowView({ row }: { row: { key: string; label: string; expanded: bo
 function BranchRowView({
   row,
   repo,
+  branches,
 }: {
   row: BranchRow | Extract<RepoRow, { type: "action" | "branch" | "tag" }>;
+  /** The repository of a branch row (unset: the selected one) and its branches, for the favorite star. */
   repo?: string;
+  branches?: readonly Branch[];
 }) {
   const pending = useVcs((s) =>
     row.type === "branch"
@@ -1142,7 +1151,7 @@ function BranchRowView({
           onMouseDown={(e) => e.preventDefault()}
           onClick={(e) => {
             e.stopPropagation();
-            toggleFavoriteBranch(b);
+            toggleFavoriteBranch(b, repo, branches);
           }}
         >
           <Icon name={row.favorite ? "star" : "star-outline"} size={14} className={styles.starIcon} />
