@@ -18,8 +18,6 @@ import { repoColor } from "./model";
 import { repositoryPath } from "./repositoryPaths";
 import { toLogChanges } from "./logChanges";
 import { refLabels } from "./logOptions";
-import { setLogFilters, useGitLog } from "./logStore";
-import { branchesByRepo } from "./multiRoot";
 import { currentRepo, focusRepo, repoOf, useVcs } from "./store";
 import { mergeIntoCurrent, rebaseOnto } from "./branchOps";
 import {
@@ -253,22 +251,8 @@ export function createGitGraphBridge(): GitGraphBridge {
     async showLog(repo) {
       await focusRepo(repo);
       if (currentRepo() !== repo) return;
+      // The main Log keeps the user's own filters; it is not rewritten from the graph (#389).
       await executeAction("vcs.showLog");
-      // The main Log keeps its filters: those left on another repository would hide this one.
-      const roots = useVcs.getState().roots;
-      const filters = useGitLog.getState().filters;
-      const shown = filters.repositories ?? [];
-      if (roots.length < 2 || (shown.length === 1 && shown[0] === repo)) return;
-      // As the log query reads them: a branch of another repository only has no history here.
-      const refs = filters.branches.length ? await branchesByRepo(roots) : {};
-      const has = (root: string, ref: string) => !!refs[root]?.some((b) => b.name === ref);
-      const branches = filters.branches.filter((ref) => has(repo, ref) || !roots.some((root) => has(root, ref)));
-      setLogFilters({
-        repositories: [repo],
-        path: filters.path && repoOf(filters.path) === repo ? filters.path : null,
-        paths: filters.paths?.filter((path) => repoOf(path) === repo),
-        ...(branches.length < filters.branches.length ? { branches } : {}),
-      });
     },
     async mergeIntoCurrent(branch, repo) {
       await focusRepo(repo);
