@@ -819,7 +819,12 @@ mod tests {
         for settings in [root.join(".openidea/settings.toml"), member.join(".openidea/settings.toml")] {
             std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
             std::fs::write(&settings, &text).unwrap();
-            // A save in the IDE, an external change, a VCS operation and a delete.
+            // The content before a first edit, a save in the IDE, an external change, a VCS
+            // operation and a delete (with its undo backup).
+            assert!(!h.record_original(&settings).unwrap());
+            let undo = h.capture_deletion_undo(std::slice::from_ref(&settings), 10);
+            assert!(undo.files.is_empty());
+            assert_eq!(undo.skipped, vec![settings.clone()]);
             h.record(&settings, &text, "Saved").unwrap();
             h.record_event(&settings, &text, "Before Commit").unwrap();
             h.record_external_changes(std::slice::from_ref(&settings), &[], 10);
