@@ -159,6 +159,18 @@ describe("controlOperation with an explicit repository", () => {
       expect(resolveConflicts).not.toHaveBeenCalled();
     });
 
+    it("reports a failed Stage and Retry the same way", async () => {
+      conflicted = [LIB];
+      vcsOperation.mockResolvedValueOnce({ status: "error", error: { kind: "other", message: UNSTAGED } });
+      stoppedActions("rebase", UNSTAGED, APP)
+        .find((l) => l.label === "Stage and Retry")!
+        .run();
+      await vi.waitFor(() => expect(notes).toContain("Continue Rebase failed"));
+      expect(vcsOperation.mock.calls[0]![2]).toEqual({ op: "stageAndContinue" });
+      expect(resolveConflicts).not.toHaveBeenCalled();
+      await vi.waitFor(() => expect(useVcs.getState().remoteBusy).toBeNull());
+    });
+
     it("opens the conflicts instead when they are that repository's", async () => {
       // None before the command (Continue would stop there), its own once it stopped again.
       vcsOperation.mockImplementationOnce(async () => {
