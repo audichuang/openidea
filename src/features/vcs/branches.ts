@@ -490,7 +490,8 @@ export function buildBranchTree(
 /** Local / remote / tag groups contain a subtree for each registered repository. */
 export function buildRepositoryBranchTree(
   repositories: readonly { root: string; name: string; branches: Branch[]; tags: string[] }[],
-  favorites: readonly string[] | null,
+  /** Each repository's own favorites. */
+  favorites: (root: string) => readonly string[] | null,
 ): BranchTreeNode[] {
   const scope = (nodes: BranchTreeNode[], repo: string): BranchTreeNode[] =>
     nodes.map((n) => ({
@@ -499,7 +500,7 @@ export function buildRepositoryBranchTree(
       key: `${repo}:${n.key}`,
       children: n.children && scope(n.children, repo),
     }));
-  const trees = repositories.map((r) => ({ ...r, nodes: buildBranchTree(r.branches, favorites, r.tags) }));
+  const trees = repositories.map((r) => ({ ...r, nodes: buildBranchTree(r.branches, favorites(r.root), r.tags) }));
   const groups = [
     { key: "g:local", label: "Local" },
     { key: "g:remote", label: "Remote" },
