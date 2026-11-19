@@ -1,4 +1,5 @@
 /** Branch operations (checkout, create, merge, rebase, update, delete) with recents and favorites. */
+import { useMemo } from "react";
 import { create } from "zustand";
 import type { Branch, BranchInfo, CheckoutOptions, Worktree } from "@/bindings";
 import { executeAction } from "@/platform/actions";
@@ -10,15 +11,19 @@ import { showCommitRange } from "./CompareBranches";
 import { confirmDialog, promptText } from "./dialogs";
 import { cleanUpBranchNameOnTyping } from "@/platform/gitRefName";
 import { errorMessage, runOp, runRemote, saveAll } from "./ops";
-import { conflictedFiles, currentRepo, refreshNow, repoName, useVcs } from "./store";
+import { conflictedFiles, currentRepo, currentRepoRoot, refreshNow, repoName, useVcs } from "./store";
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 
-const recentKey = () => `openidea.vcs.recentBranches:${useVcs.getState().root ?? ""}`;
+/** The repository recents and favorites are kept for: `repo`, else the selected one. */
+const listRepo = (repo?: string | null) => repo ?? currentRepoRoot() ?? "";
 
-export function recentBranches(): string[] {
+const recentKey = (repo?: string | null) => `openidea.vcs.recentBranches:${listRepo(repo)}`;
+
+/** Branches recently checked out in `repo` (unset: the selected repository), newest first. */
+export function recentBranches(repo?: string | null): string[] {
   try {
-    const raw = localStorage.getItem(recentKey());
+    const raw = localStorage.getItem(recentKey(repo));
     const v: unknown = raw ? JSON.parse(raw) : [];
     return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
   } catch {
@@ -26,10 +31,10 @@ export function recentBranches(): string[] {
   }
 }
 
-function rememberBranch(name: string | null | undefined) {
+function rememberBranch(name: string | null | undefined, repo?: string | null) {
   if (!name) return;
   try {
-    localStorage.setItem(recentKey(), JSON.stringify(pushRecent(recentBranches(), name)));
+    localStorage.setItem(recentKey(repo), JSON.stringify(pushRecent(recentBranches(repo), name)));
   } catch {
     // Storage unavailable: recents are a convenience only.
   }
@@ -168,6 +173,7 @@ export async function checkoutDetached(rev: string, label: string) {
 export async function checkoutBranch(name: string) {
   const state = useVcs.getState();
   const previous = state.branch?.head;
+  const repo = currentRepoRoot();
   // A local namesake tracking another branch: IDEA asks for a new local name instead.
   if (state.branches.some((b) => b.remote && b.name === name)) {
     const local = state.branches.find((b) => !b.remote && b.name === shortRemoteName(name));
@@ -175,9 +181,9 @@ export async function checkoutBranch(name: string) {
   }
   const ok = await performCheckout(name, () => `Checked out ${useVcs.getState().branch?.head ?? name}`);
   if (ok) {
-    rememberBranch(previous);
+    rememberBranch(previous, repo);
     await refreshNow();
-    rememberBranch(useVcs.getState().branch?.head);
+    rememberBranch(useVcs.getState().branch?.head, repo);
   }
 }
 
@@ -216,8 +222,8 @@ export async function newBranch(from?: string, repo = currentRepo()) {
     success: checkout ? `Created and checked out ${r.value}` : `Created branch ${r.value}`,
   });
   if (ok !== undefined && checkout) {
-    rememberBranch(previous);
-    rememberBranch(r.value);
+    rememberBranch(previous, repo);
+    rememberBranch(r.value, repo);
   }
 }
 
@@ -314,7 +320,7 @@ export async function renameBranch(branch: Branch) {
   );
   if (ok !== undefined) {
     try {
-      localStorage.setItem(recentKey(), JSON.stringify(recentBranches().map((b) => (b === name ? to : b))));
+      localStorage.setItem(recentKey(repo), JSON.stringify(recentBranches(repo).map((b) => (b === name ? to : b))));
     } catch {
       // Recents are best effort.
     }
@@ -527,10 +533,11 @@ export async function deleteBranches(targets: readonly { ref?: string; repo?: st
 export async function checkoutAndRebase(name: string) {
   const current = useVcs.getState().branch?.head;
   if (!current) return;
+  const repo = currentRepoRoot();
   const ok = await performCheckout(name, () => `Checked out ${name}`);
   if (!ok) return;
-  rememberBranch(current);
-  rememberBranch(name);
+  rememberBranch(current, repo);
+  rememberBranch(name, repo);
   await refreshNow();
   await rebaseOnto(current, branchRef(current, false));
 }
@@ -626,15 +633,19 @@ async function resetBack(root: string, before: BranchInfo) {
 /** Checks out `name` (local, or remote: its local namesake) in every repository of `roots`. */
 export async function checkoutInRepos(name: string, roots: readonly string[]) {
   const label = useVcs.getState().branches.some((b) => b.remote && b.name === name) ? shortRemoteName(name) : name;
-  const previous = useVcs.getState().branch?.head;
+  const previous = useVcs.getState().heads;
   await eachRepo(
     roots,
     async (root) => ((await performCheckout(name, () => "", root, true)) ? true : undefined),
     `Checked out ${label}`,
     { undo: tx("check out the previous branch again"), run: (root, _, before) => checkoutBack(root, before) },
   );
-  rememberBranch(previous);
-  rememberBranch(useVcs.getState().branch?.head);
+  // Each repository keeps its own recents.
+  const heads = useVcs.getState().heads;
+  for (const root of roots) {
+    rememberBranch(previous[root]?.head, root);
+    rememberBranch(heads[root]?.head, root);
+  }
 }
 
 /** New Branch in every repository of `roots` (from HEAD or `from`), checked out by default. */
@@ -728,39 +739,54 @@ export async function deleteInRepos(name: string, roots: readonly string[]) {
 
 // --- favorites ---------------------------------------------------------------
 
-const favoritesKey = () => `openidea.vcs.favoriteBranches:${useVcs.getState().root ?? ""}`;
+const favoritesKey = (root: string) => `openidea.vcs.favoriteBranches.v2:${root}`;
 
-/** The user's favorite branches for the open repository; `null` = defaults (main / master). */
-export const useFavoriteBranches = create<{ key: string; names: string[] | null }>(() => ({ key: "", names: null }));
+/**
+ * Favorites used to be one list per project. It is still read (never written) for a repository
+ * whose own list was not edited yet, so favorites marked before are kept.
+ */
+const projectFavoritesKey = () => `openidea.vcs.favoriteBranches:${useVcs.getState().root ?? ""}`;
 
-export function loadFavoriteBranches() {
-  const key = favoritesKey();
-  if (useFavoriteBranches.getState().key === key) return;
-  let names: string[] | null = null;
-  try {
-    const raw = localStorage.getItem(key);
-    const v: unknown = raw ? JSON.parse(raw) : null;
-    if (Array.isArray(v)) names = v.filter((x): x is string => typeof x === "string");
-  } catch {
-    // Storage unavailable: defaults.
+function readFavorites(root: string): string[] | null {
+  for (const key of [favoritesKey(root), projectFavoritesKey()]) {
+    try {
+      const raw = localStorage.getItem(key);
+      const v: unknown = raw ? JSON.parse(raw) : null;
+      if (Array.isArray(v)) return v.filter((x): x is string => typeof x === "string");
+    } catch {
+      // Storage unavailable: defaults.
+    }
   }
-  useFavoriteBranches.setState({ key, names });
+  return null;
 }
 
-export function toggleFavoriteBranch(b: Branch) {
-  loadFavoriteBranches();
-  const stored = useFavoriteBranches.getState().names;
+/** Repository root → the favorites edited this session; the others are read from storage. */
+export const useFavoriteBranches = create<{ byRepo: Record<string, string[] | null> }>(() => ({ byRepo: {} }));
+
+/** The user's favorite branches of `repo` (unset: the selected repository); `null` = defaults (main / master). */
+export function favoriteBranches(repo?: string | null): string[] | null {
+  const root = listRepo(repo);
+  const edited = useFavoriteBranches.getState().byRepo[root];
+  return edited !== undefined ? edited : readFavorites(root);
+}
+
+export function useFavoriteBranchNames(repo?: string | null): string[] | null {
+  const root = useVcs((s) => repo ?? s.repo ?? s.roots[0] ?? s.root ?? "");
+  const edited = useFavoriteBranches((s) => s.byRepo[root]);
+  return useMemo(() => (edited !== undefined ? edited : readFavorites(root)), [edited, root]);
+}
+
+/** Toggles `b` in the favorites of `repo` (unset: the selected repository), whose branches are `branches`. */
+export function toggleFavoriteBranch(b: Branch, repo?: string | null, branches?: readonly Branch[]) {
+  const root = listRepo(repo);
+  const stored = favoriteBranches(root);
+  const known = branches ?? (root === listRepo() ? useVcs.getState().branches : []);
   // First edit: start from the defaults that are currently shown.
-  const base =
-    stored ??
-    useVcs
-      .getState()
-      .branches.filter((x) => isFavoriteBranch(x, null))
-      .map((x) => x.name);
+  const base = stored ?? known.filter((x) => isFavoriteBranch(x, null)).map((x) => x.name);
   const names = base.includes(b.name) ? base.filter((n) => n !== b.name) : [...base, b.name];
-  useFavoriteBranches.setState({ names });
+  useFavoriteBranches.setState((s) => ({ byRepo: { ...s.byRepo, [root]: names } }));
   try {
-    localStorage.setItem(favoritesKey(), JSON.stringify(names));
+    localStorage.setItem(favoritesKey(root), JSON.stringify(names));
   } catch {
     // Favorites last for the session only.
   }
