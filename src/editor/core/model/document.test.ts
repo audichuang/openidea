@@ -395,6 +395,26 @@ describe("DocumentManager + slots", () => {
     }
   });
 
+  it("saves a split document when its last tab closes after the other tab moved to an editor window", async () => {
+    const { backend, manager } = setup({ "/p/run.py": "old\n" });
+    const model = await manager.acquire("/p/run.py");
+    const moved = new EditorSlot(model, "t1", host);
+    const kept = new EditorSlot(model, "t2", host);
+    try {
+      // The tab moved to an editor window: only its own release skips autosave.
+      model.handoffRelease = true;
+      moved.dispose();
+      await settle();
+      expect(model.handoffRelease).toBe(false);
+      kept.dispatchLocal({ changes: { from: 0, insert: "x" } });
+      kept.dispose();
+      await settle();
+      expect(backend.files.get("/p/run.py")).toBe("xold\n");
+    } finally {
+      manager.stop();
+    }
+  });
+
   it("keeps a document whose autosave was refused open when its last tab closes", async () => {
     const { backend, manager } = setup({ "/p/run.py": "old\n" });
     const model = await manager.acquire("/p/run.py");
