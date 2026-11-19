@@ -54,7 +54,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 });
 
 import { provideNotificationService } from "@/workbench/contributions";
-import { controlOperation } from "../operations";
+import { controlOperation, stoppedActions } from "../operations";
 import { refreshNow, useVcs } from "../store";
 
 const vcs = useVcs.getState();
@@ -95,6 +95,26 @@ describe("controlOperation with an explicit repository", () => {
     await controlOperation("abort", "rebase", APP);
     expect(vcsOperation).not.toHaveBeenCalled();
     expect(notes).toContain("No rebase in progress");
+  });
+
+  it("keeps the failure balloon's Stage and Retry and Abort links on that repository", async () => {
+    useVcs.setState({ repo: LIB });
+    const links = stoppedActions(
+      "rebase",
+      "There are unstaged changes in tracked files preventing rebase from continuing",
+      APP,
+    );
+    const idle = () => vi.waitFor(() => expect(useVcs.getState().remoteBusy).toBeNull());
+    links.find((l) => l.label === "Stage and Retry")!.run();
+    await vi.waitFor(() => expect(vcsOperation).toHaveBeenCalledTimes(1));
+    expect(vcsOperation.mock.calls[0]![0]).toBe(APP);
+    expect(vcsOperation.mock.calls[0]![2]).toEqual({ op: "stageAndContinue" });
+    await idle();
+    links.find((l) => l.label === "Abort")!.run();
+    await vi.waitFor(() => expect(vcsOperation).toHaveBeenCalledTimes(2));
+    expect(vcsOperation.mock.calls[1]![0]).toBe(APP);
+    expect(vcsOperation.mock.calls[1]![2]).toEqual({ op: "abort" });
+    await idle();
   });
 
   it("acts on the selected repository without one", async () => {
