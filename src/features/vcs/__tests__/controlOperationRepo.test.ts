@@ -8,7 +8,9 @@ const [APP, LIB] = ["/work/app", "/work/lib"];
 /** Root → the operation the backend reports it stopped in. */
 let operations: Record<string, string | null> = {};
 let rootsGate: Promise<void> | null = null;
-const vcsOperation = vi.fn(async (..._args: unknown[]) => ({ status: "ok", data: null }));
+/** Roots with a conflicted file. */
+let conflicted: string[] = [];
+const vcsOperation = vi.fn(async (..._args: unknown[]): Promise<unknown> => ({ status: "ok", data: null }));
 
 vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tauri-apps/api/core")>()),
@@ -46,23 +48,43 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
           })),
         };
       },
-      vcsStatus: async () => ({ status: "ok", data: [] }),
+      vcsStatus: async () => ({
+        status: "ok",
+        data: conflicted.map((root) => ({
+          path: `${root}/c.ts`,
+          relPath: "c.ts",
+          staged: null,
+          unstaged: "conflicted",
+          renamedFrom: null,
+        })),
+      }),
       vcsOperation: (...args: unknown[]) => vcsOperation(...args),
       cancelRequest: async () => ({ status: "ok", data: null }),
     },
   };
 });
 
+import { registerActions } from "@/platform/actions";
 import { provideNotificationService } from "@/workbench/contributions";
 import { controlOperation, stoppedActions } from "../operations";
 import { refreshNow, useVcs } from "../store";
 
 const vcs = useVcs.getState();
 let notes: string[] = [];
+/** Title → the links of that notification. */
+let links: Record<string, string[]> = {};
 
 beforeEach(async () => {
   notes = [];
-  provideNotificationService({ notify: (n) => void notes.push(String(n.title)), expire: () => {} });
+  links = {};
+  conflicted = [];
+  provideNotificationService({
+    notify: (n) => {
+      notes.push(String(n.title));
+      links[String(n.title)] = (n.actions ?? []).map((a) => a.label);
+    },
+    expire: () => {},
+  });
   operations = { [APP]: "rebase", [LIB]: "rebase" };
   useVcs.setState({ available: true, root: APP, roots: [APP, LIB], repo: APP });
   await refreshNow();
@@ -115,6 +137,38 @@ describe("controlOperation with an explicit repository", () => {
     expect(vcsOperation.mock.calls[1]![0]).toBe(APP);
     expect(vcsOperation.mock.calls[1]![2]).toEqual({ op: "abort" });
     await idle();
+  });
+
+  describe("when git refuses to continue", () => {
+    const UNSTAGED = "There are unstaged changes in tracked files preventing rebase from continuing";
+    const resolveConflicts = vi.fn();
+    let off = () => {};
+
+    beforeEach(() => {
+      resolveConflicts.mockClear();
+      off = registerActions([{ id: "vcs.resolveConflicts", title: "Resolve Conflicts", run: resolveConflicts }]);
+    });
+    afterEach(() => off());
+
+    it("reports that repository's failure though another one has conflicts", async () => {
+      conflicted = [LIB];
+      vcsOperation.mockResolvedValueOnce({ status: "error", error: { kind: "other", message: UNSTAGED } });
+      await controlOperation("continue", "rebase", APP);
+      expect(vcsOperation.mock.calls[0]![0]).toBe(APP);
+      expect(links["Continue Rebase failed"]).toEqual(["Stage and Retry", "Show Files", "Abort"]);
+      expect(resolveConflicts).not.toHaveBeenCalled();
+    });
+
+    it("opens the conflicts instead when they are that repository's", async () => {
+      // None before the command (Continue would stop there), its own once it stopped again.
+      vcsOperation.mockImplementationOnce(async () => {
+        conflicted = [APP];
+        return { status: "error", error: { kind: "other", message: "could not apply" } };
+      });
+      await controlOperation("continue", "rebase", APP);
+      expect(resolveConflicts).toHaveBeenCalled();
+      expect(notes).not.toContain("Continue Rebase failed");
+    });
   });
 
   it("acts on the selected repository without one", async () => {
