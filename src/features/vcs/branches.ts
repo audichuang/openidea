@@ -32,6 +32,8 @@ export interface PopupAction {
   group?: string;
   /** A toggle: shown with a check mark when on. */
   checked?: boolean;
+  /** `arg` narrows the action (one repository), so the shortcut of the plain action is not shown. */
+  hideShortcut?: boolean;
 }
 
 export type BranchGroup = "recent" | "local" | "remote";
