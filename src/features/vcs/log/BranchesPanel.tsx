@@ -4,7 +4,7 @@ import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { hasPrimaryModifier } from "@/platform/keymap";
 import { IconButton, SearchField, T, Tree, copyText, showContextMenu, type MenuItem } from "@/ui";
-import { useContext, useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useContext, useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
   branchFolderKeys,
   branchGroupKeys,
@@ -15,7 +15,7 @@ import {
   type BranchTreeNode,
 } from "../branches";
 import { branchMenu, inRepo, tagMenu } from "../branchMenu";
-import { canDeleteBranch, useFavoriteBranchNames } from "../branchOps";
+import { canDeleteBranch, favoriteBranches, useFavoriteBranches, useFavoriteBranchNames } from "../branchOps";
 import { BranchSync } from "../BranchSync";
 import styles from "../GitLog.module.css";
 import { LogIdContext } from "../logContext";
@@ -64,6 +64,12 @@ export function BranchesPanel() {
   const branchesLoaded = useVcs((s) => s.branchesLoaded);
   const current = useVcs((s) => s.branch?.head ?? null);
   const favorites = useFavoriteBranchNames(repositories.length === 1 ? repositories[0] : undefined);
+  const editedFavorites = useFavoriteBranches((s) => s.byRepo);
+  // Several repositories are listed together: each one's branches carry its own favorites.
+  const favoritesOf = useCallback(
+    (repo: string) => (editedFavorites[repo] !== undefined ? editedFavorites[repo] : favoriteBranches(repo)),
+    [editedFavorites],
+  );
   const filterBranches = useGitLog((s) => s.filters.branches);
   const filterRepositories = useGitLog((s) => s.filters.repositories);
   const [query, setQuery] = useState("");
@@ -100,9 +106,9 @@ export function BranchesPanel() {
         branches: allBranches[repo] ?? [],
         tags: allTags[repo] ?? [],
       })),
-      favorites,
+      favoritesOf,
     );
-  }, [repositories, allBranches, allTags, branches, favorites, tags]);
+  }, [repositories, allBranches, allTags, branches, favorites, tags, favoritesOf]);
   const roots = useMemo(() => filterBranchTree(allRoots, query), [allRoots, query]);
   // While searching every match is shown expanded.
   const searchExpanded = useMemo(() => (query.trim() ? new Set(branchGroupKeys(roots)) : undefined), [roots, query]);
@@ -150,7 +156,8 @@ export function BranchesPanel() {
     return () => useBranchesPane.setState({ selected: [] });
   }, [targets, active]);
   const target = targets[0] ?? undefined;
-  const favorite = !!target?.branch && isFavoriteBranch(target.branch, favorites);
+  const favorite =
+    !!target?.branch && isFavoriteBranch(target.branch, target.repo ? favoritesOf(target.repo) : favorites);
   const onKeyDownCapture = (e: KeyboardEvent<HTMLDivElement>) => {
     if ((e.key !== "c" && e.key !== "C") || !hasPrimaryModifier(e) || e.altKey || e.shiftKey) return;
     // The branch search keeps the browser's own copy.
