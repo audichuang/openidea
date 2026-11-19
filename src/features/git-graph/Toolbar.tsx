@@ -161,8 +161,9 @@ export function Toolbar(p: ToolbarProps) {
       {p.loading ? <Spinner size={14} /> : null}
       <IconButton icon="refresh" title="Refresh" onClick={p.onRefresh} />
       <IconButton icon="git-fetch" title="Fetch" action="vcs.fetch" />
-      <IconButton icon="git-pull" title="Pull…" action="vcs.pull" />
-      <IconButton icon="git-push" title="Push…" action="vcs.push" />
+      {/* The graph's repository, not the editor's or the primary one. */}
+      <IconButton icon="git-pull" title="Pull…" action="vcs.pull" actionArg={p.repo ? { repo: p.repo } : undefined} />
+      <IconButton icon="git-push" title="Push…" action="vcs.push" actionArg={p.repo ? { repo: p.repo } : undefined} />
       <IconButton icon="commit" title="Commit…" action="vcs.commit" />
       <IconButton icon="history" title="Show Git Log" action="vcs.showLog" />
     </div>
