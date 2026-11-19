@@ -18,6 +18,7 @@ import { repoColor } from "./model";
 import { repositoryPath } from "./repositoryPaths";
 import { toLogChanges } from "./logChanges";
 import { refLabels } from "./logOptions";
+import { setLogFilters, useGitLog } from "./logStore";
 import { currentRepo, focusRepo, repoOf, useVcs } from "./store";
 import { mergeIntoCurrent, rebaseOnto } from "./branchOps";
 import {
@@ -229,12 +230,14 @@ export function createGitGraphBridge(): GitGraphBridge {
         { label: "Drop", danger: true, icon: "trash", run: () => void dropStash(index, message, repo) },
       ];
     },
-    // These read the selected repository's operation, so `repo` is selected first, as `inRepo` does.
-    async controlOperation(repo, control) {
-      const { controlOperation } = await import("./operations");
+    // `repo` is passed down: the selection may change while the status refreshes. It is selected
+    // too, as `inRepo` does, for the conflicts dialog a refused Continue opens.
+    async controlOperation(repo, control, operation) {
+      const { controlOperation, inProgress } = await import("./operations");
       await focusRepo(repo);
-      if (currentRepo() === repo) await controlOperation(control);
+      await controlOperation(control, inProgress(operation), repo);
     },
+    // Reads the selected repository's operation, so `repo` is selected first.
     async resolveConflicts(repo) {
       const { showConflictsDialog } = await import("./conflictsUi");
       await focusRepo(repo);
@@ -248,7 +251,12 @@ export function createGitGraphBridge(): GitGraphBridge {
     },
     async showLog(repo) {
       await focusRepo(repo);
-      if (currentRepo() === repo) await executeAction("vcs.showLog");
+      if (currentRepo() !== repo) return;
+      await executeAction("vcs.showLog");
+      // The main Log keeps its filters: one left on another repository would hide this one.
+      const shown = useGitLog.getState().filters.repositories ?? [];
+      if (useVcs.getState().roots.length > 1 && (shown.length !== 1 || shown[0] !== repo))
+        setLogFilters({ repositories: [repo] });
     },
     async mergeIntoCurrent(branch, repo) {
       await focusRepo(repo);
