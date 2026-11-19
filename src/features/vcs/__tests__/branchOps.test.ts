@@ -81,6 +81,7 @@ import {
   deleteTag,
   newBranch,
   newBranchInRepos,
+  recentBranches,
   renameBranch,
 } from "../branchOps";
 import { useVcs } from "../store";
@@ -155,6 +156,16 @@ it("prefills nothing when HEAD is detached", async () => {
 it("still suggests a remote branch's name without the prefix", async () => {
   await newBranch({ name: "origin/main", remote: true });
   expect(mocks.prompt.mock.calls[0]?.[0].initial).toBe("main");
+});
+
+it("remembers a checkout among the recent branches of its own repository only", async () => {
+  localStorage.clear();
+  mocks.checkout.mockResolvedValue(ok({ kind: "done" }));
+  useVcs.setState({ roots: ["/p/front", "/p/back"] });
+  await checkoutBranch("main");
+  expect(recentBranches("/p/front")).toEqual(["feature/ui"]);
+  expect(recentBranches()).toEqual(["feature/ui"]);
+  expect(recentBranches("/p/back")).toEqual([]);
 });
 
 it("prefills the current branch in the multi-repository dialog too", async () => {
