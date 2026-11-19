@@ -32,7 +32,7 @@ const rowTexts = () => screen.getAllByRole("option").map((o) => o.textContent);
 
 afterEach(() => {
   localStorage.clear();
-  useFavoriteBranches.setState({ key: "", names: null });
+  useFavoriteBranches.setState({ byRepo: {} });
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
