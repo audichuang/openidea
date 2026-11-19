@@ -9,6 +9,8 @@ const config: Record<string, string | null> = {};
 let mergeBase: string | null = "head";
 let diffHunks: (oldText: string, newText: string) => LineHunk[] = () => [];
 const checkout = vi.fn();
+/** The repository each local git command ran in. */
+const gitRepos: Array<string | null> = [];
 
 vi.mock("@tauri-apps/api/core", async (original) => ({
   ...(await original<typeof import("@tauri-apps/api/core")>()),
@@ -27,13 +29,21 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       ghApi: (_repo: unknown, req: unknown) => ghApi(req),
       vcsFileAt: () => ok(HEAD),
       vcsDiffHunks: (a: string, b: string) => Promise.resolve(diffHunks(a, b)),
-      vcsConfigGet: (_repo: string | null, key: string) => ok(config[key] ?? null),
-      vcsRemotes: () =>
-        ok([
+      vcsConfigGet: (repo: string | null, key: string) => {
+        gitRepos.push(repo);
+        return ok(config[key] ?? null);
+      },
+      vcsRemotes: (repo: string | null) => {
+        gitRepos.push(repo);
+        return ok([
           { name: "origin", url: "git@github.com:o/r.git" },
           { name: "fork", url: "https://github.com/alice/r.git" },
-        ]),
-      vcsMergeBase: () => ok(mergeBase),
+        ]);
+      },
+      vcsMergeBase: (repo: string | null) => {
+        gitRepos.push(repo);
+        return ok(mergeBase);
+      },
       ghPrCheckout: (...args: unknown[]) => {
         checkout(...args);
         return ok(null);
@@ -45,7 +55,12 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 import { useEditorRegistry } from "@/editor/api";
 import { useBranchWidgetExtensions } from "@/features/vcs/branchWidgetExtensions";
 import { useVcs } from "@/features/vcs/store";
-import { provideNotificationService, type NotificationService } from "@/workbench/contributions";
+import {
+  provideEditorService,
+  provideNotificationService,
+  type EditorService,
+  type NotificationService,
+} from "@/workbench/contributions";
 import { setCurrentRepository } from "../api/client";
 import type {
   GHCommitFile,
@@ -58,7 +73,7 @@ import type {
 import { clearNewComments, useNewComments } from "../diff/newComments";
 import { parsePatch } from "../diff/model";
 import { clearPullRequests, setPullRequestData } from "../data/pullRequest";
-import { useGhRepository } from "../data/repository";
+import { connectedRepoHead, useGhRepository } from "../data/repository";
 import { activeReviewEditor, reviewModeEditorExtension } from "./editor";
 import {
   documentChanges,
@@ -286,6 +301,7 @@ beforeEach(() => {
   provideNotificationService({ notify } as unknown as NotificationService);
   restPulls = [{ number: N }];
   mergeBase = "head";
+  gitRepos.length = 0;
   diffHunks = () => [];
   for (const k of Object.keys(config)) delete config[k];
   setCurrentRepository({ owner: "o", name: "r", id: "R1" });
@@ -329,7 +345,7 @@ afterEach(async () => {
   useEditorRegistry.setState({ active: null });
   useReviewBranch.setState({ number: null, branch: null, updateRequired: false });
   useGhRepository.setState({ connection: null });
-  useVcs.setState({ available: false, branch: null, repo: null, roots: [], root: null });
+  useVcs.setState({ available: false, branch: null, repo: null, roots: [], root: null, heads: {}, operations: {} });
 });
 
 describe("the pull request of the current branch", () => {
@@ -420,8 +436,8 @@ describe("the pull request of the current branch", () => {
 
 // ---------------------------------------------------------------------------
 
-function openEditor(doc: string) {
-  const ctx = { doc: 1, path: `/p/${PATH}`, language: "typescript", uiMode: null, readOnly: false };
+function openEditor(doc: string, root = "/p") {
+  const ctx = { doc: 1, path: `${root}/${PATH}`, language: "typescript", uiMode: null, readOnly: false };
   const view = new EditorView({
     state: EditorState.create({ doc, extensions: [reviewModeEditorExtension(ctx)] }),
     parent: document.body,
@@ -444,6 +460,62 @@ const lineOf = (el: HTMLElement) => {
   while (line?.classList.contains("cm-lineInlay")) line = line.previousElementSibling;
   return line?.textContent;
 };
+
+describe("a connected repository other than the one selected in the VCS widgets", () => {
+  const branchOfA = { head: "main", headCommit: "a1", upstream: "origin/main", ahead: 0, behind: 0, operation: null };
+  beforeEach(() => {
+    // The primary repository /a has no GitHub remote: the connection is the nested /b's.
+    useVcs.setState({
+      root: "/a",
+      roots: ["/a", "/b"],
+      repo: "/a",
+      branch: branchOfA,
+      heads: { "/a": { head: "main", headCommit: "a1" }, "/b": { head: "feature", headCommit: "head" } },
+    });
+    useGhRepository.setState((s) => ({ connection: { ...s.connection!, root: "/b" } }));
+    config["branch.feature.remote"] = "origin";
+    config["branch.feature.merge"] = "refs/heads/feature";
+  });
+
+  it("looks the pull request up for the connected repository's branch, in that repository", async () => {
+    await refreshCurrentBranchPullRequest();
+    expect(useReviewBranch.getState()).toEqual({ number: N, branch: "feature", updateRequired: false });
+    // Branch config, remotes and the merge base.
+    expect(gitRepos).toEqual(["/b", "/b", "/b", "/b"]);
+  });
+
+  it("reads the connected repository's head and operation, not the selected repository's branch", () => {
+    useVcs.setState({ operations: { "/b": "merge" } });
+    expect(connectedRepoHead()).toEqual({ head: "feature", headCommit: "head", upstream: null, operation: "merge" });
+    // Selecting /b: the store's branch is still /a's until it reloads.
+    useVcs.setState({ repo: "/b" });
+    expect(connectedRepoHead()).toMatchObject({ head: "feature", upstream: null });
+    useVcs.setState({ branch: { ...branchOfA, head: "feature", headCommit: "head", upstream: "origin/feature" } });
+    expect(connectedRepoHead()).toMatchObject({ head: "feature", upstream: "origin/feature" });
+  });
+
+  it("follows the connected repository's branch and head commit", async () => {
+    deactivate = activateReviewMode();
+    await waitFor(() => expect(useReviewBranch.getState().number).toBe(N));
+    mergeBase = null;
+    act(() => useVcs.setState((s) => ({ heads: { ...s.heads, "/b": { head: "feature", headCommit: "local" } } })));
+    await waitFor(() => expect(useReviewBranch.getState().updateRequired).toBe(true));
+    act(() => useVcs.setState((s) => ({ heads: { ...s.heads, "/b": { head: "other", headCommit: "local" } } })));
+    await waitFor(() => expect(useReviewBranch.getState().number).toBeNull());
+  });
+
+  it("shows the review in that repository's files and opens another file's thread there", async () => {
+    useReviewBranch.setState({ number: N, branch: "feature", updateRequired: false });
+    const openFile = vi.fn(() => Promise.resolve());
+    provideEditorService({ openFile } as unknown as EditorService);
+    setPullRequestData(N, "changes", () => [file, { ...file, filename: "src/other.ts" }]);
+    setPullRequestData(N, "threads", () => [thread("T9", 7, { path: "src/other.ts" })]);
+    openEditor(HEAD, "/b");
+    await waitFor(() => expect(document.querySelectorAll(".cm-reviewGutter")).toHaveLength(1));
+    await act(() => activeReviewEditor()!.gotoComment(1));
+    expect(openFile).toHaveBeenCalledWith("/b/src/other.ts", expect.anything());
+  });
+});
 
 describe("review in the editor", () => {
   beforeEach(() => {
