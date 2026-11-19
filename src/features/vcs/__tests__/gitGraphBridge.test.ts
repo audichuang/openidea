@@ -50,8 +50,9 @@ vi.mock("../clip", async (importOriginal) => {
 const openInput = vi.fn();
 vi.mock("@/workbench/contributions", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/workbench/contributions")>();
-  return { ...real, editorService: () => ({ openInput }) };
+  return { ...real, editorService: () => ({ openInput }), toolWindowService: () => ({ show: showToolWindow }) };
 });
+const showToolWindow = vi.fn();
 
 const controlOperation = vi.fn();
 vi.mock("../operations", async (importOriginal) => {
@@ -89,6 +90,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { gitGraphBridge, type GraphCommit } from "@/workbench/gitGraphBridge";
 import { activate, retargetClipItems } from "../gitGraphBridge";
 import { useVcs } from "../store";
+import { closeLogTab, emptyFilters, selectGitTab, useGitLog } from "../logStore";
 import { useFavoriteBranches } from "../branchOps";
 import { registerActions } from "@/platform/actions";
 
@@ -324,15 +326,37 @@ describe("git graph bridge", () => {
       expect(controlOperation).toHaveBeenLastCalledWith("abort", "rebase", LIB);
     });
 
-    it("opens the conflicts dialog and the Git Log on the graph's repository", async () => {
+    it("opens the conflicts dialog on the graph's repository", async () => {
       await bridge().resolveConflicts(LIB);
       expect(showConflictsDialog).toHaveBeenLastCalledWith(LIB);
+    });
+
+    it("shows the graph repository's history in a Log tab of its own, leaving the main Log's filters", async () => {
       useVcs.setState({ repo: APP });
-      const showLog = vi.fn(() => useVcs.getState().repo);
-      const off = registerActions([{ id: "vcs.showLog", title: "Show Git Log", run: () => void showLog() }]);
+      const main = { ...emptyFilters(), repositories: [APP], paths: [`${APP}/src`] };
+      useGitLog.setState({ filters: main });
+      const before = useGitLog.getState().logTabs.length;
       await bridge().showLog(LIB);
-      off();
-      expect(showLog).toHaveReturnedWith(LIB);
+      const tabs = useGitLog.getState().logTabs;
+      const tab = tabs.at(-1)!;
+      expect(tabs.length).toBe(before + 1);
+      expect(tab).toMatchObject({ kind: "log", repositories: [LIB], target: "lib" });
+      expect(useGitLog.getState().shownLog).toBe(tab.id);
+      // Its own filters start empty: the main Log's repository and folder would hide this one.
+      const own = useGitLog.getState().filters;
+      expect(own).toMatchObject({ path: null, branches: [], text: "" });
+      expect(own.paths ?? []).toEqual([]);
+      expect(own.repositories ?? []).toEqual([]);
+      expect(showToolWindow).toHaveBeenLastCalledWith("git", true);
+      // The main Log still has the user's filters, and the next click reuses the tab.
+      selectGitTab("log");
+      expect(useGitLog.getState().filters).toEqual(main);
+      await bridge().showLog(LIB);
+      expect(useGitLog.getState().logTabs.length).toBe(before + 1);
+      expect(useGitLog.getState().shownLog).toBe(tab.id);
+      selectGitTab("log");
+      closeLogTab(tab.id);
+      useGitLog.setState({ filters: emptyFilters() });
     });
 
     it("stashes and rolls back the graph repository's changes, leaving the selection alone", () => {
