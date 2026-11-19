@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import type { LineHunk } from "@/bindings";
+import type { BranchInfo, LineHunk } from "@/bindings";
 
 const ghApi = vi.fn();
 const config: Record<string, string | null> = {};
@@ -11,6 +11,9 @@ let diffHunks: (oldText: string, newText: string) => LineHunk[] = () => [];
 const checkout = vi.fn();
 /** The repository each local git command ran in. */
 const gitRepos: Array<string | null> = [];
+/** What `git` reports for the branch of each repository, and the repositories it was asked for. */
+const branchInfos: Record<string, BranchInfo> = {};
+const branchInfoRepos: Array<string | null> = [];
 
 vi.mock("@tauri-apps/api/core", async (original) => ({
   ...(await original<typeof import("@tauri-apps/api/core")>()),
@@ -44,6 +47,10 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
         gitRepos.push(repo);
         return ok(mergeBase);
       },
+      vcsBranchInfo: (repo: string | null) => {
+        branchInfoRepos.push(repo);
+        return ok(branchInfos[repo ?? ""]);
+      },
       ghPrCheckout: (...args: unknown[]) => {
         checkout(...args);
         return ok(null);
@@ -73,7 +80,14 @@ import type {
 import { clearNewComments, useNewComments } from "../diff/newComments";
 import { parsePatch } from "../diff/model";
 import { clearPullRequests, setPullRequestData } from "../data/pullRequest";
-import { connectedRepoHead, useGhRepository } from "../data/repository";
+import {
+  connectedRepoHead,
+  trackConnectedUpstream,
+  useConnectedUpstream,
+  useGhRepository,
+  type GHRemote,
+} from "../data/repository";
+import { isHeadCheckedOut } from "../details/model";
 import { activeReviewEditor, reviewModeEditorExtension } from "./editor";
 import {
   documentChanges,
@@ -302,6 +316,8 @@ beforeEach(() => {
   restPulls = [{ number: N }];
   mergeBase = "head";
   gitRepos.length = 0;
+  branchInfoRepos.length = 0;
+  for (const k of Object.keys(branchInfos)) delete branchInfos[k];
   diffHunks = () => [];
   for (const k of Object.keys(config)) delete config[k];
   setCurrentRepository({ owner: "o", name: "r", id: "R1" });
@@ -345,6 +361,7 @@ afterEach(async () => {
   useEditorRegistry.setState({ active: null });
   useReviewBranch.setState({ number: null, branch: null, updateRequired: false });
   useGhRepository.setState({ connection: null });
+  useConnectedUpstream.setState({ value: null });
   useVcs.setState({ available: false, branch: null, repo: null, roots: [], root: null, heads: {}, operations: {} });
 });
 
@@ -492,6 +509,55 @@ describe("a connected repository other than the one selected in the VCS widgets"
     expect(connectedRepoHead()).toMatchObject({ head: "feature", upstream: null });
     useVcs.setState({ branch: { ...branchOfA, head: "feature", headCommit: "head", upstream: "origin/feature" } });
     expect(connectedRepoHead()).toMatchObject({ head: "feature", upstream: "origin/feature" });
+  });
+
+  describe("whose branch tracks the pull request's under another name, one commit ahead", () => {
+    const branchOfB = { ...branchOfA, head: "local-review", headCommit: "local", upstream: "origin/feature", ahead: 1 };
+    const remotes: GHRemote[] = [{ owner: "o", name: "r", remote: "origin", url: "", root: "/b" }];
+    const pr = { headRefName: "feature", headRefOid: "head", headRepository: { nameWithOwner: "o/r" } };
+    const checkedOut = () =>
+      isHeadCheckedOut(connectedRepoHead(), remotes, pr as Parameters<typeof isHeadCheckedOut>[2]);
+    beforeEach(() => {
+      useVcs.setState((s) => ({ heads: { ...s.heads, "/b": { head: "local-review", headCommit: "local" } } }));
+      branchInfos["/b"] = branchOfB;
+    });
+
+    it("stays checked out when the selection moves to another repository", async () => {
+      useVcs.setState({ repo: "/b", branch: branchOfB });
+      deactivate = trackConnectedUpstream();
+      expect(checkedOut()).toBe(true);
+      useVcs.setState({ repo: "/a", branch: branchOfA });
+      expect(checkedOut()).toBe(true);
+      // The next VCS refresh reads it again, in the connected repository.
+      act(() => useVcs.setState((s) => ({ version: s.version + 1 })));
+      await waitFor(() => expect(branchInfoRepos).toEqual(["/b"]));
+      expect(checkedOut()).toBe(true);
+    });
+
+    it("reads the upstream of a connected repository that was never the selected one", async () => {
+      expect(checkedOut()).toBe(false);
+      deactivate = trackConnectedUpstream();
+      await waitFor(() => expect(checkedOut()).toBe(true));
+      expect(branchInfoRepos).toEqual(["/b"]);
+      // `git branch --unset-upstream` there: seen at the next VCS refresh.
+      branchInfos["/b"] = { ...branchOfB, upstream: null };
+      act(() => useVcs.setState((s) => ({ version: s.version + 1 })));
+      await waitFor(() => expect(checkedOut()).toBe(false));
+    });
+
+    it("looks the pull request up again when that upstream changes", async () => {
+      config["branch.local-review.remote"] = "origin";
+      config["branch.local-review.merge"] = "refs/heads/feature";
+      const stop = [trackConnectedUpstream(), activateReviewMode()];
+      deactivate = () => stop.forEach((d) => d());
+      await waitFor(() => expect(useReviewBranch.getState().number).toBe(N));
+      await waitFor(() => expect(connectedRepoHead()?.upstream).toBe("origin/feature"));
+      delete config["branch.local-review.remote"];
+      delete config["branch.local-review.merge"];
+      branchInfos["/b"] = { ...branchOfB, upstream: null };
+      act(() => useVcs.setState((s) => ({ version: s.version + 1 })));
+      await waitFor(() => expect(useReviewBranch.getState().number).toBeNull());
+    });
   });
 
   it("follows the connected repository's branch and head commit", async () => {

@@ -13,7 +13,7 @@ import { reloadList, useGhPrList } from "./data/list";
 import { checkoutPullRequest, clearDiffCache, copyUrl, openInBrowser, openInWorktree, prepareDiff } from "./data/local";
 import { deleteMergedBranch } from "./data/operations";
 import { cachedDetails, loadPullRequestData, reloadPullRequest } from "./data/pullRequest";
-import { refreshConnection, resetConnection, useGhRepository } from "./data/repository";
+import { refreshConnection, resetConnection, trackConnectedUpstream, useGhRepository } from "./data/repository";
 import { showSubmitReview } from "./details/SubmitReviewPopup";
 import { activateReviewMode } from "./reviewMode";
 import { useGithubShell } from "./shell";
@@ -152,6 +152,7 @@ export function activate(): () => void {
         if (s.project) void loadProjectGithubAccount();
       }
     }),
+    trackConnectedUpstream(),
     activateReviewDiff(),
     activateReviewMode(),
     activateWorktreeReviews(),
