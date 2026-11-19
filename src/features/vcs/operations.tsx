@@ -127,7 +127,7 @@ export function stoppedActions(
             progress: "Continuing rebase",
             success: "Rebase continued",
             failure: tx`${controlLabel(op, "continue")} failed`,
-            onError: conflictsInstead,
+            onError: () => conflictsInsteadIn(root),
             errorActions: (m) => stoppedActions(op, m, root),
           },
           root,
@@ -139,9 +139,14 @@ export function stoppedActions(
 }
 
 /** Opens the conflicts dialog instead of an error balloon when the operation stopped on conflicts. */
-export async function conflictsInstead(): Promise<boolean> {
+export function conflictsInstead(): Promise<boolean> {
+  return conflictsInsteadIn();
+}
+
+/** With `root`, only that repository's conflicts count: another one's say nothing about this failure. */
+async function conflictsInsteadIn(root?: string): Promise<boolean> {
   await refreshNow();
-  if (!conflictedFiles().length) return false;
+  if (!conflictedFiles().some((f) => !root || repoOf(f.path) === root)) return false;
   void executeAction("vcs.resolveConflicts");
   return true;
 }
@@ -235,7 +240,7 @@ export async function controlOperation(
       progress,
       success,
       failure: tx`${controlLabel(op, control)} failed`,
-      onError: control === "abort" ? undefined : conflictsInstead,
+      onError: control === "abort" ? undefined : () => conflictsInsteadIn(root),
       errorActions: control === "abort" ? undefined : (message) => stoppedActions(op, message, root),
     },
     root,
