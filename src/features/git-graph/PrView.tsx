@@ -88,6 +88,18 @@ const range = (repo: string, from: string, to: string) =>
     }),
   );
 
+/**
+ * The previous result when a reload computed the same one: every vcs refresh reloads, and new
+ * objects would rebuild the embedded diff each time (#362).
+ */
+function keepIfSame(
+  prev: { key: string; data: PrData } | null,
+  key: string,
+  data: PrData,
+): { key: string; data: PrData } {
+  return prev?.key === key && JSON.stringify(prev.data) === JSON.stringify(data) ? prev : { key, data };
+}
+
 /** Files and commits of a pull request from `head` into `base`; the last result stays while a refresh loads. */
 function usePrData(repo: string, base: string | null, head: string, version: number, reload: number): PrData | null {
   const key = `${repo}\0${base ?? ""}\0${head}`;
@@ -105,9 +117,12 @@ function usePrData(repo: string, base: string | null, head: string, version: num
       ]);
       return { status: "ready", mergeBase, files, commits, behind: behind.length };
     })().then(
-      (data) => live && setValue({ key, data }),
+      (data) => live && setValue((prev) => keepIfSame(prev, key, data)),
       (e: unknown) =>
-        live && setValue({ key, data: { status: "error", error: String(e instanceof Error ? e.message : e) } }),
+        live &&
+        setValue((prev) =>
+          keepIfSame(prev, key, { status: "error", error: String(e instanceof Error ? e.message : e) }),
+        ),
     );
     return () => {
       live = false;
