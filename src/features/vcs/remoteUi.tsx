@@ -674,13 +674,15 @@ function MultiPushDialog({
     if (inspection.needsFetch) return inspection.fetch();
     // Like the single-repository dialog: each forced target is confirmed first (once, when several
     // repositories push to the same one), and declining one pushes nothing.
-    const forced = new Set<string>();
+    const forced = new Map<string, string[]>();
     for (const r of force && forceAvailable ? picked : []) {
       const target = targetNameOf(r);
       const remote = shownRemoteOf(r);
-      if (!isProtectedBranch(target) && !specialTarget(r)) forced.add(remote ? `${remote}/${target}` : target);
+      if (isProtectedBranch(target) || specialTarget(r)) continue;
+      const name = remote ? `${remote}/${target}` : target;
+      forced.set(name, [...(forced.get(name) ?? []), r.root]);
     }
-    for (const target of forced) if (!(await confirmForcePush(target))) return;
+    for (const [target, roots] of forced) if (!(await confirmForcePush(target, roots))) return;
     if (useProject.getState().project !== project) return;
     const tags = tagOptions.rememberForPush();
     onClose();
@@ -1225,7 +1227,12 @@ function PushDialog({
   const push = async () => {
     if (!selection || inspection.fetching || useProject.getState().project !== project) return;
     if (inspection.needsFetch) return inspection.fetch();
-    if (force && forceAvailable && !(await confirmForcePush(remote ? `${remote}/${target}` : (target ?? "")))) return;
+    if (
+      force &&
+      forceAvailable &&
+      !(await confirmForcePush(remote ? `${remote}/${target}` : (target ?? ""), [forcePushRepo(repo)]))
+    )
+      return;
     if (useProject.getState().project !== project) return;
     const options = {
       forceWithLease: force && forceAvailable,
@@ -1402,20 +1409,38 @@ function PushDialog({
   );
 }
 
-const SILENT_FORCE_PUSH_KEY = "openidea.vcs.silentForcePushTargets";
+/**
+ * Repository root → the targets "Don't warn about this target" was ticked for. `origin/feat` names a
+ * different branch in each repository, so the list is per repository; the earlier global list
+ * (`openidea.vcs.silentForcePushTargets`) cannot tell them apart and is not read.
+ */
+const SILENT_FORCE_PUSH_KEY = "openidea.vcs.silentForcePushTargets.v2";
 
-function silentForcePushTargets(): string[] {
+function silentForcePushTargets(): Record<string, string[]> {
   try {
-    const v: unknown = JSON.parse(localStorage.getItem(SILENT_FORCE_PUSH_KEY) ?? "[]");
-    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+    const v: unknown = JSON.parse(localStorage.getItem(SILENT_FORCE_PUSH_KEY) ?? "{}");
+    if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+    return Object.fromEntries(
+      Object.entries(v).map(([root, targets]) => [
+        root,
+        Array.isArray(targets) ? targets.filter((x): x is string => typeof x === "string") : [],
+      ]),
+    );
   } catch {
-    return [];
+    return {};
   }
 }
 
-/** IDEA's force push confirmation, with "Don't warn about this target". */
-async function confirmForcePush(target: string): Promise<boolean> {
-  if (target && silentForcePushTargets().includes(target)) return true;
+/** The root a force push of `repo` is remembered under (`null`: the selected repository). */
+const forcePushRepo = (repo: string | null) => repo ?? currentRepoRoot() ?? "";
+
+/**
+ * IDEA's force push confirmation, with "Don't warn about this target". `repos` are the repositories
+ * pushing to `target`: it is silent only when every one of them was told not to warn.
+ */
+async function confirmForcePush(target: string, repos: readonly string[]): Promise<boolean> {
+  const silent = silentForcePushTargets();
+  if (target && repos.length && repos.every((root) => silent[root]?.includes(target))) return true;
   const r = await ask({
     title: "Force Push",
     body: tx`You're going to force push to '${target}'. It may overwrite commits at the remote. Are you sure you want to proceed?`,
@@ -1426,7 +1451,9 @@ async function confirmForcePush(target: string): Promise<boolean> {
   if (r.button !== "force") return false;
   if (r.checked && target) {
     try {
-      localStorage.setItem(SILENT_FORCE_PUSH_KEY, JSON.stringify([...silentForcePushTargets(), target]));
+      const next = silentForcePushTargets();
+      for (const root of repos) if (!next[root]?.includes(target)) next[root] = [...(next[root] ?? []), target];
+      localStorage.setItem(SILENT_FORCE_PUSH_KEY, JSON.stringify(next));
     } catch {
       // Not remembered: the next force push asks again.
     }
