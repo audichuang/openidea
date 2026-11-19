@@ -1,10 +1,10 @@
 import clsx from "clsx";
-import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
+import { useMemo, useState, type KeyboardEvent } from "react";
 import type { Branch } from "@/bindings";
 import { HighlightedText, Icon, List, Popup, SearchField, T, firstSelectable, fuzzyMatch, listNavigate } from "@/ui";
 import { tx } from "@/platform/i18n";
 import { isFavoriteBranch, sortLocal, sortRemote } from "./branches";
-import { loadFavoriteBranches, useFavoriteBranches } from "./branchOps";
+import { useFavoriteBranchNames } from "./branchOps";
 import { isImeKey } from "@/platform/ime";
 import styles from "./GitLog.module.css";
 
@@ -98,8 +98,7 @@ export function BranchFilterPopup({
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const [expanded, setExpanded] = useState<ReadonlySet<Group>>(new Set());
-  const stored = useFavoriteBranches((s) => s.names);
-  useEffect(() => loadFavoriteBranches(), []);
+  const stored = useFavoriteBranchNames();
   // The Git Graph passes another repository's favorites; Git Log reads the current one's.
   const favorites = favoritesProp === undefined ? stored : favoritesProp;
   const rows = useMemo(() => buildRows(branches, favorites, query, expanded), [branches, favorites, query, expanded]);

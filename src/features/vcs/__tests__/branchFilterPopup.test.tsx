@@ -32,7 +32,7 @@ const rowTexts = () => screen.getAllByRole("option").map((o) => o.textContent);
 
 afterEach(() => {
   localStorage.clear();
-  useFavoriteBranches.setState({ key: "", names: null });
+  useFavoriteBranches.setState({ byRepo: {} });
 });
 
 describe("branch filter popup", () => {
