@@ -15,14 +15,13 @@ import {
   mergeInRepos,
   newBranchInRepos,
   renameInRepos,
-  loadFavoriteBranches,
+  favoriteBranches,
   mergeIntoCurrent,
   newBranch,
   renameBranch,
   toggleFavoriteBranch,
   configuredRemoteNames,
   type BranchUpdateTarget,
-  useFavoriteBranches,
 } from "./branchOps";
 import { branchRebaseProblem } from "./branchRebase";
 import type { CommonBranch } from "./repoBranches";
@@ -62,13 +61,13 @@ function updateSelection(targets: readonly BranchUpdateTarget[]) {
   );
 }
 
-function favoriteMenuItem(b: Branch, run: Run): MenuItem {
-  loadFavoriteBranches();
-  const favorite = isFavoriteBranch(b, useFavoriteBranches.getState().names);
+/** `repo`: the branch's repository when it is not the selected one (its favorites are its own). */
+function favoriteMenuItem(b: Branch, run: Run, repo?: string): MenuItem {
+  const favorite = isFavoriteBranch(b, favoriteBranches(repo));
   return {
     label: favorite ? "Remove from Favorites" : "Add to Favorites",
     icon: "star",
-    run: run(() => toggleFavoriteBranch(b)),
+    run: run(() => toggleFavoriteBranch(b, repo)),
   };
 }
 
@@ -103,11 +102,14 @@ export function branchMenu(
     existingWorktree,
     branches = useVcs.getState().branches,
     headCommit = useVcs.getState().branch?.headCommit,
+    repo,
   }: {
     selected?: readonly { repo?: string; branch?: Branch }[];
     existingWorktree?: string;
     branches?: readonly Branch[];
     headCommit?: string | null;
+    /** The branch's repository when it is not the selected one (its favorites are its own). */
+    repo?: string;
   } = {},
 ): MenuItem[] {
   const run = (fn: () => unknown) => () => {
@@ -116,7 +118,7 @@ export function branchMenu(
   };
   const cur = current ?? "HEAD";
   const rebaseBase = current ?? headCommit?.slice(0, 8);
-  const favoriteItem = favoriteMenuItem(b, run);
+  const favoriteItem = favoriteMenuItem(b, run, repo);
   const newWorktree = worktreeMenuItem(b, run);
   // Update Selected acts on every selected local branch, each in its own repository.
   const updating = !!useVcs.getState().remoteBusy;
