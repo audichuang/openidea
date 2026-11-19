@@ -18,7 +18,9 @@ import { repoColor } from "./model";
 import { repositoryPath } from "./repositoryPaths";
 import { toLogChanges } from "./logChanges";
 import { refLabels } from "./logOptions";
-import { currentRepo, focusRepo, repoOf, useVcs } from "./store";
+import { currentRepo, focusRepo, repoName, repoOf, useVcs } from "./store";
+import { emptyFilters, openLogTab, selectGitTab, setLogFilters, useGitLog } from "./logStore";
+import { toolWindowService } from "@/workbench/contributions";
 import { mergeIntoCurrent, rebaseOnto } from "./branchOps";
 import {
   applyStash,
@@ -251,8 +253,20 @@ export function createGitGraphBridge(): GitGraphBridge {
     async showLog(repo) {
       await focusRepo(repo);
       if (currentRepo() !== repo) return;
-      // The main Log keeps the user's own filters; it is not rewritten from the graph (#389).
-      await executeAction("vcs.showLog");
+      // One repository: the main Log is that repository's.
+      if (useVcs.getState().roots.length < 2) return void (await executeAction("vcs.showLog"));
+      // Several: a Log tab of its own for the graph's repository, reused on the next click; the
+      // main Log keeps the user's filters (#389).
+      const existing = useGitLog
+        .getState()
+        .logTabs.find((t) => t.kind === "log" && t.repositories?.length === 1 && t.repositories[0] === repo);
+      if (existing) selectGitTab(existing.id);
+      else {
+        openLogTab("log", repoName(repo), "toolWindow", [repo]);
+        // A new "log" tab starts from the main Log's filters, which may name another repository.
+        setLogFilters({ ...emptyFilters(), paths: undefined, repositories: undefined });
+      }
+      toolWindowService().show("git", true);
     },
     async mergeIntoCurrent(branch, repo) {
       await focusRepo(repo);

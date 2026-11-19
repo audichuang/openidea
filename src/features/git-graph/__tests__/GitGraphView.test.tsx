@@ -508,14 +508,20 @@ describe("Git Graph pseudo rows and panels", () => {
     useGraphView.setState({ repo: roots[1]! });
     const run = vi.fn();
     const off = registerActions(
-      ["vcs.pull", "vcs.push"].map((id) => ({ id, title: id, run: ({ arg }: { arg?: unknown }) => run(id, arg) })),
+      ["vcs.fetch", "vcs.pull", "vcs.push"].map((id) => ({
+        id,
+        title: id,
+        run: ({ arg }: { arg?: unknown }) => run(id, arg),
+      })),
     );
     try {
       render(<GitGraphEditor />);
       await screen.findByText("subject a");
+      fireEvent.click(screen.getByRole("button", { name: "Fetch" }));
       fireEvent.click(screen.getByRole("button", { name: "Pull…" }));
       fireEvent.click(screen.getByRole("button", { name: "Push…" }));
-      await waitFor(() => expect(run).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(run).toHaveBeenCalledTimes(3));
+      expect(run).toHaveBeenCalledWith("vcs.fetch", { repo: "/work/lib" });
       expect(run).toHaveBeenCalledWith("vcs.pull", { repo: "/work/lib" });
       expect(run).toHaveBeenCalledWith("vcs.push", { repo: "/work/lib" });
     } finally {
