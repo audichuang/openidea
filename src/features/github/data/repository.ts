@@ -11,10 +11,12 @@
  * remotes come from every git repository of the project (a folder holding several
  * repositories offers each one's), and gh runs in the repository of the connected remote.
  */
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { create } from "zustand";
+import { useShallow } from "zustand/react/shallow";
 import type { GhAvailability, Remote } from "@/platform/ipc";
 import { call, commands, isTauri } from "@/platform/ipc";
+import { useVcs, type RepoHead, type VcsState } from "@/features/vcs/store";
 import { useProject } from "@/platform/project";
 import { errorMessage, setCurrentRepository } from "../api/client";
 import * as api from "../api/requests";
@@ -128,6 +130,55 @@ export const connectedRemotes = (): readonly GHRemote[] => useGhRepository.getSt
 
 /** The local repository of the connection, for gh and git commands (null: the primary one). */
 export const connectedRoot = (): string | null => useGhRepository.getState().connection?.root ?? null;
+
+/** The connected local repository's root path (the primary repository's for a null `connection.root`). */
+export function connectedRepoRoot(vcs: Pick<VcsState, "roots" | "root"> = useVcs.getState()): string | null {
+  return connectedRoot() ?? vcs.roots[0] ?? vcs.root;
+}
+
+type VcsHeads = Pick<VcsState, "roots" | "root" | "repo" | "heads" | "operations" | "branch">;
+
+export interface ConnectedRepoHead extends RepoHead {
+  /** Known only while the connected repository is the one selected in the VCS widgets. */
+  upstream: string | null;
+  /** Merge / rebase… in progress there. */
+  operation: string | null;
+}
+
+/**
+ * The connected local repository's current branch and HEAD commit. The VCS store's `branch` is
+ * the selected repository's, which may be another one, and lags behind a selection change.
+ */
+export function connectedRepoHead(vcs: VcsHeads = useVcs.getState()): ConnectedRepoHead | null {
+  const root = connectedRepoRoot(vcs);
+  const selected = root === (vcs.repo ?? vcs.roots[0] ?? vcs.root) ? vcs.branch : null;
+  const own = root ? vcs.heads[root] : undefined;
+  const head = own ?? selected;
+  if (!head) return null;
+  return {
+    head: head.head,
+    headCommit: head.headCommit,
+    upstream: selected && selected.head === head.head ? selected.upstream : null,
+    operation: (root ? vcs.operations[root] : null) ?? (own ? null : selected?.operation) ?? null,
+  };
+}
+
+/** `connectedRepoHead` for a component. */
+export function useConnectedRepoHead(): ConnectedRepoHead | null {
+  const root = useGhRepository((s) => s.connection?.root ?? null);
+  const vcs = useVcs(
+    useShallow((s) => ({
+      roots: s.roots,
+      root: s.root,
+      repo: s.repo,
+      heads: s.heads,
+      operations: s.operations,
+      branch: s.branch,
+    })),
+  );
+  // `root` is read from the store inside: a new connection recomputes.
+  return useMemo(() => connectedRepoHead(vcs), [vcs, root]);
+}
 
 function parseNameWithOwner(s: string | null | undefined): GHRepositoryCoordinates | null {
   const m = s ? /^([^/\s]+)\/([^/\s]+)$/.exec(s) : null;
