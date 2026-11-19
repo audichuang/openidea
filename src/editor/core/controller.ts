@@ -49,6 +49,7 @@ import { ask, confirm } from "@/workbench/messages";
 import { t, tx } from "@/platform/i18n";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { openLightweightEditor } from "./openLightweightEditor";
+import { forkDetach } from "./forkDetach";
 import { windowBackgroundHex } from "@/workbench/theme";
 import { save as saveFileDialog, type DialogFilter as SaveDialogFilter } from "@/platform/dialog";
 import { isUntitledUri, untitledTitle } from "@/platform/virtualDocs";
@@ -1876,7 +1877,7 @@ export class EditorController implements SlotHost {
     const project = useProject.getState().project;
     const inProject =
       !!project && (project.workspace?.projects ?? [project.root]).some((root) => isSameOrInside(path, root));
-    const light = inProject && isTextTab(tab) && isTauri();
+    const light = forkDetach.lightweight && inProject && isTextTab(tab) && isTauri();
     return this.removeGuarded((s) => (s.panes[paneId] ? closeTab(s, paneId, tabId) : s), {
       beforeRemove: async () => {
         if (!useTabs.getState().panes[paneId]?.tabs.some((t) => t.id === tabId)) return false;
