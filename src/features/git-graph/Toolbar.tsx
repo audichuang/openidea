@@ -2,7 +2,6 @@
 import { useState, type ReactNode } from "react";
 import clsx from "clsx";
 import type { Branch } from "@/bindings";
-import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { Icon, IconButton, SearchField, Spinner, T } from "@/ui";
 import { gitGraphBridge } from "@/workbench/gitGraphBridge";
@@ -157,7 +156,9 @@ export function Toolbar(p: ToolbarProps) {
         </>
       ) : null}
       <span className={styles.spacer} />
-      {p.operation && !/bisect/i.test(p.operation) ? <OperationBar operation={p.operation} /> : null}
+      {p.repo && p.operation && !/bisect/i.test(p.operation) ? (
+        <OperationBar operation={p.operation} repo={p.repo} />
+      ) : null}
       {p.loading ? <Spinner size={14} /> : null}
       <IconButton icon="refresh" title="Refresh" onClick={p.onRefresh} />
       <IconButton icon="git-fetch" title="Fetch" action="vcs.fetch" />
@@ -165,13 +166,20 @@ export function Toolbar(p: ToolbarProps) {
       <IconButton icon="git-pull" title="Pull…" action="vcs.pull" actionArg={p.repo ? { repo: p.repo } : undefined} />
       <IconButton icon="git-push" title="Push…" action="vcs.push" actionArg={p.repo ? { repo: p.repo } : undefined} />
       <IconButton icon="commit" title="Commit…" action="vcs.commit" />
-      <IconButton icon="history" title="Show Git Log" action="vcs.showLog" />
+      <IconButton
+        icon="history"
+        title="Show Git Log"
+        onClick={() => {
+          if (p.repo) void gitGraphBridge()?.showLog(p.repo);
+        }}
+      />
     </div>
   );
 }
 
-/** Continue / Abort for a merge, rebase, cherry-pick or revert in progress. */
-function OperationBar({ operation }: { operation: string }) {
+/** Continue / Abort for a merge, rebase, cherry-pick or revert in progress in `repo`, the graph's repository. */
+function OperationBar({ operation, repo }: { operation: string; repo: string }) {
+  const bridge = gitGraphBridge();
   const op = operation.toLowerCase();
   const kind = op.includes("rebase")
     ? "rebase"
@@ -187,17 +195,21 @@ function OperationBar({ operation }: { operation: string }) {
       <Icon name="warning" size={14} />
       <span>{operation}</span>
       {kind && kind !== "merge" ? (
-        <button type="button" className={styles.opButton} onClick={() => void executeAction(`vcs.${kind}.continue`)}>
+        <button
+          type="button"
+          className={styles.opButton}
+          onClick={() => void bridge?.controlOperation(repo, "continue")}
+        >
           <T>Continue</T>
         </button>
       ) : null}
       {kind === "merge" ? (
-        <button type="button" className={styles.opButton} onClick={() => void executeAction("vcs.resolveConflicts")}>
+        <button type="button" className={styles.opButton} onClick={() => void bridge?.resolveConflicts(repo)}>
           <T>Resolve Conflicts…</T>
         </button>
       ) : null}
       {kind ? (
-        <button type="button" className={styles.opButton} onClick={() => void executeAction(`vcs.${kind}.abort`)}>
+        <button type="button" className={styles.opButton} onClick={() => void bridge?.controlOperation(repo, "abort")}>
           <T>Abort</T>
         </button>
       ) : null}
