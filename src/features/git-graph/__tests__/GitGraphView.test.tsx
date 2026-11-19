@@ -542,6 +542,14 @@ describe("Git Graph pseudo rows and panels", () => {
     expect(bridge.stashChanges).toHaveBeenCalledWith(lib);
     fireEvent.click(screen.getByRole("button", { name: "Rollback…" }));
     expect(bridge.rollback).toHaveBeenCalledWith(lib);
+    // The row's own menu does the same.
+    fireEvent.contextMenu(document.querySelector<HTMLElement>('[data-entry="*working*"]')!);
+    await waitFor(() => expect(showContextMenu).toHaveBeenCalled());
+    const items = showContextMenu.mock.calls.at(-1)![1] as Array<{ label?: string; run?: () => void }>;
+    items.find((i) => i.label === "Stash Changes…")!.run!();
+    items.find((i) => i.label === "Rollback…")!.run!();
+    expect(bridge.stashChanges).toHaveBeenCalledTimes(2);
+    expect(bridge.rollback).toHaveBeenCalledTimes(2);
 
     state = { ...state, operations: { [lib]: "merge" } };
     await act(async () => listeners.forEach((fn) => fn()));
