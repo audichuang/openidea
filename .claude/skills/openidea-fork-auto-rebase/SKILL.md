@@ -132,9 +132,16 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
 
      動作：`gh issue create -R audichuang/openidea` 開 fork issue（現象、原因、影響、修法、來源 PR），issue 編號寫進 self-reviewed 留言、release notes 的「已知問題」和第 7 步的細節。不算剩下的 finding，不擋，也不用為它再審一輪（v0.1.48 的 #350：外掛讀剪貼簿在檔案加文字的混合格式下只拿到檔名；沒有這個出口時整輪交人）。
 
+   - **上游功能的 finding**：根源在上游這一版的程式（OB..NB 新增或改寫的功能），不是 rebase 解衝突或 fork 修正造成的。這不是產品取捨，不交人，依情況擇一：
+     - **上游換掉了 OT 上的行為**（同一個入口在 OT 走 fork 或舊路徑，現在走上游新實作），而新實作有遺失資料、當機、卡住 UI 的 finding，或掉了 fork 功能（ClipCode、語言功能等）：這是回歸。照 v0.1.49 的 #397 做：加一個 fork 開關（預設維持 OT 行為，上游程式與測試保留，測試裡把開關打開照跑），另加一個 fork 測試斷言預設走 OT 路徑。
+     - **純新增的上游功能**（OT 沒有對應行為）有遺失資料的 finding：同樣用 fork 開關把它的入口關掉（可還原），不替上游修。不會遺失資料的照「已知問題」的條件判斷。
+     - 牽涉到的程式在 OT 就有、只是新功能讓它比較容易碰到（例：v0.1.49 存檔途中打字被清 dirty，#398）：開關處理後回到 OT 的路徑，照「既有問題」處理，開 issue。
+
+     動作：開關是修正 commit（回第 2、3 步，再從第 1 點重審；開關若落在保留路徑就照第 1 點交人）。開 fork issue（現象、為什麼關、上游修好後怎麼打開），編號寫進 self-reviewed 留言、release notes（寫「上游 #… 的〇〇維持 fork 原本的行為」）與第 7 步的細節。這是替使用者做的預設選擇：通知寫一句說明，使用者要上游行為再打開開關。v0.1.49 沒有這個出口，整輪交人只為了問「要不要用上游的輕量視窗」（#394）。
+
    - **其餘 finding**：能用證據證明不成立的，寫進留言駁回；成立的就修（修正 commit），修完回第 2、3 步重跑閘門與 CI，再從本步**第 1 點**重審一次。修正 commit 也可能碰到保留路徑，所以要從第 1 點開始。
-   - **通過**：三者都沒有剩下的 finding（列為已知問題的不算），對帳項目也都解釋了。
-   - **交人**：第二輪還有成立、又不符合已知問題條件的 finding，或你判斷不了。needs-human 留言列出 finding 與你的看法。交人前，第 1 點命中的全是視窗 chrome（沒有命中其他保留項）、閘門與 Fork CI 也是綠的，就先做第 3c 步：使用者核可的是這個 NT，chrome 不該留給他在實機看。3c 的結果（chrome-verified 或失敗的那一項）寫進 needs-human。
+   - **通過**：三者都沒有剩下的 finding（列為已知問題、或以 fork 開關處理的上游功能 finding 不算），對帳項目也都解釋了。
+   - **交人**：第二輪還有成立、又不符合已知問題或上游功能條件的 finding，或你判斷不了。needs-human 留言列出 finding 與你的看法。交人前，第 1 點命中的全是視窗 chrome（沒有命中其他保留項）、閘門與 Fork CI 也是綠的，就先做第 3c 步：使用者核可的是這個 NT，chrome 不該留給他在實機看。3c 的結果（chrome-verified 或失敗的那一項）寫進 needs-human。
 6. 通過 → 確認 `git rev-parse HEAD` 等於這一輪審過的 NT（不等就回第 1 點），PR 留言第一行 `<!-- auto-rebase:self-reviewed <NT> -->`，下面寫三者的結果摘要，接第 3c 步（第 1 點有視窗 chrome 命中時）或第 4 步。這個標記只是稽核紀錄，precheck 不讀。run 在這之後、推 develop 之前死掉的話，鎖過期後會從頭重來。
 
 ## 3c. 視窗 chrome 實機檢查（任何模式）
@@ -253,6 +260,7 @@ develop 一移動（含已在 HEAD 不重推的情況）就列出這次 rebase �
    - 上游這次的重點：讀 `gh release view <tag> -R l0ng-ai/openidea --json body` 裡 vOLD 之後到 vNEW 的每一版，挑使用者看得到的改動，每項一行
    - fork 這次的改動：拿 `git log --format=%s vNEW..HEAD` 和上一個已發布的 fork release（只有 tag、沒有 Release 的不算）的 `git log --format=%s <它的上游基底>..<tag>` 比，標題是新的才列；都沒有就寫「fork 功能無變更，只跟上上游」
    - 第 3b 步列為已知問題的，每個一行，附 issue 編號；沒有就不寫這段
+   - 第 3b 步用 fork 開關維持 OT 行為或關掉入口的上游功能，每個一行，附 issue 編號；沒有就不寫這段
    - 這次 rebase 的模式與衝突一句話；第 3b 步放行的寫「MANUAL，自審通過」；有第 3c 步的接「視窗 chrome 已在 Mac mini 實測（瀏海螢幕未測）」，沒有的接「未實機測試」
 3. 移動 main 並推 annotated tag，同一次推送：
    ```sh
