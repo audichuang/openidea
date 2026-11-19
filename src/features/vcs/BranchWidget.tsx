@@ -153,8 +153,13 @@ const POPUP_ACTIONS: PopupAction[] = [
   { id: "vcs.checkoutRevision", label: "Checkout Tag or Revision…", icon: "branch", group: "branch" },
 ];
 
-/** A single repository's own entries (its submenu in the popup with several repositories). */
-const REPO_ACTIONS: PopupAction[] = [
+/**
+ * A single repository's own entries (its submenu in the popup with several repositories).
+ * Update and Push… act on that repository alone, as they do in its current branch's menu.
+ */
+const repoActions = (root: string): PopupAction[] => [
+  { id: "vcs.update", label: "Update", icon: "git-pull", group: "sync", arg: { repo: root }, hideShortcut: true },
+  { id: "vcs.push", label: "Push…", icon: "git-push", group: "sync", arg: { repo: root }, hideShortcut: true },
   { id: "vcs.newBranch", label: "New Branch…", icon: "plus", group: "branch" },
   { id: "vcs.checkoutRevision", label: "Checkout Tag or Revision…", icon: "branch", group: "branch" },
 ];
@@ -626,6 +631,8 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
     setRepoMenu(null);
     searchRef.current?.focus();
   };
+  const repoMenuRoot = repoMenu?.root;
+  const repoMenuActions = useMemo(() => (repoMenuRoot ? repoActions(repoMenuRoot) : []), [repoMenuRoot]);
 
   useEffect(() => loadFavoriteBranches(), []);
   // Every repository's branches (common ones, submenus, search); refreshed after operations.
@@ -840,7 +847,7 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
             key={repoMenu.root}
             root={repoMenu.root}
             fallback={all[repoMenu.root]}
-            actions={REPO_ACTIONS}
+            actions={repoMenuActions}
             onClose={closeAll}
             onBack={closeRepoMenu}
           />
@@ -918,7 +925,7 @@ function GroupRowView({ row }: { row: { key: string; label: string; expanded: bo
 function BranchRowView({ row }: { row: BranchRow | Extract<RepoRow, { type: "action" | "branch" | "tag" }> }) {
   const indent = "depth" in row && row.depth ? { paddingLeft: row.depth * INDENT } : undefined;
   if (row.type === "action") {
-    const keys = shortcutLabel(row.action.id);
+    const keys = row.action.hideShortcut ? undefined : shortcutLabel(row.action.id);
     return (
       <span className={styles.row} data-row-key={row.key}>
         {row.action.checked === false ? (
