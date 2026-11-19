@@ -9,7 +9,13 @@ import type { MenuItem } from "@/ui";
 
 const upstream = { name: null as string | null, outgoing: [] as string[] };
 /** Repository roots the backend reports, with the operation each stopped in. */
-const backend = { roots: [] as Array<{ root: string; operation: string | null }> };
+const backend = {
+  roots: [] as Array<{ root: string; operation: string | null }>,
+  /** Root → its local branches. */
+  branches: {} as Record<string, string[]>,
+  /** Pages of history asked for: the repository and the query. */
+  logPages: [] as Array<{ repo: string; branches?: string[] | null; paths?: string[] | null }>,
+};
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -18,11 +24,13 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     commands: {
       ...real.commands,
       vcsTags: () => Promise.resolve({ status: "ok", data: [] }),
-      vcsLog: (_repo: string, q: { range?: string | null }) =>
-        Promise.resolve({
+      vcsLog: (repo: string, q: { range?: string | null; branches?: string[] | null; paths?: string[] | null }) => {
+        if (q.range !== "@{u}..HEAD") backend.logPages.push({ repo, branches: q.branches, paths: q.paths });
+        return Promise.resolve({
           status: "ok",
           data: q.range === "@{u}..HEAD" ? upstream.outgoing.map((id) => ({ id, parents: [], refs: [] })) : [],
-        }),
+        });
+      },
       vcsBranchInfo: () =>
         Promise.resolve({
           status: "ok",
@@ -35,7 +43,19 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
           data: backend.roots.map((r) => ({ ...r, head: "main", headCommit: "a" })),
         }),
       vcsStatus: () => Promise.resolve({ status: "ok", data: [] }),
-      vcsBranches: () => Promise.resolve({ status: "ok", data: [] }),
+      vcsBranches: (repo: string) =>
+        Promise.resolve({
+          status: "ok",
+          data: (backend.branches[repo] ?? []).map((name) => ({
+            name,
+            remote: false,
+            current: false,
+            upstream: null,
+            ahead: 0,
+            behind: 0,
+            lastCommitMs: 0,
+          })),
+        }),
     },
   };
 });
@@ -334,6 +354,42 @@ describe("git graph bridge", () => {
       expect(useGitLog.getState().shownLog).toBe("log");
       expect(useGitLog.getState().filters.repositories).toEqual([LIB]);
       closeLogTab(tab);
+    });
+
+    it("drops the main Git Log's filters of another repository, which would leave this one empty", async () => {
+      const off = registerActions([{ id: "vcs.showLog", title: "Show Git Log", run: () => selectGitTab("log") }]);
+      backend.branches = { [APP]: ["main", "app-only"], [LIB]: ["main"] };
+      useGitLog.setState({
+        filters: {
+          ...emptyFilters(),
+          path: `${APP}/README.md`,
+          paths: [`${APP}/src`, `${LIB}/src`],
+          branches: ["main", "app-only", "v1.0"],
+        },
+      });
+      backend.logPages = [];
+      await bridge().showLog(LIB);
+      off();
+      const filters = useGitLog.getState().filters;
+      expect(filters).toMatchObject({ repositories: [LIB], path: null, paths: [`${LIB}/src`] });
+      // A ref no repository has as a branch stays: a tag or a revision.
+      expect(filters.branches).toEqual(["main", "v1.0"]);
+      await waitFor(() =>
+        expect(backend.logPages).toContainEqual({ repo: LIB, branches: ["main", "v1.0"], paths: [`${LIB}/src`] }),
+      );
+      expect(backend.logPages.every((page) => page.repo === LIB)).toBe(true);
+      backend.branches = {};
+      useGitLog.setState({ filters: emptyFilters() });
+    });
+
+    it("loads the graph repository's history with a folder filter left in another one", async () => {
+      const off = registerActions([{ id: "vcs.showLog", title: "Show Git Log", run: () => selectGitTab("log") }]);
+      useGitLog.setState({ filters: { ...emptyFilters(), paths: [`${APP}/src`] } });
+      backend.logPages = [];
+      await bridge().showLog(LIB);
+      off();
+      await waitFor(() => expect(backend.logPages).toContainEqual({ repo: LIB, branches: [], paths: [] }));
+      useGitLog.setState({ filters: emptyFilters() });
     });
 
     it("opens the conflicts dialog and the Git Log on the graph's repository", async () => {
