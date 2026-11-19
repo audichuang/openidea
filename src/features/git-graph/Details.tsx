@@ -55,7 +55,7 @@ export function BottomPane(p: {
       <div className={styles.paneBody}>
         {p.panel === "details" ? (
           one?.kind === "working" ? (
-            <WorkingDetails entry={one} />
+            <WorkingDetails entry={one} repo={p.repo} />
           ) : (
             <CommitDetails
               commits={p.entries.flatMap((e) => (e.kind === "working" ? [] : [e.commit]))}
@@ -83,7 +83,7 @@ export function BottomPane(p: {
   );
 }
 
-function WorkingDetails({ entry }: { entry: GraphEntry & { kind: "working" } }) {
+function WorkingDetails({ entry, repo }: { entry: GraphEntry & { kind: "working" }; repo: string }) {
   const s = entry.state;
   return (
     <div className={styles.meta}>
@@ -112,10 +112,10 @@ function WorkingDetails({ entry }: { entry: GraphEntry & { kind: "working" } }) 
         <button type="button" className={styles.opButton} onClick={() => void executeAction("vcs.commit")}>
           <T>Commit…</T>
         </button>
-        <button type="button" className={styles.opButton} onClick={() => void executeAction("vcs.stash")}>
+        <button type="button" className={styles.opButton} onClick={() => gitGraphBridge()?.stashChanges(repo)}>
           <T>Stash Changes…</T>
         </button>
-        <button type="button" className={styles.opButton} onClick={() => void executeAction("vcs.rollback")}>
+        <button type="button" className={styles.opButton} onClick={() => gitGraphBridge()?.rollback(repo)}>
           <T>Rollback…</T>
         </button>
       </div>
