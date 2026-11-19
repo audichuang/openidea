@@ -71,7 +71,20 @@ async function settleUnsaved(models: DocModel[], project: string | null): Promis
   });
   if (answer.button === "save") {
     await Promise.all(dirty.map((model) => model.save("explicit")));
-    return !dirty.some((model) => model.getMeta().dirty);
+    if (!dirty.some((model) => model.getMeta().dirty)) return true;
+    // This window shows no notifications: say why it stays open, and still offer to discard.
+    const kept = await ask({
+      title: t("app.unsaved.title"),
+      body: tx(
+        "Some files changed on disk and were not saved. Save them from their editors or reload them, then close again.",
+      ),
+      buttons: [
+        { id: "discard", label: t("app.unsaved.discard") },
+        { id: "cancel", label: t("common.cancel"), primary: true },
+      ],
+      icon: "warning",
+    });
+    return kept.button === "discard";
   }
   return answer.button === "discard";
 }
