@@ -30,8 +30,12 @@ impl ReplaceHost for DocumentsHost<'_> {
                     continue;
                 }
                 docs.apply_edits(doc, &edits)?;
-                if save {
+                // An open tab's file may have changed on disk unseen: keep that change and leave
+                // the replacement unsaved (#291); a file opened just for this was read now.
+                if transient {
                     docs.save(doc)?;
+                } else if save {
+                    docs.autosave(doc)?;
                 }
                 return Ok(edits.len() as u32);
             }
