@@ -1,40 +1,17 @@
 /** Annotate (git blame) gutter left of the line numbers. */
 import { writeClipboardText } from "@/platform/clipboard";
-import {
-  Compartment,
-  Prec,
-  RangeSet,
-  StateEffect,
-  StateField,
-  type Extension,
-  type Text,
-} from "@codemirror/state";
-import {
-  EditorView,
-  GutterMarker,
-  ViewPlugin,
-  gutter,
-  type PluginValue,
-  type ViewUpdate,
-} from "@codemirror/view";
+import { Compartment, Prec, RangeSet, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
+import { EditorView, GutterMarker, ViewPlugin, gutter, type PluginValue, type ViewUpdate } from "@codemirror/view";
 import { create } from "zustand";
 import type { BlameLine } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import {
-  onWorkflowSettingsChange,
-  workflowSettings,
-  type AnnotateColors,
-} from "@/platform/workflowSettings";
+import { onWorkflowSettingsChange, workflowSettings, type AnnotateColors } from "@/platform/workflowSettings";
 import { showContextMenu } from "@/ui";
 import { notifications } from "@/workbench/contributions";
-import {
-  closeBlamePopup,
-  scheduleCloseBlamePopup,
-  scheduleOpenBlamePopup,
-} from "./BlamePopup";
+import { closeBlamePopup, scheduleCloseBlamePopup, scheduleOpenBlamePopup } from "./BlamePopup";
 import { formatDate } from "./model";
 import { useVcs } from "./store";
 
@@ -50,22 +27,12 @@ export function shortAuthor(name: string): string {
 }
 
 /** 0 (oldest) … 1 (newest) per line, for age colouring. */
-export function ageRanks(
-  lines: readonly Pick<BlameLine, "timeMs" | "commit">[],
-): number[] {
-  const times = lines
-    .filter((l) => !isUncommitted(l) && l.timeMs)
-    .map((l) => l.timeMs!);
+export function ageRanks(lines: readonly Pick<BlameLine, "timeMs" | "commit">[]): number[] {
+  const times = lines.filter((l) => !isUncommitted(l) && l.timeMs).map((l) => l.timeMs!);
   if (!times.length) return lines.map(() => 1);
   const min = Math.min(...times);
   const max = Math.max(...times);
-  return lines.map((l) =>
-    isUncommitted(l) || !l.timeMs
-      ? 1
-      : max === min
-        ? 1
-        : (l.timeMs - min) / (max - min),
-  );
+  return lines.map((l) => (isUncommitted(l) || !l.timeMs ? 1 : max === min ? 1 : (l.timeMs - min) / (max - min)));
 }
 
 /** IDEA's AnnotationsSettings: 5 anchor colours with 4 interpolated between each pair. */
@@ -74,13 +41,9 @@ const BETWEEN = 4;
 export const ANNOTATE_PALETTE_SIZE = (ANCHORS - 1) * (BETWEEN + 1) + 1;
 
 /** IDEA's author palette: the ordered palette read with a stride, so neighbouring authors differ. */
-export function authorPalette(
-  size = ANNOTATE_PALETTE_SIZE,
-  step = BETWEEN,
-): number[] {
+export function authorPalette(size = ANNOTATE_PALETTE_SIZE, step = BETWEEN): number[] {
   const out: number[] = [];
-  for (let i = 0; i < step; i++)
-    for (let k = i; k < size; k += step) out.push(k);
+  for (let i = 0; i < step; i++) for (let k = i; k < size; k += step) out.push(k);
   return out;
 }
 
@@ -98,27 +61,17 @@ export function annotateColorIndexes(
   const out = new Map<string, number>();
   if (mode === "none") return out;
   const commits = new Map<string, Pick<BlameLine, "author" | "timeMs">>();
-  for (const l of lines)
-    if (!isUncommitted(l) && !commits.has(l.commit)) commits.set(l.commit, l);
+  for (const l of lines) if (!isUncommitted(l) && !commits.has(l.commit)) commits.set(l.commit, l);
   if (mode === "order") {
     if (commits.size < 2) return out;
-    const ordered = [...commits].sort(
-      ([a, x], [b, y]) =>
-        (y.timeMs ?? 0) - (x.timeMs ?? 0) || a.localeCompare(b),
-    );
-    ordered.forEach(([commit], i) =>
-      out.set(commit, Math.floor((size * i) / ordered.length)),
-    );
+    const ordered = [...commits].sort(([a, x], [b, y]) => (y.timeMs ?? 0) - (x.timeMs ?? 0) || a.localeCompare(b));
+    ordered.forEach(([commit], i) => out.set(commit, Math.floor((size * i) / ordered.length)));
     return out;
   }
-  const authors = [
-    ...new Set([...commits.values()].map((c) => c.author)),
-  ].sort();
+  const authors = [...new Set([...commits.values()].map((c) => c.author))].sort();
   if (authors.length < 2) return out;
   const palette = authorPalette(size);
-  const byAuthor = new Map(
-    authors.map((a, i) => [a, palette[i % palette.length]!]),
-  );
+  const byAuthor = new Map(authors.map((a, i) => [a, palette[i % palette.length]!]));
   for (const [commit, c] of commits) out.set(commit, byAuthor.get(c.author)!);
   return out;
 }
@@ -149,15 +102,10 @@ class BlameMarker extends GutterMarker {
   ) {
     super();
     // On the gutter element, so the lines of one commit form a solid block.
-    this.elementClass =
-      color === undefined ? "" : `cm-vcs-blame-colored cm-vcs-blame-c${color}`;
+    this.elementClass = color === undefined ? "" : `cm-vcs-blame-colored cm-vcs-blame-c${color}`;
   }
   eq(o: BlameMarker) {
-    return (
-      o.line.commit === this.line.commit &&
-      o.rank === this.rank &&
-      o.color === this.color
-    );
+    return o.line.commit === this.line.commit && o.rank === this.rank && o.color === this.color;
   }
   toDOM() {
     const el = document.createElement("span");
@@ -216,11 +164,8 @@ const DEFAULT_COLUMNS: AnnotateColumns = {
 
 export function readAnnotateColumns(): AnnotateColumns {
   try {
-    const raw: unknown = JSON.parse(
-      localStorage.getItem(COLUMNS_KEY) ?? "null",
-    );
-    const o =
-      raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+    const raw: unknown = JSON.parse(localStorage.getItem(COLUMNS_KEY) ?? "null");
+    const o = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
     const out = { ...DEFAULT_COLUMNS };
     for (const k of COLUMNS) if (typeof o[k] === "boolean") out[k] = o[k];
     return COLUMNS.some((k) => out[k]) ? out : { ...DEFAULT_COLUMNS };
@@ -229,15 +174,12 @@ export function readAnnotateColumns(): AnnotateColumns {
   }
 }
 
-export const useAnnotateColumns = create<AnnotateColumns>(() =>
-  readAnnotateColumns(),
-);
+export const useAnnotateColumns = create<AnnotateColumns>(() => readAnnotateColumns());
 
 // Other windows (project, diff) annotate too.
 if (typeof window !== "undefined")
   window.addEventListener("storage", (e) => {
-    if (e.key === COLUMNS_KEY)
-      useAnnotateColumns.setState(readAnnotateColumns());
+    if (e.key === COLUMNS_KEY) useAnnotateColumns.setState(readAnnotateColumns());
   });
 
 /** Shows or hides a column in every annotated editor; the last shown column stays. */
@@ -262,9 +204,7 @@ const annotateColumns = ViewPlugin.define(
       EditorView.editorAttributes.of(() => {
         const c = useAnnotateColumns.getState();
         const hidden = COLUMNS.filter((k) => !c[k]);
-        return hidden.length
-          ? { class: hidden.map((k) => `cm-vcs-blame-hide-${k}`).join(" ") }
-          : null;
+        return hidden.length ? { class: hidden.map((k) => `cm-vcs-blame-hide-${k}`).join(" ") } : null;
       }),
   },
 );
@@ -299,19 +239,12 @@ interface BlameState {
 
 function build(lines: readonly BlameLine[], doc: Text): RangeSet<GutterMarker> {
   const ranks = ageRanks(lines);
-  const colors = annotateColorIndexes(
-    lines,
-    workflowSettings().vcs.git.annotateColors,
-  );
+  const colors = annotateColorIndexes(lines, workflowSettings().vcs.git.annotateColors);
   const out = [];
   const n = Math.min(lines.length, doc.lines);
   for (let i = 0; i < n; i++) {
     const line = lines[i]!;
-    out.push(
-      new BlameMarker(line, ranks[i]!, colors.get(line.commit)).range(
-        doc.line(i + 1).from,
-      ),
-    );
+    out.push(new BlameMarker(line, ranks[i]!, colors.get(line.commit)).range(doc.line(i + 1).from));
   }
   return RangeSet.of(out);
 }
@@ -319,20 +252,14 @@ function build(lines: readonly BlameLine[], doc: Text): RangeSet<GutterMarker> {
 const blameField = StateField.define<BlameState>({
   create: () => ({ lines: [], markers: RangeSet.empty }),
   update(value, tr) {
-    for (const e of tr.effects)
-      if (e.is(setBlame))
-        return { lines: e.value, markers: build(e.value, tr.state.doc) };
-    return tr.docChanged
-      ? { ...value, markers: value.markers.map(tr.changes) }
-      : value;
+    for (const e of tr.effects) if (e.is(setBlame)) return { lines: e.value, markers: build(e.value, tr.state.doc) };
+    return tr.docChanged ? { ...value, markers: value.markers.map(tr.changes) } : value;
   },
 });
 
 /** Re-blames `path` and repaints the gutter while annotations are still shown. */
 async function refreshAnnotations(view: EditorView, path: string) {
-  const lines = await call(commands.vcsBlame(path, null, null)).catch(
-    () => null,
-  );
+  const lines = await call(commands.vcsBlame(path, null, null)).catch(() => null);
   if (!lines || !view.state.field(blameField, false)) return;
   view.dispatch({ effects: setBlame.of(lines) });
 }
@@ -386,13 +313,7 @@ const COLOR_MODES: { mode: AnnotateColors; label: string }[] = [
 
 async function setColorMode(mode: AnnotateColors) {
   useProject.setState({
-    settings: await call(
-      commands.settingsSet(
-        "global",
-        "vcs.git.annotateColors",
-        JSON.stringify(mode),
-      ),
-    ),
+    settings: await call(commands.settingsSet("global", "vcs.git.annotateColors", JSON.stringify(mode))),
   });
 }
 
@@ -432,8 +353,7 @@ const blameTheme = EditorView.baseTheme({
   ".cm-vcs-blame .cm-gutterElement:hover .cm-vcs-blame-line, .cm-vcs-blame .cm-gutterElement.cm-vcs-blame-same-commit .cm-vcs-blame-line":
     {
       color: "var(--fg-strong)",
-      backgroundColor:
-        "color-mix(in srgb, var(--fg-strong) 10%, var(--blame-bg, var(--bg-tree-hover)))",
+      backgroundColor: "color-mix(in srgb, var(--fg-strong) 10%, var(--blame-bg, var(--bg-tree-hover)))",
     },
 });
 
@@ -455,14 +375,9 @@ function lineAt(view: EditorView, from: number): BlameLine | undefined {
 }
 
 function highlightSameCommit(view: EditorView, commit: string | null) {
-  for (const el of view.dom.querySelectorAll<HTMLElement>(
-    ".cm-vcs-blame .cm-gutterElement",
-  )) {
+  for (const el of view.dom.querySelectorAll<HTMLElement>(".cm-vcs-blame .cm-gutterElement")) {
     const line = el.querySelector<HTMLElement>(".cm-vcs-blame-line");
-    el.classList.toggle(
-      "cm-vcs-blame-same-commit",
-      !!commit && line?.dataset.commit === commit,
-    );
+    el.classList.toggle("cm-vcs-blame-same-commit", !!commit && line?.dataset.commit === commit);
   }
 }
 
@@ -473,12 +388,7 @@ class BlameInteraction implements PluginValue {
   };
   private readonly onLeave = (e: MouseEvent) => {
     const gutterEl = this.view.dom.querySelector(".cm-vcs-blame");
-    if (
-      gutterEl &&
-      e.relatedTarget instanceof Node &&
-      gutterEl.contains(e.relatedTarget)
-    )
-      return;
+    if (gutterEl && e.relatedTarget instanceof Node && gutterEl.contains(e.relatedTarget)) return;
     highlightSameCommit(this.view, null);
     scheduleCloseBlamePopup();
   };
@@ -502,11 +412,7 @@ class BlameInteraction implements PluginValue {
   }
 }
 
-function blameExtension(
-  lines: BlameLine[],
-  path: string,
-  live: boolean,
-): Extension {
+function blameExtension(lines: BlameLine[], path: string, live: boolean): Extension {
   return [
     blameField.init((state) => ({ lines, markers: build(lines, state.doc) })),
     Prec.high(
@@ -517,9 +423,7 @@ function blameExtension(
         domEventHandlers: {
           mouseover(view, block, event) {
             const l = lineAt(view, block.from);
-            const anchor = (
-              event.target as HTMLElement | null
-            )?.closest?.<HTMLElement>(".cm-gutterElement");
+            const anchor = (event.target as HTMLElement | null)?.closest?.<HTMLElement>(".cm-gutterElement");
             if (!l || isUncommitted(l) || !anchor) {
               highlightSameCommit(view, null);
               scheduleCloseBlamePopup();
@@ -532,8 +436,7 @@ function blameExtension(
           click(view, block) {
             closeBlamePopup(view);
             const l = lineAt(view, block.from);
-            if (l && !isUncommitted(l))
-              void executeAction("vcs.showCommit", l.commit);
+            if (l && !isUncommitted(l)) void executeAction("vcs.showCommit", l.commit);
             return true;
           },
           contextmenu(view, block, event) {
@@ -551,10 +454,7 @@ function blameExtension(
                     {
                       label: "Show Diff",
                       icon: "diff",
-                      run: () =>
-                        void import("./annotateRevision").then((m) =>
-                          m.showRevisionDiff(path, l.commit),
-                        ),
+                      run: () => void import("./annotateRevision").then((m) => m.showRevisionDiff(path, l.commit)),
                     },
                     {
                       label: "Copy Revision Number",
@@ -569,19 +469,14 @@ function blameExtension(
                     {
                       label: tx("Annotate at Revision…"),
                       icon: "clock",
-                      run: () =>
-                        void import("./FileRevisionChooser").then((m) =>
-                          m.annotateFileRevision(path),
-                        ),
+                      run: () => void import("./FileRevisionChooser").then((m) => m.annotateFileRevision(path)),
                     },
                     {
                       label: tx("Annotate Previous Revision"),
                       icon: "history",
                       // Loads the history and diff viewer code only when it is used.
                       run: () =>
-                        void import("./annotateRevision").then((m) =>
-                          m.annotatePreviousRevision(path, l.commit),
-                        ),
+                        void import("./annotateRevision").then((m) => m.annotatePreviousRevision(path, l.commit)),
                     },
                     { kind: "separator" as const },
                   ]
@@ -609,9 +504,7 @@ function blameExtension(
     ViewPlugin.define((view) => new BlameInteraction(view)),
     annotateColumns,
     // Static content (a merge pane's side) is not re-blamed on edits / HEAD moves.
-    ...(live
-      ? [ViewPlugin.define((view) => new BlameRefresher(view, path))]
-      : []),
+    ...(live ? [ViewPlugin.define((view) => new BlameRefresher(view, path))] : []),
     ViewPlugin.define(colorModeListener),
     blameTheme,
   ];
@@ -621,17 +514,10 @@ export function annotationsShown(view: EditorView): boolean {
   return !!view.state.field(blameField, false);
 }
 
-function setAnnotations(
-  view: EditorView,
-  lines: BlameLine[] | null,
-  path: string,
-  live: boolean,
-) {
+function setAnnotations(view: EditorView, lines: BlameLine[] | null, path: string, live: boolean) {
   if (!lines) closeBlamePopup(view);
   view.dispatch({
-    effects: blameCompartment.reconfigure(
-      lines ? blameExtension(lines, path, live) : [],
-    ),
+    effects: blameCompartment.reconfigure(lines ? blameExtension(lines, path, live) : []),
   });
 }
 
@@ -639,12 +525,7 @@ function setAnnotations(
  * Appends `commit` to the repository's ignore list so annotate skips it, then re-blames
  * the gutter (a live one shows the commit before it on those lines).
  */
-async function ignoreCommit(
-  view: EditorView,
-  path: string,
-  commit: string,
-  live: boolean,
-) {
+async function ignoreCommit(view: EditorView, path: string, commit: string, live: boolean) {
   try {
     await call(commands.vcsIgnoreBlameRevision(path, commit));
     if (live) await refreshAnnotations(view, path);
@@ -660,20 +541,13 @@ async function ignoreCommit(
 
 /** Toggles annotations in `view`; `text` blames that content instead of the file on
  * disk, `revision` the history it is blamed on (default HEAD). */
-export async function toggleAnnotations(
-  view: EditorView,
-  path: string,
-  text?: string,
-  revision?: string,
-) {
+export async function toggleAnnotations(view: EditorView, path: string, text?: string, revision?: string) {
   if (annotationsShown(view)) {
     setAnnotations(view, null, path, false);
     return;
   }
   try {
-    const lines = await call(
-      commands.vcsBlame(path, text ?? null, revision ?? null),
-    );
+    const lines = await call(commands.vcsBlame(path, text ?? null, revision ?? null));
     // A file Git has no commit of (unversioned, ignored, added) would get an empty column.
     if (revision === undefined && lines.every(isUncommitted)) {
       notifications().notify({
