@@ -22,7 +22,7 @@ import {
   reloadPullRequestData,
   subscribePullRequestData,
 } from "../data/pullRequest";
-import { connectedRepoHead, connectedRepoRoot, useGhRepository } from "../data/repository";
+import { connectedRepoHead, connectedRepoRoot, useConnectedUpstream, useGhRepository } from "../data/repository";
 import { isUpdateRequired, openPullRequestQuery, trackedBranch } from "./model";
 
 export interface ReviewBranchState {
@@ -149,6 +149,12 @@ export function trackCurrentBranchPullRequest(): () => void {
     }),
     useGhRepository.subscribe((s, prev) => {
       if (s.connection !== prev.connection) void refreshCurrentBranchPullRequest();
+    }),
+    // The upstream of a connected repository that is not the selected one arrives here.
+    useConnectedUpstream.subscribe((s, prev) => {
+      const vcs = useVcs.getState();
+      if (connectedRepoHead(vcs, s.value)?.upstream !== connectedRepoHead(vcs, prev.value)?.upstream)
+        void refreshCurrentBranchPullRequest();
     }),
     useReviewBranch.subscribe((s, prev) => {
       if (s.number !== prev.number) followData(s.number);
