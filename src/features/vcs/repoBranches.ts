@@ -159,6 +159,8 @@ export interface MultiRepoInput extends Omit<BranchTreeOptions, "expanded"> {
   /** Groups / folders the user expanded or collapsed (`common:local`, `repo:remote`, `repo:folder:local:feat`…). */
   expanded: ReadonlyMap<string, boolean>;
   favorites?: readonly string[] | null;
+  /** A repository's own favorites, for the rows of its branches (unset: `favorites` for every repository). */
+  favoritesOf?: (root: string) => readonly string[] | null;
   /** The current repository (of the active file), whose lists are shown when the repositories' branches differ. */
   current?: string | null;
   /** Recently checked-out branches (newest first). */
@@ -185,6 +187,7 @@ export function buildMultiRepoRows({
   actions,
   expanded,
   favorites = null,
+  favoritesOf = () => favorites,
   current = null,
   recent = [],
   tags = [],
@@ -230,6 +233,7 @@ export function buildMultiRepoRows({
     depth: number,
     grouped = groupByPrefix,
   ): RepoRow[] => {
+    const favorites = favoritesOf(repo.root);
     const items = list.flatMap((b): PrefixItem<Branch>[] => {
       const m = match(b.name);
       return m === false
@@ -320,6 +324,7 @@ export function buildMultiRepoRows({
     group(groups, "common:remote", tx("Common Remote Branches"), commonRows(common.remote, "remote"), false);
   } else if (currentRepo) {
     const list = branches[currentRepo.root] ?? [];
+    const favorites = favoritesOf(currentRepo.root);
     const local = sortLocal(list, favorites);
     const recentList = q || !showRecent ? [] : recentLocal(local, recent);
     const name = currentRepo.name;
@@ -355,6 +360,7 @@ export function buildMultiRepoRows({
     for (const repo of repos) {
       if (!sync && repo === currentRepo) continue;
       const list = branches[repo.root] ?? [];
+      const favorites = favoritesOf(repo.root);
       const own = (l: Branch[]) => l.filter((b) => !shown.has(`${b.remote}:${b.name}`));
       const rows = [
         ...branchRows(repo, own(sortLocal(list, favorites)), "local", 0, false),
