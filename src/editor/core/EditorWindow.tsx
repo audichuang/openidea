@@ -56,7 +56,8 @@ async function settleUnsaved(models: DocModel[], project: string | null): Promis
   if (dirty.length === 0) return true;
   if (useProject.getState().settings?.files?.autoSave !== false) {
     await Promise.all(dirty.map((model) => model.save("auto")));
-    return true;
+    // A file changed on disk keeps the external change and these edits stay unsaved: stay open (#291).
+    return !dirty.some((model) => model.getMeta().dirty);
   }
   const answer = await ask({
     title: t("app.unsaved.title"),
@@ -67,8 +68,11 @@ async function settleUnsaved(models: DocModel[], project: string | null): Promis
     ],
     icon: "warning",
   });
-  if (answer.button === "save") await Promise.all(dirty.map((model) => model.save("explicit")));
-  return answer.button === "save" || answer.button === "discard";
+  if (answer.button === "save") {
+    await Promise.all(dirty.map((model) => model.save("explicit")));
+    return !dirty.some((model) => model.getMeta().dirty);
+  }
+  return answer.button === "discard";
 }
 
 /** Loads the launch's file into this window's editor. */
