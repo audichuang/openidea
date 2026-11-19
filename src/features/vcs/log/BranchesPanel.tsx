@@ -15,7 +15,7 @@ import {
   type BranchTreeNode,
 } from "../branches";
 import { branchMenu, inRepo, tagMenu } from "../branchMenu";
-import { canDeleteBranch, loadFavoriteBranches, useFavoriteBranches } from "../branchOps";
+import { canDeleteBranch, useFavoriteBranchNames } from "../branchOps";
 import { BranchSync } from "../BranchSync";
 import styles from "../GitLog.module.css";
 import { LogIdContext } from "../logContext";
@@ -63,12 +63,11 @@ export function BranchesPanel() {
   const root = useVcs((s) => s.root);
   const branchesLoaded = useVcs((s) => s.branchesLoaded);
   const current = useVcs((s) => s.branch?.head ?? null);
-  const favorites = useFavoriteBranches((s) => s.names);
+  const favorites = useFavoriteBranchNames(repositories.length === 1 ? repositories[0] : undefined);
   const filterBranches = useGitLog((s) => s.filters.branches);
   const filterRepositories = useGitLog((s) => s.filters.repositories);
   const [query, setQuery] = useState("");
   const [tags, setTags] = useState<string[]>([]);
-  useEffect(() => loadFavoriteBranches(), [root]);
   // Branches reload when refs move (fetch, new tag…): the tags are re-read with them.
   useEffect(() => {
     let live = true;
@@ -284,6 +283,7 @@ export function BranchesPanel() {
                   n.repo ? (useVcs.getState().heads[n.repo]?.head ?? null) : current,
                   () => {},
                   picked,
+                  n.repo,
                 )
               : n?.kind === "tag"
                 ? tagMenu(n.ref!)
