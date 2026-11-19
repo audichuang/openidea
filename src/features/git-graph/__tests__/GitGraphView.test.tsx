@@ -423,9 +423,9 @@ describe("Git Graph pseudo rows and panels", () => {
     render(<GitGraphEditor />);
     await screen.findByText("Uncommitted Changes");
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-    expect(bridge.controlOperation).toHaveBeenLastCalledWith(lib, "continue");
+    expect(bridge.controlOperation).toHaveBeenLastCalledWith(lib, "continue", "rebase");
     fireEvent.click(screen.getByRole("button", { name: "Abort" }));
-    expect(bridge.controlOperation).toHaveBeenLastCalledWith(lib, "abort");
+    expect(bridge.controlOperation).toHaveBeenLastCalledWith(lib, "abort", "rebase");
     fireEvent.click(screen.getByRole("button", { name: "Show Git Log" }));
     expect(bridge.showLog).toHaveBeenCalledWith(lib);
     fireEvent.click(document.querySelector<HTMLElement>('[data-entry="*working*"]')!);
