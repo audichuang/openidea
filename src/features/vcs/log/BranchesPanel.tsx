@@ -238,10 +238,15 @@ export function BranchesPanel() {
     walk(allRoots);
     return out;
   }, [allRoots, scopedRepo]);
+  // One repository is listed, which need not be the selected one: its favorites are edited, not the selection's.
+  const listed = useMemo(
+    () => (repositories.length === 1 ? { repo: repositories[0]!, branches } : undefined),
+    [repositories, branches],
+  );
   const targets = useMemo(
     (): BranchTarget[] =>
-      refs.filter((r) => selected.has(r.key)).map(({ ref, branch, repo }) => ({ ref, branch, repo })),
-    [refs, selected],
+      refs.filter((r) => selected.has(r.key)).map(({ ref, branch, repo }) => ({ ref, branch, repo, listed })),
+    [refs, selected, listed],
   );
   useEffect(() => {
     if (!active) return;
@@ -453,7 +458,7 @@ export function BranchesPanel() {
                     headCommit: repo ? (useVcs.getState().heads[repo]?.headCommit ?? null) : undefined,
                     existingWorktree: worktreeFor(repo ?? currentRepository, n.branch.name),
                     branches: (repo ? allBranches[repo] : undefined) ?? branches,
-                    repo,
+                    repo: repo ?? listed?.repo,
                   },
                 )
               : n?.kind === "remote" || (n?.kind === "group" && n.key.endsWith("g:remote"))

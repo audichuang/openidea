@@ -61,13 +61,13 @@ function updateSelection(targets: readonly BranchUpdateTarget[]) {
   );
 }
 
-/** `repo`: the branch's repository when it is not the selected one (its favorites are its own). */
-function favoriteMenuItem(b: Branch, run: Run, repo?: string): MenuItem {
+/** `repo`, `branches`: the branch's repository and its branches when it is not the selected one (its favorites are its own). */
+function favoriteMenuItem(b: Branch, run: Run, repo?: string, branches?: readonly Branch[]): MenuItem {
   const favorite = isFavoriteBranch(b, favoriteBranches(repo));
   return {
     label: favorite ? "Remove from Favorites" : "Add to Favorites",
     icon: "star",
-    run: run(() => toggleFavoriteBranch(b, repo)),
+    run: run(() => toggleFavoriteBranch(b, repo, branches)),
   };
 }
 
@@ -118,7 +118,7 @@ export function branchMenu(
   };
   const cur = current ?? "HEAD";
   const rebaseBase = current ?? headCommit?.slice(0, 8);
-  const favoriteItem = favoriteMenuItem(b, run, repo);
+  const favoriteItem = favoriteMenuItem(b, run, repo, branches);
   const newWorktree = worktreeMenuItem(b, run);
   // Update Selected acts on every selected local branch, each in its own repository.
   const updating = !!useVcs.getState().remoteBusy;
