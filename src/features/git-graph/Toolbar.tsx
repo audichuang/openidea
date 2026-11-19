@@ -202,7 +202,7 @@ function OperationBar({ operation, repo }: { operation: string; repo: string }) 
         <button
           type="button"
           className={styles.opButton}
-          onClick={() => void bridge?.controlOperation(repo, "continue")}
+          onClick={() => void bridge?.controlOperation(repo, "continue", operation)}
         >
           <T>Continue</T>
         </button>
@@ -213,7 +213,11 @@ function OperationBar({ operation, repo }: { operation: string; repo: string }) 
         </button>
       ) : null}
       {kind ? (
-        <button type="button" className={styles.opButton} onClick={() => void bridge?.controlOperation(repo, "abort")}>
+        <button
+          type="button"
+          className={styles.opButton}
+          onClick={() => void bridge?.controlOperation(repo, "abort", operation)}
+        >
           <T>Abort</T>
         </button>
       ) : null}
