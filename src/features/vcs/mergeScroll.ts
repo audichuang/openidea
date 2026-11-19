@@ -104,29 +104,40 @@ export function syncMergeScroll(views: Record<MergePane, EditorView>): () => voi
   /**
    * A wheel over `side` that `side` cannot follow scrolls another pane, as in the two-pane diff
    * (`UnalignedPanes.passOn`): otherwise the end of a longer pane is reachable only with the
-   * pointer over that pane. One pane takes the wheel and the others follow it, so two of them
-   * never pull at each other. "also": `side` is at its end and the first pane that can still
-   * scroll does; "instead": a pane went past where `side` maps it and scrolls back first, so
-   * `side` must not move (it would pull that pane back in one jump).
+   * pointer over that pane. "also": `side` is at its end and a pane that can still scroll does;
+   * "instead": a pane went past where `side` maps it and scrolls back first, so `side` must not
+   * move (it would pull that pane back in one jump).
+   *
+   * Over a side, one pane takes the wheel (the result first) and the others follow it. Over the
+   * result, both sides take it and neither follows the other: a side past the result's end maps
+   * the other one to its own end, which would skip that side's last lines.
    */
   const passOn = (side: MergePane, e: WheelEvent): "also" | "instead" | null => {
     if (!e.deltaY) return null;
     const view = views[side];
     const dy = e.deltaMode === 1 ? e.deltaY * view.defaultLineHeight : e.deltaY;
-    const others = RECEIVERS[side];
-    const past = others.find((to) => {
+    const apart = side === "result";
+    const scroll = (panes: readonly MergePane[]) => {
+      for (const to of apart ? panes : panes.slice(0, 1)) {
+        const el = views[to].scrollDOM;
+        const before = el.scrollTop;
+        el.scrollBy(0, dy);
+        if (apart && el.scrollTop !== before) echoes.mark(to, el.scrollTop);
+      }
+    };
+    const past = RECEIVERS[side].filter((to) => {
       const top = views[to].scrollDOM.scrollTop;
       const mapped = followTop(side, to);
       return dy < 0 ? top > mapped + 1 : top < mapped - 1;
     });
-    if (past) {
-      views[past].scrollDOM.scrollBy(0, dy);
+    if (past.length) {
+      scroll(past);
       return "instead";
     }
     if (!atEnd(view.scrollDOM, dy)) return null;
-    const next = others.find((to) => !atEnd(views[to].scrollDOM, dy));
-    if (!next) return null;
-    views[next].scrollDOM.scrollBy(0, dy);
+    const free = RECEIVERS[side].filter((to) => !atEnd(views[to].scrollDOM, dy));
+    if (!free.length) return null;
+    scroll(free);
     return "also";
   };
 

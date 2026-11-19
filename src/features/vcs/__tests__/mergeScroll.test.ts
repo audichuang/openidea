@@ -40,7 +40,9 @@ describe("wheel over a pane that cannot scroll further", () => {
       const scrollDOM = document.createElement("div");
       Object.defineProperty(scrollDOM, "scrollHeight", { value: count * LINE });
       Object.defineProperty(scrollDOM, "clientHeight", { value: HEIGHT });
-      scrollDOM.scrollBy = vi.fn() as unknown as typeof scrollDOM.scrollBy;
+      scrollDOM.scrollBy = vi.fn((_x: number, y: number) => {
+        scrollDOM.scrollTop = Math.max(0, Math.min(scrollDOM.scrollTop + y, count * LINE - HEIGHT));
+      }) as unknown as typeof scrollDOM.scrollBy;
       return {
         scrollDOM,
         defaultLineHeight: LINE,
@@ -67,8 +69,15 @@ describe("wheel over a pane that cannot scroll further", () => {
       el(pane).scrollTop = top;
       el(pane).dispatchEvent(new Event("scroll"));
     };
+    /** The scroll events of the panes moved since the last call arrive. */
+    const seen = { ours: 0, result: 0, theirs: 0 };
+    const settle = () => {
+      const moved = (["ours", "result", "theirs"] as const).filter((pane) => el(pane).scrollTop !== seen[pane]);
+      for (const pane of moved) el(pane).dispatchEvent(new Event("scroll"));
+      for (const pane of ["ours", "result", "theirs"] as const) seen[pane] = el(pane).scrollTop;
+    };
     const passed = (pane: MergePane) => vi.mocked(el(pane).scrollBy);
-    return { el, wheel, scroll, passed, stop };
+    return { el, wheel, scroll, settle, passed, stop };
   }
 
   it("passes a wheel over the result at its end to the side that has more below", () => {
@@ -81,18 +90,37 @@ describe("wheel over a pane that cannot scroll further", () => {
 
     expect(p.wheel("result", 120)).toBe(false);
     expect(p.passed("ours")).toHaveBeenLastCalledWith(0, 120);
-    // One pane takes the wheel: the others follow it.
+    // Theirs is at its end as well.
     expect(p.passed("theirs")).not.toHaveBeenCalled();
     p.stop();
   });
 
-  it("passes it to the other side once the first one is at its end too", () => {
+  it("passes it to both sides, each scrolling through its own end", () => {
     const p = panes({ ours: 200, result: 50, theirs: 300 });
     p.scroll("result", 50 * LINE - HEIGHT);
+    const [ours, theirs] = [p.el("ours").scrollTop, p.el("theirs").scrollTop];
+    p.settle();
+    for (let i = 0; i < 10; i++) {
+      p.wheel("result", 120);
+      p.settle();
+    }
+    // Neither follows the other: ours past the result's end would map theirs to its very end.
+    expect(p.el("ours").scrollTop).toBe(ours + 1200);
+    expect(p.el("theirs").scrollTop).toBe(theirs + 1200);
+    expect(p.el("result").scrollTop).toBe(50 * LINE - HEIGHT);
+    // Ours at its end: theirs goes on alone.
     p.el("ours").scrollTop = 200 * LINE - HEIGHT;
+    p.passed("ours").mockClear();
     p.wheel("result", 120);
     expect(p.passed("ours")).not.toHaveBeenCalled();
-    expect(p.passed("theirs")).toHaveBeenLastCalledWith(0, 120);
+    expect(p.el("theirs").scrollTop).toBe(theirs + 1320);
+
+    // Back up: both sides return to where the result maps them before the result moves.
+    expect(p.wheel("result", -120)).toBe(true);
+    p.settle();
+    expect(p.el("ours").scrollTop).toBe(200 * LINE - HEIGHT - 120);
+    expect(p.el("theirs").scrollTop).toBe(theirs + 1200);
+    expect(p.passed("result")).not.toHaveBeenCalled();
     p.stop();
   });
 
@@ -108,12 +136,17 @@ describe("wheel over a pane that cannot scroll further", () => {
   it("scrolls a pane back first when it went past where this one maps it", () => {
     const p = panes({ ours: 200, result: 50, theirs: 50 });
     p.scroll("result", 50 * LINE - HEIGHT);
+    p.settle();
     p.el("ours").scrollTop = 3000;
     // Instead of the result, whose own scroll would pull ours back in one jump.
     expect(p.wheel("result", -3, WheelEvent.DOM_DELTA_LINE)).toBe(true);
     expect(p.passed("ours")).toHaveBeenLastCalledWith(0, -3 * LINE);
+    // Theirs is where the result maps it, and does not follow ours.
+    p.settle();
     expect(p.passed("theirs")).not.toHaveBeenCalled();
     expect(p.passed("result")).not.toHaveBeenCalled();
+    expect(p.el("theirs").scrollTop).toBeLessThan(50 * LINE - HEIGHT + 2 * LINE);
+    expect(p.el("ours").scrollTop).toBe(3000 - 3 * LINE);
     p.stop();
   });
 
