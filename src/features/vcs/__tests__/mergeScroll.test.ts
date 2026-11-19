@@ -170,6 +170,55 @@ describe("wheel over a pane that cannot scroll further", () => {
     p.stop();
   });
 
+  it("scrolls a pane back no further than where this one maps it", () => {
+    const p = panes({ ours: 200, result: 50, theirs: 50 });
+    p.scroll("result", 50 * LINE - HEIGHT);
+    p.settle();
+    const mapped = p.el("ours").scrollTop;
+    p.wheel("result", 100);
+    p.settle();
+    expect(p.el("ours").scrollTop).toBe(mapped + 100);
+    // A wheel longer than what is left: ours stops where the result maps it, not 20px above.
+    expect(p.wheel("result", -120)).toBe(true);
+    expect(p.passed("ours")).toHaveBeenLastCalledWith(0, -100);
+    p.settle();
+    expect(p.el("ours").scrollTop).toBe(mapped);
+    p.passed("ours").mockClear();
+    expect(p.wheel("result", -120)).toBe(false);
+    expect(p.passed("ours")).not.toHaveBeenCalled();
+    p.stop();
+  });
+
+  it("leaves the wheel to a side that a wheel over the result took past the result's end", () => {
+    const p = panes({ ours: 200, result: 50, theirs: 300 });
+    p.scroll("result", 50 * LINE - HEIGHT);
+    p.settle();
+    for (let i = 0; i < 4; i++) {
+      p.wheel("result", 120);
+      p.settle();
+    }
+    const ours = p.el("ours").scrollTop;
+    expect(ours).toBeGreaterThan(50 * LINE - HEIGHT + 480 - 1);
+    expect(ours).toBeLessThan(200 * LINE - HEIGHT - 120);
+    // The pointer moves to ours, which can still scroll: theirs was passed on from the result, and
+    // is not a pane ours has to take back.
+    p.passed("theirs").mockClear();
+    p.passed("result").mockClear();
+    expect(p.wheel("ours", 120)).toBe(false);
+    expect(p.passed("theirs")).not.toHaveBeenCalled();
+    expect(p.passed("result")).not.toHaveBeenCalled();
+    p.settle();
+    expect(p.el("ours").scrollTop).toBe(ours);
+    // The wheel scrolls ours itself.
+    p.scroll("ours", ours + 120);
+    expect(p.el("ours").scrollTop).toBe(ours + 120);
+    // Nor does a wheel back up over ours scroll another pane instead.
+    expect(p.wheel("ours", -120)).toBe(false);
+    expect(p.passed("theirs")).not.toHaveBeenCalled();
+    expect(p.passed("result")).not.toHaveBeenCalled();
+    p.stop();
+  });
+
   it("leaves the wheel to a pane whose sides are elsewhere without a wheel passed on", () => {
     // Ours starts with 1,000 lines of its own: the result's first lines map far down it.
     const p = panes({ ours: 300, result: 300, theirs: 300 }, { ours: 1000 });
