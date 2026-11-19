@@ -742,22 +742,30 @@ export async function deleteInRepos(name: string, roots: readonly string[]) {
 const favoritesKey = (root: string) => `openidea.vcs.favoriteBranches.v2:${root}`;
 
 /**
- * Favorites used to be one list per project. It is still read (never written) for a repository
- * whose own list was not edited yet, so favorites marked before are kept.
+ * Favorites used to be one list per project. Those lists are still read (never written) for a
+ * repository whose own list was not edited yet, so favorites marked before are kept: the list of the
+ * project, and the one of the repository from when it was opened as a project itself.
  */
-const projectFavoritesKey = () => `openidea.vcs.favoriteBranches:${useVcs.getState().root ?? ""}`;
+const projectFavoritesKey = (root: string) => `openidea.vcs.favoriteBranches:${root}`;
 
-function readFavorites(root: string): string[] | null {
-  for (const key of [favoritesKey(root), projectFavoritesKey()]) {
-    try {
-      const raw = localStorage.getItem(key);
-      const v: unknown = raw ? JSON.parse(raw) : null;
-      if (Array.isArray(v)) return v.filter((x): x is string => typeof x === "string");
-    } catch {
-      // Storage unavailable: defaults.
-    }
+function storedFavorites(key: string): string[] | null {
+  try {
+    const raw = localStorage.getItem(key);
+    const v: unknown = raw ? JSON.parse(raw) : null;
+    if (Array.isArray(v)) return v.filter((x): x is string => typeof x === "string");
+  } catch {
+    // Storage unavailable: defaults.
   }
   return null;
+}
+
+function readFavorites(root: string): string[] | null {
+  const own = storedFavorites(favoritesKey(root));
+  if (own) return own;
+  const earlier = [root, useVcs.getState().root ?? ""]
+    .map((project) => storedFavorites(projectFavoritesKey(project)))
+    .filter((list) => list !== null);
+  return earlier.length ? [...new Set(earlier.flat())] : null;
 }
 
 /** Repository root → the favorites edited this session; the others are read from storage. */
