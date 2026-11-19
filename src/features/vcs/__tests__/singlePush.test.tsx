@@ -4,6 +4,7 @@ import type { IdeError, PushSelection, RemoteOp, Settings } from "@/bindings";
 
 const mocks = vi.hoisted(() => ({
   log: vi.fn(),
+  ask: vi.fn(),
   inspect: vi.fn(),
   remote: vi.fn(),
   remoteRepo: vi.fn(),
@@ -36,6 +37,11 @@ const commit = (id: string, summary: string) => ({
 
 vi.mock("../DiffEditor", () => ({
   DiffEditor: ({ input }: { input: { path: string } }) => <div>diff view {input.path}</div>,
+}));
+
+vi.mock("@/workbench/messages", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/workbench/messages")>()),
+  ask: mocks.ask,
 }));
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
@@ -108,6 +114,8 @@ beforeEach(() => {
   mocks.failure.mockReset();
   useProject.setState({ settings: null });
   provideNotificationService({ notify: () => {}, expire: () => {} });
+  mocks.ask.mockReset();
+  localStorage.clear();
   useVcs.setState({
     root: "/p",
     roots: ["/p"],
@@ -679,4 +687,24 @@ it.each([
     expect(await screen.findByRole("dialog", { name: "Push Commits to origin/detached2" })).toBeInTheDocument();
     expect(mocks.remote).not.toHaveBeenCalled();
   }
+});
+
+it("asks again before a force push to the same target name in another repository", async () => {
+  const forcePush = async (root: string) => {
+    useVcs.setState({ root, roots: [root], repo: root });
+    const view = render(<VcsDialogHost />);
+    await act(() => showPushDialog());
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Force (with lease)" }));
+    const before = mocks.remote.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Force Push" }));
+    await waitFor(() => expect(mocks.remote).toHaveBeenCalledTimes(before + 1));
+    view.unmount();
+  };
+  mocks.ask.mockResolvedValue({ button: "force", checked: true });
+  await forcePush("/p");
+  await forcePush("/p");
+  expect(mocks.ask).toHaveBeenCalledTimes(1);
+
+  await forcePush("/q");
+  expect(mocks.ask).toHaveBeenCalledTimes(2);
 });
