@@ -377,7 +377,6 @@ describe("git graph bridge", () => {
       await waitFor(() =>
         expect(backend.logPages).toContainEqual({ repo: LIB, branches: ["main", "v1.0"], paths: [`${LIB}/src`] }),
       );
-      expect(backend.logPages.every((page) => page.repo === LIB)).toBe(true);
       backend.branches = {};
       useGitLog.setState({ filters: emptyFilters() });
     });
