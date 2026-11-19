@@ -302,6 +302,49 @@ describe("wheel over a pane that cannot scroll further (#363)", () => {
     }
   });
 
+  it("leaves a wheel the same way over the pane a wheel was passed on to", () => {
+    const frame = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
+    const p = panes(true, { left: 200, right: 50 });
+    try {
+      p.b.scrollDOM.scrollTop = 50 * LINE - 500;
+      p.b.scrollDOM.dispatchEvent(new Event("scroll"));
+      const mapped = p.a.scrollDOM.scrollTop;
+      for (let i = 1; i <= 4; i++) {
+        expect(p.wheel(p.b.scrollDOM, 120)).toBe(false);
+        p.a.scrollDOM.dispatchEvent(new Event("scroll"));
+        expect(p.a.scrollDOM.scrollTop).toBe(mapped + i * 120);
+      }
+      // The pointer moves to the left pane, which can still scroll: the wheel is its own.
+      expect(p.wheel(p.a.scrollDOM, 120)).toBe(false);
+      expect(p.b.scrollDOM.scrollBy).not.toHaveBeenCalled();
+      expect(p.a.scrollDOM.scrollTop).toBe(mapped + 480);
+    } finally {
+      p.controller.destroy();
+      frame.mockRestore();
+    }
+  });
+
+  it("scrolls the other pane back no further than where this one maps it", () => {
+    const frame = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
+    const p = panes(true, { left: 200, right: 50 });
+    try {
+      p.b.scrollDOM.scrollTop = 50 * LINE - 500;
+      p.b.scrollDOM.dispatchEvent(new Event("scroll"));
+      const mapped = p.a.scrollDOM.scrollTop;
+      p.wheel(p.b.scrollDOM, 100);
+      p.a.scrollDOM.dispatchEvent(new Event("scroll"));
+      expect(p.a.scrollDOM.scrollTop).toBe(mapped + 100);
+      // A wheel longer than what is left: the left pane stops where the right one maps it.
+      expect(p.wheel(p.b.scrollDOM, -120)).toBe(true);
+      expect(p.a.scrollDOM.scrollBy).toHaveBeenLastCalledWith(0, -100);
+      p.a.scrollDOM.dispatchEvent(new Event("scroll"));
+      expect(p.a.scrollDOM.scrollTop).toBe(mapped);
+    } finally {
+      p.controller.destroy();
+      frame.mockRestore();
+    }
+  });
+
   it("leaves the wheel to a pane whose other pane is elsewhere without a wheel passed on", () => {
     const frame = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
     // The left pane starts with 1,000 lines of its own: the right one's first lines map far down it.
