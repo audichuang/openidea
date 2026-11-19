@@ -349,12 +349,16 @@ export class UnalignedPanes implements DiffPanes {
       const el = this.view(side).scrollDOM;
       const onScroll = () => this.scrolled(side);
       const onPointer = () => this.interruptScroll();
+      const onWheel = (e: WheelEvent) => {
+        this.interruptScroll();
+        if (this.passOn(side, e) === "instead") e.preventDefault();
+      };
       el.addEventListener("scroll", onScroll, { passive: true });
-      el.addEventListener("wheel", onPointer, { passive: true });
+      el.addEventListener("wheel", onWheel, { passive: false });
       el.addEventListener("pointerdown", onPointer);
       this.cleanup.push(() => {
         el.removeEventListener("scroll", onScroll);
-        el.removeEventListener("wheel", onPointer);
+        el.removeEventListener("wheel", onWheel);
         el.removeEventListener("pointerdown", onPointer);
       });
     }
@@ -427,7 +431,7 @@ export class UnalignedPanes implements DiffPanes {
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       this.interruptScroll();
-      mv.b.scrollDOM.scrollBy(e.deltaX, e.deltaY);
+      if (this.passOn("b", e) !== "instead") mv.b.scrollDOM.scrollBy(e.deltaX, e.deltaY);
     };
     this.divider.addEventListener("wheel", onWheel, { passive: false });
     this.cleanup.push(() => this.divider.removeEventListener("wheel", onWheel));
@@ -499,6 +503,30 @@ export class UnalignedPanes implements DiffPanes {
     return side === "a" ? this.mv!.a : this.mv!.b;
   }
 
+  /**
+   * A synchronized wheel over `side` that `side` cannot follow scrolls the other pane: otherwise
+   * the end of the longer pane, such as lines deleted at the end of the file, is reachable only
+   * with the pointer over that pane (#363). "also": `side` is at that end and the other pane
+   * scrolls; "instead": the other pane went past where `side` maps it and scrolls back first,
+   * so `side` must not move (it would pull the other pane back in one jump).
+   */
+  private passOn(side: Side, e: WheelEvent): "also" | "instead" | null {
+    if (!this.mv || !this.sync || !e.deltaY) return null;
+    const view = this.view(side);
+    const el = view.scrollDOM;
+    const other = this.view(side === "a" ? "b" : "a").scrollDOM;
+    const dy = e.deltaMode === 1 ? e.deltaY * view.defaultLineHeight : e.deltaY;
+    const mapped = this.followTop(side);
+    if (dy < 0 ? other.scrollTop > mapped + 1 : other.scrollTop < mapped - 1) {
+      other.scrollBy(0, dy);
+      return "instead";
+    }
+    const stuck = dy > 0 ? el.scrollTop + el.clientHeight >= el.scrollHeight - 1 : el.scrollTop <= 0;
+    if (!stuck) return null;
+    other.scrollBy(0, dy);
+    return "also";
+  }
+
   private scrolled(side: Side) {
     if (this.scrolling) {
       // A follower's delayed layout scroll must not pull back the navigation source.
@@ -532,15 +560,22 @@ export class UnalignedPanes implements DiffPanes {
   }
 
   /** Scrolls the other pane to match `from`, anchored a third down the pane (SyncScrollSupport). */
-  private follow(from: Side) {
-    const to: Side = from === "a" ? "b" : "a";
+  /** Where the other pane scrolls to follow `from` (SyncScrollSupport). */
+  private followTop(from: Side): number {
     const master = this.view(from);
-    const slave = this.view(to);
+    const slave = this.view(from === "a" ? "b" : "a");
     const anchor = master.scrollDOM.clientHeight / 3;
     const at = master.scrollDOM.scrollTop + anchor - docOffset(master);
     const y = transferY([this.bandAt(at, from)], at, from);
     const el = slave.scrollDOM;
-    const top = Math.max(0, Math.min(y + docOffset(slave) - anchor, el.scrollHeight - el.clientHeight));
+    return Math.max(0, Math.min(y + docOffset(slave) - anchor, el.scrollHeight - el.clientHeight));
+  }
+
+  private follow(from: Side) {
+    const to: Side = from === "a" ? "b" : "a";
+    const master = this.view(from);
+    const el = this.view(to).scrollDOM;
+    const top = this.followTop(from);
     const moved = this.moved[to];
     if (Math.abs(el.scrollTop - top) >= 1) {
       const before = el.scrollTop;
