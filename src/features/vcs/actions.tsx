@@ -361,7 +361,11 @@ export function registerVcsActions(): () => void {
       category: "Git",
       icon: "git-fetch",
       when: VCS,
-      run: () => void runRemote({ op: "fetch" }, undefined, allRepos()),
+      // Every repository, as in IDEA, unless the caller names one (Git Graph's toolbar).
+      run: ({ arg }) => {
+        const repo = arg && typeof arg === "object" && "repo" in arg ? (arg as { repo: string | null }).repo : null;
+        void runRemote({ op: "fetch" }, undefined, repo ? [repo] : allRepos());
+      },
     },
     {
       id: "vcs.refresh",
