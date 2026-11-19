@@ -1,6 +1,6 @@
 import { branchesByRepo } from "./multiRoot";
 /** Title bar branch widget (branch name + incoming / outgoing markers) + Branches popup. */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
 import type { Branch, BranchInfo } from "@/bindings";
@@ -28,7 +28,13 @@ import type { PopupAnchor } from "@/ui/Popup";
 import { buildBranchRows, withExpanded, type BranchRow, type PopupAction } from "./branches";
 import { branchPresentation, extensionPopupActions, useBranchWidgetExtensions } from "./branchWidgetExtensions";
 import { branchMenu, commonBranchMenu, inRepo, tagMenu } from "./branchMenu";
-import { recentBranches, toggleFavoriteBranch, useFavoriteBranchNames } from "./branchOps";
+import {
+  favoriteBranches,
+  recentBranches,
+  toggleFavoriteBranch,
+  useFavoriteBranches,
+  useFavoriteBranchNames,
+} from "./branchOps";
 import { inProgress, operationTitle, type InProgress } from "./operations";
 import {
   buildMultiRepoRows,
@@ -616,6 +622,12 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
   const current = useCurrentRepo();
   // The branches listed below are the current repository's: so are their recents and favorites.
   const favorites = useFavoriteBranchNames(current);
+  const editedFavorites = useFavoriteBranches((s) => s.byRepo);
+  // A search also lists the other repositories' branches: each row carries its own repository's favorites.
+  const favoritesOf = useCallback(
+    (repo: string) => (editedFavorites[repo] !== undefined ? editedFavorites[repo] : favoriteBranches(repo)),
+    [editedFavorites],
+  );
   const recent = useMemo(() => recentBranches(current), [current]);
   const [tags, setTags] = useState<string[]>([]);
   const [query, setQuery] = useState("");
@@ -684,11 +696,12 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
         actions,
         expanded,
         favorites,
+        favoritesOf,
         current,
         recent,
         tags,
       }),
-    [repos, all, query, actions, expanded, favorites, current, recent, tags, options],
+    [repos, all, query, actions, expanded, favorites, favoritesOf, current, recent, tags, options],
   );
   const isSection = (r: RepoRow) => r.type === "section";
   const activeIndex = rows[active] && !isSection(rows[active]!) ? active : firstSelectable(rows, isSection);
