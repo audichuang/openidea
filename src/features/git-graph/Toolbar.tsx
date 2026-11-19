@@ -169,8 +169,12 @@ export function Toolbar(p: ToolbarProps) {
       <IconButton
         icon="history"
         title="Show Git Log"
-        onClick={() => {
-          if (p.repo) void gitGraphBridge()?.showLog(p.repo);
+        action="vcs.showLog"
+        onClick={(e) => {
+          if (!p.repo) return;
+          // The bridge selects the graph's repository first; the action only supplies the tooltip.
+          e.preventDefault();
+          void gitGraphBridge()?.showLog(p.repo);
         }}
       />
     </div>
