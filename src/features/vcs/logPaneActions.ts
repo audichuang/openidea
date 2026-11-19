@@ -4,7 +4,7 @@
  */
 import { create } from "zustand";
 import type { Branch, Commit } from "@/bindings";
-import { executeAction, registerActions, type Action } from "@/platform/actions";
+import { executeAction, registerActions } from "@/platform/actions";
 import { relativePath } from "@/platform/project";
 import { notifications, toolWindowService } from "@/workbench/contributions";
 import { deleteBranches, newBranch, newBranchInRepos, toggleFavoriteBranch, updateBranches } from "./branchOps";
@@ -72,6 +72,8 @@ export interface BranchTarget {
   ref: string;
   repo?: string;
   branch?: Branch;
+  /** A pane listing one repository: that repository and its branches, which the branch's favorites belong to. */
+  listed?: { repo: string; branches: readonly Branch[] };
 }
 
 /** The Branches pane's selected refs (what its toolbar acts on without an argument). */
@@ -89,15 +91,7 @@ function branchTargets(arg: unknown): BranchTarget[] {
   return useBranchesPane.getState().selected;
 }
 
-const withBranch =
-  (fn: (b: Branch) => unknown): Action["run"] =>
-  async ({ arg }) => {
-    const target = branchArg(arg);
-    if (target?.repo) await focusRepo(target.repo);
-    const b = target?.branch;
-    if (b) void fn(b);
-  };
-
+/** Update fast-forwards a local branch with an upstream (or updates the project for the current one). */
 export function canUpdateBranch(t: BranchTarget | null): boolean {
   return !!t?.branch && !t.branch.remote && !!t.branch.upstream;
 }
@@ -210,7 +204,12 @@ export function registerLogPaneActions(): () => void {
       icon: "star",
       when: VCS,
       hidden: true,
-      run: withBranch(toggleFavoriteBranch),
+      run: async ({ arg }) => {
+        const target = branchArg(arg);
+        if (!target?.branch) return;
+        if (target.repo) await focusRepo(target.repo);
+        toggleFavoriteBranch(target.branch, target.listed?.repo, target.listed?.branches);
+      },
     },
     {
       id: "vcs.log.branches.navigate",
