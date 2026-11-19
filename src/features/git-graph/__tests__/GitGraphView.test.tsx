@@ -22,6 +22,8 @@ const vcsMergeBase = vi.fn();
 const vcsDiffRevisions = vi.fn();
 const graphStashes = vi.fn();
 const graphWorkingState = vi.fn();
+const graphReflog = vi.fn();
+const graphAuthorStats = vi.fn();
 const popStash = vi.fn();
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -38,8 +40,8 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       vcsRemotes: () => Promise.resolve({ status: "ok", data: [] }),
       graphStashes: (repo: string) => graphStashes(repo),
       graphWorkingState: (repo: string) => graphWorkingState(repo),
-      graphAuthorStats: () =>
-        Promise.resolve({ status: "ok", data: [{ name: "Ann", email: "ann@example.com", commits: 3 }] }),
+      graphReflog: (repo: string) => graphReflog(repo),
+      graphAuthorStats: (repo: string) => graphAuthorStats(repo),
       graphBisectState: () =>
         Promise.resolve({ status: "ok", data: { active: false, current: null, culprit: null, output: "" } }),
     },
@@ -180,6 +182,10 @@ beforeEach(() => {
   vcsTags.mockImplementation(() => ok(["v1"]));
   vcsCommitFiles.mockImplementation(() => ok([{ path: "src/app.ts", kind: "modified", oldPath: null }]));
   graphStashes.mockImplementation(() => ok([]));
+  graphReflog.mockImplementation(() =>
+    ok([{ selector: "HEAD@{0}", id: "a".padEnd(40, "0"), action: "commit: subject a", timeMs: 1 }]),
+  );
+  graphAuthorStats.mockImplementation(() => ok([{ name: "Ann", email: "ann@example.com", commits: 3 }]));
   graphWorkingState.mockImplementation(() => ok({ staged: 0, unstaged: 0, untracked: 0, conflicted: 0 }));
   withdraw = provideGitGraphBridge(bridge);
   useGraphView.setState(initialGraphView());
@@ -362,6 +368,64 @@ describe("Git Graph pseudo rows and panels", () => {
     await screen.findByText("subject a");
     fireEvent.click(screen.getByRole("tab", { name: "Statistics" }));
     expect(await screen.findByText("Commits: 3, authors: 1")).toBeTruthy();
+  });
+
+  it("keeps Reflog and Statistics shown while a vcs refresh reloads them (#375)", async () => {
+    const refresh = () =>
+      act(async () => {
+        state = { ...state, version: state.version + 1 };
+        listeners.forEach((fn) => fn());
+      });
+    render(<GitGraphEditor />);
+    await screen.findByText("subject a");
+    for (const [tab, load, shown] of [
+      ["Statistics", graphAuthorStats, "Commits: 3, authors: 1"],
+      ["Reflog", graphReflog, "commit: subject a"],
+    ] as const) {
+      fireEvent.click(screen.getByRole("tab", { name: tab }));
+      const row = await screen.findByText(shown);
+      // The reload is still running: the list stays instead of a spinner.
+      let finish!: (v: unknown) => void;
+      const result = load.getMockImplementation()!();
+      load.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
+      await refresh();
+      expect(load).toHaveBeenCalledTimes(2);
+      expect(screen.getByText(shown)).toBe(row);
+      await act(async () => finish(await result));
+      expect(screen.getByText(shown)).toBe(row);
+    }
+    // A refresh that changed the result still updates the panel.
+    graphReflog.mockImplementation(() =>
+      ok([{ selector: "HEAD@{0}", id: "d".padEnd(40, "0"), action: "reset", timeMs: 2 }]),
+    );
+    await refresh();
+    expect(await screen.findByText("reset")).toBeTruthy();
+  });
+
+  it("does not lay the graph out again after a vcs refresh that changed nothing (#375)", async () => {
+    const layout = vi.spyOn(bridge, "layout");
+    try {
+      render(<GitGraphEditor />);
+      await screen.findByText("subject a");
+      const refresh = () =>
+        act(async () => {
+          state = { ...state, version: state.version + 1 };
+          listeners.forEach((fn) => fn());
+        });
+      await act(async () => {});
+      const before = layout.mock.calls.length;
+      await refresh();
+      await waitFor(() => expect(graphWorkingState).toHaveBeenCalledTimes(2));
+      await act(async () => {});
+      expect(layout).toHaveBeenCalledTimes(before);
+      // New uncommitted changes add their row.
+      graphWorkingState.mockImplementation(() => ok({ staged: 0, unstaged: 1, untracked: 0, conflicted: 0 }));
+      await refresh();
+      await screen.findByText("Uncommitted Changes");
+      expect(layout.mock.calls.length).toBeGreaterThan(before);
+    } finally {
+      layout.mockRestore();
+    }
   });
 
   it("filters the repository dropdown by typing and picks with Enter", async () => {

@@ -206,7 +206,10 @@ export interface GraphExtras {
 
 const NO_EXTRAS: GraphExtras = { stashes: [], working: null };
 
-/** Stashes and the working tree's changes; refreshed on every vcs refresh (both are cheap). */
+/**
+ * Stashes and the working tree's changes; refreshed on every vcs refresh (both are cheap). The
+ * same object when a refresh brought nothing new, so the graph is not laid out again.
+ */
 export function useGraphExtras(repo: string | null, version: number): GraphExtras {
   const [extras, setExtras] = useState<{ repo: string | null; value: GraphExtras }>({ repo: null, value: NO_EXTRAS });
   useEffect(() => {
@@ -216,7 +219,11 @@ export function useGraphExtras(repo: string | null, version: number): GraphExtra
       call(commands.graphStashes(repo)).catch((): GraphStash[] => []),
       call(commands.graphWorkingState(repo)).catch(() => null),
     ]).then(([stashes, working]) => {
-      if (live) setExtras({ repo, value: { stashes, working } });
+      if (!live) return;
+      const value = { stashes, working };
+      setExtras((prev) =>
+        prev.repo === repo && JSON.stringify(prev.value) === JSON.stringify(value) ? prev : { repo, value },
+      );
     });
     return () => {
       live = false;
