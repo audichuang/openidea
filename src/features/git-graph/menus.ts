@@ -167,7 +167,7 @@ export function commitExtras(
     {
       label: "Show Files at Revision",
       icon: "folder",
-      run: () => useGraphView.setState({ panel: "tree", treeRev: c.id }),
+      run: () => useGraphView.setState((s) => ({ panel: "tree", treeRev: { ...s.treeRev, [c.repo]: c.id } })),
     },
   ];
   if (bisectState?.active) {

@@ -216,7 +216,7 @@ describe("commit extras", () => {
 
   it("opens the file tree at the commit", async () => {
     await runLabel(commitExtras(newer, [newer], null), "Show Files at Revision");
-    expect(useGraphView.getState()).toMatchObject({ panel: "tree", treeRev: newer.id });
+    expect(useGraphView.getState()).toMatchObject({ panel: "tree", treeRev: { [newer.repo]: newer.id } });
   });
 
   it("starts a bisect with the newer commit bad and the older good", async () => {
