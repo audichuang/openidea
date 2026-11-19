@@ -504,6 +504,28 @@ describe("Git Graph PR view", () => {
     );
   });
 
+  it("keeps the embedded diff's input across a vcs refresh that changed nothing (#362)", async () => {
+    await openPr();
+    await screen.findByTestId("embedded-diff");
+    const inputs = () => showDiff.mock.calls.map(([p]) => p.input);
+    const before = inputs().at(-1);
+    const loads = vcsDiffRevisions.mock.calls.length;
+    await act(async () => {
+      state = { ...state, version: state.version + 1 };
+      listeners.forEach((fn) => fn());
+    });
+    await waitFor(() => expect(vcsDiffRevisions.mock.calls.length).toBeGreaterThan(loads));
+    await act(async () => {});
+    expect(new Set(inputs().slice(inputs().indexOf(before!)))).toEqual(new Set([before]));
+    // A refresh that changed the pull request still updates the diff.
+    vcsDiffRevisions.mockImplementation(() => ok([{ path: "src/app.ts", kind: "added", oldPath: null }]));
+    await act(async () => {
+      state = { ...state, version: state.version + 1 };
+      listeners.forEach((fn) => fn());
+    });
+    await waitFor(() => expect(inputs().at(-1)).not.toBe(before));
+  });
+
   it("copies the changed files from the merge base with ClipCode", async () => {
     await openPr();
     fireEvent.click(screen.getByRole("button", { name: "ClipCode: Copy Changed Files" }));
