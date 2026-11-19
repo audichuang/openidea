@@ -63,6 +63,7 @@ import {
 import { GitGraphEditor } from "../GitGraphView";
 import { findMatches, logBranches } from "../data";
 import { defaultPrRefs } from "../PrView";
+import { registerActions } from "@/platform/actions";
 import { useContributions } from "@/workbench/contributions";
 import { initialGraphView, useGraphView } from "../viewState";
 
@@ -385,6 +386,27 @@ describe("Git Graph pseudo rows and panels", () => {
     fireEvent.keyDown(search, { key: "Enter" });
     await waitFor(() => expect(useGraphView.getState().repo).toBe("/work/billing-web"));
     expect(screen.queryByRole("listbox", { name: "Repositories" })).toBeNull();
+  });
+
+  it("pulls and pushes the repository picked in the toolbar, not the primary one (#361)", async () => {
+    const roots = ["/work/app", "/work/lib"];
+    state = { ...state, roots, repo: roots[0]!, heads: { [roots[1]!]: state.heads[REPO]! } };
+    useGraphView.setState({ repo: roots[1]! });
+    const run = vi.fn();
+    const off = registerActions(
+      ["vcs.pull", "vcs.push"].map((id) => ({ id, title: id, run: ({ arg }: { arg?: unknown }) => run(id, arg) })),
+    );
+    try {
+      render(<GitGraphEditor />);
+      await screen.findByText("subject a");
+      fireEvent.click(screen.getByRole("button", { name: "Pull…" }));
+      fireEvent.click(screen.getByRole("button", { name: "Push…" }));
+      await waitFor(() => expect(run).toHaveBeenCalledTimes(2));
+      expect(run).toHaveBeenCalledWith("vcs.pull", { repo: "/work/lib" });
+      expect(run).toHaveBeenCalledWith("vcs.push", { repo: "/work/lib" });
+    } finally {
+      off();
+    }
   });
 });
 
