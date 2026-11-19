@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   upToDate: new Set<string>(),
   changes: vi.fn(),
   ask: vi.fn(),
+  secondRemote: "fork",
 }));
 
 vi.mock("@/workbench/messages", async (importOriginal) => ({
@@ -32,7 +33,8 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       ...real.commands,
       vcsBranchInfo: (repo: string) =>
         ok({ head: "feat-x", headCommit: "c1", upstream: "origin/feat-x", ahead: 1, behind: 0, operation: null, repo }),
-      vcsRemotes: (repo: string) => ok(repo === "/p/b" ? [remote("origin"), remote("fork")] : [remote("origin")]),
+      vcsRemotes: (repo: string) =>
+        ok(repo === "/p/b" ? [remote("origin"), remote(mocks.secondRemote)] : [remote("origin")]),
       vcsLog: (repo: string) =>
         ok(
           mocks.upToDate.has(repo)
@@ -82,6 +84,7 @@ beforeEach(() => {
   mocks.ops = [];
   mocks.failing = new Set();
   mocks.upToDate = new Set();
+  mocks.secondRemote = "fork";
   mocks.changes.mockReset();
   mocks.ask.mockReset();
   mocks.ask.mockResolvedValue({ button: "force", checked: false });
@@ -312,4 +315,47 @@ it("does not take the earlier project-wide silenced targets for any repository",
   localStorage.setItem(["openidea", "vcs", "silentForcePushTargets"].join("."), JSON.stringify(["origin/feat-x"]));
   await forcePushFrom("/p/a");
   expect(askedTargets()).toEqual(["origin/feat-x"]);
+});
+
+/** Repository b to branch `target` of `remote`, one of its two remotes. */
+async function retargetB(remote: string, target: string) {
+  fireEvent.click(screen.getByRole("button", { name: "Remote of b" }));
+  fireEvent.click(await screen.findByRole("option", { name: remote }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Target branch of b" }), { target: { value: target } });
+}
+
+it("keeps a silenced target apart from another remote and branch that read the same", async () => {
+  // `origin` + `team/feature` and `origin/team` + `feature` both read `origin/team/feature`.
+  mocks.secondRemote = "origin/team";
+  const forcePushB = async (remote: string, target: string) => {
+    const view = render(<VcsDialogHost />);
+    await act(() => showPushDialog({ repo: "/p/b" }));
+    await screen.findByRole("textbox", { name: "Target branch of b" });
+    await retargetB(remote, target);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Force (with lease)" }));
+    const before = mocks.ops.length;
+    fireEvent.click(screen.getByRole("button", { name: "Force Push" }));
+    await waitFor(() => expect(mocks.ops).toHaveLength(before + 1));
+    view.unmount();
+  };
+  mocks.ask.mockResolvedValue({ button: "force", checked: true });
+  await forcePushB("origin", "team/feature");
+  await forcePushB("origin", "team/feature");
+  expect(mocks.ask).toHaveBeenCalledTimes(1);
+
+  await forcePushB("origin/team", "feature");
+  expect(askedTargets()).toEqual(["origin/team/feature", "origin/team/feature"]);
+  expect(mocks.ops.at(-1)?.op).toMatchObject({ remote: "origin/team", target: "feature" });
+});
+
+it("confirms two repositories' targets one by one when only their joined names are the same", async () => {
+  mocks.secondRemote = "origin/team";
+  await openPushDialog();
+  check("c");
+  fireEvent.change(screen.getByRole("textbox", { name: "Target branch of a" }), { target: { value: "team/feature" } });
+  await retargetB("origin/team", "feature");
+  fireEvent.click(screen.getByRole("checkbox", { name: "Force (with lease)" }));
+  fireEvent.click(screen.getByRole("button", { name: "Force Push" }));
+  await waitFor(() => expect(mocks.ops).toHaveLength(2));
+  expect(askedTargets()).toEqual(["origin/team/feature", "origin/team/feature"]);
 });
