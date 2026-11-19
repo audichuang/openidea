@@ -311,6 +311,8 @@ export class UnalignedPanes implements DiffPanes {
     a: { top: null, left: null },
     b: { top: null, left: null },
   };
+  /** Where a passed-on wheel left a pane: past where the pane the wheel was over maps it. */
+  private readonly passed: Record<Side, number | null> = { a: null, b: null };
   private sync: boolean;
   private scrolling: Side | null = null;
   private scrollTimer: ReturnType<typeof setTimeout> | undefined;
@@ -518,27 +520,42 @@ export class UnalignedPanes implements DiffPanes {
    * A synchronized wheel over `side` that `side` cannot follow scrolls the other pane: otherwise
    * the end of the longer pane, such as lines deleted at the end of the file, is reachable only
    * with the pointer over that pane (#363). "also": `side` is at that end and the other pane
-   * scrolls; "instead": the other pane went past where `side` maps it and scrolls back first,
-   * so `side` must not move (it would pull the other pane back in one jump).
+   * scrolls; "instead": the other pane, which such a wheel took past where `side` maps it,
+   * scrolls back first, so `side` must not move (it would pull the other pane back in one jump).
+   * A pane that is elsewhere for another reason, such as lines only it has above the other's
+   * first one, does not hold the wheel back.
    */
   private passOn(side: Side, e: WheelEvent): "also" | "instead" | null {
     if (!this.mv || !this.sync || !e.deltaY) return null;
     const view = this.view(side);
     const el = view.scrollDOM;
-    const other = this.view(side === "a" ? "b" : "a").scrollDOM;
+    const to: Side = side === "a" ? "b" : "a";
+    const other = this.view(to).scrollDOM;
     const dy = e.deltaMode === 1 ? e.deltaY * view.defaultLineHeight : e.deltaY;
-    const mapped = this.followTop(side);
-    if (dy < 0 ? other.scrollTop > mapped + 1 : other.scrollTop < mapped - 1) {
+    const scroll = () => {
+      const before = other.scrollTop;
       other.scrollBy(0, dy);
-      return "instead";
+      if (other.scrollTop !== before) this.passed[to] = other.scrollTop;
+    };
+    if (this.passed[to] !== null) {
+      const mapped = this.followTop(side);
+      if (Math.abs(other.scrollTop - mapped) <= 1) this.passed[to] = null;
+      else if (dy < 0 ? other.scrollTop > mapped : other.scrollTop < mapped) {
+        scroll();
+        return "instead";
+      }
     }
     const stuck = dy > 0 ? el.scrollTop + el.clientHeight >= el.scrollHeight - 1 : el.scrollTop <= 0;
     if (!stuck) return null;
-    other.scrollBy(0, dy);
+    scroll();
     return "also";
   }
 
   private scrolled(side: Side) {
+    const el = this.view(side).scrollDOM;
+    // Scrolled by the user since the wheel that was passed on to it.
+    const left = this.passed[side];
+    if (left !== null && Math.abs(el.scrollTop - left) > 1) this.passed[side] = null;
     if (this.scrolling) {
       // A follower's delayed layout scroll must not pull back the navigation source.
       this.follow(this.scrolling);
@@ -546,7 +563,6 @@ export class UnalignedPanes implements DiffPanes {
       this.schedule();
       return;
     }
-    const el = this.view(side).scrollDOM;
     const moved = this.moved[side];
     const echo =
       (moved.top !== null || moved.left !== null) &&
@@ -588,6 +604,7 @@ export class UnalignedPanes implements DiffPanes {
     const el = this.view(to).scrollDOM;
     const top = this.followTop(from);
     const moved = this.moved[to];
+    this.passed[to] = null;
     if (Math.abs(el.scrollTop - top) >= 1) {
       const before = el.scrollTop;
       el.scrollTop = top;
