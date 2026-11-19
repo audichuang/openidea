@@ -1,10 +1,10 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 
-const { apply, list } = vi.hoisted(() => ({ apply: vi.fn(), list: vi.fn() }));
+const { apply, applyCommand, list } = vi.hoisted(() => ({ apply: vi.fn(), applyCommand: vi.fn(), list: vi.fn() }));
 vi.mock("@/platform/ipc", async (original) => {
   const real = await original<typeof import("@/platform/ipc")>();
-  return { ...real, commands: { ...real.commands, vcsStashes: list } };
+  return { ...real, commands: { ...real.commands, vcsStashes: list, vcsStashApply: applyCommand } };
 });
 vi.mock("../changeOps", async (original) => ({
   ...(await original<typeof import("../changeOps")>()),
@@ -13,7 +13,13 @@ vi.mock("../changeOps", async (original) => ({
 import { StashesPanel } from "../StashesPanel";
 import { useVcs } from "../store";
 
-const stash = (message: string, id = "s1") => ({ index: 0, message: `On main: ${message}`, timeMs: 0, id, base: "b" });
+const stash = (message: string, id = "s1", index = 0) => ({
+  index,
+  message: `On main: ${message}`,
+  timeMs: 0,
+  id,
+  base: "b",
+});
 const ok = (data: unknown) => ({ status: "ok", data });
 
 /** The next `vcsStashes` call stays pending until the returned function resolves it. */
@@ -25,6 +31,7 @@ function deferList() {
 
 beforeEach(() => {
   apply.mockReset();
+  applyCommand.mockReset().mockResolvedValue(ok(null));
   list.mockReset().mockResolvedValue(ok([stash("First")]));
   useVcs.setState({ root: "/p", roots: ["/p"], repo: "/p", version: 1 });
 });
@@ -60,4 +67,34 @@ it("shows the refreshed list once it arrives", async () => {
   deferList();
   act(() => useVcs.setState({ version: 4 }));
   expect(screen.getByText("No stashes")).toBeInTheDocument();
+});
+
+const select = (name: string) => fireEvent.mouseDown(screen.getByText(name).closest('[role="treeitem"]')!);
+
+it("applies the selected stash at the index a refresh moved it to", async () => {
+  const real = await vi.importActual<typeof import("../changeOps")>("../changeOps");
+  apply.mockImplementation(real.applyStash);
+  render(<StashesPanel />);
+  await screen.findByText("First");
+  select("First");
+  const finish = deferList();
+  act(() => useVcs.setState({ version: 2 }));
+  await finish([stash("Newer", "s2", 0), stash("First", "s1", 1)]);
+  list.mockResolvedValue(ok([]));
+  fireEvent.click(screen.getByRole("button", { name: "Apply Stash" }));
+  await vi.waitFor(() => expect(applyCommand).toHaveBeenCalledWith("/p", 1, false, false, null));
+});
+
+it("takes no actions once the selected stash is gone, until another is selected", async () => {
+  render(<StashesPanel />);
+  await screen.findByText("First");
+  select("First");
+  const finish = deferList();
+  act(() => useVcs.setState({ version: 2 }));
+  await finish([stash("Newer", "s2")]);
+  for (const name of ["Apply Stash", "Pop Stash (Apply and Drop)", "Drop Stash"])
+    expect(screen.getByRole("button", { name })).toBeDisabled();
+  select("Newer");
+  fireEvent.click(screen.getByRole("button", { name: "Apply Stash" }));
+  expect(apply).toHaveBeenCalledWith(0, false, "/p");
 });
