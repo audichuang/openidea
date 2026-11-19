@@ -11,6 +11,12 @@ import { ideaDiffConfig } from "./diffOptions";
 
 export type MergePane = "ours" | "result" | "theirs";
 const PANES: readonly MergePane[] = ["ours", "result", "theirs"];
+/** The panes a wheel over a pane is passed on to, first choice first: the result lines up with both sides. */
+const RECEIVERS: Record<MergePane, readonly MergePane[]> = {
+  ours: ["result", "theirs"],
+  result: ["ours", "theirs"],
+  theirs: ["result", "ours"],
+};
 
 /**
  * Scroll positions a pane was moved to by another one. A pane's scroll event arrives a
@@ -72,18 +78,20 @@ export function syncMergeScroll(views: Record<MergePane, EditorView>): () => voi
   };
 
   const echoes = new ScrollEchoes<MergePane>();
-  /** Scrolls the other panes to match `from`, anchored a third down the pane. */
-  const follow = (from: MergePane) => {
+  /** Where `to` scrolls to match `from`, anchored a third down the pane. */
+  const followTop = (from: MergePane, to: MergePane) => {
     const master = views[from];
     const anchor = master.scrollDOM.clientHeight / 3;
     const at = master.scrollDOM.scrollTop + anchor - docOffset(master);
+    const el = views[to].scrollDOM;
+    return Math.max(0, Math.min(map(from, to, at) + docOffset(views[to]) - anchor, el.scrollHeight - el.clientHeight));
+  };
+  /** Scrolls the other panes to match `from`. */
+  const follow = (from: MergePane) => {
     for (const to of PANES) {
       if (to === from) continue;
       const el = views[to].scrollDOM;
-      const top = Math.max(
-        0,
-        Math.min(map(from, to, at) + docOffset(views[to]) - anchor, el.scrollHeight - el.clientHeight),
-      );
+      const top = followTop(from, to);
       if (Math.abs(el.scrollTop - top) < 1) continue;
       const before = el.scrollTop;
       el.scrollTop = top;
@@ -91,13 +99,51 @@ export function syncMergeScroll(views: Record<MergePane, EditorView>): () => voi
     }
   };
 
+  const atEnd = (el: HTMLElement, dy: number) =>
+    dy > 0 ? el.scrollTop + el.clientHeight >= el.scrollHeight - 1 : el.scrollTop <= 0;
+  /**
+   * A wheel over `side` that `side` cannot follow scrolls another pane, as in the two-pane diff
+   * (`UnalignedPanes.passOn`): otherwise the end of a longer pane is reachable only with the
+   * pointer over that pane. One pane takes the wheel and the others follow it, so two of them
+   * never pull at each other. "also": `side` is at its end and the first pane that can still
+   * scroll does; "instead": a pane went past where `side` maps it and scrolls back first, so
+   * `side` must not move (it would pull that pane back in one jump).
+   */
+  const passOn = (side: MergePane, e: WheelEvent): "also" | "instead" | null => {
+    if (!e.deltaY) return null;
+    const view = views[side];
+    const dy = e.deltaMode === 1 ? e.deltaY * view.defaultLineHeight : e.deltaY;
+    const others = RECEIVERS[side];
+    const past = others.find((to) => {
+      const top = views[to].scrollDOM.scrollTop;
+      const mapped = followTop(side, to);
+      return dy < 0 ? top > mapped + 1 : top < mapped - 1;
+    });
+    if (past) {
+      views[past].scrollDOM.scrollBy(0, dy);
+      return "instead";
+    }
+    if (!atEnd(view.scrollDOM, dy)) return null;
+    const next = others.find((to) => !atEnd(views[to].scrollDOM, dy));
+    if (!next) return null;
+    views[next].scrollDOM.scrollBy(0, dy);
+    return "also";
+  };
+
   const offs = PANES.map((pane) => {
     const el = views[pane].scrollDOM;
     const onScroll = () => {
       if (!echoes.take(pane, el.scrollTop)) follow(pane);
     };
+    const onWheel = (e: WheelEvent) => {
+      if (passOn(pane, e) === "instead") e.preventDefault();
+    };
     el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      el.removeEventListener("wheel", onWheel);
+    };
   });
   return () => offs.forEach((off) => off());
 }
