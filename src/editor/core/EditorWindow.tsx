@@ -55,7 +55,8 @@ async function settleUnsaved(models: DocModel[], project: string | null): Promis
   let dirty = models.filter((model) => model.getMeta().dirty);
   if (dirty.length === 0) return true;
   if (useProject.getState().settings?.files?.autoSave !== false) {
-    await Promise.all(dirty.map((model) => model.save("auto")));
+    // A failed write leaves its model dirty like a refused one; both are asked about below.
+    await Promise.allSettled(dirty.map((model) => model.save("auto")));
     // A file changed on disk keeps the external change (#291): ask about the edits left unsaved.
     dirty = dirty.filter((model) => model.getMeta().dirty);
     if (dirty.length === 0) return true;
@@ -70,14 +71,19 @@ async function settleUnsaved(models: DocModel[], project: string | null): Promis
     icon: "warning",
   });
   if (answer.button === "save") {
-    await Promise.all(dirty.map((model) => model.save("explicit")));
+    const results = await Promise.allSettled(dirty.map((model) => model.save("explicit")));
     if (!dirty.some((model) => model.getMeta().dirty)) return true;
     // This window shows no notifications: say why it stays open, and still offer to discard.
+    const failed = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
     const kept = await ask({
       title: t("app.unsaved.title"),
-      body: tx(
-        "Some files changed on disk and were not saved. Save them from their editors or reload them, then close again.",
-      ),
+      body: failed
+        ? failed.reason instanceof Error
+          ? failed.reason.message
+          : String(failed.reason)
+        : tx(
+            "Some files changed on disk and were not saved. Save them from their editors or reload them, then close again.",
+          ),
       buttons: [
         { id: "discard", label: t("app.unsaved.discard") },
         { id: "cancel", label: t("common.cancel"), primary: true },
