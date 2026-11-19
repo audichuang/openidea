@@ -54,6 +54,8 @@ export function branchMenu(
   selected: readonly { repo?: string; branch?: Branch }[] = [],
   /** The branch's repository when it is not the selected one (its favorites are its own). */
   repo?: string,
+  /** That repository's branches, when it is not the selected one. */
+  branches?: readonly Branch[],
 ): MenuItem[] {
   const run = (fn: () => unknown) => () => {
     done();
@@ -64,7 +66,7 @@ export function branchMenu(
   const favoriteItem: MenuItem = {
     label: favorite ? "Remove from Favorites" : "Add to Favorites",
     icon: "star",
-    run: run(() => toggleFavoriteBranch(b, repo)),
+    run: run(() => toggleFavoriteBranch(b, repo, branches)),
   };
   const history: MenuItem = {
     label: "Show History",

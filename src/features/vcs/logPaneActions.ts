@@ -62,6 +62,8 @@ export interface BranchTarget {
   ref: string;
   repo?: string;
   branch?: Branch;
+  /** A pane listing one repository: that repository and its branches, which the branch's favorites belong to. */
+  listed?: { repo: string; branches: readonly Branch[] };
 }
 
 /** The Branches pane's selected refs (what its toolbar acts on without an argument). */
@@ -162,7 +164,12 @@ export function registerLogPaneActions(): () => void {
       icon: "star",
       when: VCS,
       hidden: true,
-      run: withBranch(toggleFavoriteBranch),
+      run: async ({ arg }) => {
+        const target = branchArg(arg);
+        if (!target?.branch) return;
+        if (target.repo) await focusRepo(target.repo);
+        toggleFavoriteBranch(target.branch, target.listed?.repo, target.listed?.branches);
+      },
     },
     {
       id: "vcs.log.branches.navigate",
