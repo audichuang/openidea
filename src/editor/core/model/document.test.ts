@@ -534,7 +534,8 @@ describe("DocumentManager + slots", () => {
       expect(backend.autosave).toHaveBeenCalledTimes(1);
       expect(save).not.toHaveBeenCalled();
       expect(model.getMeta().dirty).toBe(true);
-      await model.save("explicit");
+      // In the fork only Save of this very document overwrites the external change (#291).
+      await model.save("explicit", { overwrite: true });
       expect(save).toHaveBeenCalledTimes(1);
       expect(model.getMeta().dirty).toBe(false);
     } finally {
