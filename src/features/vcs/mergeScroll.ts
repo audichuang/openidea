@@ -78,8 +78,11 @@ export function syncMergeScroll(views: Record<MergePane, EditorView>): () => voi
   };
 
   const echoes = new ScrollEchoes<MergePane>();
-  /** Where a passed-on wheel left a pane: past where the pane the wheel was over maps it. */
-  const passed = new Map<MergePane, number>();
+  /**
+   * Where a passed-on wheel left a pane: past where `from`, the pane the wheel was over, maps it,
+   * in the wheel's direction `dir`. Only a wheel over `from` the other way takes that back.
+   */
+  const passed = new Map<MergePane, { from: MergePane; dir: number; top: number }>();
   /** Where `to` scrolls to match `from`, anchored a third down the pane. */
   const followTop = (from: MergePane, to: MergePane) => {
     const master = views[from];
@@ -108,9 +111,10 @@ export function syncMergeScroll(views: Record<MergePane, EditorView>): () => voi
    * A wheel over `side` that `side` cannot follow scrolls another pane, as in the two-pane diff
    * (`UnalignedPanes.passOn`): otherwise the end of a longer pane is reachable only with the
    * pointer over that pane. "also": `side` is at its end and a pane that can still scroll does;
-   * "instead": a pane such a wheel took past where `side` maps it scrolls back first, so `side`
-   * must not move (it would pull that pane back in one jump). A pane that is elsewhere for another
-   * reason, such as lines only it has above the others' first one, does not hold the wheel back.
+   * "instead": a pane such a wheel over `side` took past where `side` maps it scrolls back first,
+   * up to that position, when the wheel turns round, so `side` must not move (it would pull that
+   * pane back in one jump). A pane that is elsewhere for another reason, such as a wheel passed on
+   * from another pane or lines only it has above the others' first one, does not hold the wheel back.
    *
    * Over a side, one pane takes the wheel (the result first) and the others follow it. Over the
    * result, both sides take it and neither follows the other: a side past the result's end maps
@@ -121,25 +125,29 @@ export function syncMergeScroll(views: Record<MergePane, EditorView>): () => voi
     const view = views[side];
     const dy = e.deltaMode === 1 ? e.deltaY * view.defaultLineHeight : e.deltaY;
     const apart = side === "result";
-    const scroll = (panes: readonly MergePane[]) => {
+    const dir = Math.sign(dy);
+    /** Scrolls `panes` by the wheel, or back by no more than the `back` left to where `side` maps them. */
+    const scroll = (panes: readonly MergePane[], back?: Map<MergePane, number>) => {
       for (const to of apart ? panes : panes.slice(0, 1)) {
         const el = views[to].scrollDOM;
         const before = el.scrollTop;
-        el.scrollBy(0, dy);
+        const left = back?.get(to);
+        el.scrollBy(0, left === undefined ? dy : dir * Math.min(Math.abs(dy), Math.abs(left)));
         if (el.scrollTop === before) continue;
-        passed.set(to, el.scrollTop);
+        passed.set(to, { from: side, dir: back ? -dir : dir, top: el.scrollTop });
         if (apart) echoes.mark(to, el.scrollTop);
       }
     };
-    const past = RECEIVERS[side].filter((to) => {
-      if (!passed.has(to)) return false;
-      const top = views[to].scrollDOM.scrollTop;
-      const mapped = followTop(side, to);
-      if (Math.abs(top - mapped) <= 1) passed.delete(to);
-      return dy < 0 ? top > mapped + 1 : top < mapped - 1;
-    });
-    if (past.length) {
-      scroll(past);
+    const back = new Map<MergePane, number>();
+    for (const to of RECEIVERS[side]) {
+      const was = passed.get(to);
+      if (was?.from !== side) continue;
+      const left = followTop(side, to) - views[to].scrollDOM.scrollTop;
+      if (Math.abs(left) <= 1) passed.delete(to);
+      else if (was.dir !== dir && Math.sign(left) === dir) back.set(to, left);
+    }
+    if (back.size) {
+      scroll([...back.keys()], back);
       return "instead";
     }
     if (!atEnd(view.scrollDOM, dy)) return null;
@@ -154,7 +162,7 @@ export function syncMergeScroll(views: Record<MergePane, EditorView>): () => voi
     const onScroll = () => {
       // Scrolled by the user since the wheel that was passed on to it.
       const left = passed.get(pane);
-      if (left !== undefined && Math.abs(el.scrollTop - left) > 1) passed.delete(pane);
+      if (left !== undefined && Math.abs(el.scrollTop - left.top) > 1) passed.delete(pane);
       if (!echoes.take(pane, el.scrollTop)) follow(pane);
     };
     const onWheel = (e: WheelEvent) => {
