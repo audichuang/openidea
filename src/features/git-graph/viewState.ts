@@ -4,7 +4,8 @@ import { create } from "zustand";
 export interface GraphViewState {
   /** Chosen repository; null: the vcs feature's selected one. */
   repo: string | null;
-  branchFilter: string[];
+  /** Branches shown, per repository root (another repository has other branches); absent: every branch. */
+  branchFilter: Record<string, string[]>;
   showRemotes: boolean;
   /** Selected commit ids and the repository they belong to. */
   selection: { repo: string | null; ids: string[] };
@@ -12,8 +13,8 @@ export interface GraphViewState {
   matchIndex: number;
   /** The bottom pane's tab. */
   panel: GraphPanel;
-  /** Revision the File Tree tab lists; null: the selected commit. */
-  treeRev: string | null;
+  /** Revision the File Tree tab lists, per repository root; absent or null: the selected commit. */
+  treeRev: Record<string, string | null>;
   /** The commit graph or the pull request preview below the toolbar. */
   mode: GraphMode;
   /** The PR view's choices per repository root, so another repository's refs never leak in. */
@@ -36,18 +37,24 @@ export type GraphPanel = "details" | "tree" | "reflog" | "stats";
 
 export const initialGraphView = (): GraphViewState => ({
   repo: null,
-  branchFilter: [],
+  branchFilter: {},
   showRemotes: true,
   selection: { repo: null, ids: [] },
   query: "",
   matchIndex: 0,
   panel: "details",
-  treeRev: null,
+  treeRev: {},
   mode: "graph",
   pr: {},
 });
 
 export const useGraphView = create<GraphViewState>(initialGraphView);
+
+const NO_BRANCH_FILTER: string[] = [];
+
+/** `repo`'s branch filter; the same array while it is unset. */
+export const branchFilterOf = (s: GraphViewState, repo: string | null): string[] =>
+  (repo && s.branchFilter[repo]) || NO_BRANCH_FILTER;
 
 const NO_PR_CHOICE: PrChoice = { base: null, head: null, tab: "files", file: null };
 
