@@ -145,14 +145,14 @@ export function compareExtras(branch: Branch, repo: string, current: string | nu
   ];
 }
 
-/** Entries for the uncommitted-changes row. */
-export function workingMenu(): MenuItem[] {
+/** Entries for the uncommitted-changes row of `repo`; Stash and Rollback act on that repository. */
+export function workingMenu(repo: string): MenuItem[] {
   return [
     { kind: "action", action: "vcs.commit" },
-    { kind: "action", action: "vcs.stash" },
+    { label: "Stash Changes…", icon: "stash", run: () => gitGraphBridge()?.stashChanges(repo) },
     { kind: "action", action: "vcs.shelve" },
     { kind: "separator" },
-    { kind: "action", action: "vcs.rollback" },
+    { label: "Rollback…", icon: "undo", run: () => gitGraphBridge()?.rollback(repo) },
   ];
 }
 
