@@ -48,6 +48,11 @@ describe("Find in Files module and custom scopes", () => {
       path: "/p/web",
     });
     expect(resolveFindScope({ ...base, scopeTab: "module", module: "" }, inputs)).toEqual({ kind: "project" });
+    // A root that ends in a slash (`/`, `C:/`) gives no doubled separator.
+    expect(resolveFindScope({ ...base, scopeTab: "module", module: "web" }, { ...inputs, root: "C:/" })).toEqual({
+      kind: "directory",
+      path: "C:/web",
+    });
     // A Windows workspace member is a drive-letter path, not one under the first project (#4069).
     const windows = { ...inputs, root: "C:/tmp/alpha" };
     expect(resolveFindScope({ ...base, scopeTab: "module", module: "C:/tmp/beta" }, windows)).toEqual({

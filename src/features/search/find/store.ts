@@ -243,7 +243,10 @@ export function resolveFindScope(o: FindOptions, inputs: ScopeInputs): SearchSco
     return o.module && root
       ? {
           kind: "directory",
-          path: o.module.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(o.module) ? o.module : `${root}/${o.module}`,
+          path:
+            o.module.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(o.module)
+              ? o.module
+              : `${root.replace(/\/$/, "")}/${o.module}`,
         }
       : { kind: "project" };
   if (o.scopeTab !== "scope") return { kind: "project" };
