@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import type { BranchInfo, LineHunk } from "@/bindings";
@@ -83,6 +83,7 @@ import { clearPullRequests, setPullRequestData } from "../data/pullRequest";
 import {
   connectedRepoHead,
   trackConnectedUpstream,
+  useConnectedRepoHead,
   useConnectedUpstream,
   useGhRepository,
   type GHRemote,
@@ -543,6 +544,13 @@ describe("a connected repository other than the one selected in the VCS widgets"
       branchInfos["/b"] = { ...branchOfB, upstream: null };
       act(() => useVcs.setState((s) => ({ version: s.version + 1 })));
       await waitFor(() => expect(checkedOut()).toBe(false));
+    });
+
+    it("shows a component the upstream once it is read", async () => {
+      const { result } = renderHook(() => useConnectedRepoHead());
+      expect(result.current).toMatchObject({ head: "local-review", upstream: null });
+      deactivate = trackConnectedUpstream();
+      await waitFor(() => expect(result.current?.upstream).toBe("origin/feature"));
     });
 
     it("looks the pull request up again when that upstream changes", async () => {
