@@ -215,6 +215,14 @@ describe("git graph bridge", () => {
     expect(rows.flatMap((r) => r.up).filter((s) => s.arrow === "up")).toHaveLength(1);
   });
 
+  it("points each arrow at the row at its edge's other end", () => {
+    const commits = longSide("base");
+    const rows = bridge().present(bridge().layout(commits).rows);
+    // The side commit "s" (row 0) and its parent "base" (the last row).
+    expect(rows.flatMap((r) => r.down).find((s) => s.arrow === "down")?.targetRow).toBe(commits.length - 1);
+    expect(rows.flatMap((r) => r.up).find((s) => s.arrow === "up")?.targetRow).toBe(0);
+  });
+
   it("drops the stubs of lanes still open after the last loaded row", () => {
     const rows = bridge().present(bridge().layout(longSide(null)).rows);
     // The side lane leaves with a down arrow and never comes back: no stub on the last rows.
