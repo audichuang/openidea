@@ -30,6 +30,16 @@ export interface GraphLaneSegment {
   to: number;
   color: number;
   dashed?: true;
+  /** The edge continues out of sight this way: its long straight middle is hidden. */
+  arrow?: "up" | "down";
+  /**
+   * With `arrow`: the row at the edge's other end (its index in the laid-out list); at or past the
+   * list's end (or -1) when that row is not loaded.
+   */
+  targetRow?: number;
+  /** Drawn lane positions when they differ from `from` / `to` (a lane change drawn as one diagonal). */
+  fromX?: number;
+  toX?: number;
 }
 
 export interface GraphRefLabel {
@@ -91,6 +101,20 @@ export interface GitGraphBridge {
     commits: readonly { id: string; parents: readonly string[]; dashed?: readonly boolean[] }[],
     state?: GraphLayoutState,
   ): { rows: GraphLaneRow[]; state: GraphLayoutState };
+  /**
+   * The Git Log's default presentation of `layout`'s rows for the whole list: long straight
+   * edges hidden behind arrows, lanes packed, lane changes drawn as diagonals. Same row count.
+   */
+  present(rows: readonly GraphLaneRow[]): GraphLaneRow[];
+  /**
+   * A function returning `present(layout(commits).rows)`. A call whose `commits` start with the
+   * previous call's (a page appended) reuses that work: its cost follows the new commits, not the
+   * whole list. One per view. Pass plain `{ id, parents, dashed }` objects: a commit carrying
+   * `refs` (a `GraphCommit`) changes the layout and breaks the reuse.
+   */
+  presenter(): (
+    commits: readonly { id: string; parents: readonly string[]; dashed?: readonly boolean[] }[],
+  ) => GraphLaneRow[];
   laneColor(color: number): string;
   /** `root`'s colour among `roots`, as the Git tool window shows it; null with a single repository. */
   repoColor(root: string, roots: readonly string[]): string | null;

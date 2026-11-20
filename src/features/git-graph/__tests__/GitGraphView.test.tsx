@@ -62,6 +62,7 @@ import {
   type GitGraphRepoState,
   type GraphBranchFilterProps,
   type GraphDiffNavigation,
+  type GraphLaneRow,
   type GraphRevisionSide,
 } from "@/workbench/gitGraphBridge";
 import { GitGraphEditor } from "../GitGraphView";
@@ -110,6 +111,12 @@ const bridge = {
     rows: commits.map(() => ({ lane: 0, color: 0, up: [], down: [], width: 1 })),
     state: { _layout: null },
   }),
+  present: <T,>(rows: readonly T[]) => [...rows],
+  // Through `layout`, which tests spy on to count layouts.
+  presenter:
+    () =>
+    (commits: readonly { id: string }[]): GraphLaneRow[] =>
+      bridge.layout(commits).rows,
   laneColor: () => "var(--accent)",
   repoColor: () => null,
   refLabels: (refs: readonly string[]) =>
@@ -251,6 +258,26 @@ describe("Git Graph view", () => {
     await screen.findByText("subject a");
     expect(rowOf("subject b").getAttribute("aria-selected")).toBe("true");
     expect(await screen.findByText("body b")).toBeTruthy();
+  });
+
+  it("re-renders neither the toolbar nor the graph cells when the selection changes", async () => {
+    // The toolbar paints the repository swatch (shown with two roots) and every graph cell its lane colours on each render.
+    state = { ...state, roots: [REPO, "/other"] };
+    const repoColor = vi.spyOn(bridge, "repoColor");
+    const laneColor = vi.spyOn(bridge, "laneColor");
+    render(<GitGraphEditor />);
+    await screen.findByText("subject a");
+    fireEvent.click(rowOf("subject a"));
+    expect(await screen.findByText("body a")).toBeTruthy();
+    expect(repoColor).toHaveBeenCalled();
+    expect(laneColor).toHaveBeenCalled();
+    repoColor.mockClear();
+    laneColor.mockClear();
+    fireEvent.click(rowOf("subject b"));
+    expect(await screen.findByText("body b")).toBeTruthy();
+    expect(rowOf("subject b").getAttribute("aria-selected")).toBe("true");
+    expect(repoColor).not.toHaveBeenCalled();
+    expect(laneColor).not.toHaveBeenCalled();
   });
 
   it("opens the commit menu for the selection", async () => {
