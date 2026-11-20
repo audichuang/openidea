@@ -190,6 +190,11 @@ describe("Git Graph arrows", () => {
     expect(onSelect).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps arrows out of the Tab order, so Tab leaves the list in one step", () => {
+    mount({ rows: arrowRows(N) });
+    expect(arrowIn(2)!.getAttribute("tabindex")).toBe("-1");
+  });
+
   it("leaves an arrow to a row not loaded yet inert until that row loads", () => {
     const onSelect = vi.fn();
     const shorter = entries.slice(0, N - 10);
