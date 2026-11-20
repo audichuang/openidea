@@ -10,7 +10,15 @@ import { EmptyState, IconButton, showContextMenu, Spinner, T } from "@/ui";
 import { gitGraphBridge, type GraphCommit } from "@/workbench/gitGraphBridge";
 import { refClass } from "./CommitList";
 import { changeCount, type GraphEntry } from "./entries";
-import { ReflogPanel, StatsPanel, TreePanel, usePaneRows, useSelectionLoad } from "./panels";
+import {
+  paneListMove,
+  ReflogPanel,
+  StatsPanel,
+  TreePanel,
+  usePaneRows,
+  usePaneListPointer,
+  useSelectionLoad,
+} from "./panels";
 import type { GraphPanel } from "./viewState";
 import styles from "./GitGraph.module.css";
 
@@ -153,9 +161,12 @@ export function CommitDetails({
     current,
     loadedKey,
   } = useSelectionLoad<ChangedFile[]>(commitKey, () => call(commands.vcsCommitFiles(one!.repo, one!.id)), []);
-  const { scrollRef, rows, height } = usePaneRows(files?.length ?? 0, loadedKey);
+  const { scrollRef, rows, height, scrollToIndex } = usePaneRows(files?.length ?? 0, loadedKey);
   const active = activeFile.key === commitKey ? activeFile.index : -1;
   const setActive = (index: number) => setActiveFile({ key: commitKey, index });
+  const pointer = usePaneListPointer(current ? loadedKey : null, () => {
+    if (current && active < 0 && files?.length) setActive(0);
+  });
 
   if (!commits.length) return <EmptyState title="Select a commit" className={styles.empty} />;
   if (!one)
@@ -257,11 +268,26 @@ export function CommitDetails({
         role="list"
         aria-label={tx("Changed Files")}
         aria-busy={(files !== null && !current) || undefined}
+        tabIndex={0}
+        {...pointer.handlers}
+        onKeyDown={(e) => {
+          if (!current || !files) return;
+          if (e.key === "Enter") {
+            if (active >= 0) void bridge?.openDiff(one, files, active);
+            return;
+          }
+          const next = paneListMove(e.key, files.length, active);
+          if (next === null) return;
+          e.preventDefault();
+          setActive(next);
+          scrollToIndex(next);
+        }}
       >
         {files === null ? (
           <Spinner size={14} />
         ) : (
-          <div role="presentation" className={styles.virtualRows} style={{ height }}>
+          // Keyed by commit so its rows are new nodes: a press on the old ones can't click these.
+          <div key={loadedKey} role="presentation" className={styles.virtualRows} style={{ height }} inert={!current}>
             {rows.map((v) => {
               const f = files[v.index]!;
               const i = v.index;
@@ -271,7 +297,6 @@ export function CommitDetails({
                   role="listitem"
                   aria-setsize={files.length}
                   aria-posinset={i + 1}
-                  tabIndex={0}
                   className={clsx(styles.file, styles.virtualRow, i === active && styles.selected)}
                   style={{ transform: `translateY(${v.start}px)` }}
                   onClick={() => {
@@ -279,10 +304,7 @@ export function CommitDetails({
                     setActive(i);
                     void bridge?.openDiff(one, files, i, true);
                   }}
-                  onDoubleClick={() => current && void bridge?.openDiff(one, files, i)}
-                  onKeyDown={(e) => {
-                    if (current && e.key === "Enter") void bridge?.openDiff(one, files, i);
-                  }}
+                  onDoubleClick={() => pointer.doubleClickFresh() && void bridge?.openDiff(one, files, i)}
                   onContextMenu={(e) => void fileMenu(e, i)}
                   title={f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}
                 >
