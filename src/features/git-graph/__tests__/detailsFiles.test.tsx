@@ -134,6 +134,17 @@ describe("Git Graph changed files", () => {
     expect(vcsCommitFiles).toHaveBeenLastCalledWith(REPO, commit("e").id);
   });
 
+  it("loads at once when the selection was idle", async () => {
+    vcsCommitFiles.mockImplementation(() => Promise.resolve({ status: "ok", data: filesOf("x", 1) }));
+    const view = render(details(commit("a")));
+    await flush();
+    await flush(SELECTION_DELAY * 3);
+    view.rerender(details(commit("b")));
+    await flush();
+    expect(vcsCommitFiles).toHaveBeenCalledTimes(2);
+    expect(vcsCommitFiles).toHaveBeenLastCalledWith(REPO, commit("b").id);
+  });
+
   it("ignores a response for a selection that is no longer current", async () => {
     const pending = new Map<string, ReturnType<typeof deferred<unknown>>>();
     vcsCommitFiles.mockImplementation((_repo: string, id: string) => {
