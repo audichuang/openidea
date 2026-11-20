@@ -64,6 +64,7 @@ const bridge = {
 // One object per prop, as the editor passes them, so only the prop a step changes differs.
 const base: CommitListProps = {
   entries,
+  generation: 1,
   rows,
   width: 2,
   done: true,
