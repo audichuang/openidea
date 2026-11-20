@@ -47,6 +47,8 @@ export const ROW = 24;
 
 export interface CommitListProps {
   entries: GraphEntry[];
+  /** Changes when `entries` is replaced rather than extended (`GraphData.generation`). */
+  generation: number;
   rows: GraphLaneRow[];
   width: number;
   done: boolean;
@@ -101,17 +103,18 @@ export function CommitList(p: CommitListProps) {
   const indexOf = useMemo(() => new Map(p.entries.map((e, i) => [e.id, i])), [p.entries]);
   const selectedSet = useMemo(() => new Set(p.selected), [p.selected]);
   const matchSet = useMemo(() => new Set(p.matches), [p.matches]);
-  // Reveal a selection once, when it is set; a page append or refresh must not scroll back to it.
-  // A selection whose row has not loaded yet is revealed when the row appears.
-  const revealed = useRef<string[] | null>(null);
+  // Reveal a selection once, when it is set or the list is replaced; a page append or refresh must not
+  // scroll back to it. A selection whose row has not loaded yet is revealed when the row appears.
+  const revealed = useRef<{ selected: string[]; generation: number } | null>(null);
   useEffect(() => {
-    if (revealed.current === p.selected) return;
+    const done = revealed.current;
+    if (done && done.selected === p.selected && done.generation === p.generation) return;
     const id = p.selected[p.selected.length - 1];
     const i = id ? indexOf.get(id) : undefined;
     if (id && i === undefined) return;
-    revealed.current = p.selected;
+    revealed.current = { selected: p.selected, generation: p.generation };
     if (i !== undefined) virtualizer.scrollToIndex(i, { align: "auto" });
-  }, [p.selected, indexOf]);
+  }, [p.selected, p.generation, indexOf]);
 
   // Input handlers and drops read the latest props through this, so they never change identity.
   const latest = useRef({ p, selectedSet, indexOf });
