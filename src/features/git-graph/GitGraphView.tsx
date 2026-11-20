@@ -1,18 +1,19 @@
 /** The Git Graph editor tab: toolbar, the graph of every branch with stashes and uncommitted changes, and the bottom pane. */
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import type { GraphBisectState, Remote } from "@/bindings";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { EmptyState, SplitGroup, SplitHandle, SplitPanel } from "@/ui";
 import { gitGraphBridge } from "@/workbench/gitGraphBridge";
-import { CommitList } from "./CommitList";
+import { CommitList, type CommitListProps } from "./CommitList";
 import { findMatches, useGraphData, useGraphExtras, useRepoState, type GraphFilters } from "./data";
 import { BottomPane } from "./Details";
-import { buildEntries, layoutInput, selectedEntries } from "./entries";
+import { buildEntries, layoutInput, selectedEntries, type GraphEntry } from "./entries";
 import { BisectBanner } from "./panels";
 import { PrView } from "./PrView";
 import { Toolbar } from "./Toolbar";
-import { branchFilterOf, useGraphView } from "./viewState";
+import { branchFilterOf, useGraphView, type GraphPanel } from "./viewState";
 import styles from "./GitGraph.module.css";
 
 /** Remotes and the bisect state of `repo`, refreshed with the vcs state. */
@@ -37,9 +38,61 @@ function useRepoExtras(repo: string | null, version: number) {
   return { ...current, setBisect: (bisect: GraphBisectState) => setValue({ ...current, bisect }) };
 }
 
+const NO_IDS: string[] = [];
+
+/** The selected ids in `repo`: read here, not in the editor, so a selection re-renders only the list and the pane. */
+const useSelection = (repo: string) => useGraphView((s) => (s.selection.repo === repo ? s.selection.ids : NO_IDS));
+
+function GraphList(p: Omit<CommitListProps, "selected" | "onSelect">) {
+  const selected = useSelection(p.repo);
+  const { repo } = p;
+  const onSelect = useCallback((ids: string[]) => useGraphView.setState({ selection: { repo, ids } }), [repo]);
+  return <CommitList {...p} selected={selected} onSelect={onSelect} />;
+}
+
+function GraphBottomPane(p: {
+  entries: GraphEntry[];
+  repo: string;
+  version: number;
+  onJump: (id: string) => void;
+  remoteBranches: ReadonlySet<string>;
+}) {
+  const selected = useSelection(p.repo);
+  const panel = useGraphView((s) => s.panel);
+  const treeRev = useGraphView((s) => s.treeRev[p.repo] ?? null);
+  const { repo } = p;
+  const onPanel = (panel: GraphPanel) =>
+    useGraphView.setState((s) => ({
+      panel,
+      ...(panel === "tree" ? { treeRev: { ...s.treeRev, [repo]: null } } : {}),
+    }));
+  return (
+    <BottomPane
+      panel={panel}
+      onPanel={onPanel}
+      entries={selectedEntries(p.entries, selected)}
+      repo={repo}
+      version={p.version}
+      treeRev={treeRev}
+      onJump={p.onJump}
+      remoteBranches={p.remoteBranches}
+    />
+  );
+}
+
 export function GitGraphEditor() {
   const repoState = useRepoState();
-  const view = useGraphView();
+  // Everything but the selection and the bottom pane's state, which `GraphList` and `GraphBottomPane` read.
+  const view = useGraphView(
+    useShallow((s) => ({
+      repo: s.repo,
+      branchFilter: s.branchFilter,
+      showRemotes: s.showRemotes,
+      query: s.query,
+      matchIndex: s.matchIndex,
+      mode: s.mode,
+    })),
+  );
   const set = useGraphView.setState;
   const activeRepo =
     view.repo && repoState.roots.includes(view.repo) ? view.repo : (repoState.repo ?? repoState.roots[0] ?? null);
@@ -62,7 +115,7 @@ export function GitGraphEditor() {
   // Keeps the last layout: a loaded page lays out and presents only the new rows.
   const present = useMemo(() => bridge?.presenter(), [bridge]);
   const rows = useMemo(() => present?.(layoutInput(entries)) ?? [], [present, entries]);
-  const width = rows.reduce((m, r) => Math.max(m, r.width), 1);
+  const width = useMemo(() => rows.reduce((m, r) => Math.max(m, r.width), 1), [rows]);
   const searchable = useMemo(() => entries.map((e) => (e.kind === "working" ? null : e.commit)), [entries]);
   const matches = useMemo(() => findMatches(searchable, query), [searchable, query]);
   const remoteBranches = useMemo(
@@ -73,9 +126,6 @@ export function GitGraphEditor() {
   if (!bridge || !repoState.roots.length || !activeRepo)
     return <EmptyState title="No Git repository" className={styles.empty} />;
 
-  const selected = view.selection.repo === activeRepo ? view.selection.ids : [];
-  const setSelected = (ids: string[]) => set({ selection: { repo: activeRepo, ids } });
-  const selectedRows = selectedEntries(entries, selected);
   const jumpTo = (id: string) => set({ selection: { repo: activeRepo, ids: [id] }, panel: "details" });
   const step = (dir: 1 | -1) => {
     if (!matches.length) return;
@@ -119,15 +169,13 @@ export function GitGraphEditor() {
           ) : null}
           <SplitGroup orientation="vertical" id="git-graph" className={styles.split}>
             <SplitPanel id="graph" defaultSize="65%" minSize="20%">
-              <CommitList
+              <GraphList
                 entries={entries}
                 rows={rows}
                 width={width}
                 done={data.done}
                 loading={data.loading}
                 loadMore={data.loadMore}
-                selected={selected}
-                onSelect={setSelected}
                 head={head}
                 branches={data.branches}
                 remotes={repoExtras.remotes}
@@ -140,18 +188,10 @@ export function GitGraphEditor() {
             </SplitPanel>
             <SplitHandle />
             <SplitPanel id="details" defaultSize="35%" minSize="10%">
-              <BottomPane
-                panel={view.panel}
-                onPanel={(panel) =>
-                  set((s) => ({
-                    panel,
-                    ...(panel === "tree" ? { treeRev: { ...s.treeRev, [activeRepo]: null } } : {}),
-                  }))
-                }
-                entries={selectedRows}
+              <GraphBottomPane
+                entries={entries}
                 repo={activeRepo}
                 version={repoState.version}
-                treeRev={view.treeRev[activeRepo] ?? null}
                 onJump={jumpTo}
                 remoteBranches={remoteBranches}
               />
