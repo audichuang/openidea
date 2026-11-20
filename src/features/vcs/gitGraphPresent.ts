@@ -13,7 +13,7 @@
  *   through at a row. A row's output depends only on the runs covering it, and a run still open
  *   at the old end changes earlier rows in one place only: the `targetRow` of the down arrow
  *   that starts it, which is patched in place (its index is the same after every later pass).
- * - `dropTailStubs` only ever cuts at the last two rows.
+ * - `dropTailStubs` only ever cuts at the last two rows, reading the row above them.
  * - `compactLanes` and `straightenLaneChanges` read one neighbour row on each side.
  *
  * `__tests__/gitGraphPresent.test.ts` checks paged results against `presentRows(layout(all))`,
@@ -34,7 +34,9 @@ import {
  * `hideLongEdges` ends every run still open after the last loaded row there, so each lane heading
  * to commits not loaded yet gets an up-arrow stub on the last rows: hundreds of lanes side by side
  * on a merge-heavy history. Such a lane continues out of sight below; its down arrow where it
- * disappears says so, so drop the tail stub (from its up arrow to the last row).
+ * disappears says so, so drop the tail stub (from its up arrow to the last row). A stub that another
+ * edge joins (a merge into the lane, from the row above the up arrow on) stays: without it that
+ * edge would end at a row boundary with nothing to join.
  */
 export function dropTailStubs(rows: readonly GraphRow[]): GraphRow[] {
   const last = rows.at(-1);
@@ -44,6 +46,7 @@ export function dropTailStubs(rows: readonly GraphRow[]): GraphRow[] {
     row.lane !== lane && straight(row.up, lane) && straight(row.down, lane);
   const upArrow = (row: GraphRow, lane: number) =>
     row.up.some((s) => s.arrow === "up" && s.from === lane && s.to === lane);
+  const joined = (row: GraphRow, lane: number) => row.down.some((s) => s.to === lane && s.from !== lane);
   // Lane → first row of its tail stub.
   const cut = new Map<number, number>();
   for (const s of last.up) {
@@ -51,7 +54,9 @@ export function dropTailStubs(rows: readonly GraphRow[]): GraphRow[] {
     if (s.to !== lane || cut.has(lane)) continue;
     let r = rows.length - 1;
     while (r >= 0 && through(rows[r]!, lane) && !upArrow(rows[r]!, lane)) r--;
-    if (r >= 0 && through(rows[r]!, lane) && upArrow(rows[r]!, lane)) cut.set(lane, r);
+    if (r < 0 || !through(rows[r]!, lane) || !upArrow(rows[r]!, lane)) continue;
+    if (rows.slice(Math.max(0, r - 1)).some((row) => joined(row, lane))) continue;
+    cut.set(lane, r);
   }
   if (!cut.size) return rows.slice();
   const hidden = (s: GraphSegment, r: number) => s.from === s.to && r >= (cut.get(s.from) ?? Infinity);
