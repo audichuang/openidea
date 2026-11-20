@@ -1,5 +1,6 @@
 /** The bottom pane's other tabs (reflog, statistics, file tree) and the bisect banner. */
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import clsx from "clsx";
 import type { GraphAuthorStat, GraphBisectState, GraphReflogEntry, GraphTreeEntry } from "@/bindings";
 import { formatTimestamp } from "@/platform/dateFormat";
@@ -35,6 +36,81 @@ function useLoaded<T>(key: string | null, load: () => Promise<T>, refresh = 0): 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, refresh]);
   return state && state.key === key ? state.value : null;
+}
+
+/** How long a selection must stay before its files load, so arrow-key repeat sends one request. */
+export const SELECTION_DELAY = 100;
+
+/**
+ * Loads `load()` for the selection `key`, waiting `SELECTION_DELAY` after the first load so a
+ * selection that changes again sooner sends nothing. Until the new result lands, `value` stays the
+ * previous selection's (null before any) and `current` is false: show it as loading, and don't act
+ * on it. A failed load gives `fallback`, or keeps loading when there is none.
+ */
+export function useSelectionLoad<T>(
+  key: string | null,
+  load: () => Promise<T>,
+  fallback?: T,
+): { value: T | null; current: boolean; loadedKey: string | null } {
+  const [state, setState] = useState<{ key: string; value: T } | null>(null);
+  const first = useRef(true);
+  useEffect(() => {
+    if (key === null) return;
+    let live = true;
+    const timer = setTimeout(
+      () =>
+        load().then(
+          (value) => live && setState({ key, value }),
+          () => live && fallback !== undefined && setState({ key, value: fallback }),
+        ),
+      first.current ? 0 : SELECTION_DELAY,
+    );
+    first.current = false;
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+    // `load` and `fallback` are recreated each render; `key` names what they load.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+  return { value: state?.value ?? null, current: state !== null && state.key === key, loadedKey: state?.key ?? null };
+}
+
+/** `--h-list-row`, the pane lists' row height: smaller in compact mode. */
+function useListRowHeight(): number {
+  const [height, setHeight] = useState(24);
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    const read = () => {
+      const h = parseFloat(getComputedStyle(root).getPropertyValue("--h-list-row"));
+      if (h > 0) setHeight(h);
+    };
+    read();
+    const observer = new MutationObserver(read);
+    observer.observe(root, { attributes: true, attributeFilter: ["data-compact"] });
+    return () => observer.disconnect();
+  }, []);
+  return height;
+}
+
+/**
+ * Virtualises a pane list of `count` fixed-height rows. Put `scrollRef` on the scrolling list; it
+ * goes back to the top when `resetKey` changes (a new selection's rows landed).
+ */
+export function usePaneRows(count: number, resetKey: string | null) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const rowHeight = useListRowHeight();
+  const virtualizer = useVirtualizer({
+    count,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => rowHeight,
+    overscan: 10,
+  });
+  useEffect(() => virtualizer.measure(), [virtualizer, rowHeight]);
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+  }, [resetKey]);
+  return { scrollRef, rows: virtualizer.getVirtualItems(), height: virtualizer.getTotalSize() };
 }
 
 export function ReflogPanel({
@@ -97,18 +173,24 @@ export function StatsPanel({ repo, version }: { repo: string; version: number })
 
 export function TreePanel({ repo, rev, onOpen }: { repo: string; rev: string | null; onOpen: (path: string) => void }) {
   const [filter, setFilter] = useState("");
-  const entries = useLoaded<GraphTreeEntry[]>(rev ? `${repo}\0${rev}` : null, () =>
-    call(commands.graphTree(repo, rev!)),
-  );
+  const key = rev ? `${repo}\0${rev}` : null;
+  const {
+    value: entries,
+    current,
+    loadedKey,
+  } = useSelectionLoad<GraphTreeEntry[]>(key, () => call(commands.graphTree(repo, rev!)));
+  const q = filter.trim().toLowerCase();
+  const shown = !entries ? [] : q ? entries.filter((e) => e.path.toLowerCase().includes(q)) : entries;
+  const { scrollRef, rows, height } = usePaneRows(shown.length, loadedKey);
   if (!rev) return <EmptyState title="Select a commit" className={styles.empty} />;
   if (!entries) return <Spinner size={14} />;
-  const q = filter.trim().toLowerCase();
-  const shown = q ? entries.filter((e) => e.path.toLowerCase().includes(q)) : entries;
+  // Until the new revision's files land, the previous revision's stay dimmed and inert.
+  const open = (e: GraphTreeEntry) => current && e.kind === "blob" && onOpen(e.path);
   return (
     <div className={styles.treePanel}>
       <div className={styles.treeBar}>
         <span className={styles.mono}>{rev.slice(0, 8)}</span>
-        <span className={styles.dim}>{tx`${entries.length} files`}</span>
+        {current ? <span className={styles.dim}>{tx`${entries.length} files`}</span> : <Spinner size={12} />}
         <SearchField
           className={styles.search}
           value={filter}
@@ -117,22 +199,36 @@ export function TreePanel({ repo, rev, onOpen }: { repo: string; rev: string | n
           placeholder={tx("Filter files")}
         />
       </div>
-      <div className={styles.table} role="list" aria-label={tx("Files at Revision")}>
-        {shown.map((e) => (
-          <div
-            key={e.path}
-            role="listitem"
-            tabIndex={0}
-            className={styles.tableRow}
-            onDoubleClick={() => e.kind === "blob" && onOpen(e.path)}
-            onKeyDown={(ev) => ev.key === "Enter" && e.kind === "blob" && onOpen(e.path)}
-            title={e.path}
-          >
-            <Icon name={e.kind === "commit" ? "folder-github" : "file"} size={14} />
-            <span className={styles.grow}>{e.path}</span>
-            <span className={styles.dim}>{e.size === null ? "" : `${e.size} B`}</span>
-          </div>
-        ))}
+      <div
+        ref={scrollRef}
+        className={styles.table}
+        role="list"
+        aria-label={tx("Files at Revision")}
+        aria-busy={!current || undefined}
+      >
+        <div role="presentation" className={styles.virtualRows} style={{ height }}>
+          {rows.map((v) => {
+            const e = shown[v.index]!;
+            return (
+              <div
+                key={e.path}
+                role="listitem"
+                aria-setsize={shown.length}
+                aria-posinset={v.index + 1}
+                tabIndex={0}
+                className={clsx(styles.tableRow, styles.virtualRow)}
+                style={{ transform: `translateY(${v.start}px)` }}
+                onDoubleClick={() => open(e)}
+                onKeyDown={(ev) => ev.key === "Enter" && open(e)}
+                title={e.path}
+              >
+                <Icon name={e.kind === "commit" ? "folder-github" : "file"} size={14} />
+                <span className={styles.grow}>{e.path}</span>
+                <span className={styles.dim}>{e.size === null ? "" : `${e.size} B`}</span>
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );

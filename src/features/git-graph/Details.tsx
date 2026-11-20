@@ -1,5 +1,5 @@
 /** The bottom pane: the selected row's details and the File Tree, Reflog and Statistics tabs. */
-import { useEffect, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useState, type MouseEvent as ReactMouseEvent } from "react";
 import clsx from "clsx";
 import type { ChangedFile } from "@/bindings";
 import { executeAction } from "@/platform/actions";
@@ -10,7 +10,7 @@ import { EmptyState, IconButton, showContextMenu, Spinner, T } from "@/ui";
 import { gitGraphBridge, type GraphCommit } from "@/workbench/gitGraphBridge";
 import { refClass } from "./CommitList";
 import { changeCount, type GraphEntry } from "./entries";
-import { ReflogPanel, StatsPanel, TreePanel } from "./panels";
+import { ReflogPanel, StatsPanel, TreePanel, usePaneRows, useSelectionLoad } from "./panels";
 import type { GraphPanel } from "./viewState";
 import styles from "./GitGraph.module.css";
 
@@ -146,24 +146,16 @@ export function CommitDetails({
 }) {
   const one = commits.length === 1 ? commits[0]! : null;
   const commitKey = one ? `${one.repo}\0${one.id}` : null;
-  const [loadedFiles, setLoadedFiles] = useState<{ key: string; files: ChangedFile[] } | null>(null);
   const [activeFile, setActiveFile] = useState<{ key: string | null; index: number }>({ key: null, index: -1 });
-  const files = loadedFiles && loadedFiles.key === commitKey ? loadedFiles.files : null;
+  // Until the selected commit's files land, the previous commit's stay dimmed and inert.
+  const {
+    value: files,
+    current,
+    loadedKey,
+  } = useSelectionLoad<ChangedFile[]>(commitKey, () => call(commands.vcsCommitFiles(one!.repo, one!.id)), []);
+  const { scrollRef, rows, height } = usePaneRows(files?.length ?? 0, loadedKey);
   const active = activeFile.key === commitKey ? activeFile.index : -1;
   const setActive = (index: number) => setActiveFile({ key: commitKey, index });
-  const repo = one?.repo;
-  const id = one?.id;
-  useEffect(() => {
-    if (!repo || !id) return;
-    let live = true;
-    const key = `${repo}\0${id}`;
-    call(commands.vcsCommitFiles(repo, id))
-      .then((f) => live && setLoadedFiles({ key, files: f }))
-      .catch(() => live && setLoadedFiles({ key, files: [] }));
-    return () => {
-      live = false;
-    };
-  }, [repo, id]);
 
   if (!commits.length) return <EmptyState title="Select a commit" className={styles.empty} />;
   if (!one)
@@ -177,6 +169,7 @@ export function CommitDetails({
   const body = one.message.slice(one.summary.length).trim();
   const fileMenu = async (e: ReactMouseEvent, i: number) => {
     e.preventDefault();
+    if (!current) return;
     const point = { x: e.clientX, y: e.clientY };
     setActive(i);
     const items = await bridge?.filesMenu(one, [files![i]!]);
@@ -258,34 +251,50 @@ export function CommitDetails({
           ) : null}
         </dl>
       </div>
-      <div className={styles.files} role="list" aria-label={tx("Changed Files")}>
+      <div
+        ref={scrollRef}
+        className={styles.files}
+        role="list"
+        aria-label={tx("Changed Files")}
+        aria-busy={(files !== null && !current) || undefined}
+      >
         {files === null ? (
           <Spinner size={14} />
         ) : (
-          files.map((f, i) => (
-            <div
-              key={f.path}
-              role="listitem"
-              tabIndex={0}
-              className={clsx(styles.file, i === active && styles.selected)}
-              onClick={() => {
-                setActive(i);
-                void bridge?.openDiff(one, files, i, true);
-              }}
-              onDoubleClick={() => void bridge?.openDiff(one, files, i)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void bridge?.openDiff(one, files, i);
-              }}
-              onContextMenu={(e) => void fileMenu(e, i)}
-              title={f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}
-            >
-              <span className={clsx(styles.kind, styles[`kind_${f.kind}`])}>{KIND_LETTER[f.kind] ?? "?"}</span>
-              <span className={styles.fileName}>{f.path.split("/").pop()}</span>
-              <span className={styles.fileDir}>
-                {f.path.includes("/") ? f.path.slice(0, f.path.lastIndexOf("/")) : ""}
-              </span>
-            </div>
-          ))
+          <div role="presentation" className={styles.virtualRows} style={{ height }}>
+            {rows.map((v) => {
+              const f = files[v.index]!;
+              const i = v.index;
+              return (
+                <div
+                  key={f.path}
+                  role="listitem"
+                  aria-setsize={files.length}
+                  aria-posinset={i + 1}
+                  tabIndex={0}
+                  className={clsx(styles.file, styles.virtualRow, i === active && styles.selected)}
+                  style={{ transform: `translateY(${v.start}px)` }}
+                  onClick={() => {
+                    if (!current) return;
+                    setActive(i);
+                    void bridge?.openDiff(one, files, i, true);
+                  }}
+                  onDoubleClick={() => current && void bridge?.openDiff(one, files, i)}
+                  onKeyDown={(e) => {
+                    if (current && e.key === "Enter") void bridge?.openDiff(one, files, i);
+                  }}
+                  onContextMenu={(e) => void fileMenu(e, i)}
+                  title={f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}
+                >
+                  <span className={clsx(styles.kind, styles[`kind_${f.kind}`])}>{KIND_LETTER[f.kind] ?? "?"}</span>
+                  <span className={styles.fileName}>{f.path.split("/").pop()}</span>
+                  <span className={styles.fileDir}>
+                    {f.path.includes("/") ? f.path.slice(0, f.path.lastIndexOf("/")) : ""}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
         )}
       </div>
     </div>
