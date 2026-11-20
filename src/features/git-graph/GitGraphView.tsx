@@ -171,6 +171,7 @@ export function GitGraphEditor() {
             <SplitPanel id="graph" defaultSize="65%" minSize="20%">
               <GraphList
                 entries={entries}
+                generation={data.generation}
                 rows={rows}
                 width={width}
                 done={data.done}
