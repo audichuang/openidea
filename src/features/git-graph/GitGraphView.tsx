@@ -58,10 +58,10 @@ export function GitGraphEditor() {
         : [],
     [data.commits, extras, head?.headCommit, activeRepo],
   );
-  const rows = useMemo(() => {
-    const b = gitGraphBridge();
-    return b ? b.present(b.layout(layoutInput(entries)).rows) : [];
-  }, [entries]);
+  const bridge = gitGraphBridge();
+  // Keeps the last layout: a loaded page lays out and presents only the new rows.
+  const present = useMemo(() => bridge?.presenter(), [bridge]);
+  const rows = useMemo(() => present?.(layoutInput(entries)) ?? [], [present, entries]);
   const width = rows.reduce((m, r) => Math.max(m, r.width), 1);
   const searchable = useMemo(() => entries.map((e) => (e.kind === "working" ? null : e.commit)), [entries]);
   const matches = useMemo(() => findMatches(searchable, query), [searchable, query]);
@@ -70,7 +70,7 @@ export function GitGraphEditor() {
     [data.branches],
   );
 
-  if (!gitGraphBridge() || !repoState.roots.length || !activeRepo)
+  if (!bridge || !repoState.roots.length || !activeRepo)
     return <EmptyState title="No Git repository" className={styles.empty} />;
 
   const selected = view.selection.repo === activeRepo ? view.selection.ids : [];
