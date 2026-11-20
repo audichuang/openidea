@@ -126,7 +126,8 @@
   background: var(--graph-row-bg);
 }
 .scroll:focus-within .selected,
-.files:focus-within .selected {
+.files:focus-within .selected,
+.table:focus-within .selected {
   --graph-row-bg: var(--bg-tree-selected);
 }
 .match {
