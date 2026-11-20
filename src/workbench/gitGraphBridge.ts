@@ -30,6 +30,11 @@ export interface GraphLaneSegment {
   to: number;
   color: number;
   dashed?: true;
+  /** The edge continues out of sight this way: its long straight middle is hidden. */
+  arrow?: "up" | "down";
+  /** Drawn lane positions when they differ from `from` / `to` (a lane change drawn as one diagonal). */
+  fromX?: number;
+  toX?: number;
 }
 
 export interface GraphRefLabel {
@@ -91,6 +96,11 @@ export interface GitGraphBridge {
     commits: readonly { id: string; parents: readonly string[]; dashed?: readonly boolean[] }[],
     state?: GraphLayoutState,
   ): { rows: GraphLaneRow[]; state: GraphLayoutState };
+  /**
+   * The Git Log's default presentation of `layout`'s rows for the whole list: long straight
+   * edges hidden behind arrows, lanes packed, lane changes drawn as diagonals. Same row count.
+   */
+  present(rows: readonly GraphLaneRow[]): GraphLaneRow[];
   laneColor(color: number): string;
   /** `root`'s colour among `roots`, as the Git tool window shows it; null with a single repository. */
   repoColor(root: string, roots: readonly string[]): string | null;
