@@ -1,7 +1,9 @@
 /**
  * Fork-owned: provides the Git Graph view's bridge (`workbench/gitGraphBridge.ts`) from the
- * vcs feature's own menus, diff editor, lane layout and state. This file is the only place
- * the graph depends on vcs internals; `__tests__/gitGraphBridge.test.ts` pins what it relies on.
+ * vcs feature's own menus, diff editor, lane layout and state. This file and
+ * `gitGraphPresent.ts` (the paged presentation, porting upstream `hideLongEdges`) are the only places
+ * the graph depends on vcs internals; `__tests__/gitGraphBridge.test.ts` and
+ * `__tests__/gitGraphPresent.test.ts` pin what they rely on.
  */
 import type { ChangedFile } from "@/bindings";
 import type { MenuItem } from "@/ui";
@@ -13,6 +15,7 @@ import {
   type GraphRevisionSide,
 } from "@/workbench/gitGraphBridge";
 import { computeGraph, emptyGraphState, laneColor, type GraphState } from "./graph";
+import { createGraphPresenter, presentRows } from "./gitGraphPresent";
 import { diffInput, openDiff, withChain, type DiffData, type DiffSide } from "./diffInput";
 import { repoColor } from "./model";
 import { repositoryPath } from "./repositoryPaths";
@@ -153,6 +156,8 @@ export function createGitGraphBridge(): GitGraphBridge {
       const { rows, state: next } = computeGraph(commits, prev);
       return { rows, state: { _layout: next } satisfies GraphLayoutState };
     },
+    present: presentRows,
+    presenter: createGraphPresenter,
     laneColor,
     repoColor,
     refLabels(refs, remoteBranches) {
