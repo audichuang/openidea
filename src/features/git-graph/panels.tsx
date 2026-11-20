@@ -42,8 +42,8 @@ function useLoaded<T>(key: string | null, load: () => Promise<T>, refresh = 0): 
 export const SELECTION_DELAY = 100;
 
 /**
- * Loads `load()` for the selection `key`, waiting `SELECTION_DELAY` after the first load so a
- * selection that changes again sooner sends nothing. Until the new result lands, `value` stays the
+ * Loads `load()` for the selection `key`: at once when the selection was idle, else after
+ * `SELECTION_DELAY`, so a selection that keeps changing (arrow-key repeat) sends only its last. Until the new result lands, `value` stays the
  * previous selection's (null before any) and `current` is false: show it as loading, and don't act
  * on it. A failed load gives `fallback`, or keeps loading when there is none.
  */
@@ -53,19 +53,21 @@ export function useSelectionLoad<T>(
   fallback?: T,
 ): { value: T | null; current: boolean; loadedKey: string | null } {
   const [state, setState] = useState<{ key: string; value: T } | null>(null);
-  const first = useRef(true);
+  const lastChange = useRef(Number.NEGATIVE_INFINITY);
   useEffect(() => {
     if (key === null) return;
     let live = true;
+    const now = performance.now();
+    const rapid = now - lastChange.current < SELECTION_DELAY;
+    lastChange.current = now;
     const timer = setTimeout(
       () =>
         load().then(
           (value) => live && setState({ key, value }),
           () => live && fallback !== undefined && setState({ key, value: fallback }),
         ),
-      first.current ? 0 : SELECTION_DELAY,
+      rapid ? SELECTION_DELAY : 0,
     );
-    first.current = false;
     return () => {
       live = false;
       clearTimeout(timer);
