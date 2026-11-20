@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeGraph, hideLongEdges } from "../graph";
+import { compactLanes, computeGraph, hideLongEdges, straightenLaneChanges } from "../graph";
 import { createGraphPresenter, hideLongEdgesPort, presentRows, type PresentInput } from "../gitGraphPresent";
 
 /** Deterministic PRNG (mulberry32). */
@@ -58,6 +58,9 @@ function history(seed: number, size: number, branches: number): PresentInput[] {
 }
 
 const oracle = (commits: readonly PresentInput[]) => presentRows(computeGraph(commits).rows);
+/** Upstream's passes of the Git Log (`logPresentation.ts`, Show Long Edges off) on the same layout. */
+const gitLog = (commits: readonly PresentInput[]) =>
+  straightenLaneChanges(compactLanes(hideLongEdges(computeGraph(commits).rows)));
 
 /** Feeds `commits` page by page (sizes cycled), checking each result against the full computation. */
 function pageThrough(commits: readonly PresentInput[], sizes: readonly number[], every = true) {
@@ -141,5 +144,73 @@ describe("incremental git graph presentation", () => {
     const rows = present(commits);
     expect(present(commits)).toBe(rows);
     expect(present(commits.map((c) => ({ ...c })))).toBe(rows);
+  });
+  it("matches the Git Log's presentation but for the tail stubs it drops", () => {
+    for (const seed of [1, 2, 3, 4, 5, 6, 7, 8]) {
+      const commits = history(seed, 600, 8 + seed * 6);
+      const rows = oracle(commits);
+      // Dropping a stub re-packs the last two rows and the boundary above them.
+      expect(rows.slice(0, -3)).toStrictEqual(gitLog(commits).slice(0, -3));
+    }
+  });
+});
+
+describe("merges into a long edge", () => {
+  // A line of commits with `t` on row 350; row 0 and row `merge` also merge `t`, whose lane runs
+  // alongside from row 0 to row 350.
+  const node = (id: string, parents: string[]): PresentInput => ({ id, parents });
+  const id = (i: number) => (i === 350 ? "t" : `a${i}`);
+  const commits = (merge: number) =>
+    Array.from({ length: 400 }, (_, i) => node(id(i), i === 0 || i === merge ? [id(i + 1), "t"] : [id(i + 1)]));
+
+  it.each([297, 298, 299])("keeps the tail stub a merge on row %i joins", (merge) => {
+    const page = commits(merge).slice(0, 300);
+    const rows = oracle(page);
+    // As upstream's passes draw it: the stub, its up arrow, the merge joining it.
+    expect(rows).toStrictEqual(gitLog(page));
+    const into = rows[merge]!.down.find((s) => s.from !== s.to)!;
+    expect(into).toBeDefined();
+    const next = rows[merge + 1];
+    if (next) expect(next.up.some((s) => (s.fromX ?? s.from) === (into.toX ?? into.to))).toBe(true);
+    else expect(rows[merge]!.down.some((s) => s.from === s.to && s.to === into.to)).toBe(true);
+    expect(rows[298]!.up.some((s) => s.arrow === "up")).toBe(true);
+    for (const sizes of [
+      [300, 100],
+      [297, 1, 1, 1, 100],
+      [merge, 1, 99],
+      [merge + 1, 99],
+    ])
+      pageThrough(commits(merge), sizes);
+  });
+
+  it("drops the tail stub no merge joins", () => {
+    const page = commits(-1).slice(0, 300);
+    const rows = oracle(page);
+    expect(rows.slice(-2).every((r) => r.up.length === 1 && r.down.length === 1)).toBe(true);
+  });
+
+  it("leaves a merge into a hidden stretch unjoined, as upstream hideLongEdges does", () => {
+    // Upstream hides the run through the merge row too, so the merge ends at the row boundary.
+    // Not the fork's to change here; pinned so a change upstream shows up.
+    for (const merge of [150, 299]) {
+      const all = commits(merge);
+      const rows = oracle(all);
+      expect(rows).toStrictEqual(gitLog(all));
+      expect(rows[merge]!.down.some((s) => s.from !== s.to)).toBe(true);
+      expect(rows[merge + 1]!.up).toHaveLength(1);
+    }
+  });
+
+  it("draws a long edge's arrow where a straightened lane change meets, as upstream does", () => {
+    // Three-parent merge: lanes 0 and 1 run long, so the main line moves from lane 2 to lane 0
+    // below their arrows, and straightenLaneChanges meets it at lane 1, the arrow's lane.
+    const list = [node("t", ["p", "q", "a1"])];
+    for (let i = 1; i < 40; i++) list.push(node(`a${i}`, [`a${i + 1}`]));
+    list.push(node("a40", ["p"]), node("p", ["q"]), node("q", []));
+    const rows = oracle(list);
+    expect(rows).toStrictEqual(gitLog(list));
+    expect(rows[2]!.down).toContainEqual(expect.objectContaining({ to: 1, arrow: "down" }));
+    expect(rows[2]!.down).toContainEqual(expect.objectContaining({ from: 2, to: 2, toX: 1 }));
+    expect(rows[3]!.up).toContainEqual(expect.objectContaining({ from: 2, to: 0, fromX: 1 }));
   });
 });
