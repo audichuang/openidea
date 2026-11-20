@@ -195,6 +195,54 @@ describe("git graph bridge", () => {
     expect(bridge().laneColor(0)).toMatch(/^var\(--/);
   });
 
+  // s branches off `base` above a 40-commit main line: its lane runs 40 rows with no node.
+  // Ids and parents only, as the graph view lays them out.
+  const longSide = (base: string | null) => {
+    const node = (id: string, parents: string[]) => ({ id, parents });
+    const main = Array.from({ length: 40 }, (_, i) => node(`m${i}`, [i < 39 ? `m${i + 1}` : (base ?? "x")]));
+    return [node("s", [base ?? "y"]), ...main, ...(base ? [node(base, [])] : [])];
+  };
+
+  it("presents the Git Log's default: long edges end in arrows, lanes packed", () => {
+    const commits = longSide("base");
+    const laid = bridge().layout(commits).rows;
+    const rows = bridge().present(laid);
+    expect(rows).toHaveLength(commits.length);
+    expect(laid[20]!.width).toBe(2);
+    // The side lane's middle is hidden, so the main line packs into lane 0.
+    expect(rows[20]).toMatchObject({ lane: 0, width: 1, up: [{ from: 0, to: 0 }], down: [{ from: 0, to: 0 }] });
+    expect(rows.flatMap((r) => r.down).filter((s) => s.arrow === "down")).toHaveLength(1);
+    expect(rows.flatMap((r) => r.up).filter((s) => s.arrow === "up")).toHaveLength(1);
+  });
+
+  it("drops the stubs of lanes still open after the last loaded row", () => {
+    const rows = bridge().present(bridge().layout(longSide(null)).rows);
+    // The side lane leaves with a down arrow and never comes back: no stub on the last rows.
+    expect(rows.flatMap((r) => r.down).filter((s) => s.arrow === "down")).toHaveLength(1);
+    expect(rows.flatMap((r) => r.up).some((s) => s.arrow === "up")).toBe(false);
+    expect(Math.max(...rows.slice(10).map((r) => r.width))).toBe(1);
+  });
+
+  it("draws a lane change as one diagonal across the row boundary", () => {
+    const commits = [
+      commit("a", ["b", "c"]),
+      commit("b", ["e"]),
+      commit("c", ["d"]),
+      commit("d", ["e"]),
+      commit("e", []),
+    ];
+    const rows = bridge().present(bridge().layout(commits).rows);
+    expect(rows[0]!.down.find((s) => s.from === 0 && s.to === 1)?.toX).toBe(0.5);
+    expect(rows[1]!.up.find((s) => s.from === 1)?.fromX).toBe(0.5);
+  });
+
+  it("keeps a pseudo row's dashed edge through the presentation", () => {
+    const rows = bridge().present(
+      bridge().layout([{ id: "working", parents: ["a"], dashed: [true] }, commit("a", [])]).rows,
+    );
+    expect(rows[0]!.down[0]!.dashed).toBe(true);
+  });
+
   it("splits decorations into one label per reference", () => {
     const refs = ["HEAD", "main", "origin/main", "tag: v1"];
     expect(bridge().refLabels(refs, new Set(["origin/main"]))).toEqual([
