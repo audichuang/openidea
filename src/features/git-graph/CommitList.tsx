@@ -101,9 +101,15 @@ export function CommitList(p: CommitListProps) {
   const indexOf = useMemo(() => new Map(p.entries.map((e, i) => [e.id, i])), [p.entries]);
   const selectedSet = useMemo(() => new Set(p.selected), [p.selected]);
   const matchSet = useMemo(() => new Set(p.matches), [p.matches]);
+  // Reveal a selection once, when it is set; a page append or refresh must not scroll back to it.
+  // A selection whose row has not loaded yet is revealed when the row appears.
+  const revealed = useRef<string[] | null>(null);
   useEffect(() => {
+    if (revealed.current === p.selected) return;
     const id = p.selected[p.selected.length - 1];
     const i = id ? indexOf.get(id) : undefined;
+    if (id && i === undefined) return;
+    revealed.current = p.selected;
     if (i !== undefined) virtualizer.scrollToIndex(i, { align: "auto" });
   }, [p.selected, indexOf]);
 
