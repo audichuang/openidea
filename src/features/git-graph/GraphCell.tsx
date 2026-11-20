@@ -89,7 +89,8 @@ export const GraphCell = memo(function GraphCell({
           // Inline: `.graph path` sets the stroke width for every edge.
           style={{ strokeWidth: 10, pointerEvents: "stroke" }}
           role="button"
-          tabIndex={0}
+          // Out of the Tab order: dense long edges would otherwise trap Tab inside the list.
+          tabIndex={-1}
           aria-label={label}
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => {
