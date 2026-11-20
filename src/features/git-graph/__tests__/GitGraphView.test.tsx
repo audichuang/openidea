@@ -72,6 +72,7 @@ import { defaultPrRefs } from "../PrView";
 import { registerActions } from "@/platform/actions";
 import { useContributions } from "@/workbench/contributions";
 import { initialGraphView, useGraphView } from "../viewState";
+import { SELECTION_DELAY } from "../panels";
 
 const REPO = "/repo";
 const ok = <T,>(data: T) => Promise.resolve({ status: "ok" as const, data });
@@ -372,7 +373,8 @@ describe("Git Graph view", () => {
     // The other repository lists no revision of the first one.
     act(() => useGraphView.setState({ repo: lib }));
     expect(await screen.findByText("Select a commit")).toBeTruthy();
-    await act(async () => {});
+    // Past the selection delay, so a delayed load would have been sent.
+    await act(() => new Promise((r) => setTimeout(r, SELECTION_DELAY + 50)));
     expect(graphTree).not.toHaveBeenCalledWith(lib, expect.anything());
     act(() => useGraphView.setState({ repo: app }));
     expect(await screen.findByText("1 files")).toBeTruthy();
