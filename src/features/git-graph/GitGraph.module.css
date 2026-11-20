@@ -330,6 +330,21 @@
 .file:hover {
   background: var(--bg-tree-hover);
 }
+/* virtualised pane lists (changed files, file tree) */
+.virtualRows {
+  position: relative;
+}
+.virtualRow {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+}
+/* The previous selection's rows while the new one's load. */
+.files[aria-busy="true"],
+.table[aria-busy="true"] {
+  opacity: 0.5;
+}
 .fileName {
   flex: none;
 }
