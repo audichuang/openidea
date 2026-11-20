@@ -26,7 +26,7 @@ Find Action → "Git Graph" (action `gitGraph.open`, when `vcsAvailable`).
 
 1. Fixture: a repo with two feature branches, a `--no-ff` merge, tags, and one branch with a `/` in its name and no remote (that case once showed as a remote branch).
 2. Open it: `import("/src/platform/actions.ts").then(m => m.executeAction("gitGraph.open"))` (same path as Find Action).
-3. Rows: `[aria-label="Commits"] [role=row]`; selection is `aria-selected`; commit files `[aria-label="Changed Files"] [role=listitem]`; the PR view's files are `[role=tree][aria-label="Changed Files"] [role=treeitem]` (a tree row selects on `mousedown`, not `click`).
+3. Rows: `[aria-label="Commits"] [role=row]`; selection is `aria-selected`; commit files `[aria-label="Changed Files"] [role=listitem]` (virtualised: only the rows near the viewport are in the DOM; the total is each row's `aria-setsize`); the PR view's files are `[role=tree][aria-label="Changed Files"] [role=treeitem]` (a tree row selects on `mousedown`, not `click`).
 4. Click a reference pill (`button[title="<branch>"]`) for its menu; run "Merge … into …" or a commit menu's "New Tag…", then check `git log` / `git tag` in the fixture and that the graph reloaded on its own.
 5. Drag needs real input: `cliclick dd:… dm:… du:…` from a pill's rect to the HEAD row's; assert the `[role=menu]` items, then click one with `cliclick c:` and check `git log`.
 6. Bisect: two `click` events (second with `metaKey`) on rows, `contextmenu`, click the Bisect item; the banner is the `[role=status]` inside the Git Graph tab that contains "End Bisect" (the toolbar hides its operation status during a bisect, and the status bar has its own `role=status`): select it by that text, not by position. Check `git bisect log`.
