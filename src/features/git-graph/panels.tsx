@@ -1,5 +1,13 @@
 /** The bottom pane's other tabs (reflog, statistics, file tree) and the bisect banner. */
-import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import clsx from "clsx";
 import type { GraphAuthorStat, GraphBisectState, GraphReflogEntry, GraphTreeEntry } from "@/bindings";
@@ -95,11 +103,12 @@ function useListRowHeight(): number {
   return height;
 }
 
+/** The pane lists' top padding (`.files`, `.table`): rows start this far into the scrolled content. */
+const LIST_PAD = 4;
+
 /**
  * Virtualises a pane list of `count` fixed-height rows. Put `scrollRef` on the scrolling list; it
- * goes back to the top when `resetKey` changes (a new selection's rows landed). Rows outside the
- * window unmount, so the list itself takes keyboard focus (as `CommitList` does) and
- * `scrollToIndex` reveals the row the keys moved to.
+ * goes back to the top when `resetKey` changes (a new selection's rows landed).
  */
 export function usePaneRows(count: number, resetKey: string | null) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -109,8 +118,8 @@ export function usePaneRows(count: number, resetKey: string | null) {
     getScrollElement: () => scrollRef.current,
     estimateSize: () => rowHeight,
     overscan: 10,
-    // The lists' 4px top padding (`.files`, `.table`) sits above the rows: reveal a row's bottom edge with it.
-    scrollPaddingEnd: 4,
+    // The lists' top padding sits above the rows: reveal a row's bottom edge with it.
+    scrollPaddingEnd: LIST_PAD,
   });
   useEffect(() => virtualizer.measure(), [virtualizer, rowHeight]);
   useEffect(() => {
@@ -118,6 +127,7 @@ export function usePaneRows(count: number, resetKey: string | null) {
   }, [resetKey]);
   return {
     scrollRef,
+    rowHeight,
     rows: virtualizer.getVirtualItems(),
     height: virtualizer.getTotalSize(),
     scrollToIndex: (index: number) => virtualizer.scrollToIndex(index, { align: "auto" }),
@@ -125,7 +135,7 @@ export function usePaneRows(count: number, resetKey: string | null) {
 }
 
 /** The active row after a key in a pane list of `count` rows, or null when the key does not move it. */
-export function paneListMove(key: string, count: number, active: number): number | null {
+function paneListMove(key: string, count: number, active: number): number | null {
   if (!count) return null;
   if (key === "ArrowDown") return Math.min(count - 1, active + 1);
   if (key === "ArrowUp") return Math.max(0, active - 1);
@@ -135,31 +145,99 @@ export function paneListMove(key: string, count: number, active: number): number
 }
 
 /**
- * Pointer bookkeeping for a pane list that owns keyboard focus. Spread `handlers` on the list;
- * `version` names the rows shown, null while they are stale.
- * - `doubleClickFresh`: whether a double-click began on the rows shown now. A new selection's rows
- *   replace the previous ones under the pointer; keying the rows by selection keeps a click pressed
- *   on the old ones off the new, but the dblclick goes to wherever its second press lands.
- * - `onKeyboardFocus` runs when the list takes focus from Tab rather than a press, so it can give
- *   the list an active row (each row used to be its own tab stop, and Enter opened it).
+ * A virtualised pane list of `count` rows that keeps keyboard focus itself, as a listbox whose
+ * current row is its `aria-activedescendant` (as `src/ui/List.tsx`): rows outside the window
+ * unmount, so they can't hold focus. Spread `listProps` on the list (with `ref={scrollRef}`) and
+ * `rowProps(i)` on each row. `active` / `setActive` is the current row; `version` names the rows
+ * shown, null while they are stale (keys do nothing then); `open` opens a row.
+ *
+ * Keys act only on a row the user can see. When the current row is unset or scrolled out of view,
+ * focus from the keyboard (Tab), and rows landing while the list has focus, make the first fully
+ * visible row current; Enter on a current row scrolled out of view brings it back instead of
+ * opening it. Focus from a press leaves the current row alone, so no row flashes under the pointer
+ * before the click picks one.
+ *
+ * `doubleClickFresh` says whether a double-click began on the rows shown now: a new selection's
+ * rows replace the previous ones under the pointer, and keying the rows by selection keeps a click
+ * pressed on the old ones off the new, but the dblclick goes to wherever its second press lands.
  */
-export function usePaneListPointer(version: string | null, onKeyboardFocus: () => void) {
+export function usePaneList({
+  count,
+  resetKey,
+  version,
+  active,
+  setActive,
+  open,
+}: {
+  count: number;
+  resetKey: string | null;
+  version: string | null;
+  active: number;
+  setActive: (index: number) => void;
+  open: (index: number) => void;
+}) {
+  const { scrollRef, rowHeight, rows, height, scrollToIndex } = usePaneRows(count, resetKey);
+  const idPrefix = useId();
   const firstPress = useRef<string | null>(null);
   const pressing = useRef(false);
+  // Read from the DOM, not the virtualizer: the scroll reset for new rows has not reached it yet.
+  const onScreen = (i: number) => {
+    const el = scrollRef.current;
+    const top = LIST_PAD + i * rowHeight;
+    return !!el && top + rowHeight > el.scrollTop && top < el.scrollTop + el.clientHeight;
+  };
+  const showCurrent = () => {
+    if (!count || (active >= 0 && active < count && onScreen(active))) return;
+    const scrolled = (scrollRef.current?.scrollTop ?? 0) - LIST_PAD;
+    setActive(Math.min(count - 1, Math.max(0, Math.ceil(scrolled / rowHeight))));
+  };
+  useEffect(() => {
+    if (version !== null && document.activeElement === scrollRef.current) showCurrent();
+    // Only when new rows land; `showCurrent` reads this render's values.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [version]);
+  const rowId = (i: number) => `${idPrefix}-${i}`;
   return {
-    handlers: {
+    scrollRef,
+    rows,
+    height,
+    listProps: {
+      role: "listbox",
+      tabIndex: 0,
+      "aria-activedescendant": version !== null && rows.some((v) => v.index === active) ? rowId(active) : undefined,
       onMouseDownCapture: (e: ReactMouseEvent) => {
         pressing.current = true;
         if (e.detail <= 1) firstPress.current = version;
       },
       onFocus: () => {
-        if (!pressing.current) onKeyboardFocus();
+        if (!pressing.current && version !== null) showCurrent();
         pressing.current = false;
       },
       onBlur: () => {
         pressing.current = false;
       },
+      onKeyDown: (e: ReactKeyboardEvent) => {
+        if (version === null) return;
+        if (e.key === "Enter") {
+          if (active < 0 || active >= count) return;
+          if (onScreen(active)) open(active);
+          else scrollToIndex(active);
+          return;
+        }
+        const next = paneListMove(e.key, count, active);
+        if (next === null) return;
+        e.preventDefault();
+        setActive(next);
+        scrollToIndex(next);
+      },
     },
+    rowProps: (i: number) => ({
+      id: rowId(i),
+      role: "option",
+      "aria-selected": i === active,
+      "aria-setsize": count,
+      "aria-posinset": i + 1,
+    }),
     doubleClickFresh: () => version !== null && firstPress.current === version,
   };
 }
@@ -232,18 +310,22 @@ export function TreePanel({ repo, rev, onOpen }: { repo: string; rev: string | n
   } = useSelectionLoad<GraphTreeEntry[]>(key, () => call(commands.graphTree(repo, rev!)));
   const q = filter.trim().toLowerCase();
   const shown = !entries ? [] : q ? entries.filter((e) => e.path.toLowerCase().includes(q)) : entries;
-  const { scrollRef, rows, height, scrollToIndex } = usePaneRows(shown.length, loadedKey);
   // The active row belongs to the rows shown: a new revision or filter starts it over.
   const listKey = `${loadedKey}\0${q}`;
   const [activeRow, setActiveRow] = useState<{ key: string; index: number }>({ key: "", index: -1 });
   const active = activeRow.key === listKey ? activeRow.index : -1;
-  const pointer = usePaneListPointer(current ? loadedKey : null, () => {
-    if (current && active < 0 && shown.length) setActiveRow({ key: listKey, index: 0 });
+  // Until the new revision's files land, the previous revision's stay dimmed and inert.
+  const open = (e: GraphTreeEntry | undefined) => current && e?.kind === "blob" && onOpen(e.path);
+  const { scrollRef, rows, height, listProps, rowProps, doubleClickFresh } = usePaneList({
+    count: shown.length,
+    resetKey: loadedKey,
+    version: current ? loadedKey : null,
+    active,
+    setActive: (index) => setActiveRow({ key: listKey, index }),
+    open: (index) => open(shown[index]),
   });
   if (!rev) return <EmptyState title="Select a commit" className={styles.empty} />;
   if (!entries) return <Spinner size={14} />;
-  // Until the new revision's files land, the previous revision's stay dimmed and inert.
-  const open = (e: GraphTreeEntry | undefined) => current && e?.kind === "blob" && onOpen(e.path);
   return (
     <div className={styles.treePanel}>
       <div className={styles.treeBar}>
@@ -260,23 +342,9 @@ export function TreePanel({ repo, rev, onOpen }: { repo: string; rev: string | n
       <div
         ref={scrollRef}
         className={styles.table}
-        role="list"
         aria-label={tx("Files at Revision")}
         aria-busy={!current || undefined}
-        tabIndex={0}
-        {...pointer.handlers}
-        onKeyDown={(ev) => {
-          if (!current) return;
-          if (ev.key === "Enter") {
-            if (active >= 0) open(shown[active]);
-            return;
-          }
-          const next = paneListMove(ev.key, shown.length, active);
-          if (next === null) return;
-          ev.preventDefault();
-          setActiveRow({ key: listKey, index: next });
-          scrollToIndex(next);
-        }}
+        {...listProps}
       >
         {/* Keyed by revision so its rows are new nodes: a press on the old ones can't click these. */}
         <div key={loadedKey} role="presentation" className={styles.virtualRows} style={{ height }} inert={!current}>
@@ -285,13 +353,11 @@ export function TreePanel({ repo, rev, onOpen }: { repo: string; rev: string | n
             return (
               <div
                 key={e.path}
-                role="listitem"
-                aria-setsize={shown.length}
-                aria-posinset={v.index + 1}
+                {...rowProps(v.index)}
                 className={clsx(styles.tableRow, styles.virtualRow, v.index === active && styles.selected)}
                 style={{ transform: `translateY(${v.start}px)` }}
                 onClick={() => current && setActiveRow({ key: listKey, index: v.index })}
-                onDoubleClick={() => pointer.doubleClickFresh() && open(e)}
+                onDoubleClick={() => doubleClickFresh() && open(e)}
                 title={e.path}
               >
                 <Icon name={e.kind === "commit" ? "folder-github" : "file"} size={14} />
