@@ -1,5 +1,6 @@
 /** One row of the graph column: the edges entering and leaving the row and the commit's node. */
-import { memo } from "react";
+import { Fragment, memo } from "react";
+import { useTx } from "@/platform/i18n";
 import { gitGraphBridge, type GraphLaneRow, type GraphLaneSegment } from "@/workbench/gitGraphBridge";
 import styles from "./GitGraph.module.css";
 
@@ -44,29 +45,73 @@ export const GraphCell = memo(function GraphCell({
   head,
   hollow,
   width,
+  loaded,
+  onNavigate,
 }: {
   row: GraphLaneRow;
   head?: boolean;
   /** A pseudo row (uncommitted changes, stash): an outlined node. */
   hollow?: boolean;
   width: number;
+  /** Rows loaded, when an arrow of this row points at or past it; unset when every target is loaded. */
+  loaded?: number;
+  /** Goes to the row at an arrow's other end. */
+  onNavigate?: (targetRow: number) => void;
 }) {
+  const tx = useTx();
   const color = (i: number) => gitGraphBridge()?.laneColor(i) ?? "currentColor";
   const cy = ROW_HEIGHT / 2;
   const edge = (s: GraphLaneSegment, i: number, up: boolean) => {
     const d = segmentPath(s, up, width);
-    return d === null ? null : (
+    if (d === null) return null;
+    const key = `${up ? "u" : "d"}${i}`;
+    const target = s.arrow ? s.targetRow : undefined;
+    const navigable = target !== undefined && target >= 0 && (loaded === undefined || target < loaded) && !!onNavigate;
+    const line = (
       <path
-        key={`${up ? "u" : "d"}${i}`}
+        key={key}
         data-lane-color={s.color}
         d={d}
         stroke={color(s.color)}
         strokeDasharray={s.dashed ? "2 2" : undefined}
+        // Clicks on the drawn arrow reach the hit path under it, not the row.
+        pointerEvents={navigable ? "none" : undefined}
       />
+    );
+    if (!navigable) return line;
+    // As the Git Log's arrows: a wide transparent stroke to click (or Enter) that goes to the other end.
+    const label = tx("Go to connected commit");
+    return (
+      <Fragment key={key}>
+        <path
+          d={d}
+          stroke="transparent"
+          // Inline: `.graph path` sets the stroke width for every edge.
+          style={{ strokeWidth: 10, pointerEvents: "stroke" }}
+          role="button"
+          tabIndex={0}
+          aria-label={label}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            onNavigate(target!);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              e.stopPropagation();
+              onNavigate(target!);
+            }
+          }}
+        >
+          <title>{label}</title>
+        </path>
+        {line}
+      </Fragment>
     );
   };
   return (
-    <svg className={styles.graph} width={width} height={ROW_HEIGHT} aria-hidden>
+    <svg className={styles.graph} width={width} height={ROW_HEIGHT} aria-label={tx("Commit graph")}>
       {row.up.map((s, i) => edge(s, i, true))}
       {row.down.map((s, i) => edge(s, i, false))}
       {hollow ? (

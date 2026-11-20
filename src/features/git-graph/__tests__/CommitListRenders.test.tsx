@@ -144,3 +144,74 @@ describe("Git Graph list render cost", () => {
     expect(n).toBe(1);
   });
 });
+
+describe("Git Graph arrows", () => {
+  // Rows 2 and 150 joined by a long edge on lane 1 whose middle is hidden behind two arrows;
+  // row 5's lane leaves past the loaded rows.
+  const arrowRows = (loaded: number): GraphLaneRow[] =>
+    Array.from({ length: loaded }, (_, i) => ({
+      lane: 0,
+      color: 0,
+      up: [
+        { from: 0, to: 0, color: 0 },
+        ...(i === 150 ? [{ from: 1, to: 1, color: 1, arrow: "up" as const, targetRow: 2 }] : []),
+      ],
+      down: [
+        { from: 0, to: 0, color: 0 },
+        ...(i === 2 ? [{ from: 1, to: 1, color: 1, arrow: "down" as const, targetRow: 150 }] : []),
+        ...(i === 5 ? [{ from: 1, to: 1, color: 1, arrow: "down" as const, targetRow: N }] : []),
+      ],
+      width: 2,
+    }));
+  const arrowIn = (i: number) => rowOf(i).querySelector<SVGPathElement>('path[role="button"]');
+
+  it("selects the commit at the other end of a down arrow, not the arrow's row", () => {
+    const onSelect = vi.fn();
+    mount({ rows: arrowRows(N), onSelect });
+    // The drawn arrow lets clicks through to the hit path under it.
+    const hit = arrowIn(2)!;
+    expect(hit.nextElementSibling?.getAttribute("pointer-events")).toBe("none");
+    hit.focus();
+    fireEvent.click(hit);
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledWith([entries[150]!.id]);
+    // Focus moves to the list, so the arrow keys keep working once the arrow's row scrolls away.
+    expect(document.activeElement?.getAttribute("role")).toBe("grid");
+  });
+
+  it("selects the commit at the other end of an up arrow, also with Enter", () => {
+    const onSelect = vi.fn();
+    first = 140;
+    mount({ rows: arrowRows(N), onSelect });
+    fireEvent.click(arrowIn(150)!);
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenLastCalledWith([entries[2]!.id]);
+    fireEvent.keyDown(arrowIn(150)!, { key: "Enter" });
+    expect(onSelect).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves an arrow to a row not loaded yet inert until that row loads", () => {
+    const onSelect = vi.fn();
+    const shorter = entries.slice(0, N - 10);
+    const rowsNow = arrowRows(N);
+    const list = mount({ entries: shorter, rows: rowsNow.slice(0, N - 10), onSelect, done: false });
+    expect(arrowIn(5)).toBeNull();
+    // A click on the row still selects that row.
+    fireEvent.click(rowOf(5));
+    expect(onSelect).toHaveBeenLastCalledWith([entries[5]!.id]);
+    // The page holding the target arrives; row 5's segments are the same objects.
+    list.rerender({ entries: [...entries, ...extra], rows: [...rowsNow, ...arrowRows(N + 1).slice(N)] });
+    fireEvent.click(arrowIn(5)!);
+    expect(onSelect).toHaveBeenLastCalledWith([extra[0]!.id]);
+  });
+});
+
+const first0 = entries[0] as GraphEntry & { kind: "commit" };
+const extra: GraphEntry[] = [
+  {
+    kind: "commit",
+    id: "f".repeat(40),
+    parents: [],
+    commit: { ...first0.commit, id: "f".repeat(40), shortId: "ffffffff", summary: "beyond", refs: [] },
+  },
+];

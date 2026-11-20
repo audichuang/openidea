@@ -32,6 +32,11 @@ export interface GraphLaneSegment {
   dashed?: true;
   /** The edge continues out of sight this way: its long straight middle is hidden. */
   arrow?: "up" | "down";
+  /**
+   * With `arrow`: the row at the edge's other end (its index in the laid-out list); at or past the
+   * list's end (or -1) when that row is not loaded.
+   */
+  targetRow?: number;
   /** Drawn lane positions when they differ from `from` / `to` (a lane change drawn as one diagonal). */
   fromX?: number;
   toX?: number;
