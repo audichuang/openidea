@@ -110,6 +110,7 @@ const bridge = {
     rows: commits.map(() => ({ lane: 0, color: 0, up: [], down: [], width: 1 })),
     state: { _layout: null },
   }),
+  present: <T,>(rows: readonly T[]) => [...rows],
   laneColor: () => "var(--accent)",
   repoColor: () => null,
   refLabels: (refs: readonly string[]) =>
