@@ -4,11 +4,12 @@ import type { Branch, ChangedFile, Commit } from "@/bindings";
 import type { EditorInput } from "@/workbench/contributions";
 import type { MenuItem } from "@/ui";
 
+const { scrollToIndex } = vi.hoisted(() => ({ scrollToIndex: vi.fn() }));
 vi.mock("@tanstack/react-virtual", () => ({
   useVirtualizer: ({ count }: { count: number }) => ({
     getTotalSize: () => count * 24,
     getVirtualItems: () => Array.from({ length: count }, (_, index) => ({ index, start: index * 24, key: index })),
-    scrollToIndex: () => {},
+    scrollToIndex,
     measure: () => {},
     measureElement: () => {},
   }),
@@ -405,6 +406,43 @@ describe("Git Graph view", () => {
     await waitFor(() => expect(vcsLog).toHaveBeenCalledTimes(2));
     // The old graph stays while the new one loads.
     expect(screen.getByText("subject a")).toBeTruthy();
+  });
+
+  it("reveals the selection again when the list is replaced, not when a vcs refresh reloads it in place", async () => {
+    render(<GitGraphEditor />);
+    await screen.findByText("subject a");
+    fireEvent.click(rowOf("initial import"));
+    expect(scrollToIndex).toHaveBeenCalledTimes(1);
+    const reloaded = async (logs: number) => {
+      await waitFor(() => expect(vcsLog).toHaveBeenCalledTimes(logs));
+      await waitFor(() => rowOf("initial import"));
+      await act(async () => {});
+    };
+
+    vcsTags.mockImplementation(() => ok(["v1", "v2"]));
+    await act(async () => {
+      state = { ...state, version: 1 };
+      listeners.forEach((fn) => fn());
+    });
+    await reloaded(2);
+    expect(scrollToIndex).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Show Remote Branches" }));
+    await reloaded(3);
+    expect(scrollToIndex).toHaveBeenCalledTimes(2);
+    expect(scrollToIndex).toHaveBeenLastCalledWith(2, { align: "auto" });
+
+    // A reload: nothing is revealed while the old rows are still shown, once when the new list has the row.
+    let branches!: (v: unknown) => void;
+    const result = vcsBranches.getMockImplementation()!();
+    vcsBranches.mockImplementationOnce(() => new Promise((resolve) => (branches = resolve)));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await act(async () => {});
+    expect(rowOf("initial import")).toBeTruthy();
+    expect(scrollToIndex).toHaveBeenCalledTimes(2);
+    await act(async () => branches(await result));
+    await reloaded(4);
+    expect(scrollToIndex).toHaveBeenCalledTimes(3);
   });
 });
 

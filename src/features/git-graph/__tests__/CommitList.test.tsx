@@ -31,8 +31,9 @@ const entry = (id: string): GraphEntry => {
 };
 const page = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => entry(`c${from + i}`));
 
-const props = (entries: GraphEntry[], selected: string[]): CommitListProps => ({
+const props = (entries: GraphEntry[], selected: string[], generation = 1): CommitListProps => ({
   entries,
+  generation,
   rows: [],
   width: 1,
   done: true,
@@ -88,6 +89,37 @@ describe("CommitList reveal", () => {
     expect(scrollToIndex).toHaveBeenLastCalledWith(15, { align: "auto" });
 
     rerender(<CommitList {...props(page(0, 30), selected)} />);
+    expect(scrollToIndex).toHaveBeenCalledTimes(1);
+  });
+
+  // A filter switch or reload replaces the list with an unchanged selection: reveal it again once its row is back.
+  it("reveals an unchanged selection once more when the list is replaced, then not on its page appends", () => {
+    const selected = ["c15"];
+    const { rerender } = render(<CommitList {...props(page(0, 20), selected, 1)} />);
+    expect(scrollToIndex).toHaveBeenCalledTimes(1);
+
+    // Remote branches hidden: the selected commit is gone from the new list.
+    rerender(<CommitList {...props([], selected, 2)} />);
+    rerender(<CommitList {...props(page(0, 10), selected, 2)} />);
+    expect(scrollToIndex).toHaveBeenCalledTimes(1);
+
+    // Shown again: the list starts over and the row comes back with a later page.
+    rerender(<CommitList {...props([], selected, 3)} />);
+    rerender(<CommitList {...props(page(0, 10), selected, 3)} />);
+    expect(scrollToIndex).toHaveBeenCalledTimes(1);
+    rerender(<CommitList {...props(page(0, 20), selected, 3)} />);
+    expect(scrollToIndex).toHaveBeenCalledTimes(2);
+    expect(scrollToIndex).toHaveBeenLastCalledWith(15, { align: "auto" });
+
+    rerender(<CommitList {...props(page(0, 30), selected, 3)} />);
+    expect(scrollToIndex).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not reveal when a refresh in place drops the selected row and brings it back", () => {
+    const selected = ["c15"];
+    const { rerender } = render(<CommitList {...props(page(0, 20), selected)} />);
+    rerender(<CommitList {...props(page(0, 10), selected)} />);
+    rerender(<CommitList {...props(page(0, 20), selected)} />);
     expect(scrollToIndex).toHaveBeenCalledTimes(1);
   });
 });
