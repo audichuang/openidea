@@ -52,6 +52,7 @@ const rows: GraphLaneRow[] = entries.map(() => ({ lane: 0, color: 0, up: [], dow
 
 const props: CommitListProps = {
   entries,
+  generation: 1,
   rows,
   width: 1,
   done: true,
