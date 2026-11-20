@@ -260,6 +260,26 @@ describe("Git Graph view", () => {
     expect(await screen.findByText("body b")).toBeTruthy();
   });
 
+  it("re-renders neither the toolbar nor the graph cells when the selection changes", async () => {
+    // The toolbar paints the repository swatch (shown with two roots) and every graph cell its lane colours on each render.
+    state = { ...state, roots: [REPO, "/other"] };
+    const repoColor = vi.spyOn(bridge, "repoColor");
+    const laneColor = vi.spyOn(bridge, "laneColor");
+    render(<GitGraphEditor />);
+    await screen.findByText("subject a");
+    fireEvent.click(rowOf("subject a"));
+    expect(await screen.findByText("body a")).toBeTruthy();
+    expect(repoColor).toHaveBeenCalled();
+    expect(laneColor).toHaveBeenCalled();
+    repoColor.mockClear();
+    laneColor.mockClear();
+    fireEvent.click(rowOf("subject b"));
+    expect(await screen.findByText("body b")).toBeTruthy();
+    expect(rowOf("subject b").getAttribute("aria-selected")).toBe("true");
+    expect(repoColor).not.toHaveBeenCalled();
+    expect(laneColor).not.toHaveBeenCalled();
+  });
+
   it("opens the commit menu for the selection", async () => {
     render(<GitGraphEditor />);
     await screen.findByText("subject a");
