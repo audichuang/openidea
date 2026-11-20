@@ -16,6 +16,8 @@ export interface GraphFilters {
 interface Loaded {
   /** Repository and filters this state belongs to. */
   key: string;
+  /** Which load of the list this is: a new one when the list is replaced, kept by page appends and vcs refreshes. */
+  generation: number;
   commits: GraphCommit[];
   branches: Branch[];
   loading: boolean;
@@ -25,6 +27,8 @@ interface Loaded {
 
 export interface GraphData {
   commits: GraphCommit[];
+  /** Changes when the list is replaced (repository, filters, reload), not when a page is added or a vcs refresh reloads it in place. */
+  generation: number;
   branches: Branch[];
   loading: boolean;
   done: boolean;
@@ -67,6 +71,7 @@ export function logBranches(filters: GraphFilters, branches: readonly Branch[]):
 
 const emptyLoaded = (key: string): Loaded => ({
   key,
+  generation: 0,
   commits: [],
   branches: [],
   loading: true,
@@ -83,6 +88,7 @@ export function useGraphData(repo: string | null, filters: GraphFilters, version
 
   /** Branch tips and tags the loaded graph reflects; a vcs refresh reloads only when they move. */
   const refs = useRef<string | null>(null);
+  const generations = useRef(0);
 
   const fetchPage = useCallback(
     async (base: Loaded, preserve = false) => {
@@ -140,7 +146,8 @@ export function useGraphData(repo: string | null, filters: GraphFilters, version
       const signature = JSON.stringify([branches, tags]);
       if (preserve && signature === refs.current) return;
       refs.current = signature;
-      await fetchPage({ ...emptyLoaded(key), branches }, preserve);
+      const generation = preserve ? latest.current.generation : ++generations.current;
+      await fetchPage({ ...emptyLoaded(key), generation, branches }, preserve);
     },
     [repo, key, fetchPage],
   );
@@ -172,6 +179,7 @@ export function useGraphData(repo: string | null, filters: GraphFilters, version
   const current = repo && loaded.key === key ? loaded : emptyLoaded(key);
   return {
     commits: current.commits,
+    generation: current.generation,
     branches: current.branches,
     loading: !!repo && current.loading,
     done: !repo || current.done,
