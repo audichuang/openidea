@@ -62,6 +62,7 @@ import {
   type GitGraphRepoState,
   type GraphBranchFilterProps,
   type GraphDiffNavigation,
+  type GraphLaneRow,
   type GraphRevisionSide,
 } from "@/workbench/gitGraphBridge";
 import { GitGraphEditor } from "../GitGraphView";
@@ -111,6 +112,11 @@ const bridge = {
     state: { _layout: null },
   }),
   present: <T,>(rows: readonly T[]) => [...rows],
+  // Through `layout`, which tests spy on to count layouts.
+  presenter:
+    () =>
+    (commits: readonly { id: string }[]): GraphLaneRow[] =>
+      bridge.layout(commits).rows,
   laneColor: () => "var(--accent)",
   repoColor: () => null,
   refLabels: (refs: readonly string[]) =>

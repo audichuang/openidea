@@ -1,7 +1,9 @@
 /**
  * Fork-owned: provides the Git Graph view's bridge (`workbench/gitGraphBridge.ts`) from the
- * vcs feature's own menus, diff editor, lane layout and state. This file is the only place
- * the graph depends on vcs internals; `__tests__/gitGraphBridge.test.ts` pins what it relies on.
+ * vcs feature's own menus, diff editor, lane layout and state. This file and
+ * `gitGraphPresent.ts` (the paged presentation, porting upstream `hideLongEdges`) are the only places
+ * the graph depends on vcs internals; `__tests__/gitGraphBridge.test.ts` and
+ * `__tests__/gitGraphPresent.test.ts` pin what they rely on.
  */
 import type { ChangedFile } from "@/bindings";
 import type { MenuItem } from "@/ui";
@@ -12,17 +14,8 @@ import {
   type GraphLayoutState,
   type GraphRevisionSide,
 } from "@/workbench/gitGraphBridge";
-import {
-  compactLanes,
-  computeGraph,
-  emptyGraphState,
-  hideLongEdges,
-  laneColor,
-  straightenLaneChanges,
-  type GraphRow,
-  type GraphSegment,
-  type GraphState,
-} from "./graph";
+import { computeGraph, emptyGraphState, laneColor, type GraphState } from "./graph";
+import { createGraphPresenter, presentRows } from "./gitGraphPresent";
 import { diffInput, openDiff, withChain, type DiffData, type DiffSide } from "./diffInput";
 import { repoColor } from "./model";
 import { repositoryPath } from "./repositoryPaths";
@@ -137,43 +130,6 @@ export function revisionFileDiff(
   };
 }
 
-/**
- * `hideLongEdges` ends every run still open after the last loaded row there, so each lane heading
- * to commits not loaded yet gets an up-arrow stub on the last rows: hundreds of lanes side by side
- * on a merge-heavy history. Such a lane continues out of sight below; its down arrow where it
- * disappears says so, so drop the tail stub (from its up arrow to the last row).
- */
-function dropTailStubs(rows: readonly GraphRow[]): GraphRow[] {
-  const last = rows.at(-1);
-  if (!last) return rows.slice();
-  const straight = (list: readonly GraphSegment[], lane: number) => list.some((s) => s.from === lane && s.to === lane);
-  const through = (row: GraphRow, lane: number) =>
-    row.lane !== lane && straight(row.up, lane) && straight(row.down, lane);
-  const upArrow = (row: GraphRow, lane: number) =>
-    row.up.some((s) => s.arrow === "up" && s.from === lane && s.to === lane);
-  // Lane → first row of its tail stub.
-  const cut = new Map<number, number>();
-  for (const s of last.up) {
-    const lane = s.from;
-    if (s.to !== lane || cut.has(lane)) continue;
-    let r = rows.length - 1;
-    while (r >= 0 && through(rows[r]!, lane) && !upArrow(rows[r]!, lane)) r--;
-    if (r >= 0 && through(rows[r]!, lane) && upArrow(rows[r]!, lane)) cut.set(lane, r);
-  }
-  if (!cut.size) return rows.slice();
-  const hidden = (s: GraphSegment, r: number) => s.from === s.to && r >= (cut.get(s.from) ?? Infinity);
-  const filter = (list: GraphSegment[], targets: string[] | undefined, r: number) => {
-    const kept = list.flatMap((s, i) => (hidden(s, r) ? [] : [i]));
-    if (kept.length === list.length) return [list, targets] as const;
-    return [kept.map((i) => list[i]!), targets && kept.map((i) => targets[i]!)] as const;
-  };
-  return rows.map((row, r) => {
-    const [up, upTargets] = filter(row.up, row.upTargets, r);
-    const [down, downTargets] = filter(row.down, row.downTargets, r);
-    return up === row.up && down === row.down ? row : { ...row, up, down, upTargets, downTargets };
-  });
-}
-
 /** Matches no branch name (git refuses NUL in ref names). */
 const NO_REMOTES: ReadonlySet<string> = new Set(["\0"]);
 
@@ -200,10 +156,8 @@ export function createGitGraphBridge(): GitGraphBridge {
       const { rows, state: next } = computeGraph(commits, prev);
       return { rows, state: { _layout: next } satisfies GraphLayoutState };
     },
-    present(rows) {
-      // The Git Log's default (Show Long Edges off), as in `logPresentation.ts`.
-      return straightenLaneChanges(compactLanes(dropTailStubs(hideLongEdges(rows))));
-    },
+    present: presentRows,
+    presenter: createGraphPresenter,
     laneColor,
     repoColor,
     refLabels(refs, remoteBranches) {
