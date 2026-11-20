@@ -53,7 +53,7 @@ export const useGraphView = create<GraphViewState>(initialGraphView);
 const NO_BRANCH_FILTER: string[] = [];
 
 /** `repo`'s branch filter; the same array while it is unset. */
-export const branchFilterOf = (s: GraphViewState, repo: string | null): string[] =>
+export const branchFilterOf = (s: Pick<GraphViewState, "branchFilter">, repo: string | null): string[] =>
   (repo && s.branchFilter[repo]) || NO_BRANCH_FILTER;
 
 const NO_PR_CHOICE: PrChoice = { base: null, head: null, tab: "files", file: null };

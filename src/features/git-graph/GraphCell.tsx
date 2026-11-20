@@ -1,4 +1,5 @@
 /** One row of the graph column: the edges entering and leaving the row and the commit's node. */
+import { memo } from "react";
 import { gitGraphBridge, type GraphLaneRow, type GraphLaneSegment } from "@/workbench/gitGraphBridge";
 import styles from "./GitGraph.module.css";
 
@@ -35,32 +36,29 @@ export function segmentPath(s: GraphLaneSegment, up: boolean, width: number): st
 }
 
 /**
- * `highlight`: the colour (branch line) under the pointer; its edges stay bright and every
- * other line dims, so a hover shows where a branch runs.
+ * Every edge and node carries its colour (branch line) in `data-lane-color`, so the list dims the
+ * lines other than the hovered one with one style rule instead of re-rendering its rows.
  */
-export function GraphCell({
+export const GraphCell = memo(function GraphCell({
   row,
   head,
   hollow,
   width,
-  highlight,
 }: {
   row: GraphLaneRow;
   head?: boolean;
   /** A pseudo row (uncommitted changes, stash): an outlined node. */
   hollow?: boolean;
   width: number;
-  highlight: number | null;
 }) {
   const color = (i: number) => gitGraphBridge()?.laneColor(i) ?? "currentColor";
   const cy = ROW_HEIGHT / 2;
-  const dim = (c: number) => (highlight !== null && highlight !== c ? styles.dim : undefined);
   const edge = (s: GraphLaneSegment, i: number, up: boolean) => {
     const d = segmentPath(s, up, width);
     return d === null ? null : (
       <path
         key={`${up ? "u" : "d"}${i}`}
-        className={dim(s.color)}
+        data-lane-color={s.color}
         d={d}
         stroke={color(s.color)}
         strokeDasharray={s.dashed ? "2 2" : undefined}
@@ -73,7 +71,7 @@ export function GraphCell({
       {row.down.map((s, i) => edge(s, i, false))}
       {hollow ? (
         <circle
-          className={dim(row.color)}
+          data-lane-color={row.color}
           cx={x(row.lane)}
           cy={cy}
           r={4}
@@ -85,7 +83,7 @@ export function GraphCell({
       ) : head ? (
         <>
           <circle
-            className={dim(row.color)}
+            data-lane-color={row.color}
             cx={x(row.lane)}
             cy={cy}
             r={5}
@@ -93,11 +91,11 @@ export function GraphCell({
             stroke={color(row.color)}
             strokeWidth={2}
           />
-          <circle className={dim(row.color)} cx={x(row.lane)} cy={cy} r={2} fill={color(row.color)} />
+          <circle data-lane-color={row.color} cx={x(row.lane)} cy={cy} r={2} fill={color(row.color)} />
         </>
       ) : (
-        <circle className={dim(row.color)} cx={x(row.lane)} cy={cy} r={4} fill={color(row.color)} />
+        <circle data-lane-color={row.color} cx={x(row.lane)} cy={cy} r={4} fill={color(row.color)} />
       )}
     </svg>
   );
-}
+});
