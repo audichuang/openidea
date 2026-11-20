@@ -7,6 +7,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type KeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
@@ -15,7 +16,8 @@ import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Branch, GraphBisectState, Remote } from "@/bindings";
 import { formatTimestamp } from "@/platform/dateFormat";
-import { tx } from "@/platform/i18n";
+import { tx, useI18n } from "@/platform/i18n";
+import { useProject } from "@/platform/project";
 import {
   EmptyState,
   Icon,
@@ -70,7 +72,13 @@ interface RowActions {
   menu(e: ReactMouseEvent, i: number): void;
   drag(e: ReactPointerEvent<HTMLElement>, entry: GraphEntry): void;
   openRef(e: ReactMouseEvent, l: GraphRefLabel): void;
+  /** Selects the row at an arrow's other end (scrolled into view with the selection). */
+  navigate(targetRow: number): void;
 }
+
+/** Rows loaded, when one of `row`'s down arrows points past them: the row re-renders once they load. */
+const pendingTarget = (row: GraphLaneRow | undefined, loaded: number) =>
+  row?.down.some((s) => s.arrow && s.targetRow !== undefined && s.targetRow >= loaded) ? loaded : undefined;
 
 export function CommitList(p: CommitListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -215,6 +223,15 @@ export function CommitList(p: CommitListProps) {
         }
         if (items.length) showContextMenu(point, items);
       },
+      navigate: (targetRow) => {
+        const { p } = latest.current;
+        const entry = p.entries[targetRow];
+        if (!entry) return;
+        anchor.current = targetRow;
+        p.onSelect([entry.id]);
+        // The clicked arrow may scroll out and unmount: keep the keys on the list.
+        scrollRef.current?.focus({ preventScroll: true });
+      },
     }),
     [],
   );
@@ -309,6 +326,7 @@ export function CommitList(p: CommitListProps) {
                 head={entry.id === p.head?.headCommit}
                 currentBranch={currentBranch}
                 graphWidth={graphWidth}
+                loaded={pendingTarget(p.rows[v.index], p.entries.length)}
                 remoteBranches={p.remoteBranches}
                 actions={actions}
               />
@@ -332,6 +350,7 @@ const CommitRow = memo(function CommitRow({
   head,
   currentBranch,
   graphWidth,
+  loaded,
   remoteBranches,
   actions,
 }: {
@@ -346,6 +365,7 @@ const CommitRow = memo(function CommitRow({
   head: boolean;
   currentBranch: string | null;
   graphWidth: number;
+  loaded: number | undefined;
   remoteBranches: ReadonlySet<string>;
   actions: RowActions;
 }) {
@@ -370,7 +390,16 @@ const CommitRow = memo(function CommitRow({
       onPointerDown={(e) => actions.drag(e, entry)}
     >
       <span className={styles.colGraph} style={{ width: graphWidth }}>
-        {row ? <GraphCell row={row} head={head} hollow={entry.kind !== "commit"} width={graphWidth} /> : null}
+        {row ? (
+          <GraphCell
+            row={row}
+            head={head}
+            hollow={entry.kind !== "commit"}
+            width={graphWidth}
+            loaded={loaded}
+            onNavigate={actions.navigate}
+          />
+        ) : null}
       </span>
       <span className={styles.colDescription}>
         {entry.kind === "working" ? (
@@ -398,7 +427,7 @@ const CommitRow = memo(function CommitRow({
           </>
         )}
       </span>
-      <span className={styles.colDate}>{c?.timeMs ? formatTimestamp(c.timeMs) : ""}</span>
+      <DateCell ms={c?.timeMs} />
       <span className={styles.colAuthor} title={c?.email}>
         {c?.author}
       </span>
@@ -406,6 +435,36 @@ const CommitRow = memo(function CommitRow({
     </div>
   );
 });
+
+// One timer for every date cell, so relative dates ("5 min ago") advance without re-rendering rows.
+const minuteListeners = new Set<() => void>();
+let minuteTimer: ReturnType<typeof setInterval> | undefined;
+let minute = 0;
+function subscribeMinute(listener: () => void) {
+  minuteListeners.add(listener);
+  minuteTimer ??= setInterval(() => {
+    minute++;
+    for (const l of minuteListeners) l();
+  }, 60_000);
+  return () => {
+    minuteListeners.delete(listener);
+    if (minuteListeners.size) return;
+    clearInterval(minuteTimer);
+    minuteTimer = undefined;
+  };
+}
+const currentMinute = () => minute;
+
+/**
+ * The date column: also re-renders on its own when the date format settings, the language or the
+ * minute change, which the memoised row does not see. Not memoised itself, so it renders with its row.
+ */
+function DateCell({ ms }: { ms: number | null | undefined }) {
+  useSyncExternalStore(subscribeMinute, currentMinute);
+  useProject((s) => s.settings?.general?.dateFormat);
+  useI18n((s) => s.texts);
+  return <span className={styles.colDate}>{ms ? formatTimestamp(ms) : ""}</span>;
+}
 
 const REF_CLASS: Record<GraphRefLabel["kind"], string | undefined> = {
   head: styles.refHead,
