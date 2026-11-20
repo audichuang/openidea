@@ -58,7 +58,10 @@ export function GitGraphEditor() {
         : [],
     [data.commits, extras, head?.headCommit, activeRepo],
   );
-  const rows = useMemo(() => gitGraphBridge()?.layout(layoutInput(entries)).rows ?? [], [entries]);
+  const rows = useMemo(() => {
+    const b = gitGraphBridge();
+    return b ? b.present(b.layout(layoutInput(entries)).rows) : [];
+  }, [entries]);
   const width = rows.reduce((m, r) => Math.max(m, r.width), 1);
   const searchable = useMemo(() => entries.map((e) => (e.kind === "working" ? null : e.commit)), [entries]);
   const matches = useMemo(() => findMatches(searchable, query), [searchable, query]);
