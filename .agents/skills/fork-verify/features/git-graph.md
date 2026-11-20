@@ -6,7 +6,8 @@
 - Branch filter (all / chosen branches, remote branches on or off), repository switcher with several roots, find with match stepping.
 - Details pane: message, hash, parents (click jumps), author, dates, changed files; a file click opens the diff in the preview tab, double-click opens it.
 - Menus reused from the vcs feature: commit rows (Git Log commit menu), reference pills (Branches popup branch/tag menu), files (Git Log changes menu).
-- Hover on a row dims every other branch line.
+- Hover on a row dims every other branch line (one generated CSS rule, no per-row state).
+- Long edges are drawn as in the Git Log: the middle of a straight run of 30+ rows is hidden and its stubs end in arrows; lanes are packed. Clicking an arrow whose other end is loaded selects that commit and scrolls to it (hit path `svg path[role=button]`, out of the Tab order). Pages of 300 commits are laid out incrementally (`src/features/vcs/gitGraphPresent.ts`).
 - A vcs refresh reloads the graph only when branch tips or tags moved.
 - Uncommitted-changes row above HEAD and stash rows above their base (dashed, hollow nodes); fork backend `graph_working_state` / `graph_stashes` (`crates/ide-vcs/src/fork_graph.rs`).
 - Bottom pane tabs: Details, File Tree (`graph_tree`, double-click compares the revision with the working file), Reflog (`graph_reflog`), Statistics (`graph_author_stats`, branches/tags/remotes only).
@@ -32,6 +33,7 @@ Find Action → "Git Graph" (action `gitGraph.open`, when `vcsAvailable`).
 7. PR view: click `[role=tab]` "PR" in the Git Graph toolbar; pick refs with `button[aria-label="Base Branch"]` / `"Head Branch"` (type in "Search branches and tags", Enter); check the `[role=status]` summary containing "commits ahead" against `git rev-list --count base..head` / `head..base`, and the files under `[aria-label="Changed Files"]` against `git diff --name-status base...head`. Click the copy button ("ClipCode: Copy Changed Files") and compare the clipboard (`pbpaste`) with IntelliJ ClipCode's copy of the same range.
 8. Several repositories (FORK.md, repository picker decision): fixture a repository with an independent repository nested inside it, each cloned from its own bare remote that is one commit ahead. Pick the nested one in Git Graph, then before each toolbar button select the other repository in the VCS branch popup (the bridge's `focusRepo` moves the VCS selection), press the button and assert on the repository that changed (`git rev-parse origin/main` in both, the dialog's Repository field, the `Log: <repo>` tab's rows), not on the click. A single-repository fixture cannot show this class of bug.
 9. Hover needs real input: `cliclick m:X,Y` (window origin + row rect); assert the count of `svg path, circle` with opacity < 0.5 and look at a `screencapture` crop.
+10. Performance on a merge-heavy history: build one with a short `git fast-import` script (20k commits, 150 branches, merges between any two branches, back-merges of main, octopus merges; `git log --all --graph` about 750 columns wide). Keep the window visible and unminimised (a hidden webview pauses `requestAnimationFrame`, which looks like a multi-second stall), scroll `scrollTop += 120` per frame and record rAF gaps; count frames over 17 ms and 50 ms, and the gap at each page append. A `MessageChannel` ping-pong busy probe gave misleading numbers here; use rAF gaps.
 
 ## Gotchas
 
