@@ -768,8 +768,17 @@ const CommitMessageList = memo(function CommitMessageList({
   };
 
   const onContextMenu = (e: ReactMouseEvent<HTMLDivElement>) => {
-    const text = selectedRangeText();
-    if (text === null) return;
+    const scrollEl = scrollRef.current;
+    const listEl = listRef.current;
+    if (!scrollEl || !listEl || !commits.length) return;
+    const range = selectedCommitRange(
+      window.getSelection(),
+      scrollEl,
+      listEl,
+      commits.length,
+      allSelectedRangeRef.current,
+    );
+    if (!range) return;
     e.preventDefault();
     showContextMenu(e, [
       {
@@ -777,7 +786,7 @@ const CommitMessageList = memo(function CommitMessageList({
         label: "Copy",
         icon: "copy",
         shortcut: formatBinding(hostBinding("Meta+C")),
-        run: () => void copyText(text),
+        run: () => void copyText(formatCommitMessages(commits, range.start, range.end)),
       },
     ]);
   };
