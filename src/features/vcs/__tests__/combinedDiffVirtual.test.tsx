@@ -2,18 +2,37 @@
  * The all-in-one diff with many files: only the blocks near the viewport keep a mounted diff
  * editor, except blocks with unsaved edits or focus, and scrolling never drops or reorders files.
  */
+import { useEffect, useState } from "react";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const dirtyDocs = new Set<number>();
+const unmountedPaths: string[] = [];
+let nextDocId = 1;
+
 vi.mock("../DiffEditor", () => ({
-  DiffEditor: ({ input }: { input: { data: { path: string } } }) => (
-    <div data-testid="block-diff" data-path={input.data.path}>
-      <input aria-label={`Edit ${input.data.path}`} />
-    </div>
-  ),
+  DiffEditor: ({ input }: { input: { data: { path: string } } }) => {
+    const path = input.data.path;
+    const [docId] = useState(() => nextDocId++);
+    useEffect(() => {
+      const handle = { view: {}, ctx: { doc: docId, path } } as unknown as TextEditorHandle;
+      _addEditor(handle);
+      return () => {
+        _removeEditor(handle);
+        // Mirror real DiffEditor unmount: releasing the view drops its unsaved document state.
+        dirtyDocs.delete(docId);
+        unmountedPaths.push(path);
+      };
+    }, [docId, path]);
+    return (
+      <div data-testid="block-diff" data-path={path}>
+        <input aria-label={`Edit ${path}`} onChange={() => dirtyDocs.add(docId)} />
+      </div>
+    );
+  },
 }));
 
-import { _addEditor, _removeEditor, type TextEditorHandle } from "@/editor/api";
+import { _addEditor, _removeEditor, editorsFor, type TextEditorHandle } from "@/editor/api";
 import { useProject } from "@/platform/project";
 import { provideEditorService } from "@/workbench/contributions";
 import { CombinedDiffTab } from "../CombinedDiff";
@@ -26,13 +45,12 @@ const VIEW = 600;
 const diff = (path: string): DiffData => ({ path, left: { type: "rev", rev: "HEAD" }, right: { type: "worktree" } });
 const files = (n: number) => Array.from({ length: n }, (_, i) => diff(`/r/src/f${String(i).padStart(5, "0")}.ts`));
 
-let dirtyDocs: number[] = [];
 const openInput = vi.fn(async () => undefined);
 provideEditorService({
   openInput,
   openFile: vi.fn(async () => undefined),
   closeInput: vi.fn(),
-  dirtyDocumentIds: () => dirtyDocs,
+  dirtyDocumentIds: () => [...dirtyDocs],
 } as never);
 
 /**
@@ -83,7 +101,9 @@ const scrollTo = Element.prototype.scrollTo;
 
 beforeEach(() => {
   localStorage.clear();
-  dirtyDocs = [];
+  dirtyDocs.clear();
+  unmountedPaths.length = 0;
+  nextDocId = 1;
   openInput.mockClear();
   useProject.setState({ project: { name: "r", root: "/r", trusted: true, isGit: true, settings: {} } as never });
   vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
@@ -173,30 +193,36 @@ describe("the all-in-one diff with many files", () => {
   it("keeps a block with unsaved edits mounted however far it is scrolled, until they are saved", () => {
     const items = files(120);
     const edited = items[2]!.path;
-    const handle = { view: {}, ctx: { doc: 42, path: edited } } as unknown as TextEditorHandle;
-    _addEditor(handle);
-    try {
-      render(<CombinedDiffTab input={combinedDiffInput({ items })} />);
-      const field = screen.getByLabelText(`Edit ${edited}`) as HTMLInputElement;
-      act(() => {
-        fireEvent.change(field, { target: { value: "typed, not saved" } });
-      });
-      dirtyDocs = [42];
-      scroll(scroller(), items.length * BLOCK);
-      // Far away, it is still there, with its edit and the document still dirty.
-      expect(mounted()).toContain(edited);
-      expect(mounted().length).toBeLessThanOrEqual(13);
-      scroll(scroller(), 0);
-      expect(screen.getByLabelText(`Edit ${edited}`)).toBe(field);
-      expect(field.value).toBe("typed, not saved");
-      expect(dirtyDocs).toEqual([42]);
-      // Saved: it goes like any other block once out of view.
-      dirtyDocs = [];
-      scroll(scroller(), items.length * BLOCK);
-      expect(mounted()).not.toContain(edited);
-    } finally {
-      _removeEditor(handle);
-    }
+    render(<CombinedDiffTab input={combinedDiffInput({ items })} />);
+    const field = screen.getByLabelText(`Edit ${edited}`) as HTMLInputElement;
+    act(() => {
+      fireEvent.change(field, { target: { value: "typed, not saved" } });
+    });
+    // Ensure focus is outside the scroller so only the unsaved-edits guard keeps the block mounted.
+    field.blur();
+    expect(scroller().contains(document.activeElement)).toBe(false);
+    const docId = editorsFor(edited)[0]!.ctx.doc;
+    expect(dirtyDocs.has(docId)).toBe(true);
+
+    scroll(scroller(), items.length * BLOCK);
+    // Far away, it is still mounted, never unmounted, with its edit and dirty doc intact.
+    expect(mounted()).toContain(edited);
+    expect(unmountedPaths).not.toContain(edited);
+    expect(dirtyDocs.has(docId)).toBe(true);
+    expect(editorsFor(edited)).toHaveLength(1);
+    expect(mounted().length).toBeLessThanOrEqual(13);
+
+    scroll(scroller(), 0);
+    expect(screen.getByLabelText(`Edit ${edited}`)).toBe(field);
+    expect(field.value).toBe("typed, not saved");
+    expect(dirtyDocs.has(docId)).toBe(true);
+
+    // Saved: it unmounts and releases its document once scrolled out of view.
+    dirtyDocs.delete(docId);
+    scroll(scroller(), items.length * BLOCK);
+    expect(mounted()).not.toContain(edited);
+    expect(unmountedPaths).toContain(edited);
+    expect(editorsFor(edited)).toHaveLength(0);
   });
 
   it("keeps the focused block mounted while it is scrolled away", () => {
@@ -435,15 +461,14 @@ describe("the all-in-one diff with many files", () => {
     const items = files(120);
     const edited = items[2]!.path;
     const focusedPath = items[1]!.path;
-    const handle = { view: {}, ctx: { doc: 43, path: edited } } as unknown as TextEditorHandle;
-    _addEditor(handle);
     try {
       render(<CombinedDiffTab input={combinedDiffInput({ items })} />);
       const editedField = screen.getByLabelText(`Edit ${edited}`) as HTMLInputElement;
       act(() => {
         fireEvent.change(editedField, { target: { value: "unsaved across zero height" } });
       });
-      dirtyDocs = [43];
+      const editedDocId = editorsFor(edited)[0]!.ctx.doc;
+      expect(dirtyDocs.has(editedDocId)).toBe(true);
       const focusedField = screen.getByLabelText(`Edit ${focusedPath}`) as HTMLInputElement;
       focusedField.focus();
 
@@ -461,6 +486,8 @@ describe("the all-in-one diff with many files", () => {
       // Both the dirty block and the focused block stay mounted in place.
       expect(mounted()).toContain(edited);
       expect(mounted()).toContain(focusedPath);
+      expect(unmountedPaths).not.toContain(edited);
+      expect(dirtyDocs.has(editedDocId)).toBe(true);
       expect(screen.getByLabelText(`Edit ${edited}`)).toBe(editedField);
       expect(editedField.value).toBe("unsaved across zero height");
       expect(document.activeElement).toBe(focusedField);
@@ -471,10 +498,10 @@ describe("the all-in-one diff with many files", () => {
       expect(mounted()).toContain(mid);
       expect(screen.getByLabelText(`Edit ${edited}`)).toBe(editedField);
       expect(editedField.value).toBe("unsaved across zero height");
+      expect(dirtyDocs.has(editedDocId)).toBe(true);
       expect(screen.getByLabelText(`Edit ${focusedPath}`)).toBe(focusedField);
       expect(document.activeElement).toBe(focusedField);
     } finally {
-      _removeEditor(handle);
       window.ResizeObserver = origRO;
       window.requestAnimationFrame = origRAF;
       window.cancelAnimationFrame = origCAF;
@@ -491,66 +518,64 @@ describe("the all-in-one diff with many files", () => {
       ),
     );
     const last = items[4_999]!.path;
-    const handle = { view: {}, ctx: { doc: 99, path: last } } as unknown as TextEditorHandle;
-    _addEditor(handle);
-    try {
-      render(<CombinedDiffTab input={combinedDiffInput({ items })} />);
-      expect(screen.getByText("5000 files")).toBeTruthy();
-      const initialCount = mounted().length;
-      let most = initialCount;
-      const end = scroller().scrollHeight;
-      // Sweep from top to bottom and back across all 5,000 files in 100-file bands:
-      // every band renders in order without gaps, the 5,000th file is reached, and the
-      // mounted editor count stays bounded with no leak back at the top.
-      const visitedBands = new Set<number>();
-      for (let top = 0; top <= end; top += Math.ceil(end / 50)) {
-        scroll(scroller(), top);
-        most = Math.max(most, mounted().length);
-        const shown = headers();
-        expect(shown.length).toBeGreaterThan(0);
-        const first = Number(/(\d+)\.\w+$/.exec(shown[0]!)![1]);
-        expect(shown).toEqual(items.slice(first, first + shown.length).map((i) => i.path));
-        visitedBands.add(Math.floor(first / 100));
-      }
-      scroll(scroller(), end);
-      expect(headers()).toContain(last);
+    render(<CombinedDiffTab input={combinedDiffInput({ items })} />);
+    expect(screen.getByText("5000 files")).toBeTruthy();
+    const initialCount = mounted().length;
+    let most = initialCount;
+    const end = scroller().scrollHeight;
+    // Sweep from top to bottom and back across all 5,000 files in 100-file bands:
+    // every band renders in order without gaps, the 5,000th file is reached, and the
+    // mounted editor count stays bounded with no leak back at the top.
+    const visitedBands = new Set<number>();
+    for (let top = 0; top <= end; top += Math.ceil(end / 50)) {
+      scroll(scroller(), top);
       most = Math.max(most, mounted().length);
-      expect(visitedBands.size).toBeGreaterThanOrEqual(45);
-      for (let top = end; top >= 0; top -= Math.ceil(end / 25)) {
-        scroll(scroller(), top);
-        most = Math.max(most, mounted().length);
-      }
-      scroll(scroller(), 0);
-      expect(most).toBeLessThanOrEqual(12);
-      // Returning to the top leaves no leaked editors.
-      expect(mounted().length).toBe(initialCount);
-
-      // Collapse all, jump to the 5,000th file, expand it, edit it, scroll back to top and return.
-      act(() => {
-        fireEvent.click(screen.getByRole("button", { name: "Collapse All Files" }));
-      });
-      scroll(scroller(), end);
-      expect(headers()).toContain(last);
-      expect(mounted()).toEqual([]);
-      const lastBlock = document.querySelector<HTMLElement>(`[data-combined-block="${last}"]`)!;
-      act(() => {
-        fireEvent.click(lastBlock.querySelector<HTMLButtonElement>('button[aria-label="Expand File"]')!);
-      });
-      expect(mounted()).toContain(last);
-      const field = screen.getByLabelText(`Edit ${last}`) as HTMLInputElement;
-      act(() => {
-        fireEvent.change(field, { target: { value: "edited 5000th file" } });
-      });
-      dirtyDocs = [99];
-      scroll(scroller(), 0);
-      // Still mounted with unsaved edit while scrolled 5,000 files away, and total editors stay bounded.
-      expect(mounted()).toContain(last);
-      expect(mounted().length).toBeLessThanOrEqual(initialCount + 1);
-      scroll(scroller(), end);
-      expect(screen.getByLabelText(`Edit ${last}`)).toBe(field);
-      expect(field.value).toBe("edited 5000th file");
-    } finally {
-      _removeEditor(handle);
+      const shown = headers();
+      expect(shown.length).toBeGreaterThan(0);
+      const first = Number(/(\d+)\.\w+$/.exec(shown[0]!)![1]);
+      expect(shown).toEqual(items.slice(first, first + shown.length).map((i) => i.path));
+      visitedBands.add(Math.floor(first / 100));
     }
+    scroll(scroller(), end);
+    expect(headers()).toContain(last);
+    most = Math.max(most, mounted().length);
+    expect(visitedBands.size).toBeGreaterThanOrEqual(45);
+    for (let top = end; top >= 0; top -= Math.ceil(end / 25)) {
+      scroll(scroller(), top);
+      most = Math.max(most, mounted().length);
+    }
+    scroll(scroller(), 0);
+    expect(most).toBeLessThanOrEqual(12);
+    // Returning to the top leaves no leaked editors.
+    expect(mounted().length).toBe(initialCount);
+
+    // Collapse all, jump to the 5,000th file, expand it, edit it, blur, scroll back to top and return.
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Collapse All Files" }));
+    });
+    scroll(scroller(), end);
+    expect(headers()).toContain(last);
+    expect(mounted()).toEqual([]);
+    const lastBlock = document.querySelector<HTMLElement>(`[data-combined-block="${last}"]`)!;
+    act(() => {
+      fireEvent.click(lastBlock.querySelector<HTMLButtonElement>('button[aria-label="Expand File"]')!);
+    });
+    expect(mounted()).toContain(last);
+    const field = screen.getByLabelText(`Edit ${last}`) as HTMLInputElement;
+    act(() => {
+      fireEvent.change(field, { target: { value: "edited 5000th file" } });
+    });
+    field.blur();
+    const lastDocId = editorsFor(last)[0]!.ctx.doc;
+    expect(dirtyDocs.has(lastDocId)).toBe(true);
+    scroll(scroller(), 0);
+    // Still mounted with unsaved edit while scrolled 5,000 files away, and total editors stay bounded.
+    expect(mounted()).toContain(last);
+    expect(dirtyDocs.has(lastDocId)).toBe(true);
+    expect(mounted().length).toBeLessThanOrEqual(initialCount + 1);
+    scroll(scroller(), end);
+    expect(screen.getByLabelText(`Edit ${last}`)).toBe(field);
+    expect(field.value).toBe("edited 5000th file");
+    expect(dirtyDocs.has(lastDocId)).toBe(true);
   });
 });
