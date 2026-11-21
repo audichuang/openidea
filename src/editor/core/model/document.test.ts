@@ -332,6 +332,33 @@ describe("DocumentManager + slots", () => {
     }
   });
 
+  it("follows the dirty flag of a server that sends no dirty versions, and clears it on save", async () => {
+    _resetLanguages();
+    const path = "/p/a.txt";
+    const backend = createMemoryBackend({ [path]: "base\n" });
+    const onDirty = backend.onDirty.bind(backend);
+    // A server from before `DocDirty.version`: the desktop delivers its dirty flags at version 0 and
+    // drops its clean ones (`with_doc_version` in remote_dev.rs); the save reply clears the flag.
+    backend.onDirty = (handler) => onDirty((e) => e.dirty && handler({ ...e, version: 0 }));
+    const manager = new DocumentManager(backend, { settings: () => ({}), notify: vi.fn() }, () => {});
+    manager.start();
+    const model = await manager.acquire(path);
+    const slot = new EditorSlot(model, "t1", host);
+    try {
+      model.onBackendDirty({ type: "docDirty", doc: model.doc, dirty: true, version: 0 });
+      expect(useDocMeta.getState()[path]?.dirty).toBe(true);
+      slot.dispatchLocal({ changes: { from: 4, insert: " saved" } });
+      await model.sync.whenIdle();
+      await model.save("explicit");
+      expect(backend.files.get(path)).toBe("base saved\n");
+      expect(useDocMeta.getState()[path]?.dirty).toBe(false);
+    } finally {
+      slot.dispose();
+      manager.releaseProjectDocuments();
+      manager.stop();
+    }
+  });
+
   it("reconciles a save that includes an edit whose acknowledgement is still pending", async () => {
     const path = "/p/a.txt";
     const { backend, manager } = setup({ [path]: "base\n" }, { files: { autoSave: false } });
