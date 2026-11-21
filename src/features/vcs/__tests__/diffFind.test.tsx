@@ -116,6 +116,22 @@ describe("Find in the diff viewer", () => {
     await waitFor(() => expect(bar.isConnected).toBe(false));
   });
 
+  it("starts the right label and the find bar at the right pane, set on those rows and not on the panes", async () => {
+    useKeymap.setState({ overrides: KEYMAP });
+    const { container } = render(<DiffEditor input={revisions} />);
+    const right = await pane(1);
+    const root = container.firstElementChild as HTMLElement;
+    const labels = screen.getByTitle("abc123 /p/a.ts").parentElement!;
+    const start = labels.style.getPropertyValue("--diff-b-start");
+    expect(start).toMatch(/px$/);
+    // Not inherited by every line of the panes.
+    expect(root.style.getPropertyValue("--diff-b-start")).toBe("");
+    expect(right.dom.closest("[style*='--diff-b-start']")).toBeNull();
+    await press(1, "KeyF");
+    const bar = await screen.findByRole("search", { name: "Find in file" });
+    expect(bar.parentElement!.style.getPropertyValue("--diff-b-start")).toBe(start);
+  });
+
   it("closes with Esc in the editor while a found match is selected", async () => {
     useKeymap.setState({ overrides: KEYMAP });
     render(<DiffEditor input={revisions} />);

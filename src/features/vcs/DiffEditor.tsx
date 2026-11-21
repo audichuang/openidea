@@ -336,6 +336,27 @@ export function DiffEditor({
   const [busy, setBusy] = useState(false);
   const hostRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  /**
+   * Where the right pane starts (`--diff-b-start`), set on the rows lined up with it (the labels,
+   * the find bar) rather than on the root: a custom property changed on the root restyles every
+   * line of both panes, which the all-in-one diff pays for each block it mounts.
+   */
+  const bStart = useRef<string | null>(null);
+  const bStartRows = useRef(new Set<HTMLElement>());
+  const bStartRow = useCallback((el: HTMLElement | null) => {
+    if (!el) return;
+    bStartRows.current.add(el);
+    if (bStart.current) el.style.setProperty("--diff-b-start", bStart.current);
+  }, []);
+  const setBStart = useCallback((value: string | null) => {
+    if (value === bStart.current) return;
+    bStart.current = value;
+    for (const el of bStartRows.current) {
+      if (!el.isConnected) bStartRows.current.delete(el);
+      else if (value) el.style.setProperty("--diff-b-start", value);
+      else el.style.removeProperty("--diff-b-start");
+    }
+  }, []);
   const viewsRef = useRef<Views | null>(null);
   const staticsRef = useRef(statics);
   const focusedSide = useRef<Side>("b");
@@ -705,11 +726,7 @@ export function DiffEditor({
     const root = rootRef.current;
     if (views.a && root && typeof ResizeObserver !== "undefined") {
       const paneB = views.b.dom;
-      const align = () =>
-        root.style.setProperty(
-          "--diff-b-start",
-          `${paneB.getBoundingClientRect().left - root.getBoundingClientRect().left}px`,
-        );
+      const align = () => setBStart(`${paneB.getBoundingClientRect().left - root.getBoundingClientRect().left}px`);
       const observer = new ResizeObserver(align);
       observer.observe(root);
       observer.observe(paneB);
@@ -717,7 +734,7 @@ export function DiffEditor({
       const destroyPanes = views.destroy;
       views.destroy = () => {
         observer.disconnect();
-        root.style.removeProperty("--diff-b-start");
+        setBStart(null);
         destroyPanes();
       };
     }
@@ -1580,7 +1597,7 @@ export function DiffEditor({
         />
       </div>
       {viewMode === "split" ? (
-        <div className={styles.labels}>
+        <div ref={bStartRow} className={styles.labels}>
           <span className={styles.label} title={[titleA.label, titleA.file].filter(Boolean).join(" ")}>
             {titleA.label}
             {titleA.file && <span className={styles.labelFile}>{titleA.file}</span>}
@@ -1611,6 +1628,7 @@ export function DiffEditor({
       )}
       {find && ready && (
         <div
+          ref={bStartRow}
           className={clsx(
             styles.findRow,
             viewMode === "split" && styles.findRowSplit,
