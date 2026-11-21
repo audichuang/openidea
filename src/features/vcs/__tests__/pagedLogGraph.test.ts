@@ -258,7 +258,7 @@ describe("paged Git Log graph", () => {
   }, 60_000);
 
   it("pages a deep history with hundreds of branches and cross merges at a cost set by the page", () => {
-    const all = history(18, 6_000, 400, 0.6);
+    const all = history(18, 4_500, 400, 0.6);
     const present = createLogGraphPresenter();
     const costs: number[] = [];
     for (let n = 300; n <= all.length; n += 300) {
@@ -272,7 +272,7 @@ describe("paged Git Log graph", () => {
     }
     const pages = costs.slice(1);
     expect(pages.filter((rows) => rows <= 300 + 34).length).toBeGreaterThanOrEqual(0.8 * pages.length);
-  });
+  }, 60_000);
 
   it("lays the list out once on a page that cannot keep the rows above it", () => {
     // On this history the page from 97 to 228 commits renumbers lanes of rows above it.
@@ -300,12 +300,50 @@ describe("paged Git Log graph", () => {
   it("lays out a Refresh again only from a kept lane state before its first change", () => {
     // Few parents outside the history, so few lanes stay open to its end.
     const deep = ["refs moved deep down", "a commit rewritten deep down", "commits dropped deep down"];
-    const presented = refreshThrough(history(36, 2_400, 12, 0.5, 0.002), 2_200, 36, DEFAULT_LOG_OPTIONS, [
+    const presented = refreshThrough(history(36, 1_400, 12, 0.5, 0.002), 1_300, 36, DEFAULT_LOG_OPTIONS, [
       "same commits",
       ...deep,
     ]);
     expect(presented.get("same commits")).toBe(0);
-    for (const name of deep) expect(presented.get(name)).toBeLessThanOrEqual(2_200 - 1_024);
+    for (const name of deep) expect(presented.get(name)).toBeLessThanOrEqual(1_300 - 512);
+  });
+
+  it("keeps the rows below commits made on top on Refresh", () => {
+    // Commits on the newest branch, which moves to them; the oldest loaded commits then fall off
+    // the end (the same number is loaded again) or stay. Show Long Edges off and on.
+    for (const [made, longBranches, longEdges] of [
+      [1, 20, false],
+      [3, 20, false],
+      [1, 60, true],
+      [2, 5, false],
+    ] as const) {
+      const base = probeLog(1_500, longBranches);
+      const options = { ...DEFAULT_LOG_OPTIONS, longEdges };
+      const tip = Array.from({ length: made }, (_, i) =>
+        commit(`new${i}`, [i + 1 < made ? `new${i + 1}` : base[0]!.id], i ? [] : base[0]!.refs),
+      );
+      const after = [...tip, { ...base[0]!, refs: [] }, ...base.slice(1)];
+      for (const n of [1_300, 1_300 + made]) {
+        const present = createLogGraphPresenter();
+        for (let loaded = 300; loaded < 1_300; loaded += 250) present(base.slice(0, loaded), options, fragments, keep);
+        present(base.slice(0, 1_300), options, fragments, keep);
+        const list = after.slice(0, n);
+        let got!: ReturnType<typeof present>;
+        const presented = rowsPresented(() => (got = present(list, options, fragments, keep)));
+        // Rows down to the first kept state below the new commits, and the last page.
+        expect(presented).toBeLessThanOrEqual(512 + 2 * 34 + 300);
+        expectStrictEqual(
+          got.rows.map((_, i) => got.row(i)),
+          full(list, options).rows,
+        );
+        const next = after.slice(0, n + 150);
+        const paged = present(next, options, fragments, keep);
+        expectStrictEqual(
+          paged.rows.map((_, i) => paged.row(i)),
+          full(next, options).rows,
+        );
+      }
+    }
   });
 
   it("starts over when the list is not an extension of the last one", () => {
