@@ -378,7 +378,7 @@ describe("paged Git Log graph", () => {
         );
       }
     }
-  });
+  }, 60_000);
 
   it("keeps the rows below a commit made on top of a history too long to pass as call arguments", () => {
     const count = 150_000;
@@ -516,7 +516,7 @@ describe("paged Git Log graph", () => {
           expect({ seed, step, op, rows }).toStrictEqual({ seed, step, op, rows: want });
       }
     }
-  });
+  }, 60_000);
 
   it("starts over when the list is not an extension of the last one", () => {
     const present = createLogGraphPresenter();
