@@ -456,6 +456,7 @@ function PrCommitList({ repo, commits, resetKey }: { repo: string; commits: Comm
   const onKeyDown = (e: ReactKeyboardEvent) => {
     if (e.key !== " ") return listProps.onKeyDown(e);
     e.preventDefault();
+    if (e.repeat) return;
     listProps.onKeyDown({ ...e, key: "Enter" } as ReactKeyboardEvent);
   };
   return (
