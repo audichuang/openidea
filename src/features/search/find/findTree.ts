@@ -124,46 +124,36 @@ export function isNodeExcluded(node: FindTreeNode, marks: ReplaceMarks): boolean
 }
 
 // ---------------------------------------------------------------------------
-// Collapse state (O(1) toggle, Collapse All and Expand All)
+// Collapsed keys
 
-const EMPTY_KEYS: ReadonlySet<string> = new Set();
-
-export interface CollapseState {
-  /** True after Collapse All: nodes stay collapsed unless listed in `exceptions`. */
-  defaultCollapsed: boolean;
-  /** Keys whose expanded state differs from `!defaultCollapsed`. */
-  exceptions: ReadonlySet<string>;
-}
-
-export const EXPAND_ALL: CollapseState = { defaultCollapsed: false, exceptions: EMPTY_KEYS };
-export const COLLAPSE_ALL: CollapseState = { defaultCollapsed: true, exceptions: EMPTY_KEYS };
-
-function isExpandedKey(state: CollapseState, key: string): boolean {
-  return state.defaultCollapsed ? state.exceptions.has(key) : !state.exceptions.has(key);
-}
-
-/** Returns a new `CollapseState` with `node` opened or closed, or `state` unchanged. */
-export function toggleCollapseNode(state: CollapseState, node: FindTreeNode, open: boolean): CollapseState {
-  if (node.kind === "match") return state;
-  const matchesDefault = open === !state.defaultCollapsed;
-  let next: Set<string> | null = null;
-  const apply = (key: string, wantOpen: boolean) => {
-    const isDefault = wantOpen === !state.defaultCollapsed;
-    const has = (next ?? state.exceptions).has(key);
-    if (isDefault ? has : !has) {
-      next ??= new Set(state.exceptions);
-      if (isDefault) next.delete(key);
-      else next.add(key);
-    }
-  };
-  apply(node.key, open);
-  // Collapsing a directory also collapses its child files, matching Tree's collapse rule.
-  if (!open && node.kind === "dir") {
-    for (const child of node.children) apply(child.key, false);
+/** Keys of every node that can be collapsed, for Collapse All: what was listed when it was clicked. */
+export function expandableKeys(files: readonly FileMatches[], groupByDirectory: boolean): Set<string> {
+  const keys = new Set<string>();
+  for (const f of files) {
+    keys.add(`f:${f.path}`);
+    if (groupByDirectory) keys.add(`d:${relDir(f.relPath)}`);
   }
-  if (!next) return state;
-  if (matchesDefault && next.size === 0) return state.defaultCollapsed ? COLLAPSE_ALL : EXPAND_ALL;
-  return { defaultCollapsed: state.defaultCollapsed, exceptions: next };
+  return keys;
+}
+
+/**
+ * `collapsed` with `node` opened or closed, or `collapsed` itself when nothing changes. Closing a
+ * directory also closes its files, so opening it again shows only the files (as `Tree` does).
+ */
+export function setNodeCollapsed(
+  collapsed: ReadonlySet<string>,
+  node: FindTreeNode,
+  open: boolean,
+): ReadonlySet<string> {
+  if (node.kind === "match") return collapsed;
+  const keys = !open && node.kind === "dir" ? [node.key, ...node.children.map((c) => c.key)] : [node.key];
+  if (keys.every((k) => collapsed.has(k) === !open)) return collapsed;
+  const next = new Set(collapsed);
+  for (const k of keys) {
+    if (open) next.delete(k);
+    else next.add(k);
+  }
+  return next;
 }
 
 // ---------------------------------------------------------------------------
@@ -339,14 +329,14 @@ class OrderedTree<E> {
   }
 
   forEachInOrder(visit: (entry: E, rank: number) => void) {
+    const stack: AvlNode<E>[] = [];
     let rank = 0;
-    const walk = (n: AvlNode<E> | null) => {
-      if (!n) return;
-      walk(n.left);
-      visit(n.entry, rank++);
-      walk(n.right);
-    };
-    walk(this.root);
+    for (let n = this.root; n || stack.length;) {
+      for (; n; n = n.left) stack.push(n);
+      const top = stack.pop()!;
+      visit(top.entry, rank++);
+      n = top.right;
+    }
   }
 }
 
@@ -357,10 +347,6 @@ class RowFenwick {
   private values: number[] = [];
   private tree: number[] = [0];
   total = 0;
-
-  get length(): number {
-    return this.values.length;
-  }
 
   push(val: number) {
     const idx = this.values.length;
@@ -476,12 +462,30 @@ function findMatchIndex(file: FileNode, line: number): number {
   return map.get(line) ?? -1;
 }
 
+/** An occurrence found while walking the matches: the match, its file and directory. */
+interface OccurrenceSlot {
+  match: MatchNode | null;
+  file: FileNode | null;
+  dir: DirNode | null;
+  index: number;
+}
+
+const emptySlot = (): OccurrenceSlot => ({ match: null, file: null, dir: null, index: 0 });
+
+function fillSlot(slot: OccurrenceSlot, match: MatchNode, file: FileNode, dir: DirNode | null, index: number) {
+  slot.match = match;
+  slot.file = file;
+  slot.dir = dir;
+  slot.index = index;
+}
+
 function parseMatchKey(key: string): { fileKey: string; line: number } | null {
   if (!key.startsWith("m:")) return null;
   const sep = key.lastIndexOf(":");
-  if (sep <= 2) return null;
+  if (sep < 2) return null;
   const line = Number(key.slice(sep + 1));
-  if (!Number.isFinite(line)) return null;
+  // Only the key `fileEntry` writes for that line, e.g. not "m:/a.ts:" or "m:/a.ts:01".
+  if (!Number.isInteger(line) || String(line) !== key.slice(sep + 1)) return null;
   return { fileKey: `f:${key.slice(2, sep)}`, line };
 }
 
@@ -492,7 +496,7 @@ function parseMatchKey(key: string): { fileKey: string; line: number } | null {
 export class FindTreeIndex {
   private files: readonly FileMatches[] = [];
   private grouped = false;
-  private collapse: CollapseState = EXPAND_ALL;
+  private collapsed: ReadonlySet<string> = new Set();
   private onToggle: (node: FindTreeNode, open: boolean) => void = () => {};
 
   private flatTree = new OrderedTree<FlatFileItem>();
@@ -508,22 +512,22 @@ export class FindTreeIndex {
   sync(
     files: readonly FileMatches[],
     grouped: boolean,
-    collapse: CollapseState,
+    collapsed: ReadonlySet<string>,
     onToggle: (node: FindTreeNode, open: boolean) => void,
   ): TreeModel<FindTreeNode> {
     this.onToggle = onToggle;
     const sameFiles = files === this.files;
     const sameMode = grouped === this.grouped;
-    const sameCollapse = collapse === this.collapse;
-    if (sameFiles && sameMode && sameCollapse && this.cachedModel) return this.cachedModel;
+    const sameCollapsed = collapsed === this.collapsed;
+    if (sameFiles && sameMode && sameCollapsed && this.cachedModel) return this.cachedModel;
 
-    const prevCollapse = this.collapse;
-    this.collapse = collapse;
+    const prevCollapsed = this.collapsed;
+    this.collapsed = collapsed;
 
     if (!sameMode || !isStreamExtension(files, this.files)) {
       this.rebuild(files, grouped);
     } else {
-      if (!sameCollapse) this.applyCollapseChange(prevCollapse, collapse);
+      if (!sameCollapsed) this.applyCollapseChange(prevCollapsed, collapsed);
       if (files.length > this.files.length) this.append(files, this.files.length);
       this.files = files;
     }
@@ -573,7 +577,6 @@ export class FindTreeIndex {
 
   /** Short-circuiting check whether at least one usage is still pending replacement. */
   hasPendingUsage(marks: ReplaceMarks): boolean {
-    if (marks.excluded.size === 0 && marks.done.size === 0) return this.files.length > 0;
     for (const f of this.files) {
       for (const m of f.matches) {
         for (const [col] of m.ranges) {
@@ -604,7 +607,7 @@ export class FindTreeIndex {
         this.rawByPath.set(raw.path, raw);
         const { node, rel } = fileEntry(raw);
         const item: FlatFileItem = { node, rel, treeNode: null };
-        const open = isExpandedKey(this.collapse, node.key);
+        const open = !this.collapsed.has(node.key);
         const ownRows = 1 + (open ? node.children.length : 0);
         item.treeNode = this.flatTree.insert(item, ownRows, compareFlat);
         this.flatByKey.set(node.key, item);
@@ -627,27 +630,24 @@ export class FindTreeIndex {
       const indexInDir = dir.node.children.length;
       dir.node.children.push(node);
       dir.node.count += node.count;
-      const fileOpen = isExpandedKey(this.collapse, node.key);
+      const fileOpen = !this.collapsed.has(node.key);
       dir.bit.push(1 + (fileOpen ? node.children.length : 0));
-      if (isExpandedKey(this.collapse, dirKey)) {
+      if (!this.collapsed.has(dirKey)) {
         this.dirTree.setOwnRows(dir.treeNode!, 1 + dir.bit.total);
       }
       this.groupedByFileKey.set(node.key, { node, dir, indexInDir });
     }
   }
 
-  private applyCollapseChange(prev: CollapseState, next: CollapseState) {
-    if (prev.defaultCollapsed !== next.defaultCollapsed || Math.abs(prev.exceptions.size - next.exceptions.size) > 64) {
-      this.recomputeAllRows();
-      return;
-    }
+  /** Updates the row counts of the nodes opened or closed; Collapse All and Expand All recount every row. */
+  private applyCollapseChange(prev: ReadonlySet<string>, next: ReadonlySet<string>) {
     const changed: string[] = [];
-    for (const k of prev.exceptions) if (!next.exceptions.has(k)) changed.push(k);
-    for (const k of next.exceptions) if (!prev.exceptions.has(k)) changed.push(k);
-    if (changed.length > 64) {
-      this.recomputeAllRows();
-      return;
-    }
+    // False past 64 changed keys (Expand All, Collapse All): every row is recounted instead.
+    const collect = (from: ReadonlySet<string>, to: ReadonlySet<string>) => {
+      for (const k of from) if (!to.has(k) && changed.push(k) > 64) return false;
+      return true;
+    };
+    if (!collect(prev, next) || !collect(next, prev)) return this.recomputeAllRows();
     for (const k of changed) this.updateKeyRows(k);
   }
 
@@ -655,23 +655,23 @@ export class FindTreeIndex {
     if (!this.grouped) {
       const item = this.flatByKey.get(key);
       if (!item?.treeNode) return;
-      const open = isExpandedKey(this.collapse, key);
+      const open = !this.collapsed.has(key);
       this.flatTree.setOwnRows(item.treeNode, 1 + (open ? item.node.children.length : 0));
       return;
     }
     if (key.startsWith("d:")) {
       const dir = this.dirByKey.get(key);
       if (!dir?.treeNode) return;
-      const open = isExpandedKey(this.collapse, key);
+      const open = !this.collapsed.has(key);
       this.dirTree.setOwnRows(dir.treeNode, 1 + (open ? dir.bit.total : 0));
       return;
     }
     if (key.startsWith("f:")) {
       const ref = this.groupedByFileKey.get(key);
       if (!ref?.dir.treeNode) return;
-      const fileOpen = isExpandedKey(this.collapse, key);
+      const fileOpen = !this.collapsed.has(key);
       ref.dir.bit.set(ref.indexInDir, 1 + (fileOpen ? ref.node.children.length : 0));
-      if (isExpandedKey(this.collapse, ref.dir.node.key)) {
+      if (!this.collapsed.has(ref.dir.node.key)) {
         this.dirTree.setOwnRows(ref.dir.treeNode, 1 + ref.dir.bit.total);
       }
     }
@@ -680,7 +680,7 @@ export class FindTreeIndex {
   private recomputeAllRows() {
     if (!this.grouped) {
       this.flatTree.recomputeAllRows((item) =>
-        isExpandedKey(this.collapse, item.node.key) ? 1 + item.node.children.length : 1,
+        !this.collapsed.has(item.node.key) ? 1 + item.node.children.length : 1,
       );
       return;
     }
@@ -688,9 +688,9 @@ export class FindTreeIndex {
       const children = dir.node.children as FileNode[];
       dir.bit.rebuild((i) => {
         const f = children[i]!;
-        return isExpandedKey(this.collapse, f.key) ? 1 + f.children.length : 1;
+        return !this.collapsed.has(f.key) ? 1 + f.children.length : 1;
       });
-      return isExpandedKey(this.collapse, dir.node.key) ? 1 + dir.bit.total : 1;
+      return !this.collapsed.has(dir.node.key) ? 1 + dir.bit.total : 1;
     });
   }
 
@@ -706,7 +706,7 @@ export class FindTreeIndex {
           depth: 0,
           parentKey: null,
           expandable: true,
-          expanded: isExpandedKey(this.collapse, file.key),
+          expanded: !this.collapsed.has(file.key),
           posInSet: hit.rank + 1,
           setSize: this.flatTree.size,
         };
@@ -734,7 +734,7 @@ export class FindTreeIndex {
         depth: 0,
         parentKey: null,
         expandable: true,
-        expanded: isExpandedKey(this.collapse, dir.node.key),
+        expanded: !this.collapsed.has(dir.node.key),
         posInSet: hit.rank + 1,
         setSize: this.dirTree.size,
       };
@@ -748,7 +748,7 @@ export class FindTreeIndex {
         depth: 1,
         parentKey: dir.node.key,
         expandable: true,
-        expanded: isExpandedKey(this.collapse, file.key),
+        expanded: !this.collapsed.has(file.key),
         posInSet: fileIdx + 1,
         setSize: dir.node.children.length,
       };
@@ -775,7 +775,7 @@ export class FindTreeIndex {
       const parsed = parseMatchKey(key);
       if (!parsed) return -1;
       const item = this.flatByKey.get(parsed.fileKey);
-      if (!item?.treeNode || !isExpandedKey(this.collapse, parsed.fileKey)) return -1;
+      if (!item?.treeNode || this.collapsed.has(parsed.fileKey)) return -1;
       const childIdx = findMatchIndex(item.node, parsed.line);
       return childIdx >= 0 ? this.flatTree.rowStartOf(item.treeNode) + 1 + childIdx : -1;
     }
@@ -786,18 +786,13 @@ export class FindTreeIndex {
     }
     if (key.startsWith("f:")) {
       const ref = this.groupedByFileKey.get(key);
-      if (!ref?.dir.treeNode || !isExpandedKey(this.collapse, ref.dir.node.key)) return -1;
+      if (!ref?.dir.treeNode || this.collapsed.has(ref.dir.node.key)) return -1;
       return this.dirTree.rowStartOf(ref.dir.treeNode) + 1 + ref.dir.bit.sumBefore(ref.indexInDir);
     }
     const parsed = parseMatchKey(key);
     if (!parsed) return -1;
     const ref = this.groupedByFileKey.get(parsed.fileKey);
-    if (
-      !ref?.dir.treeNode ||
-      !isExpandedKey(this.collapse, ref.dir.node.key) ||
-      !isExpandedKey(this.collapse, parsed.fileKey)
-    )
-      return -1;
+    if (!ref?.dir.treeNode || this.collapsed.has(ref.dir.node.key) || this.collapsed.has(parsed.fileKey)) return -1;
     const childIdx = findMatchIndex(ref.node, parsed.line);
     if (childIdx < 0) return -1;
     return this.dirTree.rowStartOf(ref.dir.treeNode) + 1 + ref.dir.bit.sumBefore(ref.indexInDir) + 1 + childIdx;
@@ -808,7 +803,7 @@ export class FindTreeIndex {
       const total = this.flatTree.size;
       this.flatTree.forEachInOrder((item, rank) => {
         const file = item.node;
-        const open = isExpandedKey(this.collapse, file.key);
+        const open = !this.collapsed.has(file.key);
         visit({
           node: file,
           key: file.key,
@@ -840,7 +835,7 @@ export class FindTreeIndex {
 
     const totalDirs = this.dirTree.size;
     this.dirTree.forEachInOrder((dir, dirRank) => {
-      const dirOpen = isExpandedKey(this.collapse, dir.node.key);
+      const dirOpen = !this.collapsed.has(dir.node.key);
       visit({
         node: dir.node,
         key: dir.node.key,
@@ -855,7 +850,7 @@ export class FindTreeIndex {
       const files = dir.node.children as FileNode[];
       for (let fi = 0; fi < files.length; fi++) {
         const file = files[fi]!;
-        const fileOpen = isExpandedKey(this.collapse, file.key);
+        const fileOpen = !this.collapsed.has(file.key);
         visit({
           node: file,
           key: file.key,
@@ -895,10 +890,11 @@ export class FindTreeIndex {
     let total = 0;
     let leadFound = false;
     let passedLead = false;
-    let firstOcc: { node: FindTreeNode; ancestors: FindTreeNode[]; index: number } | null = null;
-    let lastOcc: { node: FindTreeNode; ancestors: FindTreeNode[]; index: number } | null = null;
-    let nextOcc: { node: FindTreeNode; ancestors: FindTreeNode[]; index: number } | null = null;
-    let prevOcc: { node: FindTreeNode; ancestors: FindTreeNode[]; index: number } | null = null;
+    // Filled in place while walking, so a step allocates nothing per match.
+    const first = emptySlot();
+    const last = emptySlot();
+    const next = emptySlot();
+    const prev = emptySlot();
 
     const visitFile = (file: FileNode, dirNode: DirNode | null, skipFromDir: boolean) => {
       const isLeadFile = !leadFound && lead !== null && file.key === lead;
@@ -906,7 +902,6 @@ export class FindTreeIndex {
         leadFound = true;
         if (!skipSubtree) passedLead = true;
       }
-      const ancestors: FindTreeNode[] = dirNode ? [dirNode, file] : [file];
       const matches = file.children as MatchNode[];
       for (let i = 0; i < matches.length; i++) {
         const m = matches[i]!;
@@ -914,11 +909,10 @@ export class FindTreeIndex {
         if (isLeadMatch) leadFound = true;
         if (accept(m)) {
           total++;
-          const occ = { node: m, ancestors, index: total };
-          if (!firstOcc) firstOcc = occ;
-          lastOcc = occ;
-          if (!leadFound) prevOcc = occ;
-          else if (passedLead && !nextOcc && !isLeadMatch && !skipFromDir) nextOcc = occ;
+          if (!first.match) fillSlot(first, m, file, dirNode, total);
+          fillSlot(last, m, file, dirNode, total);
+          if (!leadFound) fillSlot(prev, m, file, dirNode, total);
+          else if (passedLead && !next.match && !isLeadMatch && !skipFromDir) fillSlot(next, m, file, dirNode, total);
         }
         if (isLeadMatch) passedLead = true;
       }
@@ -940,9 +934,14 @@ export class FindTreeIndex {
       });
     }
 
-    if (total === 0) return null;
-    const hit = !leadFound ? (dir === 1 ? firstOcc : lastOcc) : dir === 1 ? nextOcc : prevOcc;
-    return hit ? { ...hit, total } : null;
+    const hit = !leadFound ? (dir === 1 ? first : last) : dir === 1 ? next : prev;
+    if (!hit.match || !hit.file) return null;
+    return {
+      node: hit.match,
+      ancestors: hit.dir ? [hit.dir, hit.file] : [hit.file],
+      index: hit.index,
+      total,
+    };
   }
 
   private createModelSnapshot(): TreeModel<FindTreeNode> {

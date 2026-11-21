@@ -78,6 +78,7 @@ export interface TreeModelRow<T> {
  * The visible rows of a tree that the caller indexes itself, for results that stream in: `Tree`
  * reads the rows in view and the lead row instead of walking every node on each update.
  * Expansion is the model's: `setExpanded` is called instead of `onExpandedChange`.
+ * Pass a new model object whenever its rows change: speed search and the row lookups are memoized on it.
  */
 export interface TreeModel<T> {
   rowCount: number;
@@ -923,10 +924,13 @@ export function Tree<T>(props: TreeProps<T>) {
                   onMouseDown={(e) => {
                     if (!row.expandable || e.button !== 0) return;
                     e.stopPropagation();
+                    // Checked before collapsing: a model may hide the descendants right away.
+                    const leadInside =
+                      row.expanded &&
+                      !!leadRow &&
+                      isDescendant((k) => rowAt(keyIndex(k))?.parentKey ?? null, leadRow.key, row.key);
                     setExpanded(row, !row.expanded);
-                    if (!row.expanded) return;
-                    if (leadRow && isDescendant((k) => rowAt(keyIndex(k))?.parentKey ?? null, leadRow.key, row.key))
-                      selectIndex(v.index);
+                    if (leadInside) selectIndex(v.index);
                   }}
                   onDoubleClick={(e) => e.stopPropagation()}
                 >

@@ -296,6 +296,31 @@ describe("Tree with a model", () => {
     act(() => void (step = handle.current!.selectOccurrence(-1)));
     expect(step).toBeNull();
   });
+
+  // The model hides the rows below `main` as soon as it is told to collapse it.
+  it("moves the lead to a folder collapsed with its chevron from a row inside it", () => {
+    const onSelectionChange = vi.fn();
+    render(
+      <Tree<N>
+        aria-label="Files"
+        model={modelOf(new Set(["src", "main"]))}
+        getKey={(n) => n.id}
+        getLabel={(n) => n.id}
+        getChildren={(n) => n.children}
+        isExpandable={(n) => !!n.children}
+        onSelectionChange={onSelectionChange}
+      />,
+    );
+    const tree = screen.getByRole("tree");
+    fireEvent.mouseDown(within(tree).getByText("index.ts"), { button: 0, detail: 1 });
+    expect(onSelectionChange).toHaveBeenLastCalledWith(
+      new Set(["index.ts"]),
+      expect.objectContaining({ id: "index.ts" }),
+    );
+    const main = within(tree).getAllByRole("treeitem")[1]!;
+    fireEvent.mouseDown(main.querySelector("[data-tree-toggle]")!, { button: 0 });
+    expect(onSelectionChange).toHaveBeenLastCalledWith(new Set(["main"]), expect.objectContaining({ id: "main" }));
+  });
 });
 
 describe("Tree keyboard navigation", () => {

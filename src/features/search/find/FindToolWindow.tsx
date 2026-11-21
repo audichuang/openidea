@@ -44,13 +44,11 @@ import {
   type Usage,
 } from "./replaceFlow";
 import {
-  COLLAPSE_ALL,
-  EXPAND_ALL,
+  expandableKeys,
   FindTreeIndex,
   isNodeExcluded,
   nodeGroups,
-  toggleCollapseNode,
-  type CollapseState,
+  setNodeCollapsed,
   type FindTreeNode,
 } from "./findTree";
 import {
@@ -85,13 +83,14 @@ const useMarks = create<{ byTab: Record<number, ReplaceMarks> }>(() => ({ byTab:
 const setMarks = (tab: number, marks: ReplaceMarks) =>
   useMarks.setState((s) => ({ byTab: { ...s.byTab, [tab]: marks } }));
 
-const useCollapsed = create<{ byTab: Record<number, CollapseState> }>(() => ({ byTab: {} }));
-const setCollapseState = (tab: number, state: CollapseState) =>
-  useCollapsed.setState((s) => ({ byTab: { ...s.byTab, [tab]: state } }));
+const NOTHING_COLLAPSED: ReadonlySet<string> = new Set();
+const useCollapsed = create<{ byTab: Record<number, ReadonlySet<string>> }>(() => ({ byTab: {} }));
+const setCollapsed = (tab: number, keys: ReadonlySet<string>) =>
+  useCollapsed.setState((s) => ({ byTab: { ...s.byTab, [tab]: keys } }));
 const toggleCollapsed = (tab: number, node: Node, open: boolean) =>
   useCollapsed.setState((s) => {
-    const prev = s.byTab[tab] ?? EXPAND_ALL;
-    const next = toggleCollapseNode(prev, node, open);
+    const prev = s.byTab[tab] ?? NOTHING_COLLAPSED;
+    const next = setNodeCollapsed(prev, node, open);
     return next === prev ? s : { byTab: { ...s.byTab, [tab]: next } };
   });
 
@@ -162,11 +161,11 @@ function FindTabView({ tab }: { tab: FindTab }) {
   const groupByDirectory = useFindViewOptions((o) => o.groupByDirectory);
   const showPreview = useFindViewOptions((o) => o.preview);
   const [index] = useState(() => new FindTreeIndex());
-  const collapse = useCollapsed((s) => s.byTab[tab.id]) ?? EXPAND_ALL;
+  const collapsed = useCollapsed((s) => s.byTab[tab.id]) ?? NOTHING_COLLAPSED;
   const onToggle = useCallback((node: Node, open: boolean) => toggleCollapsed(tab.id, node, open), [tab.id]);
   const treeModel = useMemo(
-    () => index.sync(tab.state.files, groupByDirectory, collapse, onToggle),
-    [index, tab.state.files, groupByDirectory, collapse, onToggle],
+    () => index.sync(tab.state.files, groupByDirectory, collapsed, onToggle),
+    [index, tab.state.files, groupByDirectory, collapsed, onToggle],
   );
   const tree = useRef<TreeHandle>(null);
   const [leadNode, setLeadNode] = useState<Node | null>(null);
@@ -532,17 +531,14 @@ export function FindToolWindowActions() {
           onClick={() => rerunFindTab(tab.id)}
         />
       )}
-      <IconButton
-        icon="expand-all"
-        title="Expand All"
-        size="small"
-        onClick={() => setCollapseState(tab.id, EXPAND_ALL)}
-      />
+      <IconButton icon="expand-all" title="Expand All" size="small" onClick={() => setCollapsed(tab.id, new Set())} />
       <IconButton
         icon="collapse-all"
         title="Collapse All"
         size="small"
-        onClick={() => setCollapseState(tab.id, COLLAPSE_ALL)}
+        onClick={() =>
+          setCollapsed(tab.id, expandableKeys(tab.state.files, useFindViewOptions.getState().groupByDirectory))
+        }
       />
       <IconButton icon="close" title="Close Tab" size="small" onClick={() => closeFindTab(tab.id)} />
     </>
