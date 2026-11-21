@@ -91,6 +91,23 @@ interface Checkpoint {
   width: number;
   /** Whether its lanes are numbered for the layout of the list that keeps it. */
   numbered: boolean;
+  /** One of the states kept every `CHECKPOINT` rows (the others are where a page restarted). */
+  periodic: boolean;
+}
+
+/**
+ * `checkpoints` without periodic ones closer than half a `CHECKPOINT` to the one kept before them,
+ * so that commits made on top, which move them all down, do not pile them up near the top.
+ */
+function spaced(checkpoints: readonly Checkpoint[], keep = -1) {
+  const out: Checkpoint[] = [];
+  let last = -CHECKPOINT;
+  for (const p of checkpoints) {
+    if (p.periodic && p.row - last < CHECKPOINT / 2 && p.row !== keep) continue;
+    out.push(p);
+    if (p.periodic) last = p.row;
+  }
+  return out;
 }
 
 interface Layout {
@@ -527,6 +544,7 @@ function replay(
   upTo: number,
   whole: Layout,
   from: { row: number; lanes: LaneSnapshot; nextIdentity: number } = START,
+  keepAt = -1,
 ) {
   // Lanes are either preferred ones or below the number of lanes in use.
   let size = from.lanes.length + 2;
@@ -574,7 +592,9 @@ function replay(
     const i = free.first();
     return i < 0 ? length : i;
   };
+  let kept: { slots: Uint8Array; identities: number[] } | null = null;
   for (let row = from.row; row < upTo; row++) {
+    if (row === keepAt) kept = { slots: slots.slice(0, length), identities: identities.slice() };
     const links = index.links[row]!;
     // The commit's lane goes on to its first parent: it stays in use (no counts to update).
     const continues = links.length > 0 && links[0] !== SHALLOW;
@@ -610,7 +630,7 @@ function replay(
       slots[length] = HOLE;
     }
   }
-  return { ranks, slots: slots.subarray(0, length), identities };
+  return { ranks, slots: slots.subarray(0, length), identities, kept };
 }
 
 /**
@@ -789,6 +809,7 @@ function emptyPaged(longEdges: boolean): Paged {
         runs: new Map(),
         width: 0,
         numbered: true,
+        periodic: true,
       },
     ],
     arrowRows: [],
@@ -842,40 +863,53 @@ function lanesAt(
   const differs = ranks.findIndex((r, i) => r !== prev.ranks[i]);
   if (differs >= 0) return { changed: prev.rankRows[differs]! };
   if (ranks.length !== cp.ranks) return { changed: 0 };
+  return renumbered(cp.lanes, slots, identities) ?? { changed: 0 };
+}
+
+/** `lanes` in the slots {@link replay} gives them (by creation number), or null if they differ. */
+function renumbered(lanes: LaneSnapshot, slots: Uint8Array, identities: readonly number[]): LaneSnapshot | null {
   const byIdentity = new Map<number, Lane>();
-  for (const [, lane] of cp.lanes.slots) if (lane) byIdentity.set(lane.identity, lane);
+  for (const [, lane] of lanes.slots) if (lane) byIdentity.set(lane.identity, lane);
   const out: Array<[number, Lane | null]> = [];
   for (const [i, slot] of slots.entries()) {
     if (slot === FREE) out.push([i, null]);
     else if (slot === USED) {
       const lane = byIdentity.get(identities[i]!);
-      if (!lane) return { changed: 0 };
+      if (!lane) return null;
       out.push([i, lane]);
       byIdentity.delete(identities[i]!);
     }
   }
-  return byIdentity.size ? { changed: 0 } : { length: slots.length, slots: out };
+  return byIdentity.size ? null : { length: slots.length, slots: out };
 }
 
 /**
  * `input`'s graph laid out again from `prev`'s checkpoint `index`, keeping `prev`'s rows above it.
- * The commits before the checkpoint and `WINDOW` rows after it must be `prev`'s.
+ * The commits before the checkpoint and `WINDOW` rows after it must be `prev`'s. `numbered` is the
+ * checkpoint's lanes numbered for `input`'s layout, when the caller has them.
  */
-function resume(prev: Paged, index: number, input: Input): Paged | Changed {
+function resume(prev: Paged, index: number, input: Input, numbered?: LaneSnapshot): Paged | Changed {
   const cp = prev.checkpoints[index]!;
   const { graph, positions, refAware, layout, longEdges } = input;
   const c = cp.row;
   const n = graph.length;
   const whole = { positions, layout, refAware };
-  const lanes = lanesAt(prev, cp, cp.numbered && index === prev.checkpoints.length - 1, input.index, whole);
+  const lanes = numbered ?? lanesAt(prev, cp, cp.numbered && index === prev.checkpoints.length - 1, input.index, whole);
   if ("changed" in lanes) return lanes;
   const ranks = prev.ranks.slice(0, cp.ranks);
   const rankRows = prev.rankRows.slice(0, cp.ranks);
   const tips = prev.tips.slice(0, cp.tips);
   const next = Math.max(c, n - WINDOW);
-  const snapRows = new Set<number>();
-  for (let row = (Math.floor(c / CHECKPOINT) + 1) * CHECKPOINT; row < next; row += CHECKPOINT) snapRows.add(row);
-  snapRows.add(next);
+  // Periodic states go on every `CHECKPOINT` rows from the last one kept (moved down with commits
+  // made on top, they are no longer at multiples of it).
+  const periodicKept = prev.checkpoints.slice(0, index + 1).filter((p) => p.periodic);
+  const base = periodicKept.at(-1)!.row;
+  const periodic = new Set<number>();
+  for (let row = base + (Math.floor((c - base) / CHECKPOINT) + 1) * CHECKPOINT; row < next; row += CHECKPOINT)
+    periodic.add(row);
+  const snapRows = new Set([...periodic, next]);
+  // A periodic state laid out again stays one.
+  for (const p of periodicKept) if (snapRows.has(p.row)) periodic.add(p.row);
   const from = { lanes, nextColor: cp.nextColor, nextIdentity: cp.nextIdentity };
   const laid = layOut(graph, c, from, whole, ranks, rankRows, tips, snapRows);
   // The two rows kept before the window are context only: lanes started on them keep their place.
@@ -929,9 +963,7 @@ function resume(prev: Paged, index: number, input: Input): Paged | Changed {
   const arrowRows = prev.arrowRows.slice(0, below(prev.arrowRows, outFrom));
   for (let r = outFrom; r < n; r++) if (hasArrow(rows[r]!)) arrowRows.push(r);
 
-  const checkpoints = prev.checkpoints
-    .slice(0, index + 1)
-    .filter((p) => p.row % CHECKPOINT === 0 && !snapRows.has(p.row));
+  const checkpoints = periodicKept.filter((p) => !snapRows.has(p.row));
   const rowsAt = [...snapRows].sort((a, b) => a - b);
   let width = c > 0 ? cp.width : 0;
   let r = outFrom;
@@ -950,6 +982,7 @@ function resume(prev: Paged, index: number, input: Input): Paged | Changed {
       runs: new Map([...hidden.snaps.get(row)!].map(([lane, start]) => [identityAt.get(lane)!, start])),
       width,
       numbered: true,
+      periodic: periodic.has(row),
     });
   }
   for (; r < n; r++) width = Math.max(width, rows[r]!.width);
@@ -1038,8 +1071,19 @@ function resync(prev: Paged, input: Input, shift: number, tail: number): Paged |
     });
     if (!order) return null;
     for (const [kept, fresh] of keys) if (kept === fresh) keys.delete(kept);
-    // ... each later lane taking the same place among them...
-    const later = replay(input.index!, shared, whole, { row: at, ...snap });
+    // ... each later lane taking the same place among them. A list longer or shorter than `prev`'s
+    // is laid out again from the last kept state before its end: keep the lanes there.
+    const restart =
+      n === n0 + shift
+        ? -1
+        : Math.max(
+            at,
+            ...prev.checkpoints
+              .slice(cpIndex + 1)
+              .map((p) => p.row + shift)
+              .filter((row) => row <= shared - WINDOW),
+          );
+    const later = replay(input.index!, shared, whole, { row: at, ...snap }, restart);
     const before = below(prev.rankRows, shared - shift);
     if (later.ranks.length !== before - cp.ranks || later.ranks.some((rank, i) => rank !== prev.ranks[cp.ranks + i]))
       return null;
@@ -1089,6 +1133,7 @@ function resync(prev: Paged, input: Input, shift: number, tail: number): Paged |
         runs: new Map([...hidden.snaps.get(row)!].map(([lane, start]) => [identityAt.get(lane)!, start])),
         width: widest(row + 2),
         numbered: true,
+        periodic: row !== at || cp.periodic,
       });
     }
     for (const p of prev.checkpoints.slice(cpIndex + 1))
@@ -1113,6 +1158,7 @@ function resync(prev: Paged, input: Input, shift: number, tail: number): Paged |
         width: widest(Math.min(p.row + shift + 2, rows.length)),
         // Numbered for the layout `prev` had: laying out from it replays the lanes first.
         numbered: false,
+        periodic: p.periodic,
       });
     const synced: Paged = {
       ...input,
@@ -1120,7 +1166,7 @@ function resync(prev: Paged, input: Input, shift: number, tail: number): Paged |
       ranks: ranks.slice(0, snap.ranks).concat(prev.ranks.slice(cp.ranks)),
       rankRows: rankRows.slice(0, snap.ranks).concat(prev.rankRows.slice(cp.ranks).map((row) => row + shift)),
       tips: tips.slice(0, snap.tips).concat(prev.tips.slice(cp.tips).map((row) => row + shift)),
-      checkpoints,
+      checkpoints: spaced(checkpoints, restart),
       arrowRows,
       width: widest(rows.length),
       recolor: recolorRows(prev.recolor, c + 2, prev.rows.length, shift).concat(
@@ -1129,8 +1175,9 @@ function resync(prev: Paged, input: Input, shift: number, tail: number): Paged |
     };
     if (n === n0 + shift) return synced;
     // `prev`'s rows end where its list did: lay out the rest as a page.
-    const last = checkpoints.findLastIndex((p) => p.row <= shared - WINDOW);
-    const next = resume(synced, last, input);
+    const last = synced.checkpoints.findIndex((p) => p.row === restart);
+    const lanes = later.kept && renumbered(synced.checkpoints[last]!.lanes, later.kept.slots, later.kept.identities);
+    const next = resume(synced, last, input, lanes ?? undefined);
     return "changed" in next ? null : next;
   }
   return null;
