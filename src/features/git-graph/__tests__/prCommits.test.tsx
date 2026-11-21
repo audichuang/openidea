@@ -230,6 +230,22 @@ describe("PR Commits virtualization", () => {
     });
   });
 
+  it("Space reveals the current commit like Enter and does not scroll the list", async () => {
+    const commits = commitsOf(50);
+    setupCommits(commits);
+    render(<PrView repo={REPO} current="feature" version={0} reload={0} />);
+    await flush();
+    const list = screen.getByRole("listbox", { name: "Commits" });
+    act(() => list.focus());
+    const notPrevented = fireEvent.keyDown(list, { key: " ", code: "Space" });
+    expect(notPrevented).toBe(false);
+    expect(useGraphView.getState()).toMatchObject({
+      mode: "graph",
+      selection: { repo: REPO, ids: [commits[0]!.id] },
+      panel: "details",
+    });
+  });
+
   it("shows empty state when there are no commits", async () => {
     setupCommits([]);
     render(<PrView repo={REPO} current="feature" version={0} reload={0} />);
