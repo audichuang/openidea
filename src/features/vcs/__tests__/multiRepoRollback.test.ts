@@ -486,6 +486,15 @@ describe("renaming a common branch", () => {
     expect(recents("/b")).toEqual(["feature", "main"]);
   });
 
+  it("renames recent branches only where the rename stayed, on Don't Rollback", async () => {
+    keepRecents();
+    mocks.ask.mockResolvedValue({ button: "keep" });
+    await renameInRepos("feature", ["/a", "/b", "/c"], false);
+    expect(recents("/a")).toEqual(["feature2", "main"]);
+    expect(recents("/b")).toEqual(["feature", "main"]);
+    expect(recents("/c")).toEqual(["feature", "main"]);
+  });
+
   it("unsets the upstream only after the branch was renamed in every repository", async () => {
     mocks.prompt.mockResolvedValue({ value: "feature2", checked: true });
     await renameInRepos("feature", ["/a", "/c"], true);
