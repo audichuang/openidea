@@ -119,7 +119,7 @@ function extensions(): Extension[] {
     displayed,
     // Copies and drags take the text as received, without the splits of long lines; with nothing
     // selected, whole lines as received, like the editor's line-wise copy.
-    EditorView.clipboardOutputFilter.of((copied, state) => {
+    EditorView.clipboardOutputFilter.of((_copied, state) => {
       const ranges = state.selection.ranges.filter((r) => !r.empty);
       if (ranges.length) return ranges.map((r) => textBetween(state, r.from, r.to)).join(state.lineBreak);
       const lines = new Map(state.selection.ranges.map((r) => lineAt(state, r.head)).map((l) => [l.from, l.text]));
