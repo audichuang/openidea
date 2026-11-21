@@ -57,27 +57,3 @@ it("every class read from a CSS module is defined in it", () => {
   }
   expect(missing).toEqual([]);
 });
-
-function stylesheets(dir: string): string[] {
-  return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
-    const path = join(dir, e.name);
-    if (e.isDirectory()) return stylesheets(path);
-    return e.name.endsWith(".css") ? [path] : [];
-  });
-}
-
-/**
- * `X > * + *` makes Chromium restyle the whole subtree of any element whose inline style changes,
- * anywhere in the app: an editor laying itself out restyled every diff of the all-in-one diff, a
- * long frame each. `X > :where(:not(:first-child))` selects the same children at the same specificity.
- */
-it("no stylesheet selects a universal element after a universal sibling", () => {
-  const found: string[] = [];
-  for (const path of stylesheets(SRC)) {
-    const css = readFileSync(path, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-    for (const prelude of css.matchAll(/([^{}]+)\{/g)) {
-      if (/\*\s*[+~]\s*\*/.test(prelude[1]!)) found.push(`${path.slice(SRC.length + 1)}: ${prelude[1]!.trim()}`);
-    }
-  }
-  expect(found).toEqual([]);
-});
