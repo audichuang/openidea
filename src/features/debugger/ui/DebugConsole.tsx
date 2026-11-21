@@ -38,6 +38,7 @@ import { useExpressionCompletion } from "./ExpressionCompletion";
 import {
   findOutputLinks,
   horizontalColumnWindow,
+  measureMonoCharWidth,
   sliceRangesInWindow,
   visibleCharWindow,
   type OutputLink,
@@ -53,6 +54,8 @@ const EMPTY_FIND: FindResult = { matches: [], overflow: false, invalid: false };
 const MARK_COLOR = "var(--bg-search-match)";
 const CURRENT_MARK_COLOR = "var(--bg-search-match-current)";
 const isCurrentMark = (m: SegmentMark) => !!m.current;
+/** Matches `.consoleOutput { padding: 6px 14px }` in `DebugToolWindow.module.css`. */
+const DEBUG_PADDING_LEFT_PX = 14;
 
 function sameMarks(a: readonly SegmentMark[] | undefined, b: readonly SegmentMark[] | undefined): boolean {
   if (a === b) return true;
@@ -186,20 +189,48 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   const [widest] = useState(() => new WidestColumns());
   const columns = useMemo(() => widest.measure(lines ?? []), [widest, lines]);
   const programmatic = useRef(false);
+  const charWidthRef = useRef<number | null | undefined>(undefined);
   const [colWindow, setColWindow] = useState<TextWindow | null>(null);
   const syncHorizontalWindow = (el: HTMLDivElement | null) => {
-    const next = softWrap || !el ? null : horizontalColumnWindow(el.scrollLeft, el.clientWidth, consoleFont.size);
+    if (softWrap || !el) {
+      setColWindow(null);
+      return;
+    }
+    if (charWidthRef.current === undefined && el.clientWidth > 0) {
+      charWidthRef.current = measureMonoCharWidth(el);
+    }
+    const next = horizontalColumnWindow(el.scrollLeft, el.clientWidth, consoleFont.size, {
+      charWidthPx: charWidthRef.current,
+      paddingLeftPx: DEBUG_PADDING_LEFT_PX,
+    });
     setColWindow((prev) => (prev?.start === next?.start && prev?.end === next?.end ? prev : next));
   };
   useLayoutEffect(() => {
     const el = scroller.current;
+    if (softWrap || !el) {
+      charWidthRef.current = undefined;
+      setColWindow(null);
+      return;
+    }
+    let active = true;
+    charWidthRef.current = el.clientWidth > 0 ? measureMonoCharWidth(el) : undefined;
     syncHorizontalWindow(el);
-    if (softWrap || !el || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(() => syncHorizontalWindow(el));
-    ro.observe(el);
-    return () => ro.disconnect();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- consoleFont.size and softWrap govern window width
-  }, [softWrap, consoleFont.size]);
+    const fonts = el.ownerDocument?.fonts;
+    if (fonts?.ready) {
+      void fonts.ready.then(() => {
+        if (!active) return;
+        charWidthRef.current = el.clientWidth > 0 ? measureMonoCharWidth(el) : undefined;
+        syncHorizontalWindow(el);
+      });
+    }
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => syncHorizontalWindow(el)) : null;
+    ro?.observe(el);
+    return () => {
+      active = false;
+      ro?.disconnect();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- consoleFont metrics and softWrap govern window width
+  }, [softWrap, consoleFont.family, consoleFont.size, consoleFont.weight]);
   const [input, setInput] = useState("");
   const history = useRef<string[]>(readHistory("console"));
   const historyPos = useRef(-1);

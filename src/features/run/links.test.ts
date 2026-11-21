@@ -1,6 +1,13 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
-import { findOutputLinks, joinPath, sliceRangesInWindow, visibleCharWindow, type OutputLink } from "./links";
+import {
+  findOutputLinks,
+  horizontalColumnWindow,
+  joinPath,
+  sliceRangesInWindow,
+  visibleCharWindow,
+  type OutputLink,
+} from "./links";
 
 function files(text: string) {
   return findOutputLinks(text)
@@ -246,5 +253,28 @@ describe("horizontal window helpers", () => {
       { start: 50, end: 55, current: false },
       { start: 100, end: 105, current: true },
     ]);
+  });
+
+  it("covers real 0.60em monospace columns when scrolled horizontally", () => {
+    // At 13px and 0.60em (7.8px/ch), scrollLeft 20,280 in an 800px viewport displays cols 2600..2703.
+    const win = horizontalColumnWindow(20_280, 800, 13);
+    expect(win).not.toBeNull();
+    expect(win!.start).toBeLessThanOrEqual(2_600);
+    expect(win!.end).toBeGreaterThanOrEqual(2_703);
+
+    // With a measured 1ch advance width and left padding, the window stays tight around the visible cols.
+    const measured = horizontalColumnWindow(20_280, 800, 13, { charWidthPx: 7.8, paddingLeftPx: 12 });
+    expect(measured).not.toBeNull();
+    expect(measured!.start).toBeLessThanOrEqual(2_598);
+    expect(measured!.end).toBeGreaterThanOrEqual(2_702);
+    expect(measured!.end - measured!.start).toBeLessThan(400);
+
+    // Wide (0.70em) and narrow (0.50em) fonts both stay covered when measured.
+    const wide = horizontalColumnWindow(20_000, 800, 13, { charWidthPx: 9.1, paddingLeftPx: 12 });
+    expect(wide!.start).toBeLessThanOrEqual(Math.floor((20_000 - 12) / 9.1));
+    expect(wide!.end).toBeGreaterThanOrEqual(Math.ceil((20_800 - 12) / 9.1));
+    const narrow = horizontalColumnWindow(20_000, 800, 13, { charWidthPx: 6.5, paddingLeftPx: 12 });
+    expect(narrow!.start).toBeLessThanOrEqual(Math.floor((20_000 - 12) / 6.5));
+    expect(narrow!.end).toBeGreaterThanOrEqual(Math.ceil((20_800 - 12) / 6.5));
   });
 });

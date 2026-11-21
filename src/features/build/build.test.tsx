@@ -749,7 +749,7 @@ describe("build feature", () => {
   });
 
   it("renders links on >10 KiB build console lines without dropping them", async () => {
-    const longLine = `src/start.java:1:1 ${"x".repeat(5_000)} src/mid.java:2:2 ${"y".repeat(5_000)} src/end.java:3:3`;
+    const longLine = `src/start.java:1:1 ${"x".repeat(2_580)} src/col2600.java:10:2 ${"x".repeat(2_400)} src/mid.java:2:2 ${"y".repeat(5_000)} src/end.java:3:3`;
     useBuildRun.setState({
       status: "failed",
       title: "Build",
@@ -760,14 +760,23 @@ describe("build feature", () => {
     });
     const { container } = render(<BuildView />);
     const log = screen.getByRole("log", { name: "Build output" });
+    Object.defineProperty(log, "clientWidth", { configurable: true, value: 800 });
+    Object.defineProperty(log, "scrollLeft", { configurable: true, writable: true, value: 0 });
+    fireEvent.scroll(log);
     expect(container.querySelectorAll('[role="link"]')[0]?.textContent).toBe("src/start.java:1:1");
+    // At --fs-code (13px) * 0.60em (7.8px/ch), scrollLeft 20,280 in an 800px viewport displays cols 2,600..2,703.
+    Object.defineProperty(log, "scrollLeft", { configurable: true, writable: true, value: 20_280 });
+    fireEvent.scroll(log);
+    expect(Array.from(container.querySelectorAll('[role="link"]')).map((a) => a.textContent)).toContain(
+      "src/col2600.java:10:2",
+    );
     // Scrolling horizontally reveals links in the middle and at the end of the >10 KiB line.
-    Object.defineProperty(log, "scrollLeft", { configurable: true, writable: true, value: 33_000 });
+    Object.defineProperty(log, "scrollLeft", { configurable: true, writable: true, value: 39_200 });
     fireEvent.scroll(log);
     expect(Array.from(container.querySelectorAll('[role="link"]')).map((a) => a.textContent)).toContain(
       "src/mid.java:2:2",
     );
-    Object.defineProperty(log, "scrollLeft", { configurable: true, writable: true, value: 66_000 });
+    Object.defineProperty(log, "scrollLeft", { configurable: true, writable: true, value: 78_400 });
     fireEvent.scroll(log);
     expect(Array.from(container.querySelectorAll('[role="link"]')).map((a) => a.textContent)).toContain(
       "src/end.java:3:3",
