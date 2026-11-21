@@ -3,6 +3,19 @@ import { copyMenuFor } from "@/ui";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const keyCalls = vi.hoisted(() => ({ count: 0 }));
+
+vi.mock("../multiRoot", async (original) => {
+  const real = await original<typeof import("../multiRoot")>();
+  return {
+    ...real,
+    commitKey: (...args: Parameters<typeof real.commitKey>) => {
+      keyCalls.count++;
+      return real.commitKey(...args);
+    },
+  };
+});
+
 const api = vi.hoisted(() => ({
   commitsChanges: vi.fn(),
   commitFiles: vi.fn(),
@@ -169,6 +182,24 @@ describe("CommitDetails multi-selection virtualization", () => {
       fireEvent.scroll(box);
     });
     expect(box.textContent).toContain("commit 0");
+  });
+
+  it.each([2_000, 10_000])("does not rescan all %i rows on each scroll while heights are unchanged", (count) => {
+    const raw = makeCommits(count);
+    const keys = raw.map(commitKey);
+    useGitLog.setState({ commits: raw, selected: keys[0]!, selection: keys });
+    const { container } = render(<CommitDetails commits={raw} />);
+    const box = messageBoxOf(container);
+
+    keyCalls.count = 0;
+    for (let i = 1; i <= 10; i++) {
+      act(() => {
+        box.scrollTop = i * 500;
+        fireEvent.scroll(box);
+      });
+    }
+    // A stable getItemKey keeps the measurement cache; an inline one re-reads every row per scroll.
+    expect(keyCalls.count).toBeLessThan(count);
   });
 
   it("measures variable-height commit messages and positions items without overlap", () => {
