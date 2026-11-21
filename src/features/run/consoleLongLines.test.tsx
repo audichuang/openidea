@@ -205,4 +205,72 @@ describe("ConsoleView long lines and no-newline output", () => {
       rectSpy.mockRestore();
     }
   });
+
+  it("updates Find matches and rendered line content after a same-length \\r overwrite", () => {
+    const model = new ConsoleModel();
+    model.append({ kind: "stdout", text: "status: alpha src/a.ts:1:1" });
+    const view = render(
+      <ConsoleView model={model} version={1} softWrap={false} follow={false} onFollowChange={() => {}} cwd="/p" />,
+    );
+    const log = screen.getByRole("log");
+    fireEvent.keyDown(log, { key: "f", code: "KeyF", metaKey: true });
+    fireEvent.change(screen.getByRole("textbox", { name: "Find in console" }), { target: { value: "bravo" } });
+    expect(screen.getByText("0 results")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "src/a.ts:1:1" })).toBeInTheDocument();
+
+    // Overwrite open line in place with the exact same length (keeping id === 1).
+    model.append({ kind: "stdout", text: "\rstatus: bravo src/b.ts:2:2" });
+    expect(model.lines).toHaveLength(1);
+    expect(model.lines[0]!.id).toBe(1);
+    expect(model.lines[0]!.text).toBe("status: bravo src/b.ts:2:2");
+    view.rerender(
+      <ConsoleView model={model} version={2} softWrap={false} follow={false} onFollowChange={() => {}} cwd="/p" />,
+    );
+
+    expect(screen.getByText("1/1")).toBeInTheDocument();
+    expect(view.container.querySelectorAll("[data-find-match]")).toHaveLength(1);
+    expect(screen.getByRole("link", { name: "src/b.ts:2:2" })).toBeInTheDocument();
+  });
+
+  it("resets Find cache when switching models or rerunning in the same mounted ConsoleView", () => {
+    // Simulates RunView swapping `model={testModel ?? rt.console}` or rerunning a session with a fresh ConsoleModel.
+    const firstModel = new ConsoleModel();
+    firstModel.append({ kind: "stdout", text: "run1 fail\n" });
+    const view = render(
+      <ConsoleView model={firstModel} version={1} softWrap={false} follow={false} onFollowChange={() => {}} cwd="/p" />,
+    );
+    const log = screen.getByRole("log");
+    fireEvent.keyDown(log, { key: "f", code: "KeyF", metaKey: true });
+    fireEvent.change(screen.getByRole("textbox", { name: "Find in console" }), { target: { value: "fail" } });
+    expect(screen.getByText("1/1")).toBeInTheDocument();
+
+    // Model switch (e.g. selecting a test node or rerun): new ConsoleModel starts ids at 1 with the same line length.
+    const rerunModel = new ConsoleModel();
+    rerunModel.append({ kind: "stdout", text: "run2 pass\n" });
+    expect(rerunModel.lines[0]!.id).toBe(1);
+    expect(rerunModel.lines[0]!.text.length).toBe(firstModel.lines[0]!.text.length);
+    view.rerender(
+      <ConsoleView model={rerunModel} version={2} softWrap={false} follow={false} onFollowChange={() => {}} cwd="/p" />,
+    );
+    expect(screen.getByText("0 results")).toBeInTheDocument();
+    expect(view.container.querySelectorAll("[data-find-match]")).toHaveLength(0);
+
+    // Switching back to a model whose line 1 matches the current query finds the match cleanly.
+    const switchedModel = new ConsoleModel();
+    switchedModel.append({ kind: "stdout", text: "test fail\n" });
+    expect(switchedModel.lines[0]!.id).toBe(1);
+    expect(switchedModel.lines[0]!.text.length).toBe(rerunModel.lines[0]!.text.length);
+    view.rerender(
+      <ConsoleView
+        model={switchedModel}
+        version={3}
+        softWrap={false}
+        follow={false}
+        onFollowChange={() => {}}
+        cwd="/p"
+      />,
+    );
+    expect(screen.getByText("1/1")).toBeInTheDocument();
+    expect(view.container.querySelectorAll("[data-find-match]")).toHaveLength(1);
+  });
 });
