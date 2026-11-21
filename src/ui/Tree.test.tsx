@@ -358,6 +358,17 @@ describe("Tree keyboard navigation", () => {
     expect(labels(tree)).toEqual(["src", "main", "util.ts", "README.md"]);
   });
 
+  it("collapses a node whose expanded descendant has more children than fit in call arguments", () => {
+    const leaves = Array.from({ length: 300_000 }, (_, i) => ({ id: `leaf${i}` }));
+    const big: N[] = [{ id: "root", children: [{ id: "dir", children: leaves }] }];
+    const onExpandedChange = vi.fn();
+    const { tree, key } = setup({ roots: big, defaultExpanded: ["root", "dir"], onExpandedChange });
+    key("Home");
+    key("ArrowLeft");
+    expect(labels(tree)).toEqual(["root"]);
+    expect([...onExpandedChange.mock.calls[0]![0]]).toEqual([]);
+  });
+
   it("Enter toggles folders and activates leaves", () => {
     const { tree, lead, key, onActivate } = setup();
     key("ArrowDown");

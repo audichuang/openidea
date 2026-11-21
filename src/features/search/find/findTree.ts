@@ -114,6 +114,17 @@ export function nodeGroups(node: FindTreeNode): UsageGroup[] {
   return node.children.flatMap(nodeGroups);
 }
 
+/** The usages under the nodes with these keys, in key order (keys no longer listed are skipped). */
+export function groupsOfKeys(keys: Iterable<string>, getNode: (key: string) => FindTreeNode | undefined): UsageGroup[] {
+  const out: UsageGroup[] = [];
+  for (const k of keys) {
+    const node = getNode(k);
+    // One push per usage: spreading a file's usages as call arguments overflows the stack for large files.
+    if (node) for (const g of nodeGroups(node)) out.push(g);
+  }
+  return out;
+}
+
 /** True when every usage under `node` is excluded; short-circuits in O(1) when nothing is excluded. */
 export function isNodeExcluded(node: FindTreeNode, marks: ReplaceMarks): boolean {
   if (marks.excluded.size === 0) return false;

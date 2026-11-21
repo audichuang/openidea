@@ -47,7 +47,7 @@ import {
   expandableKeys,
   FindTreeIndex,
   isNodeExcluded,
-  nodeGroups,
+  groupsOfKeys,
   setNodeCollapsed,
   type FindTreeNode,
 } from "./findTree";
@@ -176,14 +176,7 @@ function FindTabView({ tab }: { tab: FindTab }) {
   const [progress, setProgress] = useState<ReplaceProgress | null>(null);
   const busy = !!running;
 
-  const groupsForKeys = (keys: Iterable<string>) => {
-    const out = [];
-    for (const k of keys) {
-      const node = index.getNode(k);
-      if (node) out.push(...nodeGroups(node));
-    }
-    return out;
-  };
+  const groupsForKeys = (keys: Iterable<string>) => groupsOfKeys(keys, (k) => index.getNode(k));
   const selectedGroups = () => groupsForKeys(selection);
 
   const exclude = () => {

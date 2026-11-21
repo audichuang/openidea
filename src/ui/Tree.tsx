@@ -501,7 +501,8 @@ export function Tree<T>(props: TreeProps<T>) {
       const stack = [...(getChildren(row.node) ?? [])];
       while (next.size && stack.length) {
         const n = stack.pop()!;
-        if (next.delete(getKey(n)) || isExpandable(n)) stack.push(...(getChildren(n) ?? []));
+        // One push per child: spreading them as call arguments overflows the stack for huge folders.
+        if (next.delete(getKey(n)) || isExpandable(n)) for (const c of getChildren(n) ?? []) stack.push(c);
       }
     }
     if (!expandedControlled) setExpandedInner(next);
