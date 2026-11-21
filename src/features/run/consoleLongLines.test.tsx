@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { usePlatform } from "@/platform/platformInfo";
+import { useProject } from "@/platform/project";
+import { setInvokeRoute } from "@/platform/tauriCore";
+import * as consoleFindModule from "@/ui/consoleFind";
 import { ConsoleModel } from "./console";
 import { ConsoleView } from "./ConsoleView";
 import * as linksModule from "./links";
@@ -312,6 +315,160 @@ describe("ConsoleView long lines and no-newline output", () => {
       expect(new Set(wideLines.map((l) => l.text)).size).toBe(wideLines.length);
     } finally {
       rafSpy.mockRestore();
+    }
+  });
+
+  it("re-measures char width after delayed macOS user font registration so far links stay clickable", async () => {
+    const prevSettings = useProject.getState().settings;
+    const prevFonts = Object.getOwnPropertyDescriptor(document, "fonts");
+    let resolveFontData!: (buf: ArrayBuffer) => void;
+    let probeWidth = 780;
+    const fontDataPromise = new Promise<ArrayBuffer>((resolve) => {
+      resolveFontData = resolve;
+    });
+
+    vi.stubGlobal("isTauri", true);
+    setInvokeRoute((cmd) => (cmd === "user_font_data" ? fontDataPromise : null));
+    const ctxSpy = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
+      () =>
+        ({
+          font: "",
+          measureText: () => ({ width: 100 }),
+        }) as unknown as CanvasRenderingContext2D,
+    );
+    const rectSpy = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      const width = this.textContent === "0".repeat(100) ? probeWidth : 0;
+      return { width, height: 0, top: 0, left: 0, bottom: 0, right: width, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+    });
+    vi.stubGlobal(
+      "FontFace",
+      class {
+        constructor(
+          public family: string,
+          _bytes: ArrayBuffer,
+          public descriptors: unknown,
+        ) {}
+        load() {
+          probeWidth = 715;
+          return Promise.resolve(this);
+        }
+      },
+    );
+    const load = vi.fn().mockResolvedValue([]);
+    Object.defineProperty(document, "fonts", {
+      configurable: true,
+      value: { add: vi.fn(), delete: vi.fn(), load, ready: Promise.resolve() },
+    });
+
+    try {
+      useProject.setState({ settings: { editor: { fontFamily: "DelayedRunMono", fontSize: 13 } } as never });
+      const model = new ConsoleModel();
+      const linkText = "src/col6020.ts:4:2";
+      model.append({ kind: "stdout", text: `${"a".repeat(6_019)} ${linkText} ${"b".repeat(500)}\n` });
+
+      render(
+        <ConsoleView model={model} version={1} softWrap={false} follow={false} onFollowChange={() => {}} cwd="/p" />,
+      );
+      const log = screen.getByRole("log");
+      expect(log.style.fontFamily).toContain("OpenIDEA User Font");
+      Object.defineProperty(log, "clientWidth", { configurable: true, value: 800 });
+      Object.defineProperty(log, "scrollLeft", { configurable: true, writable: true, value: 12 + 6_000 * 7.15 });
+      fireEvent.scroll(log);
+
+      // Flush document.fonts.ready while user_font_data is still in flight (probe still measures 7.8px/ch).
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(screen.queryByRole("link", { name: linkText })).not.toBeInTheDocument();
+
+      // Complete delayed macOS user font registration; probe now measures 7.15px/ch.
+      const header = new TextEncoder().encode(JSON.stringify([{ weight: 400, style: "normal", offset: 0, length: 2 }]));
+      const bundle = new Uint8Array(4 + header.length + 2);
+      new DataView(bundle.buffer).setUint32(0, header.length, true);
+      bundle.set(header, 4);
+      await act(async () => {
+        resolveFontData(bundle.buffer);
+        await fontDataPromise;
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      const link = screen.getByRole("link", { name: linkText });
+      fireEvent.click(link);
+      expect(nav.openTarget).toHaveBeenCalledWith(
+        expect.objectContaining({ path: "src/col6020.ts", line: 4, col: 2 }),
+        "/p",
+      );
+      expect(load).toHaveBeenCalled();
+      expect(load.mock.calls.every(([spec]) => !String(spec).includes("var("))).toBe(true);
+    } finally {
+      useProject.setState({ settings: prevSettings });
+      setInvokeRoute(null);
+      if (prevFonts) Object.defineProperty(document, "fonts", prevFonts);
+      else delete (document as unknown as { fonts?: unknown }).fonts;
+      vi.unstubAllGlobals();
+      ctxSpy.mockRestore();
+      rectSpy.mockRestore();
+    }
+  });
+
+  it("keeps per-line Find cache hits when ConsoleModel is rebuilt with unchanged lines on version updates", () => {
+    const body = Array.from({ length: 200 }, (_, i) => `{"row":${i},"payload":"${"x".repeat(300)}"}\n`).join("");
+    const buildModel = (extra = "") => {
+      const m = new ConsoleModel();
+      m.append({ kind: "stdout", text: body + extra });
+      return m;
+    };
+
+    const view = render(
+      <ConsoleView
+        model={buildModel()}
+        version={1}
+        softWrap={false}
+        follow={false}
+        onFollowChange={() => {}}
+        cwd="/p"
+      />,
+    );
+    const log = screen.getByRole("log");
+    fireEvent.keyDown(log, { key: "f", code: "KeyF", metaKey: true });
+    fireEvent.click(screen.getByRole("button", { name: "Words" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Find in console" }), { target: { value: "needle" } });
+    expect(screen.getByText("0 results")).toBeInTheDocument();
+
+    const findSpy = vi.spyOn(consoleFindModule, "findInLines");
+    try {
+      // Simulate RunView rebuilding testModel on another test's output (new ConsoleModel, same text).
+      view.rerender(
+        <ConsoleView
+          model={buildModel()}
+          version={2}
+          softWrap={false}
+          follow={false}
+          onFollowChange={() => {}}
+          cwd="/p"
+        />,
+      );
+      expect(screen.getByText("0 results")).toBeInTheDocument();
+      expect(findSpy.mock.calls.length).toBeLessThan(10);
+
+      // Appending one new matching line in a rebuilt model scans only the new line.
+      view.rerender(
+        <ConsoleView
+          model={buildModel("found needle here\n")}
+          version={3}
+          softWrap={false}
+          follow={false}
+          onFollowChange={() => {}}
+          cwd="/p"
+        />,
+      );
+      expect(screen.getByText("1/1")).toBeInTheDocument();
+      expect(findSpy.mock.calls.length).toBeLessThan(10);
+    } finally {
+      findSpy.mockRestore();
     }
   });
 });

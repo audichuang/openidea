@@ -16,6 +16,7 @@ import { formatBinding, hasPrimaryModifier, hostBinding, registerKeyClaim } from
 import { tx } from "@/platform/i18n";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { useConsoleFont } from "@/platform/consoleFont";
+import { fontsLoaded, monoStack } from "@/platform/fonts";
 import { spanStyle, type Span } from "@/ui/ansi";
 import { logLineColor } from "@/ui/logColors";
 import { compileConsoleRules, matchConsoleRules, styleSpans, type ConsoleRuleMatch } from "@/ui/consoleRules";
@@ -217,14 +218,12 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
     let active = true;
     charWidthRef.current = el.clientWidth > 0 ? measureMonoCharWidth(el) : undefined;
     syncHorizontalWindow(el);
-    const fonts = el.ownerDocument?.fonts;
-    if (fonts?.ready) {
-      void fonts.ready.then(() => {
-        if (!active) return;
-        charWidthRef.current = el.clientWidth > 0 ? measureMonoCharWidth(el) : undefined;
-        syncHorizontalWindow(el);
-      });
-    }
+    const fontStack = consoleFont.family.replaceAll("var(--font-mono)", monoStack());
+    void fontsLoaded(fontStack, consoleFont.size).then(() => {
+      if (!active) return;
+      charWidthRef.current = el.clientWidth > 0 ? measureMonoCharWidth(el) : undefined;
+      syncHorizontalWindow(el);
+    });
     const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => syncHorizontalWindow(el)) : null;
     ro?.observe(el);
     return () => {
