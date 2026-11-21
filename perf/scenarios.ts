@@ -907,6 +907,118 @@ const prCommits: Scenario = {
   },
 };
 
+/** Git Graph PR tab refresh when head is far behind base (and has many commits ahead). */
+const prRefresh: Scenario = {
+  id: "prRefresh",
+  title: "Refresh the Git Graph PR tab when far behind base",
+  async run(h) {
+    const ahead = Math.max(1, Number(process.env.OPENIDEA_PERF_PR_AHEAD) || 1_000);
+    const behind = Math.max(1, Number(process.env.OPENIDEA_PERF_PR_BEHIND) || 100_000);
+    const rounds = 5;
+    await h.page.evaluate(
+      ({ a, b }) => {
+        const probe = (
+          window as never as {
+            __openideaPerf: {
+              fakePrRefresh(ahead: number, behind: number): void;
+              runAction(id: string): Promise<boolean>;
+            };
+          }
+        ).__openideaPerf;
+        probe.fakePrRefresh(a, b);
+        return probe.runAction("gitGraph.open");
+      },
+      { a: ahead, b: behind },
+    );
+    try {
+      const prTab = h.page.getByRole("tab", { name: "PR", exact: true });
+      await prTab.waitFor();
+      await prTab.click();
+      await h.page.getByText(`Commits: ${ahead} ahead, ${behind} behind main`).waitFor({ timeout: 60_000 });
+      const commitsTab = h.page.getByRole("tab", { name: /^Commits/ });
+      await commitsTab.click();
+      const list = h.page.locator('[aria-label="Commits"]').first();
+      await list.getByText("order flow step 0").waitFor({ timeout: 30_000 });
+      await h.page.waitForTimeout(100);
+
+      const refresh = await h.refreshMs();
+      await h.page.evaluate(() =>
+        (window as never as { __openideaPerf: { resetPrRefreshStats(): void } }).__openideaPerf.resetPrRefreshStats(),
+      );
+      const t0 = await h.now();
+      const before = await h.counters();
+      await h.inPage((p) => p.startFrames());
+      const latencies: number[] = [];
+      for (let i = 0; i < rounds; i++) {
+        const ms = await h.page.evaluate(async () => {
+          const probe = (
+            window as never as {
+              __openideaPerf: {
+                triggerPrRefresh(): void;
+                prRefreshStats(): { diffCalls: number };
+              };
+            }
+          ).__openideaPerf;
+          const prevDiffs = probe.prRefreshStats().diffCalls;
+          const start = performance.now();
+          probe.triggerPrRefresh();
+          while (probe.prRefreshStats().diffCalls === prevDiffs) {
+            await new Promise((r) => setTimeout(r, 0));
+          }
+          await new Promise(requestAnimationFrame);
+          await new Promise(requestAnimationFrame);
+          return performance.now() - start;
+        });
+        latencies.push(ms);
+      }
+      const frames = await h.inPage((p) => p.stopFrames());
+      const work = Harness.delta(before, await h.counters());
+      const tasks = await h.longTasksSince(t0);
+      const stats = await h.page.evaluate(() =>
+        (
+          window as never as {
+            __openideaPerf: {
+              prRefreshStats(): { logCalls: number; commitsFetched: number; countCalls: number; diffCalls: number };
+            };
+          }
+        ).__openideaPerf.prRefreshStats(),
+      );
+
+      // Verify the last ahead commit is reachable by scrolling to the bottom.
+      const lastReached = await list.evaluate(
+        async (el, lastText) => {
+          el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+          for (let i = 0; i < 30; i++) {
+            await new Promise(requestAnimationFrame);
+            if ((el.textContent ?? "").includes(lastText)) return true;
+          }
+          return false;
+        },
+        `order flow step ${ahead - 1}`,
+      );
+      if (!lastReached) throw new Error(`last commit (order flow step ${ahead - 1}) not reachable at bottom`);
+
+      return {
+        ...latencySummary(latencies, "refresh"),
+        refreshMainThreadMs: work.taskMs / rounds,
+        commitsFetchedPerRefresh: stats.commitsFetched / rounds,
+        logCallsPerRefresh: stats.logCalls / rounds,
+        countCallsPerRefresh: stats.countCalls / rounds,
+        ...frameSummary(frames, refresh),
+        framesOver8ms: frames.filter((f) => f > 8).length,
+        longTasks: tasks.length,
+        tbtMs: totalBlockingTime(tasks),
+      };
+    } finally {
+      await h.page.evaluate(() =>
+        (
+          window as never as { __openideaPerf: { fakePrRefresh(a: number, b: number): void } }
+        ).__openideaPerf.fakePrRefresh(0, 0),
+      );
+    }
+  },
+};
+
 export const SCENARIOS: Scenario[] = [
   startup,
   typing,
@@ -919,6 +1031,7 @@ export const SCENARIOS: Scenario[] = [
   gitLogScrollbar,
   gitLogWide,
   prCommits,
+  prRefresh,
   resizePanels,
   keyRepeat,
   scroll,

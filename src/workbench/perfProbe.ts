@@ -10,7 +10,7 @@ import { executeAction } from "@/platform/actions";
 import { bindingsFor } from "@/platform/keymap";
 import { activeEditor } from "@/editor/api";
 import { docBackend, type MemoryBackend } from "@/editor/core/backend";
-import type { Branch, Commit, CompletionItem, CompletionKind, LogQuery } from "@/bindings";
+import type { Branch, ChangedFile, Commit, CompletionItem, CompletionKind, LogQuery } from "@/bindings";
 import { openProject } from "@/platform/project";
 import { setInvokeRoute } from "@/platform/tauriCore";
 import { editorService } from "./contributions";
@@ -61,6 +61,17 @@ export interface PerfProbe {
    * and `feature`. `0` commits removes it and restores the real bridge.
    */
   fakePrCommits(commits: number): void;
+  /**
+   * Answers the Git Graph PR view with `ahead` commits in `main..feature` and
+   * `behind` commits in `feature..main`, supporting triggered vcs refreshes and
+   * fetch-count stats. Both `0` removes it and restores the real bridge.
+   */
+  fakePrRefresh(ahead: number, behind: number): void;
+  /** Bumps the fake PR bridge's vcs version (like a file save / git refresh). */
+  triggerPrRefresh(): void;
+  /** Fetch and refresh counters collected by `fakePrRefresh`. */
+  prRefreshStats(): { logCalls: number; commitsFetched: number; countCalls: number; diffCalls: number };
+  resetPrRefreshStats(): void;
 }
 
 const KINDS: CompletionKind[] = [
@@ -159,6 +170,8 @@ function requireView() {
 
 export function installPerfProbe(): () => void {
   let restorePrBridge: (() => void) | null = null;
+  let bumpPrRefresh: (() => void) | null = null;
+  let prStats = { logCalls: 0, commitsFetched: 0, countCalls: 0, diffCalls: 0 };
   const probe: PerfProbe = {
     seed(path, text) {
       const backend = docBackend() as Partial<MemoryBackend>;
@@ -277,14 +290,130 @@ export function installPerfProbe(): () => void {
           return Promise.resolve({ staged: 0, unstaged: 0, untracked: 0, conflicted: 0 });
         if (cmd === "graph_bisect_state")
           return Promise.resolve({ active: false, current: null, culprit: null, output: "" });
+        if (cmd === "graph_rev_counts") return Promise.resolve({ ahead: count, behind: 0 });
         if (cmd === "vcs_log") {
           const { skip, limit, range } = (args as { query: LogQuery }).query;
-          if (range === "main..feature") return Promise.resolve(commits);
+          if (range === "main..feature") return Promise.resolve(commits.slice(skip, limit ? skip + limit : undefined));
           if (range === "feature..main") return Promise.resolve([]);
           return Promise.resolve(commits.slice(skip, limit ? skip + limit : undefined));
         }
         return null;
       });
+    },
+    fakePrRefresh(ahead, behind) {
+      restorePrBridge?.();
+      restorePrBridge = null;
+      bumpPrRefresh = null;
+      prStats = { logCalls: 0, commitsFetched: 0, countCalls: 0, diffCalls: 0 };
+      if (!ahead && !behind) {
+        setRoute("prRefresh", null);
+        return;
+      }
+      const repo = "/dev/acme-api";
+      const mergeBase = (ahead + behind + 1).toString(16).padStart(40, "0");
+      const headCommit = ahead > 0 ? (0).toString(16).padStart(40, "0") : mergeBase;
+      const branches: Branch[] = [
+        {
+          name: "feature",
+          remote: false,
+          current: true,
+          upstream: null,
+          ahead,
+          behind,
+          lastCommitMs: Date.UTC(2026, 10, 5),
+        },
+        {
+          name: "main",
+          remote: false,
+          current: false,
+          upstream: null,
+          ahead: 0,
+          behind: 0,
+          lastCommitMs: Date.UTC(2026, 10, 5),
+        },
+      ];
+      const files: ChangedFile[] = Array.from({ length: 10 }, (_, i) => ({
+        path: `src/module${i}/OrderService${i}.ts`,
+        kind: i % 3 === 0 ? "added" : "modified",
+        oldPath: null,
+      }));
+      const listeners = new Set<() => void>();
+      let version = 1;
+      const realBridge = gitGraphBridge();
+      if (realBridge) {
+        let fakeState = {
+          roots: [repo],
+          repo,
+          heads: { [repo]: { head: "feature", headCommit } },
+          operations: {},
+          version,
+        };
+        const wrapped: GitGraphBridge = {
+          ...realBridge,
+          state: () => fakeState,
+          subscribe: (fn) => {
+            listeners.add(fn);
+            return () => listeners.delete(fn);
+          },
+        };
+        const withdraw = provideGitGraphBridge(wrapped);
+        bumpPrRefresh = () => {
+          version += 1;
+          fakeState = { ...fakeState, version };
+          listeners.forEach((fn) => fn());
+        };
+        restorePrBridge = () => {
+          listeners.clear();
+          withdraw();
+          provideGitGraphBridge(realBridge);
+        };
+      }
+      setRoute("prRefresh", (cmd, args) => {
+        if (cmd === "vcs_branches") return Promise.resolve(branches);
+        if (cmd === "vcs_tags") return Promise.resolve([]);
+        if (cmd === "vcs_merge_base") return Promise.resolve(mergeBase);
+        if (cmd === "vcs_diff_revisions") {
+          prStats.diffCalls += 1;
+          return Promise.resolve(files.map((f) => ({ ...f })));
+        }
+        if (cmd === "graph_rev_counts") {
+          prStats.countCalls += 1;
+          const { base, head } = args as { base: string; head: string };
+          if (base === "main" && head === "feature") return Promise.resolve({ ahead, behind });
+          if (base === "feature" && head === "main") return Promise.resolve({ ahead: behind, behind: ahead });
+          return Promise.resolve({ ahead: 0, behind: 0 });
+        }
+        if (cmd === "vcs_remotes") return Promise.resolve([]);
+        if (cmd === "graph_stashes") return Promise.resolve([]);
+        if (cmd === "graph_working_state")
+          return Promise.resolve({ staged: 0, unstaged: 0, untracked: 0, conflicted: 0 });
+        if (cmd === "graph_bisect_state")
+          return Promise.resolve({ active: false, current: null, culprit: null, output: "" });
+        if (cmd === "vcs_log") {
+          const { skip, limit, range } = (args as { query: LogQuery }).query;
+          if (!range) {
+            const graphTotal = Math.min(ahead, 300);
+            const start = Math.min(skip, graphTotal);
+            const end = limit > 0 ? Math.min(graphTotal, start + limit) : graphTotal;
+            return Promise.resolve(Array.from({ length: end - start }, (_, i) => commit(start + i, graphTotal)));
+          }
+          prStats.logCalls += 1;
+          const total = range === "main..feature" ? ahead : range === "feature..main" ? behind : 0;
+          const start = Math.min(skip, total);
+          const end = limit > 0 ? Math.min(total, start + limit) : total;
+          const page = Array.from({ length: end - start }, (_, i) => commit(start + i, total));
+          prStats.commitsFetched += page.length;
+          return Promise.resolve(page);
+        }
+        return null;
+      });
+    },
+    triggerPrRefresh() {
+      bumpPrRefresh?.();
+    },
+    prRefreshStats: () => ({ ...prStats }),
+    resetPrRefreshStats() {
+      prStats = { logCalls: 0, commitsFetched: 0, countCalls: 0, diffCalls: 0 };
     },
     editorText: () => activeEditor()?.view.state.doc.toString() ?? null,
     insertAfter(after, text) {
