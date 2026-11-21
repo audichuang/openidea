@@ -199,6 +199,26 @@ describe("HTTP Client large responses", () => {
     );
   });
 
+  it("leaves the focus where it went while the body switched to was being formatted", async () => {
+    const body = minifiedJson(20_000);
+    show(exchangeWith(body, "application/json"));
+    fireEvent.click(screen.getByRole("button", { name: "Show Raw" }));
+    await expectBody(body);
+    fireEvent.keyDown(screen.getByLabelText("Response body"), { key: "f", metaKey: true, ctrlKey: true });
+    fireEvent.click(screen.getByRole("button", { name: "Show Formatted" }));
+    expect(screen.getByLabelText("Formatting")).toBeTruthy();
+    // Back to the request editor while the worker formats.
+    const editor = document.body.appendChild(document.createElement("textarea"));
+    try {
+      act(() => editor.focus());
+      FakeWorker.all[1]!.answer();
+      await vi.waitFor(() => expect(screen.getByLabelText("Find in response", { selector: "input" })).toBeTruthy());
+      expect(document.activeElement).toBe(editor);
+    } finally {
+      editor.remove();
+    }
+  });
+
   it("gives the focus to the body once a body switched to is formatted", async () => {
     const body = minifiedJson(20_000);
     show(exchangeWith(body, "application/json"));

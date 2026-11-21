@@ -95,6 +95,7 @@ function useShownBody(kind: BodyKind, body: string | null, raw: boolean): string
 
 function ExchangeView({ ex }: { ex: HttpExchange }) {
   const [tab, setTab] = useState<Tab>("body");
+  const root = useRef<HTMLDivElement>(null);
   const pane = useRef<HTMLDivElement>(null);
   useSelectionBoundary(pane);
   const [raw, setRaw] = useState(false);
@@ -132,9 +133,12 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
     if (!searchable) return;
     return registerKeyClaim((e) => !!(e.target as Element | null)?.closest?.("[data-console-find]"));
   }, [searchable]);
-  // Focus the bar (and select the query) when it is shown: opened, or the body it searches is ready again.
+  // Focus the bar (and select the query) when it is shown: opened, or the body it searches is ready again,
+  // unless the focus went elsewhere meanwhile (the request editor while a body was being formatted).
   useEffect(() => {
     if (!searchable) return;
+    const focused = document.activeElement;
+    if (focused && focused !== document.body && !root.current?.contains(focused)) return;
     findInput.current?.focus();
     findInput.current?.select();
   }, [searchable]);
@@ -172,7 +176,7 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
     }
   };
   return (
-    <div className={styles.exchange} onKeyDown={onKeyDown}>
+    <div ref={root} className={styles.exchange} onKeyDown={onKeyDown}>
       <div className={styles.statusLine}>
         {r ? (
           <>
