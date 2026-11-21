@@ -39,6 +39,13 @@ const FAST_PX_PER_MS = 4;
 const SETTLE_MS = 100;
 /** Scroll events closer than this to the last one measured count towards the next measurement. */
 const MIN_SAMPLE_MS = 4;
+/**
+ * Longest time a scroll event's movement is spread over: the browser reports scrolling once a
+ * frame, so a jump after the view sat still (a scrollbar track click, a fling's first frame)
+ * happened within about two frames, not over the whole wait. One wheel notch (~120 px) stays
+ * below `FAST_PX_PER_MS`.
+ */
+const MAX_SAMPLE_MS = 33;
 
 /**
  * Paces the mounting of the blocks' diff editors. Building one (a CodeMirror merge view, laid
@@ -47,10 +54,9 @@ const MIN_SAMPLE_MS = 4;
  * and waits; once the scrolling settles, the waiting blocks mount one a frame, those in view first.
  */
 class MountGate {
+  /** Where the view was at `at`: the next scroll's speed is measured from there. */
   private top = 0;
   private at = 0;
-  /** Whether the next scroll event only sets where the speed is measured from. */
-  private rebase = true;
   private fastUntil = 0;
   private frame = 0;
   private readonly waiting = new Set<{ index: number; grant: () => void }>();
@@ -63,24 +69,31 @@ class MountGate {
     return performance.now() < this.fastUntil;
   }
 
+  /** The view is at `top` without having scrolled there (it just opened). */
+  seen(top: number) {
+    this.top = top;
+    this.at = performance.now();
+  }
+
   /** The user scrolled the view to `top`. */
   scrolled(top: number) {
     const now = performance.now();
-    if (this.rebase) {
-      this.rebase = false;
-    } else {
-      const elapsed = now - this.at;
-      if (elapsed < MIN_SAMPLE_MS) return;
-      if (Math.abs(top - this.top) / elapsed > FAST_PX_PER_MS) this.fastUntil = now + SETTLE_MS;
-    }
+    const elapsed = now - this.at;
+    if (elapsed < MIN_SAMPLE_MS) return;
+    if (Math.abs(top - this.top) / Math.min(elapsed, MAX_SAMPLE_MS) > FAST_PX_PER_MS) this.fastUntil = now + SETTLE_MS;
     this.top = top;
     this.at = now;
   }
 
-  /** The view scrolled itself: by a block above resizing (`jump` false), or to a file (Next File, reveal). */
-  moved(jump: boolean) {
-    this.rebase = true;
-    if (!jump) return;
+  /** The view moved itself by `by` px to keep its content in place as a block above resized. */
+  shifted(by: number) {
+    // Not the user's movement: the speed keeps being measured from the same content.
+    this.top += by;
+  }
+
+  /** The view went to `top` itself, to a file (Next File, reveal). */
+  jumped(top: number) {
+    this.seen(top);
     // Going to a file ends a fling: the blocks there mount right away.
     this.fastUntil = 0;
     this.schedule();
@@ -308,6 +321,7 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
     const el = scrollRef.current;
     if (!el) return;
     const onScroll = () => gate.scrolled(el.scrollTop);
+    gate.seen(el.scrollTop);
     el.addEventListener("scroll", onScroll, { capture: true, passive: true });
     return () => {
       el.removeEventListener("scroll", onScroll, { capture: true });
@@ -326,8 +340,13 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
       // browser dispatches its scroll event; `offset` is then stale, so apply size
       // adjustments relative to the live scrollTop instead of reverting pending movement.
       const base = options.adjustments ? el.scrollTop : offset;
-      gate.moved(!options.adjustments);
-      el.scrollTo({ top: base + (options.adjustments ?? 0), behavior: options.behavior });
+      const top = base + (options.adjustments ?? 0);
+      // Before the scroll event this write may dispatch, so the event isn't taken for the user's.
+      if (options.adjustments) gate.shifted(options.adjustments);
+      else gate.jumped(top);
+      el.scrollTo({ top, behavior: options.behavior });
+      // The browser clamps at either end: measure from where the view actually is.
+      if (options.behavior !== "smooth") gate.shifted(el.scrollTop - top);
     },
     [gate],
   );

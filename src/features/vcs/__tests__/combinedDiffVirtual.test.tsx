@@ -132,7 +132,10 @@ beforeEach(() => {
   Element.prototype.scrollTo = function (this: Element, opts?: ScrollToOptions | number) {
     // Called inside React updates (a click, the first layout): no act of its own.
     if (typeof opts === "object" && opts.top != null) {
-      (this as HTMLElement).scrollTop = Math.max(0, opts.top);
+      const top = Math.max(0, opts.top);
+      // As in a browser, scrolling to where the view already is fires no scroll event.
+      if (top === this.scrollTop) return;
+      (this as HTMLElement).scrollTop = top;
       this.dispatchEvent(new Event("scroll"));
     }
   } as Element["scrollTo"];
@@ -786,9 +789,10 @@ describe("the all-in-one diff while it scrolls fast", () => {
   /** The block at the top of the view. */
   function atTop() {
     const top = scroller().scrollTop;
-    const slot = [...document.querySelectorAll<HTMLElement>("[data-index]")].find(
-      (s) => Math.abs(parseFloat(s.style.top) - top) < 1,
-    )!;
+    // The last slot starting at or above it (blocks not measured yet sit at the estimated height).
+    const slot = [...document.querySelectorAll<HTMLElement>("[data-index]")]
+      .filter((s) => parseFloat(s.style.top) <= top + 1)
+      .at(-1)!;
     return slot.querySelector<HTMLElement>("[data-combined-block]")!;
   }
 
@@ -817,6 +821,101 @@ describe("the all-in-one diff while it scrolls fast", () => {
     expect(seen.size).toBe(n);
     // Each file flown past costs its header only, however many there are.
     expect(mountedPaths.slice(before)).toEqual([]);
+  });
+
+  /** Diff editors mounted since `from` (an index into `mountedPaths`). */
+  const mountedSince = (from: number) => mountedPaths.slice(from);
+
+  it("holds off the diffs when the view first jumps far after sitting still, then mounts them one a frame", () => {
+    render(<CombinedDiffTab input={combinedDiffInput({ items: files(500) })} />);
+    clock += 500;
+    const before = mountedPaths.length;
+    // One scroll event, as a click on the scrollbar track sends.
+    scroll(scroller(), 20_000);
+    expect(mountedSince(before)).toEqual([]);
+    let previous = mounted().length;
+    for (let i = 0; i < 30; i++) {
+      frame();
+      expect(mounted().length - previous).toBeLessThanOrEqual(1);
+      previous = mounted().length;
+    }
+    expect([...mounted()].sort()).toEqual([...headers()].sort());
+  });
+
+  it("holds off the diffs when the view jumps a screen and a half after sitting still a while", () => {
+    render(<CombinedDiffTab input={combinedDiffInput({ items: files(500) })} />);
+    frame();
+    scroll(scroller(), BLOCK);
+    clock += 300;
+    const before = mountedPaths.length;
+    scroll(scroller(), BLOCK + 900);
+    expect(mountedSince(before)).toEqual([]);
+  });
+
+  it("mounts the diff a mouse wheel notch brings into view at once", () => {
+    render(<CombinedDiffTab input={combinedDiffInput({ items: files(500) })} />);
+    frame();
+    scroll(scroller(), 10 * BLOCK);
+    for (let i = 0; i < 20; i++) frame();
+    clock += 300;
+    const before = mountedPaths.length;
+    scroll(scroller(), 10 * BLOCK + 120);
+    expect(mountedSince(before).length).toBeGreaterThan(0);
+  });
+
+  it("mounts no diff editor while flung up through blocks not measured yet", () => {
+    // Reports each block's size as a browser does once it is laid out.
+    const observed: Array<{ cb: ResizeObserverCallback; targets: Set<Element> }> = [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        private readonly targets = new Set<Element>();
+        constructor(cb: ResizeObserverCallback) {
+          observed.push({ cb, targets: this.targets });
+        }
+        observe(el: Element) {
+          this.targets.add(el);
+        }
+        unobserve(el: Element) {
+          this.targets.delete(el);
+        }
+        disconnect() {
+          this.targets.clear();
+        }
+      },
+    );
+    const laidOut = new WeakSet<Element>();
+    const layout = () =>
+      act(() => {
+        for (const { cb, targets } of observed)
+          for (const el of targets) {
+            if (laidOut.has(el) || !el.isConnected) continue;
+            laidOut.add(el);
+            cb([{ target: el, borderBoxSize: [{ blockSize: BLOCK, inlineSize: 800 }] } as never], {} as never);
+          }
+      });
+    // A browser sends one scroll event a frame: the view's own moves arrive merged into the
+    // next one the fling sends.
+    let adjusted = 0;
+    Element.prototype.scrollTo = function (this: Element, opts?: ScrollToOptions | number) {
+      if (typeof opts !== "object" || opts.top == null) return;
+      adjusted++;
+      (this as HTMLElement).scrollTop = Math.max(0, opts.top);
+    } as Element["scrollTo"];
+    render(<CombinedDiffTab input={combinedDiffInput({ items: files(500) })} />);
+    layout();
+    clock += 500;
+    // Far down at once: the blocks above were never shown, so each one laid out on the way up
+    // (taller than estimated) moves the view to keep its content in place.
+    scroll(scroller(), 400 * 200);
+    layout();
+    for (let i = 0; i < 30; i++) frame();
+    layout();
+    const before = mountedPaths.length;
+    adjusted = 0;
+    fling(scroller().scrollTop, scroller().scrollTop - 40 * VIEW, layout);
+    expect(adjusted).toBeGreaterThan(0);
+    expect(mountedSince(before)).toEqual([]);
   });
 
   it("mounts the diffs in view once the scroll settles, one a frame, the top of the view first", () => {
