@@ -872,11 +872,22 @@ function bodyScrollToEnd(h: Harness) {
         const tick = () => {
           scroller.scrollTop = scroller.scrollHeight;
           const atEnd = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2;
-          const lines = el.querySelectorAll(".cm-line");
+          // Lines on screen; the editor also keeps the cursor's line (the start) in the DOM.
+          const box = scroller.getBoundingClientRect();
+          const lines = [...el.querySelectorAll(".cm-line")].filter((l) => {
+            const r = l.getBoundingClientRect();
+            return r.bottom > box.top && r.top < box.bottom;
+          });
           // The last record sits a few closing lines above the end (`}`, `]`, `</root>`).
-          const tail = lines.length ? [...lines].slice(-8).map((l) => l.textContent ?? "") : ["last-item"];
+          const tail = el.querySelector(".cm-line") ? lines.map((l) => l.textContent ?? "") : ["last-item"];
           if (atEnd && tail.some((l) => l.includes("last-item"))) resolve(performance.now() - t0);
-          else if (++n > 600) reject(new Error("response body never reached its end"));
+          else if (++n > 600)
+            reject(
+              new Error(
+                `response body never reached its end (scrollTop ${scroller.scrollTop}, height ${scroller.scrollHeight}, ` +
+                  `client ${scroller.clientHeight}, tail ${JSON.stringify(tail.map((l) => l.slice(0, 60)))})`,
+              ),
+            );
           else requestAnimationFrame(tick);
         };
         tick();
