@@ -286,6 +286,8 @@ interface Row<T> {
 
 const NO_ROOTS: readonly never[] = [];
 const NO_ROWS: readonly Row<never>[] = [];
+/** Rows have one height, so a model's index is a key as good as any (and costs no lookup per row). */
+const indexItemKey = (i: number) => i;
 
 /** What the tree reads of a row, whether it flattened `roots` or got the row from a model. */
 type VisibleRow<T> = Omit<Row<T>, "parent"> & Partial<Pick<TreeModelRow<T>, "posInSet" | "setSize">>;
@@ -442,13 +444,14 @@ export function Tree<T>(props: TreeProps<T>) {
 
   const themedRowHeight = useIconRowHeight();
   const rowHeight = fixedRowHeight ?? themedRowHeight ?? DEFAULT_ROW_HEIGHT;
+  // A new `getItemKey` makes the virtualizer remeasure every row, so it changes only with the rows.
+  const getItemKey = useMemo(() => (shown ? (i: number) => shown[i]!.key : indexItemKey), [shown]);
   const virtualizer = useVirtualizer({
     count: rowCount,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => rowHeight,
     overscan: 12,
-    // Rows have one height, so a model's index is a key as good as any (and costs no lookup per row).
-    getItemKey: (i) => (shown ? shown[i]!.key : i),
+    getItemKey,
   });
   useEffect(() => virtualizer.measure(), [virtualizer, rowHeight]);
 
