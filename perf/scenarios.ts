@@ -859,6 +859,26 @@ function bodyFirstLine(h: Harness, t0: number, expected: string, prefix: boolean
   );
 }
 
+/**
+ * Characters put into text nodes so far (what the page had to lay out), counted
+ * from the first call on.
+ */
+function drawnChars(h: Harness): Promise<number> {
+  return h.page.evaluate(() => {
+    const w = window as never as { __drawnChars?: { n: number } };
+    if (!w.__drawnChars) {
+      const counter = { n: 0 };
+      const create = document.createTextNode.bind(document);
+      document.createTextNode = (text: string) => {
+        counter.n += text.length;
+        return create(text);
+      };
+      w.__drawnChars = counter;
+    }
+    return w.__drawnChars.n;
+  });
+}
+
 /** Scrolls the response body to its end until the last record is on screen; ms. */
 function bodyScrollToEnd(h: Harness) {
   return h.inPage(
@@ -933,10 +953,15 @@ async function httpResponseRun(h: Harness, shape: HttpBodyShape, bytes: number, 
   m[key("openLayoutMs")] = open.styleLayoutMs;
   m[key("domNodes")] = c1.Nodes ?? 0;
   if (shape !== "text") {
+    const drawn0 = await drawnChars(h);
     mark = await h.now();
     await h.page.getByRole("button", { name: "Show Raw" }).click();
     m[key("rawMs")] = await bodyFirstLine(h, mark, raw, true);
     const c2 = await h.counters();
+    const rawStep = Harness.delta(c1, c2);
+    m[key("rawScriptMs")] = rawStep.scriptMs;
+    m[key("rawLayoutMs")] = rawStep.styleLayoutMs;
+    m[key("rawDrawnChars")] = (await drawnChars(h)) - drawn0;
     mark = await h.now();
     await h.page.getByRole("button", { name: "Show Formatted" }).click();
     m[key("formattedMs")] = await bodyFirstLine(h, mark, formatted, false);
