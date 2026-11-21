@@ -569,4 +569,30 @@ describe("build feature", () => {
       fake.resolve(result([], true));
     });
   });
+
+  it("renders links on >10 KiB build console lines without dropping them", async () => {
+    const longLine = `src/start.java:1:1 ${"x".repeat(5_000)} src/mid.java:2:2 ${"y".repeat(5_000)} src/end.java:3:3`;
+    useBuildRun.setState({
+      status: "failed",
+      title: "Build",
+      messages: [],
+      lines: [{ text: longLine, kind: "err" }],
+      selected: null,
+      durationMs: 100,
+    });
+    const { container } = render(<BuildView />);
+    const log = screen.getByRole("log", { name: "Build output" });
+    expect(container.querySelectorAll('[role="link"]')[0]?.textContent).toBe("src/start.java:1:1");
+    // Scrolling horizontally reveals links in the middle and at the end of the >10 KiB line.
+    Object.defineProperty(log, "scrollLeft", { configurable: true, writable: true, value: 33_000 });
+    fireEvent.scroll(log);
+    expect(Array.from(container.querySelectorAll('[role="link"]')).map((a) => a.textContent)).toContain(
+      "src/mid.java:2:2",
+    );
+    Object.defineProperty(log, "scrollLeft", { configurable: true, writable: true, value: 66_000 });
+    fireEvent.scroll(log);
+    expect(Array.from(container.querySelectorAll('[role="link"]')).map((a) => a.textContent)).toContain(
+      "src/end.java:3:3",
+    );
+  });
 });

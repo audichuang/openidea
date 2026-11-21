@@ -6,6 +6,7 @@
  */
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -45,7 +46,14 @@ import {
   type BuildStatus,
   type ConsoleLine,
 } from "./model";
-import { findOutputLinks, type OutputLink } from "@/features/run/links";
+import {
+  findOutputLinks,
+  horizontalColumnWindow,
+  sliceRangesInWindow,
+  visibleCharWindow,
+  type OutputLink,
+  type TextWindow,
+} from "@/features/run/links";
 import { openTarget, openUrl } from "@/features/run/navigate";
 import { navigateToMessage, rerunBuild, selectBuildNode, useBuildRun } from "./store";
 import styles from "./Build.module.css";
@@ -213,14 +221,33 @@ function BuildTree() {
   );
 }
 
+const BUILD_FONT_PX = 12;
+
 /**
  * One console line: file locations and URLs (compiler diagnostics, stack
  * frames) are links, resolved against the directory of the step that printed
  * the line (Maven reactor modules run in their own directory), then the
  * project root and a name search as in the run console.
  */
-function ConsoleLineText({ line, root }: { line: ConsoleLine; root: string }) {
-  const links = useMemo(() => (line.kind === "system" ? [] : findOutputLinks(line.text)), [line.text, line.kind]);
+const ConsoleLineText = memo(function ConsoleLineText({
+  line,
+  root,
+  colStart,
+  colEnd,
+}: {
+  line: ConsoleLine;
+  root: string;
+  colStart?: number;
+  colEnd?: number;
+}) {
+  const rawLinks = useMemo(() => (line.kind === "system" ? [] : findOutputLinks(line.text)), [line.text, line.kind]);
+  const links = useMemo(() => {
+    if (colStart === undefined || colEnd === undefined || (colStart === 0 && line.text.length <= colEnd)) {
+      return rawLinks;
+    }
+    const win = visibleCharWindow(line.text, colStart, colEnd);
+    return sliceRangesInWindow(rawLinks, win.start, win.end);
+  }, [rawLinks, line.text, colStart, colEnd]);
   const activate = (e: MouseEvent, link: OutputLink) => {
     e.preventDefault();
     if (window.getSelection()?.toString()) return;
@@ -248,13 +275,26 @@ function ConsoleLineText({ line, root }: { line: ConsoleLine; root: string }) {
   }
   out.push(line.text.slice(pos));
   return <>{out}</>;
-}
+});
 
 function BuildConsole({ rowHeight }: { rowHeight: number }) {
   const root = useProject((s) => s.project?.root ?? "/");
   const lines = useBuildRun((s) => s.lines);
   const ref = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  const [colWindow, setColWindow] = useState<TextWindow | null>(null);
+  const syncHorizontalWindow = (el: HTMLDivElement | null) => {
+    const next = el ? horizontalColumnWindow(el.scrollLeft, el.clientWidth, BUILD_FONT_PX) : null;
+    setColWindow((prev) => (prev?.start === next?.start && prev?.end === next?.end ? prev : next));
+  };
+  useLayoutEffect(() => {
+    const el = ref.current;
+    syncHorizontalWindow(el);
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => syncHorizontalWindow(el));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const [widest] = useState(() => new WidestColumns());
   const columns = useMemo(() => widest.measure(lines), [widest, lines]);
   const virtualizer = useVirtualizer({
@@ -279,6 +319,7 @@ function BuildConsole({ rowHeight }: { rowHeight: number }) {
       aria-label={tx("Build output")}
       onScroll={(e) => {
         const el = e.currentTarget;
+        syncHorizontalWindow(el);
         stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < rowHeight * 2;
       }}
     >
@@ -294,7 +335,7 @@ function BuildConsole({ rowHeight }: { rowHeight: number }) {
               className={clsx(styles.line, styles[line.kind])}
               style={{ transform: `translateY(${v.start}px)` }}
             >
-              <ConsoleLineText line={line} root={root} />
+              <ConsoleLineText line={line} root={root} colStart={colWindow?.start} colEnd={colWindow?.end} />
             </div>
           );
         })}
