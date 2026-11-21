@@ -1385,7 +1385,7 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
                 {n.repo && <RepoSwatch root={n.repo} />}
                 {label}
                 {n.type !== "file" && (n.group !== "amend" || n.historicalFileCount !== undefined) && (
-                  <span className={styles.nodeCount}>
+                  <span className={styles.count}>
                     {n.group === "ignored"
                       ? ignoredFileCount(n.files)
                       : fileCount(n.historicalFileCount ?? n.files.length)}
