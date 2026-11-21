@@ -829,6 +829,128 @@ const leaks: Scenario = {
   },
 };
 
+/**
+ * Interactive rebase dialog at 1×, 10× and 100× scales (50, 500 and 5,000 commits):
+ * opening the dialog, measuring mounted row Selects and DOM size, and scrolling to the last commit.
+ */
+const interactiveRebase: Scenario = {
+  id: "interactiveRebase",
+  title: "Open and scroll Interactive Rebase (50 / 500 / 5,000 commits)",
+  async run(h) {
+    const refresh = await h.refreshMs();
+    const out: Metrics = {};
+    try {
+      // Warm up the dialog and VCS action path so the 1× scale does not include first-load JIT cost.
+      const warmTarget = await h.page.evaluate(() =>
+        (
+          window as never as { __openideaPerf: { fakeInteractiveRebase(c: number): unknown } }
+        ).__openideaPerf.fakeInteractiveRebase(5),
+      );
+      await h.measure(
+        () =>
+          h.page.evaluate(
+            (arg) =>
+              (
+                window as never as { __openideaPerf: { runAction(id: string, a?: unknown): Promise<boolean> } }
+              ).__openideaPerf.runAction("vcs.log.interactiveRebase", arg),
+            warmTarget,
+          ),
+        '[role="list"][aria-label="Commits to rebase"]',
+        "Commit 0:",
+        30_000,
+      );
+      await h.page.keyboard.press("Escape");
+      await h.page.locator('[role="dialog"]').waitFor({ state: "detached" });
+      await h.gc();
+
+      for (const count of [50, 500, 5_000]) {
+        const target = await h.page.evaluate((n) => {
+          const probe = (window as never as { __openideaPerf: { fakeInteractiveRebase(c: number): unknown } })
+            .__openideaPerf;
+          return probe.fakeInteractiveRebase(n);
+        }, count);
+        const t0 = await h.now();
+        const beforeOpen = await h.counters();
+        const openMs = await h.measure(
+          () =>
+            h.page.evaluate(
+              (arg) =>
+                (
+                  window as never as { __openideaPerf: { runAction(id: string, a?: unknown): Promise<boolean> } }
+                ).__openideaPerf.runAction("vcs.log.interactiveRebase", arg),
+              target,
+            ),
+          '[role="list"][aria-label="Commits to rebase"]',
+          "Commit 0:",
+          30_000,
+        );
+        await h.inPage((p) => p.afterNextPaint());
+        const openWork = Harness.delta(beforeOpen, await h.counters());
+        const openLongTasks = await h.longTasksSince(t0);
+        const { selects, domNodes } = await h.page.evaluate(() => {
+          const list = document.querySelector('[role="list"][aria-label="Commits to rebase"]')!;
+          const dialog = list.closest('[role="dialog"]')!;
+          return {
+            selects: list.querySelectorAll('button[aria-haspopup="listbox"]').length,
+            domNodes: dialog.querySelectorAll("*").length,
+          };
+        });
+
+        const list = h.page.getByRole("list", { name: "Commits to rebase" });
+        const t1 = await h.now();
+        const beforeScroll = await h.counters();
+        await h.inPage((p) => p.startFrames());
+        const reachedLast = await list.evaluate(
+          async (el, lastLabel) => {
+            const max = Math.max(0, el.scrollHeight - el.clientHeight);
+            for (let i = 0; i <= 60; i++) {
+              el.scrollTop = (i / 60) * max;
+              await new Promise(requestAnimationFrame);
+            }
+            await new Promise(requestAnimationFrame);
+            const found = (el.textContent ?? "").includes(lastLabel);
+            for (let i = 60; i >= 0; i--) {
+              el.scrollTop = (i / 60) * max;
+              await new Promise(requestAnimationFrame);
+            }
+            return found;
+          },
+          `Commit ${count - 1}:`,
+        );
+        if (!reachedLast) throw new Error(`Interactive Rebase (${count}) did not render last commit`);
+        const scrollFrames = await h.inPage((p) => p.stopFrames());
+        const scrollWork = Harness.delta(beforeScroll, await h.counters());
+        const scrollLongTasks = await h.longTasksSince(t1);
+        const scrollSummary = frameSummary(scrollFrames, refresh);
+        const p = `n${count}`;
+        out[`${p}OpenMs`] = openMs;
+        out[`${p}OpenTaskMs`] = openWork.taskMs;
+        out[`${p}OpenLongTasks`] = openLongTasks.length;
+        out[`${p}OpenTbtMs`] = totalBlockingTime(openLongTasks);
+        out[`${p}Selects`] = selects;
+        out[`${p}DomNodes`] = domNodes;
+        out[`${p}ScrollFrameP95Ms`] = scrollSummary.frameP95Ms;
+        out[`${p}ScrollFrameMaxMs`] = scrollSummary.frameMaxMs;
+        out[`${p}ScrollDroppedFramesPct`] = scrollSummary.droppedFramesPct;
+        out[`${p}ScrollWorkMsPerFrame`] = scrollFrames.length ? scrollWork.taskMs / scrollFrames.length : 0;
+        out[`${p}ScrollLongTasks`] = scrollLongTasks.length;
+        out[`${p}ScrollTbtMs`] = totalBlockingTime(scrollLongTasks);
+
+        await h.page.keyboard.press("Escape");
+        await h.page.locator('[role="dialog"]').waitFor({ state: "detached" });
+        await h.gc();
+      }
+    } finally {
+      await h.page.evaluate(() =>
+        (
+          window as never as { __openideaPerf: { fakeInteractiveRebase(c: number): unknown } }
+        ).__openideaPerf.fakeInteractiveRebase(0),
+      );
+    }
+    return out;
+  },
+};
+
 export const SCENARIOS: Scenario[] = [
   startup,
   typing,
@@ -840,6 +962,7 @@ export const SCENARIOS: Scenario[] = [
   gitLog,
   gitLogScrollbar,
   gitLogWide,
+  interactiveRebase,
   resizePanels,
   keyRepeat,
   scroll,
