@@ -1,0 +1,265 @@
+/**
+ * The all-in-one diff with many files: only the blocks near the viewport keep a mounted diff
+ * editor, except blocks with unsaved edits or focus, and scrolling never drops or reorders files.
+ */
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../DiffEditor", () => ({
+  DiffEditor: ({ input }: { input: { data: { path: string } } }) => (
+    <div data-testid="block-diff" data-path={input.data.path}>
+      <input aria-label={`Edit ${input.data.path}`} />
+    </div>
+  ),
+}));
+
+import { _addEditor, _removeEditor, type TextEditorHandle } from "@/editor/api";
+import { useProject } from "@/platform/project";
+import { provideEditorService } from "@/workbench/contributions";
+import { CombinedDiffTab } from "../CombinedDiff";
+import { combinedDiffInput, type DiffData } from "../diffInput";
+
+/** Height of every block (header + diff) and of the scroller, in px. */
+const BLOCK = 300;
+const VIEW = 600;
+
+const diff = (path: string): DiffData => ({ path, left: { type: "rev", rev: "HEAD" }, right: { type: "worktree" } });
+const files = (n: number) => Array.from({ length: n }, (_, i) => diff(`/r/src/f${String(i).padStart(5, "0")}.ts`));
+
+let dirtyDocs: number[] = [];
+const openInput = vi.fn(async () => undefined);
+provideEditorService({
+  openInput,
+  openFile: vi.fn(async () => undefined),
+  closeInput: vi.fn(),
+  dirtyDocumentIds: () => dirtyDocs,
+} as never);
+
+/**
+ * jsdom has no layout. Blocks measure `BLOCK` tall; an IntersectionObserver reports a block
+ * near once the scroller's viewport (plus the observer's bottom margin) reaches it, from the
+ * block's position among its siblings, as a browser would with blocks of that height.
+ */
+class FakeIntersectionObserver {
+  static all = new Set<FakeIntersectionObserver>();
+  private readonly targets = new Set<Element>();
+  constructor(
+    private readonly callback: IntersectionObserverCallback,
+    private readonly options: IntersectionObserverInit = {},
+  ) {
+    FakeIntersectionObserver.all.add(this);
+  }
+  observe(el: Element) {
+    this.targets.add(el);
+    this.check();
+  }
+  unobserve(el: Element) {
+    this.targets.delete(el);
+  }
+  disconnect() {
+    this.targets.clear();
+    FakeIntersectionObserver.all.delete(this);
+  }
+  takeRecords() {
+    return [];
+  }
+  check() {
+    const root = this.options.root as HTMLElement | null;
+    if (!root) return;
+    const below = Number(/(\d+)px 0px$/.exec(this.options.rootMargin ?? "")?.[1] ?? 0);
+    const blocks = [...root.querySelectorAll("[data-combined-block]")];
+    const entries = [...this.targets].flatMap((el) => {
+      const at = blocks.indexOf(el);
+      const top = at * BLOCK - root.scrollTop;
+      return top < VIEW + below && top + BLOCK > 0 ? [{ target: el, isIntersecting: true }] : [];
+    });
+    if (entries.length) this.callback(entries as never, this as never);
+  }
+}
+
+const offsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight")!;
+const scrollHeight = Object.getOwnPropertyDescriptor(Element.prototype, "scrollHeight")!;
+const scrollTo = Element.prototype.scrollTo;
+
+beforeEach(() => {
+  localStorage.clear();
+  dirtyDocs = [];
+  openInput.mockClear();
+  useProject.setState({ project: { name: "r", root: "/r", trusted: true, isGit: true, settings: {} } as never });
+  vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+    configurable: true,
+    get(this: HTMLElement) {
+      return this.hasAttribute("data-index") || this.hasAttribute("data-combined-block") ? BLOCK : VIEW;
+    },
+  });
+  // The scroller's content: the blocks' full height.
+  Object.defineProperty(Element.prototype, "scrollHeight", {
+    configurable: true,
+    get(this: Element) {
+      const content = this.hasAttribute("data-combined-scroll") ? this.firstElementChild : null;
+      return content instanceof HTMLElement ? parseFloat(content.style.height) || 0 : 0;
+    },
+  });
+  Element.prototype.scrollTo = function (this: Element, opts?: ScrollToOptions | number) {
+    // Called inside React updates (a click, the first layout): no act of its own.
+    if (typeof opts === "object" && opts.top != null) {
+      (this as HTMLElement).scrollTop = Math.max(0, opts.top);
+      this.dispatchEvent(new Event("scroll"));
+    }
+  } as Element["scrollTo"];
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", offsetHeight);
+  Object.defineProperty(Element.prototype, "scrollHeight", scrollHeight);
+  Element.prototype.scrollTo = scrollTo;
+});
+
+const scroller = () => document.querySelector<HTMLElement>("[data-combined-scroll]")!;
+const mounted = () => screen.queryAllByTestId("block-diff").map((b) => b.dataset.path!);
+const headers = () =>
+  [...document.querySelectorAll<HTMLElement>("[data-combined-block]")].map((b) => b.dataset.combinedBlock!);
+
+function scroll(el: HTMLElement, top: number) {
+  act(() => {
+    el.scrollTop = Math.max(0, top);
+    fireEvent.scroll(el);
+    FakeIntersectionObserver.all.forEach((o) => o.check());
+  });
+}
+
+/** Scrolls a screen at a time to the end of `n` blocks and back, calling `seen` at each stop. */
+function scrollDownAndBack(n: number, seen: () => void = () => {}) {
+  const end = n * BLOCK;
+  for (let top = 0; top <= end; top += VIEW) {
+    scroll(scroller(), top);
+    seen();
+  }
+  for (let top = end; top >= 0; top -= VIEW) {
+    scroll(scroller(), top);
+    seen();
+  }
+  scroll(scroller(), 0);
+}
+
+describe("the all-in-one diff with many files", () => {
+  it.each([40, 160])("keeps a bounded number of diff editors mounted while scrolling %i files", (n) => {
+    render(<CombinedDiffTab input={combinedDiffInput({ items: files(n) })} />);
+    let most = mounted().length;
+    scrollDownAndBack(n, () => (most = Math.max(most, mounted().length)));
+    // A window around the viewport, whatever the number of files scrolled past.
+    expect(most).toBeLessThanOrEqual(12);
+    expect(mounted().length).toBeLessThanOrEqual(12);
+    expect(mounted()[0]).toBe(files(n)[0]!.path);
+  });
+
+  it("shows every file, in order, on the way down", () => {
+    const items = files(100);
+    render(<CombinedDiffTab input={combinedDiffInput({ items })} />);
+    expect(screen.getByText("100 files")).toBeTruthy();
+    const seen = new Set<string>();
+    scrollDownAndBack(items.length, () => {
+      const shown = headers();
+      // In the files' order, without gaps.
+      const first = items.findIndex((i) => i.path === shown[0]);
+      expect(shown).toEqual(items.slice(first, first + shown.length).map((i) => i.path));
+      shown.forEach((p) => seen.add(p));
+    });
+    expect(seen.size).toBe(items.length);
+  });
+
+  it("keeps a block with unsaved edits mounted however far it is scrolled, until they are saved", () => {
+    const items = files(120);
+    const edited = items[2]!.path;
+    const handle = { view: {}, ctx: { doc: 42, path: edited } } as unknown as TextEditorHandle;
+    _addEditor(handle);
+    try {
+      render(<CombinedDiffTab input={combinedDiffInput({ items })} />);
+      const field = screen.getByLabelText(`Edit ${edited}`) as HTMLInputElement;
+      act(() => {
+        fireEvent.change(field, { target: { value: "typed, not saved" } });
+      });
+      dirtyDocs = [42];
+      scroll(scroller(), items.length * BLOCK);
+      // Far away, it is still there, with its edit and the document still dirty.
+      expect(mounted()).toContain(edited);
+      expect(mounted().length).toBeLessThanOrEqual(13);
+      scroll(scroller(), 0);
+      expect(screen.getByLabelText(`Edit ${edited}`)).toBe(field);
+      expect(field.value).toBe("typed, not saved");
+      expect(dirtyDocs).toEqual([42]);
+      // Saved: it goes like any other block once out of view.
+      dirtyDocs = [];
+      scroll(scroller(), items.length * BLOCK);
+      expect(mounted()).not.toContain(edited);
+    } finally {
+      _removeEditor(handle);
+    }
+  });
+
+  it("keeps the focused block mounted while it is scrolled away", () => {
+    const items = files(120);
+    const focused = items[1]!.path;
+    render(<CombinedDiffTab input={combinedDiffInput({ items })} />);
+    const field = screen.getByLabelText(`Edit ${focused}`);
+    field.focus();
+    scroll(scroller(), items.length * BLOCK);
+    expect(mounted()).toContain(focused);
+    expect(document.activeElement).toBe(field);
+    field.blur();
+    scroll(scroller(), 30 * BLOCK);
+    expect(mounted()).not.toContain(focused);
+  });
+
+  it("moves to the next and previous file, and opens at the file asked for", () => {
+    const items = files(120);
+    const { unmount } = render(<CombinedDiffTab input={combinedDiffInput({ items })} />);
+    // The file moved to sits at the top of the view.
+    const top = (i: number) => {
+      const slot = document.querySelector<HTMLElement>(`[data-index="${i}"]`)!;
+      return parseFloat(slot.style.top);
+    };
+    fireEvent.click(screen.getByRole("button", { name: "Next File" }));
+    expect(scroller().scrollTop).toBeGreaterThan(0);
+    expect(scroller().scrollTop).toBe(top(1));
+    fireEvent.click(screen.getByRole("button", { name: "Next File" }));
+    expect(scroller().scrollTop).toBe(top(2));
+    fireEvent.click(screen.getByRole("button", { name: "Previous File" }));
+    expect(scroller().scrollTop).toBe(top(1));
+    unmount();
+
+    render(<CombinedDiffTab input={combinedDiffInput({ items, reveal: items[80]!.path })} />);
+    expect(headers()).toContain(items[80]!.path);
+    expect(scroller().scrollTop).toBe(top(80));
+    expect(mounted()).toContain(items[80]!.path);
+    expect(mounted().length).toBeLessThanOrEqual(12);
+  });
+
+  it("goes back to one tab per file at the file in view", async () => {
+    const items = files(120);
+    render(<CombinedDiffTab input={combinedDiffInput({ items, reveal: items[40]!.path })} />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Show Files in Separate Diff Tabs" }));
+    });
+    expect((openInput.mock.calls[0] as unknown as [{ path: string }])[0].path).toBe(items[40]!.path);
+  });
+
+  it("loads no diff for a collapsed file scrolled into view, and loads it when expanded", () => {
+    const items = files(120);
+    render(<CombinedDiffTab input={combinedDiffInput({ items })} />);
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Collapse All Files" }));
+    });
+    scroll(scroller(), 80 * BLOCK);
+    const shown = headers();
+    expect(shown.length).toBeGreaterThan(0);
+    // Headers only: none of these files was expanded while in view.
+    expect(mounted()).toEqual([]);
+    act(() => {
+      fireEvent.click(screen.getAllByRole("button", { name: "Expand File" })[0]!);
+    });
+    expect(mounted()).toContain(shown[0]);
+  });
+});
