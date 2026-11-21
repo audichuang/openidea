@@ -834,7 +834,8 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
           {/* IDEA's Commit view: Show Diff after Rollback. */}
           {mode !== "dialog" && <IconButton icon="diff" action="vcs.showDiff" size="small" />}
           {mode === "local" && <IconButton icon="changelist" action="vcs.changelist.new" size="small" />}
-          {mode !== "dialog" && <IconButton icon="shelve" action="vcs.shelveSilently" size="small" />}
+          {/* The fork's Shelve opens the dialog first, as before v0.1.50; Shelve Silently keeps its shortcut and action. */}
+          {mode !== "dialog" && <IconButton icon="shelve" action="vcs.shelve" size="small" />}
           {mode !== "dialog" && <IconButton icon="git-pull" action="vcs.update" size="small" />}
           <IconButton
             ref={viewRef}
