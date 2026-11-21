@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../DiffEditor", () => ({
   DiffEditor: ({ input, fit }: { input: { data: { path: string; mode?: string } }; fit?: boolean }) => (
@@ -73,6 +73,19 @@ describe("all-in-one diff", () => {
 
 describe("the all-in-one diff tab", () => {
   const input = combinedDiffInput({ items });
+  // jsdom has no layout: a view tall enough for every block (each measures 0 px tall).
+  const offsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight")!;
+  beforeEach(() => {
+    Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.hasAttribute("data-combined-scroll") ? 600 : 0;
+      },
+    });
+  });
+  afterEach(() => {
+    Object.defineProperty(HTMLElement.prototype, "offsetHeight", offsetHeight);
+  });
 
   it("shows a block per file, each diff fitted to its content", () => {
     render(<CombinedDiffTab input={input} />);

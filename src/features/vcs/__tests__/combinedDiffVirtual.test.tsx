@@ -188,6 +188,22 @@ describe("the all-in-one diff with many files", () => {
     expect(mounted()[0]).toBe(files(n)[0]!.path);
   });
 
+  it("mounts the diffs in view and one block past each edge only", () => {
+    // Each mounted diff adds to the style work every later mount does while the view scrolls.
+    const items = files(160);
+    render(<CombinedDiffTab input={combinedDiffInput({ items })} />);
+    for (const top of [10 * BLOCK, 10 * BLOCK + 40, 30 * BLOCK]) {
+      scroll(scroller(), top);
+      const slots = [...document.querySelectorAll<HTMLElement>("[data-index]")];
+      const starts = slots.map((s) => parseFloat(s.style.top));
+      // Slots overlapping the view, each running to where the next one starts.
+      const inView = starts.filter((start, k) => start < top + VIEW && (starts[k + 1] ?? Infinity) > top).length;
+      expect(inView).toBeGreaterThan(0);
+      expect(slots.length).toBeLessThanOrEqual(inView + 2);
+      expect([...mounted()].sort()).toEqual([...headers()].sort());
+    }
+  });
+
   it("shows every file, in order, on the way down", () => {
     const items = files(100);
     render(<CombinedDiffTab input={combinedDiffInput({ items })} />);
