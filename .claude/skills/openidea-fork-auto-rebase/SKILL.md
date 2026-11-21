@@ -29,7 +29,7 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
   - PR 開著、有 `<!-- auto-rebase:develop-moved <sha> -->` 留言（前一次 run 移動 develop 後、發版途中死了，或發版失敗）→ vNEW=vX、PR=那個 PR，直接做第 6 步，發的是最後一則 develop-moved 留言裡的 sha；vOLD 與 OLD_DEVELOP 取 PR 說明。
     - 例外：那個 sha 已有 `vX-fork.N` tag，但這個 tag 沒有已發布的 Release（`gh release view <tag> -R audichuang/openidea` 失敗），它最近一次 fork-release run 是 completed failure，而 `fork/develop` 已經越過它（`git merge-base --is-ancestor <sha> fork/develop` 成功、兩者不同），`fork/develop` 的 develop push Fork CI `Fork CI passed` 成功。tag 的 run 永遠用 tag 那個 commit 的 workflow，所以 workflow 本身的問題重跑修不好，只能發新的 commit（v0.1.48-fork.1：macOS 的 tsc 超過 Node heap，#354、#355）。
     - 這時改發 `fork/develop`：先在 PR 留一則第一行是 `<!-- auto-rebase:develop-moved <fork/develop 完整 sha> -->` 的留言，寫明舊 tag 為什麼失敗、`<舊 sha>..fork/develop` 帶進哪些 commit，再做第 6 步。第 6 步第 1 點會照常算下一個 N；舊 tag 不刪也不移。precheck 看到這個狀態就起 run，不等鎖過期。
-  - PR 開著、沒有 develop-moved、**最後一則** `<!-- auto-rebase:approved <sha> -->` 留言排在最後一則 needs-human 之後、sha 等於 `git rev-parse fork/rebase/vX`（使用者看過 needs-human 的 PR 後核可；和 precheck 同一個定義。sha 不等代表核可後又推過；排在 needs-human 之前代表之前的 run 已拒絕它。兩者都是核可作廢，照下一條處理）→ vNEW=vX、PR=那個 PR，vOLD 與 OLD_DEVELOP 取 PR 說明。先確認 Fork CI 在這個 sha 上 `Fork CI passed` 成功，或紅的 job 都已在 PR 說明列為上游在 vX 也紅（第 3 步的規則）；不符就 PR 留言 `<!-- auto-rebase:needs-human -->` 說明哪裡不符，跳第 7 步。都符合就 `git checkout --detach <sha>`，從第 4 步「移動」做起（不重跑 rebase 與閘門），接著第 5、6 步。
+  - PR 開著、沒有 develop-moved、**最後一則** `<!-- auto-rebase:approved <sha> -->` 留言排在最後一則 needs-human 之後、sha 等於 `git rev-parse fork/rebase/vX`（使用者看過 needs-human 的 PR 後核可；和 precheck 同一個定義。sha 不等代表核可後又推過；排在 needs-human 之前代表之前的 run 已拒絕它。兩者都是核可作廢，照下一條處理）→ vNEW=vX、PR=那個 PR，vOLD 與 OLD_DEVELOP 取 PR 說明。先確認 Fork CI 在這個 sha 上 `Fork CI passed` 成功。核可只解除需要人決定的事（保留路徑、自審沒過的取捨），不放行紅燈：上游也紅的 job 要在交人前照第 3b 步第 1 點的 #252 filter 例外修綠，PR 說明列為上游也紅不算綠。不成功就 PR 留言 `<!-- auto-rebase:needs-human -->` 說明 CI 哪裡不綠、核可不能放行，跳第 7 步。都符合就 `git checkout --detach <sha>`，從第 4 步「移動」做起（不重跑 rebase 與閘門），接著第 5、6 步。
   - PR 開著、有 `<!-- auto-rebase:needs-human -->` 留言、沒有符合上一條的 approved（precheck 只在它過時才讓你跑到這：上游出了更新的 release，或 develop 已經在 vX）→ **收鎖**：`rebase/vX` 的 tip 不在 `fork/develop` 或 `fork/backup/*` 上就先 `git push fork "fork/rebase/vX:refs/heads/backup/rebase-vX-$RUN"`；PR 留言說明原因後 `gh pr close`，刪 fork 的 `rebase/vX` 與 `ci-base/vX`。然後重新判斷：vNEW == vOLD 就結束、不推通知；否則 NEW。
   - 其他（precheck 判定鎖過期：前一次 run 死了）→ 同樣先備份不在 develop／backup 上的 tip、關 PR（有的話）、刪兩條分支，當 NEW 從頭來。不續跑半途的 rebase：從頭重來比較可靠。
 - 沒有 `rebase/*` 且 vNEW == vOLD：
@@ -92,7 +92,7 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
 1. **必交人路徑**：下面三份檔案清單的聯集，任何一個落在 FORK.md「Reserved for the user」的路徑就交人，留言寫明是哪個路徑、為什麼要人看。例外：命中的全是保留清單第一項（視窗 chrome）時不交人，記下命中的檔，其餘各點照做，通過後接第 3c 步實機檢查。
    - 手動碰過的檔：`conflicts.txt` 裡 MANUAL 類的檔，加上 `git range-diff --no-color OB..OT NB..NT` 裡 `>`（新增的修正 commit）與 `<`（被丟掉的 commit）改到的所有檔（`git show --format= --name-status <sha>`，rename 的來源與目的路徑都算），以及 `!` commit 裡 +/- 行有變的檔。`!` 的算到檔案，不算整個 commit：取第 2 點對帳報告「`!` with different +/- lines」在每個 commit 底下列的檔（所以先跑第 2 點）。同一個 commit 裡 rebase 前後 +/- 行相同的檔不算：v0.1.48 有 ClipCode 的 commit 只是 `Cargo.lock` 與註冊行變了，`crates/ide-clip/**` 逐位元組沒變，照 commit 算會誤判成碰到 ClipCode。
    - 上游這次改到的視窗 chrome：`git diff --name-status OB NB` 落在保留清單第一項（macOS 視窗 chrome）的檔，rename 的來源與目的路徑都算（上游把保留檔搬走也要人看，FORK.md 的清單跟著更新）。上游自己改了它，沒有衝突也要實機看（第 3c 步）；上游改其他保留路徑不算。
-   - 會削弱閘門的修正：修正 commit 改了 `.config/nextest.toml`、`fork-ci.yml` 裡的測試 filter 或 skip，或刪掉、`#[ignore]`、`.skip` 了測試。同樣交人。純資源設定（磁碟、逾時、runner）不在此列，由審查者看。
+   - 會削弱閘門的修正：修正 commit 改了 `.config/nextest.toml`、`fork-ci.yml` 裡的測試 filter 或 skip，或刪掉、`#[ignore]`、`.skip` 了測試；加了行內抑制（Rust `#[allow(clippy::…)]`／`#[allow(…)]`、`#[cfg_attr(…, allow(…))]`、`// eslint-disable`、`oxlint-disable`、`biome-ignore`、`@ts-ignore`／`@ts-expect-error`、`as any`）；在 lint 或其他檢查的 baseline／允許清單新增條目；或放寬了既有斷言（改期望值遷就新輸出、`assert` 改成較寬的比較、拉長逾時讓失敗變通過）。同樣交人。第 3 點的獨立審查者逐一核對每個修正 commit 有沒有這幾類，結果寫進 self-reviewed 留言。純資源設定（磁碟、逾時、runner）不在此列，由審查者看。
      - 例外：**上游也紅的測試**。上游沒有修正可搬時，照 #252 加 filter 不交人，但下面每一條都要成立。證據只能來自上游自己在 NB 的 CI，不能來自這次的修正：
        - 上游 `ci.yml` 在 NB 的 run（第 3 步那條 `gh run list -R l0ng-ai/openidea --workflow ci.yml --commit <NB>`）裡，同一個 job 也是紅的。
        - fork 的 job 重跑一次（第 3 步）後仍紅。
@@ -234,7 +234,7 @@ osascript -e "tell application \"System Events\" to tell (first process whose un
 
 CLEAN、MECHANICAL 先做第 3b 步第 1 點的保留路徑檢查：命中的全是視窗 chrome，就先做第 3c 步再回來；命中其他保留項就交人（下面「不符合條件」那段）。
 
-條件全部成立才移動：模式是 CLEAN 或 MECHANICAL（或 MANUAL 而第 3b 步通過）、第 3b 步第 1 點的保留路徑檢查沒有命中，或命中的全是視窗 chrome 而第 3c 步留了這一輪 NT（＝HEAD）的 chrome-verified（CLEAN、MECHANICAL 也要做這一點：上游改了視窗 chrome，沒衝突也要實機看；從第 0 步 approved 進來的不用）、第 2 步沒有 fork 造成的紅、第 3 步 `Fork CI passed` 綠。上游也紅的 job 不算綠：上游已修就搬它的修正，否則修測試或照 #252 加 filter 並開 issue，都是修正 commit（模式變 MANUAL）。推上去後回第 2、3 步，再進第 3b 步（加 filter 屬於削弱閘門，只有符合第 3b 步第 1 點「上游也紅的測試」例外時不交人）。從第 0 步 approved 進來的不做這段修正：PR 說明已列為上游也紅、使用者核可過的 job 照第 0 步的規則放行，推修正 commit 會讓核可作廢。從第 0 步 approved 進來的，使用者的核可取代模式條件。
+條件全部成立才移動：模式是 CLEAN 或 MECHANICAL（或 MANUAL 而第 3b 步通過）、第 3b 步第 1 點的保留路徑檢查沒有命中，或命中的全是視窗 chrome 而第 3c 步留了這一輪 NT（＝HEAD）的 chrome-verified（CLEAN、MECHANICAL 也要做這一點：上游改了視窗 chrome，沒衝突也要實機看；從第 0 步 approved 進來的不用）、第 2 步沒有 fork 造成的紅、第 3 步 `Fork CI passed` 綠。上游也紅的 job 不算綠：上游已修就搬它的修正，否則修測試或照 #252 加 filter 並開 issue，都是修正 commit（模式變 MANUAL）。推上去後回第 2、3 步，再進第 3b 步（加 filter 屬於削弱閘門，只有符合第 3b 步第 1 點「上游也紅的測試」例外時不交人）。從第 0 步 approved 進來的不做這段修正：第 0 步已確認這個 sha 的 `Fork CI passed` 成功，推修正 commit 會讓核可作廢。從第 0 步 approved 進來的，使用者的核可取代模式與自審條件，不取代 CI 條件。
 
 `git rev-parse fork/develop` 已經等於 HEAD（使用者自己移過，或前一次 run 推完還沒留言就死了）→ 不推，直接留 develop-moved 留言。否則：
 
@@ -262,7 +262,8 @@ develop 一移動（含已在 HEAD 不重推的情況）就列出這次 rebase �
    - 第 3b 步列為已知問題的，每個一行，附 issue 編號；沒有就不寫這段
    - 第 3b 步用 fork 開關維持 OT 行為或關掉入口的上游功能，每個一行，附 issue 編號；沒有就不寫這段
    - 這次 rebase 的模式與衝突一句話；第 3b 步放行的寫「MANUAL，自審通過」；有第 3c 步的接「視窗 chrome 已在 Mac mini 實測（瀏海螢幕未測）」，沒有的接「未實機測試」
-3. 移動 main 並推 annotated tag，同一次推送：
+3. 推 tag 前，不論從哪條路徑進來（第 4 步移動、develop-moved 續跑、發版失敗改發 `fork/develop`、RELEASE），都重查要發的 sha：`gh run list -R audichuang/openidea --workflow fork-ci.yml --commit <sha> --limit 1 --json status,conclusion` 是 `completed`／`success`（查的是最新一次，之後被重跑成紅也擋；develop push 的 run 還在跑就 `gh-wait run <id> -R audichuang/openidea` 等它）。不是就不推 tag、不發版，PR 有就留 needs-human 寫明，沒有就寫進第 7 步通知。
+   移動 main 並推 annotated tag，同一次推送：
    ```sh
    old=$(git ls-remote fork refs/heads/main | cut -f1)
    git tag -a vNEW-fork.N <develop-moved 的 sha> -F "$MAIN/.rebase-review/notes.md"
