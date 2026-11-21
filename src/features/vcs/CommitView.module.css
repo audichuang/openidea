@@ -112,10 +112,6 @@
   text-overflow: ellipsis;
   color: var(--fg-subtle);
 }
-.nodeCount {
-  flex: none;
-  color: var(--fg-subtle);
-}
 .detailIcon {
   flex: none;
   --icon-color: var(--fg-subtle);

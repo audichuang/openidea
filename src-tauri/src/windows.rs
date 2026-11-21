@@ -293,10 +293,6 @@ pub(crate) fn reopen_saved_window(app: &AppHandle, path: &Path) -> IdeResult<Opt
     Ok(Some(create_restored_window(app, path.to_path_buf())?))
 }
 
-/// macOS: windows created to restore a saved tab group. They take the group's frame and fullscreen
-/// state from the window they join, so window-state must not restore their own: tao keeps every
-/// tab a fullscreen group has shown marked fullscreen (AppKit only tells the tab that entered),
-/// and each would reopen in a fullscreen Space of its own, which merging into a group refuses.
 /// macOS: whether `main` reopens in fullscreen, kept here instead of by window-state. tao keeps
 /// every tab a fullscreen group has shown marked fullscreen (AppKit only tells the tab that entered
 /// or left), so window-state would reopen a group the user took out of fullscreen in fullscreen,
