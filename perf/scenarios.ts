@@ -642,6 +642,67 @@ const gitLogDeep: Scenario = {
 };
 
 /**
+ * Refresh after a commit at depth: the same Git Log as `gitLogDeep` (`OPENIDEA_PERF_GIT_LOG_DEEP`
+ * commits, 200 long-lived branches) paged until 60% of it is loaded, then a commit is made on the
+ * newest branch and the log's Refresh brings it in on top of every loaded commit.
+ */
+const gitLogDeepCommit: Scenario = {
+  id: "gitLogDeepCommit",
+  title: "Refresh a Git Log 30k commits deep after a commit",
+  async run(h) {
+    const total = Number(process.env.OPENIDEA_PERF_GIT_LOG_DEEP ?? 50_000);
+    const target = Math.floor(total * 0.6);
+    await h.page.evaluate(
+      async ({ total }) => {
+        const { __openideaPerf: probe } = window as never as {
+          __openideaPerf: {
+            fakeGitLog(n: number, latencyMs: number, longBranches: number): void;
+            runAction(id: string): Promise<boolean>;
+          };
+        };
+        probe.fakeGitLog(total, 15, 200);
+        await probe.runAction("vcs.showLog");
+      },
+      { total },
+    );
+    const list = h.page.getByRole("listbox", { name: "Commits" });
+    await list.getByRole("option").first().waitFor();
+    await list.evaluate(async (el, target) => {
+      const started = performance.now();
+      while (el.scrollHeight < target * 26) {
+        if (performance.now() - started > 20 * 60_000) throw new Error("Deep Git Log did not load");
+        el.scrollTop = el.scrollHeight;
+        await new Promise(requestAnimationFrame);
+      }
+      // Refresh with no page request in flight: the perf backend has no request cancellation.
+      el.scrollTop = 0;
+      for (let i = 0; i < 600 && el.querySelector('[role="status"], [class*="Spinner"]'); i++)
+        await new Promise((r) => setTimeout(r, 50));
+    }, target);
+    await h.page.waitForTimeout(500);
+    await h.page.evaluate(() =>
+      (window as never as { __openideaPerf: { fakeGitLogCommit(n: number): void } }).__openideaPerf.fakeGitLogCommit(1),
+    );
+    const refreshStarted = await h.now();
+    // The log's own Refresh (its filter bar), not the Branches panel's, which reloads branches.
+    const refreshButton = h.page.getByRole("button", { name: "Refresh", exact: true });
+    const logPane = h.page.locator("div").filter({ has: list }).filter({ has: refreshButton }).last();
+    await logPane.getByRole("button", { name: "Refresh", exact: true }).first().click();
+    await list.getByText("feat(orders): new work 0").waitFor();
+    const refreshShownMs = (await h.now()) - refreshStarted;
+    await h.page.waitForTimeout(1500);
+    await h.inPage((p) => p.afterNextPaint().then(() => p.afterNextPaint()));
+    const refreshTasks = await h.longTasksSince(refreshStarted);
+    return {
+      refreshShownMs,
+      refreshLongTasks: refreshTasks.length,
+      refreshLongTaskMaxMs: Math.max(0, ...refreshTasks.map((t) => t.duration)),
+      refreshTbtMs: totalBlockingTime(refreshTasks),
+    };
+  },
+};
+
+/**
  * Dragging the splitters with an editor, the Project tree and the Git Log
  * open: every pointer move resizes the islands, so each frame relays them out.
  */
@@ -2335,6 +2396,7 @@ export const SCENARIOS: Scenario[] = [
   gitLogDeep,
   gitLogMultiSelect,
   interactiveRebase,
+  gitLogDeepCommit,
   resizePanels,
   keyRepeat,
   scroll,
