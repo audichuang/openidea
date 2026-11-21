@@ -428,7 +428,7 @@ impl ClientHandler {
 impl Handler for ClientHandler {
     fn on_notification(&self, method: &str, params: Value) {
         match method {
-            "event" => match serde_json::from_value::<EventMessage>(params) {
+            "event" => match serde_json::from_value::<EventMessage>(with_doc_version(params)) {
                 Ok(m) => {
                     let trusted = self
                         .connection
@@ -1444,9 +1444,31 @@ async fn invoke_reply(peer: &Peer, call: Invoke, entries_timeout: std::time::Dur
     }
 }
 
+/// A server from before `DocDirty.version` (still protocol 2, reached through the offline fallback)
+/// sends none, and the event would be dropped. Its dirty flag still arrives, at version 0; its clean
+/// flag stays dropped, as a clean at 0 would never match and would keep the save reply from clearing it.
+fn with_doc_version(mut params: Value) -> Value {
+    if let Some(event) = params.get_mut("event").and_then(Value::as_object_mut)
+        && event.get("type").and_then(Value::as_str) == Some("docDirty")
+        && event.get("dirty").and_then(Value::as_bool) == Some(true)
+    {
+        event.entry("version").or_insert(Value::from(0));
+    }
+    params
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dirty_flag_from_a_server_without_versions_still_arrives() {
+        let params = serde_json::json!({"window": null, "event": {"type": "docDirty", "doc": 7, "dirty": true}});
+        let m: EventMessage = serde_json::from_value(with_doc_version(params)).unwrap();
+        assert!(matches!(m.event, ide_core::IdeEvent::DocDirty { dirty: true, version: 0, .. }), "{:?}", m.event);
+        let clean = serde_json::json!({"window": null, "event": {"type": "docDirty", "doc": 7, "dirty": false}});
+        assert!(serde_json::from_value::<EventMessage>(with_doc_version(clean)).is_err());
+    }
 
     #[test]
     fn remote_locations_round_trip_like_the_frontend() {
