@@ -40,12 +40,13 @@ const SETTLE_MS = 100;
 /** Scroll events closer than this to the last one measured count towards the next measurement. */
 const MIN_SAMPLE_MS = 4;
 /**
- * Longest time a scroll event's movement is spread over: the browser reports scrolling once a
- * frame, so a jump after the view sat still (a scrollbar track click, a fling's first frame)
- * happened within about two frames, not over the whole wait. One wheel notch (~120 px) stays
- * below `FAST_PX_PER_MS`.
+ * A scroll event this long after the last one comes after the view sat still: the browser reports
+ * scrolling once a frame, so its movement (a scrollbar track click, a fling's first frame) took
+ * about `IDLE_SAMPLE_MS`, not the whole wait. Shorter gaps are a long frame (a diff mounting) the
+ * scrolling went on through, and count in full. One wheel notch (~120 px) stays below `FAST_PX_PER_MS`.
  */
-const MAX_SAMPLE_MS = 33;
+const IDLE_MS = 250;
+const IDLE_SAMPLE_MS = 33;
 
 /**
  * Paces the mounting of the blocks' diff editors. Building one (a CodeMirror merge view, laid
@@ -80,7 +81,8 @@ class MountGate {
     const now = performance.now();
     const elapsed = now - this.at;
     if (elapsed < MIN_SAMPLE_MS) return;
-    if (Math.abs(top - this.top) / Math.min(elapsed, MAX_SAMPLE_MS) > FAST_PX_PER_MS) this.fastUntil = now + SETTLE_MS;
+    const span = elapsed >= IDLE_MS ? IDLE_SAMPLE_MS : elapsed;
+    if (Math.abs(top - this.top) / span > FAST_PX_PER_MS) this.fastUntil = now + SETTLE_MS;
     this.top = top;
     this.at = now;
   }

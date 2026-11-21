@@ -863,6 +863,21 @@ describe("the all-in-one diff while it scrolls fast", () => {
     expect(mountedSince(before).length).toBeGreaterThan(0);
   });
 
+  it("mounts the diff a slow read brings into view at once, even after a long frame", () => {
+    render(<CombinedDiffTab input={combinedDiffInput({ items: files(500) })} />);
+    frame();
+    scroll(scroller(), 2_860);
+    for (let i = 0; i < 20; i++) frame();
+    // Reading at 40 px a frame...
+    frame();
+    scroll(scroller(), 2_900);
+    // ...when a frame takes 67 ms (a diff mounting): the view kept moving at the same pace meanwhile.
+    clock += 67;
+    const before = mountedPaths.length;
+    scroll(scroller(), 2_900 + 160);
+    expect(mountedSince(before).length).toBeGreaterThan(0);
+  });
+
   it("mounts no diff editor while flung up through blocks not measured yet", () => {
     // Reports each block's size as a browser does once it is laid out.
     const observed: Array<{ cb: ResizeObserverCallback; targets: Set<Element> }> = [];
