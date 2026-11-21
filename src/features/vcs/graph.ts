@@ -536,6 +536,68 @@ export function reachableFrom(
   return out;
 }
 
+const refRank = (c: GraphCommit, ref: string) =>
+  `${ref === "HEAD" ? 0 : ref === "main" || ref === "master" ? 1 : ref.startsWith("tag: ") ? 4 : c.remoteNames?.includes(ref) ? 3 : 2}${ref}`;
+
+/** The order `graphLayout` takes heads in (`localeCompare`): by their best ref, refless ones by id. */
+export const headPriority = (c: GraphCommit) =>
+  c.refs?.length ? c.refs.map((r) => refRank(c, r)).sort()[0]! : `5${c.id}`;
+
+/**
+ * `graphLayout`'s DFS, given each commit's loaded parents (rows, in parent order) and the heads in
+ * the order it takes them. Owners are built when asked for.
+ */
+export function layoutChains(
+  commits: readonly GraphCommit[],
+  parents: readonly (readonly number[])[],
+  heads: readonly number[],
+) {
+  const layout = new Int32Array(commits.length);
+  // The head whose DFS reached each commit, and the layout that DFS started at.
+  const headOf = new Int32Array(commits.length);
+  const starts = new Map<number, number>();
+  // Parents before a commit's cursor are laid out already: they stay so.
+  const cursor = new Int32Array(commits.length);
+  let next = 1;
+  const stack: number[] = [];
+  for (const head of heads) {
+    if (layout[head]) continue;
+    starts.set(head, next);
+    stack.push(head);
+    while (stack.length) {
+      const node = stack[stack.length - 1]!;
+      const first = !layout[node];
+      if (first) {
+        layout[node] = next;
+        headOf[node] = head;
+      }
+      const own = parents[node]!;
+      let k = cursor[node]!;
+      while (k < own.length && layout[own[k]!]) k++;
+      cursor[node] = k;
+      if (k < own.length) stack.push(own[k]!);
+      else {
+        if (first) next++;
+        stack.pop();
+      }
+    }
+  }
+  const names = new Map<number, string>();
+  const owner = (i: number) => {
+    const head = headOf[i]!;
+    let name = names.get(head);
+    if (name === undefined) {
+      const c = commits[head]!;
+      name =
+        c.refs?.filter((r) => r !== "HEAD").sort((a, b) => refRank(c, a).localeCompare(refRank(c, b)))[0] ??
+        (c.refs?.includes("HEAD") ? "HEAD" : c.id);
+      names.set(head, name);
+    }
+    return `${name}\0${layout[i]! - starts.get(head)!}`;
+  };
+  return { layout, owner };
+}
+
 /** Ref-priority DFS layout, shared by Bek fragment recognition and lane colours.
  * Adapted from IntelliJ GraphLayoutBuilder (JetBrains contributors, Apache-2.0). */
 export function graphLayout(commits: readonly GraphCommit[]) {
@@ -548,40 +610,11 @@ export function graphLayout(commits: readonly GraphCommit[]) {
   );
   const children = commits.map(() => [] as number[]);
   parents.forEach((ps, i) => ps.forEach((p) => children[p]!.push(i)));
-  const refRank = (c: GraphCommit, ref: string) =>
-    `${ref === "HEAD" ? 0 : ref === "main" || ref === "master" ? 1 : ref.startsWith("tag: ") ? 4 : c.remoteNames?.includes(ref) ? 3 : 2}${ref}`;
-  const priority = (i: number) =>
-    commits[i]!.refs?.length ? commits[i]!.refs!.map((r) => refRank(commits[i]!, r)).sort()[0]! : `5${commits[i]!.id}`;
-  const heads = commits
-    .flatMap((c, i) => (!children[i]!.length || c.refs?.length ? [i] : []))
-    .sort((a, b) => priority(a).localeCompare(priority(b)));
-  const layout = commits.map(() => 0);
-  const owners = commits.map(() => "");
-  let next = 1;
-  for (const head of heads) {
-    if (layout[head]) continue;
-    const owner =
-      commits[head]!.refs?.filter((r) => r !== "HEAD").sort((a, b) =>
-        refRank(commits[head]!, a).localeCompare(refRank(commits[head]!, b)),
-      )[0] ?? (commits[head]!.refs?.includes("HEAD") ? "HEAD" : commits[head]!.id);
-    const startLayout = next;
-    const stack = [head];
-    while (stack.length) {
-      const node = stack.at(-1)!;
-      const first = !layout[node];
-      if (first) {
-        layout[node] = next;
-        owners[node] = `${owner}\0${next - startLayout}`;
-      }
-      const parent = parents[node]!.find((p) => !layout[p]);
-      if (parent != null) stack.push(parent);
-      else {
-        if (first) next++;
-        stack.pop();
-      }
-    }
-  }
-  return { layout, owners, parents, children };
+  const heads = commits.flatMap((c, i) => (!children[i]!.length || c.refs?.length ? [i] : []));
+  const priorities = new Map(heads.map((i) => [i, headPriority(commits[i]!)]));
+  heads.sort((a, b) => priorities.get(a)!.localeCompare(priorities.get(b)!));
+  const { layout, owner } = layoutChains(commits, parents, heads);
+  return { layout, owners: commits.map((_, i) => owner(i)), parents, children };
 }
 
 /** LinearBek fragment recognition and nested expansion.
