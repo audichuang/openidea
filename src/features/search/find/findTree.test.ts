@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { FileMatches } from "@/platform/ipc";
 import { findOccurrence, type TreeModelRow } from "@/ui/Tree";
-import { FindTreeIndex, buildFindTree, expandableKeys, setNodeCollapsed, type FindTreeNode } from "./findTree";
+import {
+  FindTreeIndex,
+  buildFindTree,
+  expandableKeys,
+  groupsOfKeys,
+  setNodeCollapsed,
+  type FindTreeNode,
+} from "./findTree";
 
 const file = (i: number, hits = 1 + (i % 3)): FileMatches => {
   const rel = `src/m${(i * 7) % 23}/F${(i * 7919) % 2_000}.ts`;
@@ -326,4 +333,21 @@ describe("FindTreeIndex", () => {
     },
     60_000,
   );
+});
+
+describe("groupsOfKeys", () => {
+  it("lists every usage of a file with more matching lines than fit in call arguments", () => {
+    // Editor-scope Find (FindBar, log views) has no match cap, so one file can hold any number of lines.
+    const lines = 300_000;
+    const big: FileMatches = {
+      path: "/p/huge.log",
+      relPath: "huge.log",
+      matches: Array.from({ length: lines }, (_, line) => ({ line, text: "x", ranges: [[0, 1]], textOffset: 0 })),
+    };
+    const roots = buildFindTree([big], false);
+    const byKey = new Map(roots.map((n) => [n.key, n]));
+    const groups = groupsOfKeys([roots[0]!.key, "gone"], (k) => byKey.get(k));
+    expect(groups).toHaveLength(lines);
+    expect(new Set(groups.map((g) => g.key)).size).toBe(lines);
+  });
 });
