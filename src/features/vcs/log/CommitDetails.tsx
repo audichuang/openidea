@@ -521,10 +521,12 @@ const CommitMessageList = memo(function CommitMessageList({
   label?: string;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Stable identity: a new getItemKey makes the virtualizer rebuild every row position on each render.
+  const getItemKey = useCallback((index: number) => commitKey(commits[index]!), [commits]);
   const virtualizer = useVirtualizer({
     count: commits.length,
     getScrollElement: () => scrollRef.current,
-    getItemKey: (index) => commitKey(commits[index]!),
+    getItemKey,
     estimateSize: () => 96,
     overscan: 6,
   });
