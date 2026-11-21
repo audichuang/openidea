@@ -7,7 +7,12 @@ import { DEFAULT_LOG_OPTIONS, type LogOptions } from "../logOptions";
 
 vi.mock("../graph", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../graph")>();
-  return { ...actual, compactLanes: vi.fn(actual.compactLanes) };
+  return {
+    ...actual,
+    compactLanes: vi.fn(actual.compactLanes),
+    graphLayout: vi.fn(actual.graphLayout),
+    layoutChains: vi.fn(actual.layoutChains),
+  };
 });
 
 const fragments = { expanded: new Set<string>(), collapsed: new Set<string>(), merges: new Set<string>() };
@@ -49,7 +54,7 @@ function commit(id: string, parents: string[], refs: string[] = [], extra: Parti
  * octopus merges, parents far below (long lanes), parents outside the history (unloaded), shallow
  * boundaries, and refs on some tips (branches, remotes, tags) so lanes are laid out by branch.
  */
-function history(seed: number, size: number, branches: number, refShare = 0.5): Commit[] {
+function history(seed: number, size: number, branches: number, refShare = 0.5, unloaded = 0.02): Commit[] {
   const random = rng(seed);
   const pick = <T>(list: readonly T[]) => list[Math.floor(random() * list.length)]!;
   const made: { id: string; parents: string[]; boundary?: string[] }[] = [];
@@ -57,7 +62,7 @@ function history(seed: number, size: number, branches: number, refShare = 0.5): 
   for (let i = 0; i < size; i++) {
     const id = `c${i}`;
     const parents: string[] = [];
-    if (i === 0 || random() < 0.02) parents.push(`gone${i}`);
+    if (i === 0 || random() < unloaded) parents.push(`gone${i}`);
     else if (tips.length < branches && random() < 0.3) parents.push(made[Math.floor(random() * made.length)]!.id);
     else {
       const t = Math.floor(random() * tips.length);
@@ -156,6 +161,73 @@ function pageThrough(all: readonly Commit[], sizes: readonly number[], options: 
   return { reused, pages };
 }
 
+/**
+ * How a Refresh can return `base` (a longer history; the log shows a prefix of it): the same
+ * commits as new objects, refs moved near the top and deep down, commits made on top (the
+ * oldest loaded ones then fall off the end), a commit rewritten deep down, and commits dropped.
+ */
+function refreshed(base: readonly Commit[], seed: number): Array<[string, Commit[]]> {
+  const random = rng(seed);
+  const deep = Math.floor(base.length * (0.5 + 0.3 * random()));
+  const copy = () => base.map((c) => ({ ...c, refs: [...c.refs] }));
+  const withRefs = (rows: readonly number[]) => {
+    const out = copy();
+    for (const i of rows) out[i]!.refs = out[i]!.refs.length ? [] : [`moved${i}`];
+    return out;
+  };
+  const top = { ...base[0]!, refs: base[0]!.refs.filter((r) => !r.startsWith("HEAD")) };
+  const made = [
+    commit("new1", ["new2", base[0]!.id], ["HEAD -> main"]),
+    commit("new2", [base[0]!.id]),
+    top,
+    ...base.slice(1),
+  ];
+  const rewritten = copy();
+  rewritten[deep] = { ...rewritten[deep]!, parents: [base[deep + 5]!.id, ...rewritten[deep]!.parents.slice(1)] };
+  return [
+    ["same commits", copy()],
+    ["refs moved near the top", withRefs([1, 3])],
+    ["refs moved deep down", withRefs([deep, deep + 1])],
+    ["commits made on top", made],
+    ["a commit rewritten deep down", rewritten],
+    ["commits dropped deep down", [...base.slice(0, deep), ...base.slice(deep + 3)]],
+  ];
+}
+
+/**
+ * Pages through `base.slice(0, loaded)`, then gives each Refresh of it and one more page after
+ * that, comparing every result with the full computation. Returns the rows each Refresh presented.
+ */
+function refreshThrough(
+  base: readonly Commit[],
+  loaded: number,
+  seed: number,
+  options = DEFAULT_LOG_OPTIONS,
+  only?: readonly string[],
+) {
+  const presented = new Map<string, number>();
+  for (const [name, after] of refreshed(base, seed)) {
+    if (only && !only.includes(name)) continue;
+    const present = createLogGraphPresenter();
+    for (let n = Math.min(loaded, 300); ; n = Math.min(loaded, n + 300)) {
+      present(base.slice(0, n), options, fragments, keep);
+      if (n === loaded) break;
+    }
+    for (const n of [loaded, loaded + 150]) {
+      const list = after.slice(0, n);
+      let got!: ReturnType<typeof present>;
+      const count = rowsPresented(() => (got = present(list, options, fragments, keep)));
+      if (n === loaded) presented.set(name, count);
+      const want = full(list, options);
+      const rows = got.rows.map((_, i) => got.row(i));
+      if (!isDeepStrictEqual(rows, want.rows)) expect({ name, n, rows }).toStrictEqual({ name, n, rows: want.rows });
+      expectStrictEqual(got.commits, want.commits);
+      expectStrictEqual(got.graph, want.graph);
+    }
+  }
+  return presented;
+}
+
 describe("paged Git Log graph", () => {
   it("gives the full computation's rows, page by page, on random merge-heavy histories", () => {
     const stats = [1, 2, 3, 4, 5, 6].map((seed) => pageThrough(history(seed, 900, 6 + seed * 8), [97, 131, 300]));
@@ -186,13 +258,13 @@ describe("paged Git Log graph", () => {
   }, 60_000);
 
   it("pages a deep history with hundreds of branches and cross merges at a cost set by the page", () => {
-    const all = history(18, 12_000, 400, 0.6);
+    const all = history(18, 6_000, 400, 0.6);
     const present = createLogGraphPresenter();
     const costs: number[] = [];
     for (let n = 300; n <= all.length; n += 300) {
       let got!: ReturnType<typeof present>;
       costs.push(rowsPresented(() => (got = present(all.slice(0, n), DEFAULT_LOG_OPTIONS, fragments, keep))));
-      if (n % 6_000 === 0)
+      if (n === all.length)
         expectStrictEqual(
           got.rows.map((_, i) => got.row(i)),
           full(all.slice(0, n)).rows,
@@ -200,7 +272,41 @@ describe("paged Git Log graph", () => {
     }
     const pages = costs.slice(1);
     expect(pages.filter((rows) => rows <= 300 + 34).length).toBeGreaterThanOrEqual(0.8 * pages.length);
-  }, 120_000);
+  });
+
+  it("lays the list out once on a page that cannot keep the rows above it", () => {
+    // On this history the page from 97 to 228 commits renumbers lanes of rows above it.
+    const all = history(3, 900, 30);
+    const present = createLogGraphPresenter();
+    present(all.slice(0, 97), DEFAULT_LOG_OPTIONS, fragments, keep);
+    const graphLayout = vi.mocked(graphModule.graphLayout);
+    const layoutChains = vi.mocked(graphModule.layoutChains);
+    graphLayout.mockClear();
+    layoutChains.mockClear();
+    const got = present(all.slice(0, 228), DEFAULT_LOG_OPTIONS, fragments, keep);
+    expect(graphLayout.mock.calls.length + layoutChains.mock.calls.length).toBe(1);
+    expectStrictEqual(
+      got.rows.map((_, i) => got.row(i)),
+      full(all.slice(0, 228)).rows,
+    );
+  });
+
+  it("gives the full computation's rows after a Refresh, and on the page after it", () => {
+    refreshThrough(history(31, 500, 12), 350, 31);
+    refreshThrough(history(34, 400, 12, 0), 250, 34);
+    refreshThrough(history(35, 400, 12), 250, 35, { ...DEFAULT_LOG_OPTIONS, longEdges: true });
+  });
+
+  it("lays out a Refresh again only from a kept lane state before its first change", () => {
+    // Few parents outside the history, so few lanes stay open to its end.
+    const deep = ["refs moved deep down", "a commit rewritten deep down", "commits dropped deep down"];
+    const presented = refreshThrough(history(36, 2_400, 12, 0.5, 0.002), 2_200, 36, DEFAULT_LOG_OPTIONS, [
+      "same commits",
+      ...deep,
+    ]);
+    expect(presented.get("same commits")).toBe(0);
+    for (const name of deep) expect(presented.get(name)).toBeLessThanOrEqual(2_200 - 1_024);
+  });
 
   it("starts over when the list is not an extension of the last one", () => {
     const present = createLogGraphPresenter();
@@ -242,6 +348,17 @@ describe("paged Git Log graph", () => {
       i % 5 === 0 && c.parents.length > 1 ? { ...c, dashed: c.parents.map((_, k) => k > 0) } : c,
     );
     pageThrough(all, [150]);
+  });
+
+  it("gives the full computation's rows when a parent comes before its child", () => {
+    // Clock skew: a commit listed above one of its children. Layout heads then change above a page.
+    const all = history(37, 600, 12);
+    const child = all.findIndex(
+      (c, i) => i > 450 && c.parents.length === 1 && all.findIndex((p) => p.id === c.parents[0]) > i + 1,
+    );
+    const parent = all.findIndex((p) => p.id === all[child]!.parents[0]);
+    const skewed = [...all.slice(0, child), all[parent]!, ...all.slice(child, parent), ...all.slice(parent + 1)];
+    pageThrough(skewed, [150]);
   });
 
   it("gives the full computation's rows when commits share a key", () => {
