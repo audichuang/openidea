@@ -406,8 +406,11 @@ describe("paged Git Log graph", () => {
     const chain = Array.from({ length: 1_310 }, (_, i) =>
       commit(`c${i}`, i + 1 < 1_310 ? [`c${i + 1}`] : [], i ? [] : ["HEAD -> main"]),
     );
+    // A branch far down merging the old head, listed above it: its lane takes the old head's key.
+    const lateMerge = chain.map((c, i) => (i === 700 ? commit("m", ["c701", "c0"]) : c));
     for (const [base, longEdges] of [
       [chain, false],
+      [lateMerge, false],
       [probeLog(1_500, 0), false],
       [probeLog(1_500, 0), true],
       [probeLog(1_500, 20), false],
