@@ -829,6 +829,198 @@ const leaks: Scenario = {
   },
 };
 
+type HttpBodyShape = "json" | "nested" | "xml" | "text";
+
+/** The HTTP Client backend's response body limit (`MAX_BODY` in crates/ide-http/src/exec.rs). */
+const HTTP_MAX_BODY = 16 * 1024 * 1024;
+
+/**
+ * First line of the response body as shown, wherever the view keeps it: a line
+ * element of a virtualized viewer or the first text node of a single block.
+ */
+function bodyFirstLine(h: Harness, t0: number, expected: string, prefix: boolean, timeoutMs = 120_000) {
+  return h.inPage(
+    (_p, a) =>
+      new Promise<number>((resolve, reject) => {
+        const deadline = performance.now() + a.timeoutMs;
+        const tick = () => {
+          const el = document.querySelector('[aria-label="Response body"]');
+          const line =
+            el?.querySelector(".cm-line")?.textContent ??
+            (el?.firstChild?.textContent ?? "").slice(0, 400).split("\n")[0];
+          if (line !== undefined && (a.prefix ? line.startsWith(a.expected) : line === a.expected))
+            resolve(performance.now() - a.t0);
+          else if (performance.now() > deadline) reject(new Error(`response body never showed ${a.expected}`));
+          else requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      }),
+    { t0, expected, prefix, timeoutMs },
+  );
+}
+
+/**
+ * Characters put into text nodes so far (what the page had to lay out), counted
+ * from the first call on.
+ */
+function drawnChars(h: Harness): Promise<number> {
+  return h.page.evaluate(() => {
+    const w = window as never as { __drawnChars?: { n: number } };
+    if (!w.__drawnChars) {
+      const counter = { n: 0 };
+      const create = document.createTextNode.bind(document);
+      document.createTextNode = (text: string) => {
+        counter.n += text.length;
+        return create(text);
+      };
+      w.__drawnChars = counter;
+    }
+    return w.__drawnChars.n;
+  });
+}
+
+/** Scrolls the response body to its end until the last record is on screen; ms. */
+function bodyScrollToEnd(h: Harness) {
+  return h.inPage(
+    () =>
+      new Promise<number>((resolve, reject) => {
+        const el = document.querySelector('[aria-label="Response body"]') as HTMLElement | null;
+        const scroller = (el?.closest(".cm-scroller") ?? el?.parentElement) as HTMLElement | null;
+        if (!el || !scroller) return reject(new Error("no response body"));
+        const t0 = performance.now();
+        let n = 0;
+        const tick = () => {
+          scroller.scrollTop = scroller.scrollHeight;
+          const atEnd = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2;
+          // Lines on screen; the editor also keeps the cursor's line (the start) in the DOM.
+          const box = scroller.getBoundingClientRect();
+          const lines = [...el.querySelectorAll(".cm-line")].filter((l) => {
+            const r = l.getBoundingClientRect();
+            return r.bottom > box.top && r.top < box.bottom;
+          });
+          // The last record sits a few closing lines above the end (`}`, `]`, `</root>`).
+          const tail = el.querySelector(".cm-line") ? lines.map((l) => l.textContent ?? "") : ["last-item"];
+          if (atEnd && tail.some((l) => l.includes("last-item"))) resolve(performance.now() - t0);
+          else if (++n > 600)
+            reject(
+              new Error(
+                `response body never reached its end (scrollTop ${scroller.scrollTop}, height ${scroller.scrollHeight}, ` +
+                  `client ${scroller.clientHeight}, tail ${JSON.stringify(tail.map((l) => l.slice(0, 60)))})`,
+              ),
+            );
+          else requestAnimationFrame(tick);
+        };
+        tick();
+      }),
+  );
+}
+
+/**
+ * One response of `shape` at `bytes`: open it (Formatted), switch to Raw and
+ * back, scroll to the end and search it. Metrics are prefixed with `prefix`.
+ */
+async function httpResponseRun(h: Harness, shape: HttpBodyShape, bytes: number, prefix: string): Promise<Metrics> {
+  const key = (k: string) => `${prefix}${k[0]!.toUpperCase()}${k.slice(1)}`;
+  await h.page.evaluate(
+    ({ shape, bytes }) =>
+      (
+        window as never as { __openideaPerf: { fakeHttpResponse(s: string, b: number): void } }
+      ).__openideaPerf.fakeHttpResponse(shape, bytes),
+    { shape, bytes },
+  );
+  await h.page.evaluate(() =>
+    (window as never as { __openideaPerf: { runAction(id: string): Promise<boolean> } }).__openideaPerf.runAction(
+      "http.showToolWindow",
+    ),
+  );
+  await h.page.getByRole("button", { name: "Reload History" }).click();
+  const entry = h.page.getByRole("list", { name: "Response history" }).getByRole("button").first();
+  await entry.waitFor();
+  const refresh = await h.refreshMs();
+  // Formatted and raw first lines: `[` / `{` / `<root>` alone vs the whole minified body.
+  const formatted = { json: "[", nested: "[", xml: "<root>", text: "0 INFO" }[shape];
+  const raw = { json: "[{", nested: "[{", xml: "<root><", text: "0 INFO" }[shape];
+  const m: Metrics = {};
+  const t0 = await h.now();
+  await h.inPage((p) => p.startFrames());
+  let mark = await h.now();
+  const c0 = await h.counters();
+  await entry.click();
+  m[key("openMs")] = await bodyFirstLine(h, mark, formatted, shape === "text");
+  const c1 = await h.counters();
+  const open = Harness.delta(c0, c1);
+  m[key("openScriptMs")] = open.scriptMs;
+  m[key("openLayoutMs")] = open.styleLayoutMs;
+  m[key("domNodes")] = c1.Nodes ?? 0;
+  if (shape !== "text") {
+    const drawn0 = await drawnChars(h);
+    mark = await h.now();
+    await h.page.getByRole("button", { name: "Show Raw" }).click();
+    m[key("rawMs")] = await bodyFirstLine(h, mark, raw, true);
+    const c2 = await h.counters();
+    const rawStep = Harness.delta(c1, c2);
+    m[key("rawScriptMs")] = rawStep.scriptMs;
+    m[key("rawLayoutMs")] = rawStep.styleLayoutMs;
+    m[key("rawDrawnChars")] = (await drawnChars(h)) - drawn0;
+    mark = await h.now();
+    await h.page.getByRole("button", { name: "Show Formatted" }).click();
+    m[key("formattedMs")] = await bodyFirstLine(h, mark, formatted, false);
+    const toggle = Harness.delta(c2, await h.counters());
+    m[key("formattedScriptMs")] = toggle.scriptMs;
+    m[key("formattedLayoutMs")] = toggle.styleLayoutMs;
+  }
+  m[key("endMs")] = await bodyScrollToEnd(h);
+  await h.page.getByRole("button", { name: "Find…" }).click();
+  await h.page.getByRole("textbox", { name: "Find in response" }).waitFor();
+  const keys = await h.typeMeasured("last-item", 120);
+  await h.page.getByText("1/1").waitFor({ timeout: 60_000 });
+  const frames = await h.inPage((p) => p.stopFrames());
+  const tasks = await h.longTasksSince(t0);
+  Object.assign(m, {
+    ...keySummary(keys, refresh, key("findKey")),
+    [key("frameMaxMs")]: frames.length ? Math.max(...frames) : NaN,
+    [key("framesOver8Ms")]: frames.filter((f) => f > 8.4).length,
+    [key("longTasks")]: tasks.length,
+    [key("longTaskMaxMs")]: tasks.length ? Math.max(...tasks.map((t) => t.duration)) : 0,
+    [key("tbtMs")]: totalBlockingTime(tasks),
+  });
+  await h.page.keyboard.press("Escape");
+  return m;
+}
+
+/**
+ * A JSON response from the HTTP Client at 1%, 10% and 100% of the backend's
+ * 16 MB body limit, one single minified line: open it formatted, switch to Raw
+ * and back, scroll to the very end and search for the last record.
+ */
+const httpLargeResponse: Scenario = {
+  id: "httpLargeResponse",
+  title: "Format, scroll and search 0.16 / 1.6 / 16 MB HTTP responses",
+  async run(h) {
+    const m: Metrics = {};
+    for (const [pct, bytes] of [
+      [1, HTTP_MAX_BODY / 100],
+      [10, HTTP_MAX_BODY / 10],
+      [100, HTTP_MAX_BODY],
+    ] as const) {
+      Object.assign(m, await httpResponseRun(h, "json", bytes, `s${pct}`));
+    }
+    return m;
+  },
+};
+
+/** The same at the 16 MB limit for deeply nested JSON, XML and plain-text lines. */
+const httpLargeResponseShapes: Scenario = {
+  id: "httpLargeResponseShapes",
+  title: "Format, scroll and search 16 MB nested JSON, XML and text responses",
+  async run(h) {
+    const m: Metrics = {};
+    for (const shape of ["nested", "xml", "text"] as const)
+      Object.assign(m, await httpResponseRun(h, shape, HTTP_MAX_BODY, shape));
+    return m;
+  },
+};
+
 export const SCENARIOS: Scenario[] = [
   startup,
   typing,
@@ -849,4 +1041,6 @@ export const SCENARIOS: Scenario[] = [
   toolWindows,
   projectTree,
   leaks,
+  httpLargeResponse,
+  httpLargeResponseShapes,
 ];

@@ -3,8 +3,9 @@
  * exchange (right): status line, timing, body (pretty-printed JSON / XML /
  * HTML or raw), response headers and the request as sent.
  */
-import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
+import type { EditorView } from "@codemirror/view";
 import type { HttpExchange, HttpHistoryEntry } from "@/platform/ipc";
 import {
   Button,
@@ -19,9 +20,11 @@ import {
   useSelectionBoundary,
 } from "@/ui";
 import { ConsoleFindBar } from "@/ui/ConsoleFindBar";
-import { DEFAULT_FIND_OPTIONS, findInLines, type ConsoleMatch, type FindOptions } from "@/ui/consoleFind";
-import { formatBinding, hasPrimaryModifier, hostBinding } from "@/platform/keymap";
-import { bodyKind, formatMs, formatSize, prettyBody } from "./format";
+import { DEFAULT_FIND_OPTIONS, type FindOptions } from "@/ui/consoleFind";
+import { formatBinding, hasPrimaryModifier, hostBinding, registerKeyClaim } from "@/platform/keymap";
+import { bodyKind, formatMs, formatSize, prettyBody, PRETTY_INLINE_LIMIT, type BodyKind } from "./format";
+import { ResponseBody } from "./ResponseBody";
+import { findInBody, lineStarts } from "./bodyFind";
 import { cancelRunning, clearHistory, refreshHistory, selectEntry, useHttpClient } from "./store";
 import styles from "./HttpClient.module.css";
 import { tx } from "@/platform/i18n";
@@ -55,59 +58,125 @@ function EntryRow({ entry, selected }: { entry: HttpHistoryEntry; selected: bool
 
 type Tab = "body" | "headers" | "request";
 
+/**
+ * The body as shown: as received, or pretty-printed. Long bodies are formatted
+ * in a worker (null until it answers), cancelled when Raw is chosen or the
+ * response closes; the result is kept for switching back.
+ */
+function useShownBody(kind: BodyKind, body: string | null, raw: boolean): string | null {
+  const plain = raw || kind === "text";
+  const inline = body != null && body.length <= PRETTY_INLINE_LIMIT;
+  const [formatted, setFormatted] = useState<{ source: string; text: string } | null>(null);
+  const cached = body != null && formatted?.source === body ? formatted.text : null;
+  const small = useMemo(
+    () => (body != null && !plain && inline ? prettyBody(kind, body) : null),
+    [body, plain, inline, kind],
+  );
+  useEffect(() => {
+    if (body == null || plain || inline || cached != null) return;
+    let alive = true;
+    const worker = new Worker(new URL("./format.worker.ts", import.meta.url), { type: "module" });
+    const done = (text: string) => {
+      worker.terminate();
+      if (alive) setFormatted({ source: body, text });
+    };
+    worker.onmessage = (event: MessageEvent<string>) => done(event.data);
+    // Shown as received, as when it does not parse.
+    worker.onerror = () => done(body);
+    worker.postMessage({ kind, body });
+    return () => {
+      alive = false;
+      worker.terminate();
+    };
+  }, [body, plain, inline, cached, kind]);
+  if (body == null || plain) return body;
+  return inline ? small : cached;
+}
+
 function ExchangeView({ ex }: { ex: HttpExchange }) {
   const [tab, setTab] = useState<Tab>("body");
+  const root = useRef<HTMLDivElement>(null);
   const pane = useRef<HTMLDivElement>(null);
   useSelectionBoundary(pane);
   const [raw, setRaw] = useState(false);
   const r = ex.response;
-  const kind = r?.body != null ? bodyKind(r.contentType, r.body) : "text";
-  const body = useMemo(() => (r?.body == null ? null : raw ? r.body : prettyBody(kind, r.body)), [r, raw, kind]);
+  const kind = useMemo(() => (r?.body != null ? bodyKind(r.contentType, r.body) : "text"), [r]);
+  const body = useShownBody(kind, r?.body ?? null, raw);
+  const view = useRef<EditorView | null>(null);
   const [findOpen, setFindOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [findOptions, setFindOptions] = useState<FindOptions>(DEFAULT_FIND_OPTIONS);
   const [active, setActive] = useState(0);
   const findInput = useRef<HTMLInputElement>(null);
-  const searchable = findOpen && tab === "body" && body != null;
-  const lines = useMemo(() => (body ?? "").split("\n").map((text, id) => ({ id, text })), [body]);
+  const showsEditor = tab === "body" && body != null;
+  const searchable = findOpen && showsEditor;
+  // While the bar is open: where the body's lines start, and its lines (split once, for a regular expression).
+  const searched = useMemo(() => {
+    if (!searchable || body == null) return null;
+    let lines: { id: number; text: string }[] | null = null;
+    return {
+      text: body,
+      starts: lineStarts(body),
+      lines: () => (lines ??= body.split("\n").map((text, id) => ({ id, text }))),
+    };
+  }, [searchable, body]);
   const found = useMemo(
-    () => (searchable ? findInLines(lines, query, findOptions) : { matches: [], overflow: false, invalid: false }),
-    [searchable, lines, query, findOptions],
+    () =>
+      searched
+        ? findInBody(searched.text, searched.starts, searched.lines, query, findOptions)
+        : { matches: [], overflow: false, invalid: false },
+    [searched, query, findOptions],
   );
   const activeIndex = found.matches.length ? Math.min(active, found.matches.length - 1) : -1;
+  // The bar owns Escape / Enter / F3 / ⌘G while it is focused; keep the IDE keymap out.
   useEffect(() => {
-    pane.current?.querySelector("[data-find-current]")?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [activeIndex, found]);
+    if (!searchable) return;
+    return registerKeyClaim((e) => !!(e.target as Element | null)?.closest?.("[data-console-find]"));
+  }, [searchable]);
+  // Focus the bar (and select the query) when it is shown: opened, or the body it searches is ready again,
+  // unless the focus went elsewhere meanwhile (the request editor while a body was being formatted).
+  useEffect(() => {
+    if (!searchable) return;
+    const focused = document.activeElement;
+    if (focused && focused !== document.body && !root.current?.contains(focused)) return;
+    findInput.current?.focus();
+    findInput.current?.select();
+  }, [searchable]);
   const openFind = () => {
     setFindOpen(true);
-    // The bar mounts with this render; focus it (and select the query) once it has.
-    requestAnimationFrame(() => findInput.current?.select());
+    findInput.current?.focus();
+    findInput.current?.select();
   };
   const closeFind = () => {
     setFindOpen(false);
-    pane.current?.focus();
+    (view.current ?? pane.current)?.focus();
   };
+  // A click on the toggle leaves the focus nowhere in WebKit (it does not focus buttons): give it to the body.
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (!refocus.current) return;
+    refocus.current = false;
+    const focused = document.activeElement;
+    if (!focused || focused === document.body) (view.current ?? pane.current)?.focus();
+  }, [raw]);
+  // The pane held the focus while the body was being formatted: hand it to the body once shown.
+  useEffect(() => {
+    if (showsEditor && document.activeElement === pane.current) view.current?.focus();
+  }, [showsEditor]);
   const goToMatch = (step: number) => {
     const n = found.matches.length;
     if (n) setActive((activeIndex + step + n) % n);
   };
-  // ⌘F in the response, as in IDEA's response viewer: the find bar of the Run console.
+  // ⌘F in the response (its toolbar included), as in IDEA's response viewer: the find bar of the Run console.
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (
-      tab === "body" &&
-      body != null &&
-      e.key.toLowerCase() === "f" &&
-      hasPrimaryModifier(e) &&
-      !e.altKey &&
-      !e.shiftKey
-    ) {
+    if (showsEditor && e.key.toLowerCase() === "f" && hasPrimaryModifier(e) && !e.altKey && !e.shiftKey) {
       e.preventDefault();
       e.stopPropagation();
       openFind();
     }
   };
   return (
-    <div className={styles.exchange}>
+    <div ref={root} className={styles.exchange} onKeyDown={onKeyDown}>
       <div className={styles.statusLine}>
         {r ? (
           <>
@@ -137,13 +206,15 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
           { id: "request", label: "Request" },
         ]}
         trailing={
-          tab === "body" && body != null ? (
+          tab === "body" && r?.body != null ? (
             <>
               <IconButton
                 icon="search"
                 title="Find…"
                 shortcut={formatBinding(hostBinding("Meta+F"))}
                 pressed={findOpen}
+                // Nothing to search while the body is being formatted.
+                disabled={!showsEditor}
                 onClick={() => (findOpen ? closeFind() : openFind())}
               />
               {kind !== "text" && (
@@ -151,7 +222,10 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
                   icon="soft-wrap"
                   title={raw ? "Show Formatted" : "Show Raw"}
                   pressed={raw}
-                  onClick={() => setRaw((v) => !v)}
+                  onClick={() => {
+                    refocus.current = true;
+                    setRaw((v) => !v);
+                  }}
                 />
               )}
             </>
@@ -181,22 +255,32 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
           label="Find in response"
         />
       )}
-      {/* Focusable, so Select All and Copy work on the response like in a read-only editor. */}
-      <div ref={pane} className={styles.tabBody} tabIndex={0} onKeyDown={onKeyDown}>
+      {/* Focusable, so Select All and Copy work on the response like in a read-only editor;
+          the body is one, which takes the focus (Select All here would reach only its visible part). */}
+      <div
+        ref={pane}
+        className={styles.tabBody}
+        tabIndex={showsEditor ? -1 : 0}
+        onFocus={(e) => {
+          if (showsEditor && e.target === e.currentTarget) view.current?.focus();
+        }}
+      >
         {tab === "body" &&
           (r == null ? (
             <pre className={styles.pre}>{ex.entry.error}</pre>
-          ) : body == null ? (
+          ) : r.body == null ? (
             <EmptyState title="Binary response">
               {r.contentType ?? tx("unknown type")}, {formatSize(r.size)}
             </EmptyState>
+          ) : body == null ? (
+            <div className={styles.center}>
+              <Spinner label={tx("Formatting")} />
+            </div>
           ) : (
-            <pre className={styles.pre} aria-label={tx("Response body")}>
-              {found.matches.length ? highlighted(lines, found.matches, activeIndex) : body}
-              {r.truncated && (
-                <span className={styles.truncated}>{`\n… truncated (${formatSize(r.size)} received)`}</span>
-              )}
-            </pre>
+            <div className={styles.bodyView}>
+              <ResponseBody text={body} matches={found.matches} current={activeIndex} viewRef={view} />
+              {r.truncated && <div className={styles.truncated}>{`… truncated (${formatSize(r.size)} received)`}</div>}
+            </div>
           ))}
         {tab === "headers" && r && <HeaderTable headers={r.headers} />}
         {tab === "request" && (
@@ -209,32 +293,6 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
       </div>
     </div>
   );
-}
-
-/** The body with its find matches marked, the current one distinctly. */
-function highlighted(lines: readonly { text: string }[], matches: readonly ConsoleMatch[], current: number): ReactNode {
-  const out: ReactNode[] = [];
-  let m = 0;
-  lines.forEach(({ text }, line) => {
-    if (line > 0) out.push("\n");
-    let at = 0;
-    for (; m < matches.length && matches[m]!.line === line; m++) {
-      const { start, end } = matches[m]!;
-      if (start > at) out.push(text.slice(at, start));
-      out.push(
-        <mark
-          key={m}
-          className={clsx(styles.match, m === current && styles.matchCurrent)}
-          data-find-current={m === current ? "" : undefined}
-        >
-          {text.slice(start, end)}
-        </mark>,
-      );
-      at = end;
-    }
-    if (at < text.length) out.push(text.slice(at));
-  });
-  return <Fragment>{out}</Fragment>;
 }
 
 function HeaderTable({ headers }: { headers: Array<[string, string]> }) {
