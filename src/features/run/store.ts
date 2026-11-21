@@ -1882,19 +1882,16 @@ export interface SampleConsoleOptions {
   perFrame: number;
   /** Physical line length for `long` mode (default 10 KiB). */
   lineLength?: number;
+  /** Existing session opened via `openSampleConsoleSession`; creates one when omitted. */
+  sessionId?: string;
 }
 
 /**
- * Development and the performance harness only: streams either very long lines
- * (10 KiB each, splitting across `MAX_LINE_LENGTH`) or high-rate output without
- * newlines into a Run console session. Resolves once all output is flushed.
+ * Development and the performance harness only: creates and activates an empty Run
+ * console session so callers can await its mount and open UI (such as Find) before
+ * `startSampleConsoleOutput` begins streaming.
  */
-export async function startSampleConsoleOutput({
-  mode,
-  count,
-  perFrame,
-  lineLength = 10_240,
-}: SampleConsoleOptions): Promise<{ lines: number; dropped: number }> {
+export function openSampleConsoleSession(mode: "long" | "no-lf"): string {
   const config: RunConfig = {
     id: `sample-${mode}-${sessionSeq + 1}`,
     name: `Sample ${mode}`,
@@ -1926,23 +1923,56 @@ export async function startSampleConsoleOutput({
   } catch {
     /* no workbench (tests) */
   }
+  return session.id;
+}
+
+/**
+ * Development and the performance harness only: streams either very long lines
+ * (10 KiB each, splitting across `MAX_LINE_LENGTH`) or high-rate output without
+ * newlines into a Run console session. Resolves once all output is flushed.
+ */
+export async function startSampleConsoleOutput({
+  mode,
+  count,
+  perFrame,
+  lineLength = 10_240,
+  sessionId,
+}: SampleConsoleOptions): Promise<{ lines: number; dropped: number }> {
+  const id = sessionId && runtimes.has(sessionId) ? sessionId : openSampleConsoleSession(mode);
+  const rt = runtimes.get(id)!;
   const prefix = "target.txt:1:1 ";
-  const longLine = `${prefix}${"x".repeat(Math.max(0, lineLength - prefix.length - 1))}\n`;
-  const noLfUnit = `${prefix}${"x".repeat(47)} `;
   const beginText = `${prefix}begin\n`;
-  enqueue(session.id, { kind: "stdout", text: beginText });
+  enqueue(id, { kind: "stdout", text: beginText });
   for (let i = 0; i < count;) {
     await new Promise(requestAnimationFrame);
     const take = Math.min(perFrame, count - i);
-    const chunkText = mode === "long" ? `${longLine.repeat(take)}${prefix}batch ${i}\n` : noLfUnit.repeat(take);
-    enqueue(session.id, { kind: "stdout", text: chunkText });
+    let chunkText = "";
+    if (mode === "long") {
+      // Vary both head (before the 8,000-char split) and tail (after the split) per line so
+      // `findOutputLinks`'s text-keyed cache cannot mask real regex scanning cost.
+      for (let j = 0; j < take; j++) {
+        const lineNo = i + j + 1;
+        const head = `target.txt:${lineNo}:1 `;
+        const tail = ` #${lineNo}`;
+        const fill = "x".repeat(Math.max(0, lineLength - head.length - tail.length - 1));
+        chunkText += `${head}${fill}${tail}\n`;
+      }
+      chunkText += `${prefix}batch ${i}\n`;
+    } else {
+      // Keep each record at 63 chars with a unique counter so 8,000-char lines stay unique at any scale.
+      for (let j = 0; j < take; j++) {
+        const tag = String(i + j).padStart(6, "0");
+        chunkText += `${prefix}${tag} ${"x".repeat(40)} `;
+      }
+    }
+    enqueue(id, { kind: "stdout", text: chunkText });
     i += take;
   }
   const doneText = "\nstream-done\n";
-  enqueue(session.id, { kind: "stdout", text: doneText });
+  enqueue(id, { kind: "stdout", text: doneText });
   await new Promise(requestAnimationFrame);
-  flush(session.id);
-  finishSession(session.id, 0);
+  flush(id);
+  finishSession(id, 0);
   return { lines: rt.console.size, dropped: rt.console.dropped };
 }
 
