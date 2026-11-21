@@ -459,6 +459,88 @@ const gitLogWide: Scenario = {
 };
 
 /**
+ * Deep paging: a Git Log of `OPENIDEA_PERF_GIT_LOG_DEEP` commits (default 50,000) with 200
+ * long-lived branches, scrolled to the end until 60% of it is loaded page by page, then
+ * arrow keys, hover over the graph and Refresh at that depth. Each page arriving must cost
+ * the same at row 30,000 as at row 600.
+ */
+const gitLogDeep: Scenario = {
+  id: "gitLogDeep",
+  title: "Page a Git Log 30k commits deep, then navigate, hover and refresh",
+  async run(h) {
+    const total = Number(process.env.OPENIDEA_PERF_GIT_LOG_DEEP ?? 50_000);
+    const target = Math.floor(total * 0.6);
+    await h.page.evaluate(
+      async ({ total }) => {
+        const { __openideaPerf: probe } = window as never as {
+          __openideaPerf: {
+            fakeGitLog(n: number, latencyMs: number, longBranches: number): void;
+            runAction(id: string): Promise<boolean>;
+          };
+        };
+        probe.fakeGitLog(total, 15, 200);
+        await probe.runAction("vcs.showLog");
+      },
+      { total },
+    );
+    const list = h.page.getByRole("listbox", { name: "Commits" });
+    await list.getByRole("option").first().waitFor();
+    const refresh = await h.refreshMs();
+
+    const pagingStarted = await h.now();
+    await h.inPage((p) => p.startFrames());
+    const pagingMs = await list.evaluate(async (el, target) => {
+      const started = performance.now();
+      // 26 px rows; the Loading row and column headers add a little.
+      while (el.scrollHeight < target * 26) {
+        if (performance.now() - started > 20 * 60_000) throw new Error("Deep Git Log did not load");
+        el.scrollTop = el.scrollHeight;
+        await new Promise(requestAnimationFrame);
+      }
+      return performance.now() - started;
+    }, target);
+    const pagingFrames = await h.inPage((p) => p.stopFrames());
+    const pagingTasks = await h.longTasksSince(pagingStarted);
+    const paging = frameSummary(pagingFrames, refresh);
+
+    await h.page.waitForTimeout(300);
+    const box = (await list.boundingBox())!;
+    await h.page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    const keyLat = await h.pressMeasured(Array(30).fill("ArrowDown"), 50);
+
+    const hoverStarted = await h.now();
+    await h.inPage((p) => p.startFrames());
+    for (let i = 0; i < 40; i++) {
+      await h.page.mouse.move(box.x + 8 + (i % 8) * 12, box.y + 40 + ((i * 7) % 20) * 13);
+      await h.page.waitForTimeout(16);
+    }
+    const hover = frameSummary(await h.inPage((p) => p.stopFrames()), refresh);
+    const hoverTasks = await h.longTasksSince(hoverStarted);
+
+    const refreshStarted = await h.now();
+    await h.page.getByRole("button", { name: "Refresh", exact: true }).first().click();
+    await h.page.waitForTimeout(1500);
+    const refreshTasks = await h.longTasksSince(refreshStarted);
+
+    const longest = (tasks: ReadonlyArray<{ duration: number }>) => Math.max(0, ...tasks.map((t) => t.duration));
+    return {
+      pagingMs,
+      pagingFrameP95Ms: paging.frameP95Ms,
+      pagingFrameMaxMs: paging.frameMaxMs,
+      pagingDroppedFramesPct: paging.droppedFramesPct,
+      pagingLongTasks: pagingTasks.length,
+      pagingLongTaskMaxMs: longest(pagingTasks),
+      pagingTbtMs: totalBlockingTime(pagingTasks),
+      ...keySummary(keyLat, refresh, "arrowKey"),
+      hoverFrameMaxMs: hover.frameMaxMs,
+      hoverLongTasks: hoverTasks.length,
+      refreshLongTasks: refreshTasks.length,
+      refreshLongTaskMaxMs: longest(refreshTasks),
+    };
+  },
+};
+
+/**
  * Dragging the splitters with an editor, the Project tree and the Git Log
  * open: every pointer move resizes the islands, so each frame relays them out.
  */
@@ -840,6 +922,7 @@ export const SCENARIOS: Scenario[] = [
   gitLog,
   gitLogScrollbar,
   gitLogWide,
+  gitLogDeep,
   resizePanels,
   keyRepeat,
   scroll,
