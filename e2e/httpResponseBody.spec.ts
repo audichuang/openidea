@@ -88,15 +88,16 @@ for (const how of ["opened", "switched"] as const) {
     await expectEveryPartReachable(page);
   });
 
-  test(`every part of one very long line ${how} in Raw can be scrolled to after the pane gets wider`, async ({
-    page,
-  }) => {
-    await page.setViewportSize({ width: 500, height: 900 });
-    await open(page, how);
-    await page.setViewportSize({ width: 1400, height: 900 });
-    await settle(page);
-    await expectEveryPartReachable(page);
-  });
+  for (const from of [500, 800, 1000])
+    test(`every part of one very long line ${how} in Raw can be scrolled to after the pane gets wider (${from} px)`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width: from, height: 900 });
+      await open(page, how);
+      await page.setViewportSize({ width: 1400, height: 900 });
+      await settle(page);
+      await expectEveryPartReachable(page);
+    });
 }
 
 test("a line at the backend's 16 MB limit opened in Raw is drawn in part and every part can be scrolled to", async ({
@@ -132,4 +133,28 @@ test("a find match at the end of a long line opened in Raw is marked and scrolle
   await page.setViewportSize({ width: 1400, height: 900 });
   await settle(page);
   await expect(body(page).locator("[data-find-current]")).toHaveText("last-item");
+});
+
+test("a selection in a long line stays as it was after the pane gets wider", async ({ page }) => {
+  await page.setViewportSize({ width: 500, height: 900 });
+  await open(page, "opened");
+  await body(page).click();
+  await page.keyboard.press("ControlOrMeta+a");
+  const selection = () => page.evaluate(() => (window as never as { selection(): unknown }).selection());
+  const all = await selection();
+  const length = await page.evaluate(() => (window as never as { rawLength: number }).rawLength);
+  expect(all).toEqual({ anchor: 0, head: length });
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await settle(page);
+  expect(await selection()).toEqual(all);
+});
+
+test("a 16 MB line opened in a hidden pane is drawn in part and reachable once the pane is shown", async ({ page }) => {
+  await page.goto(`/e2e/httpResponseBody.html?chars=${16 * 1024 * 1024}&raw&hidden`);
+  await settle(page);
+  await page.getByRole("button", { name: "Show Pane" }).click();
+  await expect(body(page).locator(".cm-line").first()).toBeVisible();
+  await settle(page);
+  expect(await drawnChars(page)).toBeLessThan(CHARS / 20);
+  await expectEveryPartReachable(page);
 });
