@@ -683,8 +683,10 @@ pub async fn restore(app: &AppHandle, caller: &str) -> IdeResult<()> {
     if restore_gate(&state, reopen) != RestoreGate::Restore {
         return Ok(());
     }
+    // A remote `main` holds its remote location (`wsl://…`), the form `persist` saved it in.
+    let root = windows::window_project_path(app, caller);
     // Unreadable saved groups: not done, so saving leaves them on disk.
-    let failed = restore_groups(app, caller, project.as_ref().map(|p| p.root.as_path())).await?;
+    let failed = restore_groups(app, caller, root.as_deref()).await?;
     *state.groups_unrestored.lock() = failed;
     state.groups_restore_done.store(true, Ordering::SeqCst);
     // Saves made while reopening kept the groups not reopened yet; now the open ones are complete.
@@ -723,6 +725,7 @@ async fn restore_groups(app: &AppHandle, caller: &str, root: Option<&Path>) -> I
     let saved = tauri::async_runtime::spawn_blocking(move || read_saved(&path))
         .await
         .map_err(|e| IdeError::internal(e.to_string()))??;
+    let root = root.map(|root| saved_form(&saved, root));
     // A remote location reopens as a remote launch; a missing local folder is left out.
     let plan = restore_plan(&saved, root, |path| windows::saved_project_launch(path).is_some());
     if plan.is_empty() {
@@ -775,6 +778,11 @@ async fn restore_groups(app: &AppHandle, caller: &str, root: Option<&Path>) -> I
         wait_fullscreen_transition(app, &window).await;
     }
     Ok(failed)
+}
+
+/// `root` as `saved` holds it: a WSL share and the `wsl://` location of that folder are one project.
+fn saved_form<'a>(saved: &'a [SavedGroup], root: &'a Path) -> &'a Path {
+    saved.iter().flat_map(|g| &g.projects).find(|p| windows::same_saved_project(p, root)).map_or(root, PathBuf::as_path)
 }
 
 /// Opens `group`'s projects (`root` in `caller`) and tabs them together; returns the shown tab.
@@ -856,6 +864,18 @@ async fn wait_fullscreen_transition(_app: &AppHandle, _window: &tauri::WebviewWi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn main_root_takes_the_saved_form_of_its_project() {
+        let saved = [SavedGroup {
+            projects: vec![PathBuf::from("/alpha"), PathBuf::from("wsl://Ubuntu/home/me/app")],
+            selected: 0,
+            fullscreen: false,
+        }];
+        assert_eq!(saved_form(&saved, Path::new("wsl://Ubuntu/home/me/app/")), Path::new("wsl://Ubuntu/home/me/app"));
+        assert_eq!(saved_form(&saved, Path::new("/alpha")), Path::new("/alpha"));
+        assert_eq!(saved_form(&saved, Path::new("/other")), Path::new("/other"));
+    }
 
     #[test]
     fn restore_gate_decides_once_per_launch() {
