@@ -28,10 +28,11 @@ const currentMark = Decoration.mark({
   attributes: { "data-find-current": "" },
 });
 
-/** The find matches; the document never changes (a new body is a new state). */
+/** The find matches. */
 const marks = StateField.define<DecorationSet>({
   create: () => Decoration.none,
   update(value, tr) {
+    value = value.map(tr.changes);
     for (const e of tr.effects)
       if (e.is(setMarks))
         value = Decoration.set(
@@ -50,6 +51,7 @@ let resyncs = 0;
 const resyncMark = StateField.define<DecorationSet>({
   create: () => Decoration.none,
   update(value, tr) {
+    value = value.map(tr.changes);
     for (const e of tr.effects)
       if (e.is(resync) && e.value < tr.state.doc.length)
         value = Decoration.set(
@@ -80,6 +82,40 @@ const redrawStaleViewport = EditorView.updateListener.of((u) => {
     view.dispatch({ effects: resync.of(from) });
 });
 
+/** Longer lines are drawn only in part (twice the editor's 10,000-character wrapped-line margin). */
+const LONG_LINE = 20_000;
+const measured = new WeakSet<EditorView>();
+
+/**
+ * The part of a long line that is not drawn gets a height estimated from the
+ * line metrics, and once drawn that height is measured back as the line's own.
+ * Until the editor's first measure the metrics are defaults (a 30-character,
+ * 14 px line), so a long line put in before it would keep a wrong height: too
+ * little of it drawn on screen, and parts never drawn at all. Put the text in
+ * again once, after the first measure, when a long line is on screen, through
+ * an empty document (a line replaced by one about as long keeps its height).
+ */
+const sizeLongLines = EditorView.updateListener.of((u) => {
+  const { view } = u;
+  if (u.transactions.length || measured.has(view)) return;
+  measured.add(view);
+  if (!view.viewportLineBlocks.some((b) => b.length > LONG_LINE)) return;
+  const doc = u.state.doc;
+  queueMicrotask(() => {
+    if (view.state.doc !== doc) return;
+    const kept: MarkRange[] = [];
+    view.state.field(marks).between(0, doc.length, (from, to, mark) => {
+      kept.push({ from, to, current: mark === currentMark });
+    });
+    const at = kept.find((m) => m.current);
+    view.dispatch({ changes: { from: 0, to: doc.length } });
+    view.dispatch({
+      changes: { from: 0, insert: doc },
+      effects: [setMarks.of(kept), ...(at ? [EditorView.scrollIntoView(at.from, { y: "nearest", x: "nearest" })] : [])],
+    });
+  });
+});
+
 function extensions(): Extension[] {
   return [
     EditorState.readOnly.of(true),
@@ -91,7 +127,23 @@ function extensions(): Extension[] {
     marks,
     resyncMark,
     redrawStaleViewport,
+    sizeLongLines,
   ];
+}
+
+/**
+ * Shows `text` from its start. It replaces the document of the same state
+ * rather than starting a new one: a new state starts with default line metrics
+ * (see `sizeLongLines`), and a state created with a long line draws its hidden
+ * part unwrapped, so its first measure finds the line short and draws all of it
+ * once (over a second of layout for a 16 MB line).
+ */
+function show(v: EditorView, text: string) {
+  v.dispatch({
+    changes: { from: 0, to: v.state.doc.length, insert: text },
+    selection: { anchor: 0 },
+    effects: EditorView.scrollIntoView(0, { y: "start" }),
+  });
 }
 
 export function ResponseBody({
@@ -111,10 +163,9 @@ export function ResponseBody({
   const shown = useRef(text);
 
   useEffect(() => {
-    const v = new EditorView({
-      parent: host.current!,
-      state: EditorState.create({ doc: text, extensions: extensions() }),
-    });
+    // Created empty: a state created with a long line draws all of it once (see `show`).
+    const v = new EditorView({ parent: host.current!, state: EditorState.create({ extensions: extensions() }) });
+    show(v, text);
     view.current = v;
     if (viewRef) viewRef.current = v;
     return () => {
@@ -130,7 +181,7 @@ export function ResponseBody({
     const v = view.current;
     if (!v || shown.current === text) return;
     shown.current = text;
-    v.setState(EditorState.create({ doc: text, extensions: extensions() }));
+    show(v, text);
   }, [text]);
 
   useEffect(() => {
