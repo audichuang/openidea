@@ -39,7 +39,7 @@ describe("remote invoke", () => {
         };
         expect(console).toBe("/remote/console.sql");
         expect(consoleManual).toBe(true);
-        call.onChannel.onmessage({ id: onProgress.$channel, data: JSON.stringify(done) });
+        call.onChannel.onmessage({ id: onProgress.$channel, data: JSON.stringify(done), end: false });
         return "null";
       },
     });

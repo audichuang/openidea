@@ -26,7 +26,7 @@ beforeEach(() => {
     status: "ok",
     data: { kind: "opened", label: "second" },
   });
-  vi.spyOn(light, "openLightweightEditor").mockResolvedValue();
+  vi.spyOn(light, "openLightweightEditor").mockResolvedValue("editor-main-1");
 });
 afterEach(() => {
   ctrl?.stop();
