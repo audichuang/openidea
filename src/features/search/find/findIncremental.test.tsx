@@ -4,12 +4,14 @@ import type { FileMatches, SearchQuery, SearchSummary } from "@/platform/ipc";
 
 const treeSpy = {
   getKeyCallsPerRender: [] as number[],
+  rowAtCallsPerRender: [] as number[],
   expandedSizes: [] as number[],
-  rootLengths: [] as number[],
+  forEachRowCalls: 0,
   reset() {
     this.getKeyCallsPerRender = [];
+    this.rowAtCallsPerRender = [];
     this.expandedSizes = [];
-    this.rootLengths = [];
+    this.forEachRowCalls = 0;
   },
 };
 
@@ -32,14 +34,24 @@ vi.mock("@/ui", async (importOriginal) => {
     ...actual,
     Tree: function InstrumentedTree<T>(props: React.ComponentProps<typeof actual.Tree<T>>) {
       let calls = 0;
+      let rowAtCalls = 0;
       const wrappedGetKey = (node: T) => {
         calls++;
         return props.getKey(node);
       };
-      const out = actual.Tree({ ...props, getKey: wrappedGetKey });
+      // Every row read through the model counts, and any walk over all of its rows.
+      const model = props.model && {
+        ...props.model,
+        rowAt: (i: number) => (rowAtCalls++, props.model!.rowAt(i)),
+        forEachRow: (visit: Parameters<typeof props.model.forEachRow>[0]) => {
+          treeSpy.forEachRowCalls++;
+          props.model!.forEachRow(visit);
+        },
+      };
+      const out = actual.Tree({ ...props, model, getKey: wrappedGetKey });
       treeSpy.getKeyCallsPerRender.push(calls);
+      treeSpy.rowAtCallsPerRender.push(rowAtCalls);
       treeSpy.expandedSizes.push(props.expanded?.size ?? 0);
-      treeSpy.rootLengths.push(props.roots?.length ?? 0);
       return out;
     },
   };
@@ -132,6 +144,10 @@ describe("FindToolWindow incremental streaming", () => {
         maxGetKeyCalls: expect.any(Number),
       });
       expect(maxGetKeyCalls).toBeLessThan(150);
+      // Rows in view only (jsdom has no viewport height, so only the overscan), never all of them.
+      expect(Math.max(...treeSpy.rowAtCallsPerRender)).toBeLessThan(150);
+      expect(Math.max(...treeSpy.rowAtCallsPerRender)).toBeGreaterThan(0);
+      expect(treeSpy.forEachRowCalls).toBe(0);
     },
   );
 });
