@@ -158,3 +158,27 @@ test("a 16 MB line opened in a hidden pane is drawn in part and reachable once t
   expect(await drawnChars(page)).toBeLessThan(CHARS / 20);
   await expectEveryPartReachable(page);
 });
+
+// Past the editor's scaling limit (7,000,000 px of height) a single line is taller than the editor can draw.
+for (const width of [200, 300, 400])
+  test(`a 16 MB line in a ${width} px pane: every part can be scrolled to and a match at its end is shown`, async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    await page.setViewportSize({ width, height: 900 });
+    await open(page, "opened", 16 * 1024 * 1024, "last-item");
+    await expectCurrentMatchOnScreen(page);
+    await expectEveryPartReachable(page);
+    expect(errors).toEqual([]);
+  });
+
+test("a 16 MB line shown wide, then in a 300 px pane: every part can be scrolled to", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  await open(page, "opened", 16 * 1024 * 1024);
+  await page.setViewportSize({ width: 300, height: 900 });
+  await settle(page);
+  await expectEveryPartReachable(page);
+  expect(errors).toEqual([]);
+});
