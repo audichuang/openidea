@@ -1,9 +1,10 @@
 /**
  * The Git Log's graph (`presentLogGraph` without Collapse Linear Branches, Collapse Merges or
  * pruned filtered merges), extended page by page: when the commit list only grew at its end, only
- * the new commits and a fixed window of rows before them are laid out and presented again, so a
- * page costs about the same at row 30,000 as at row 600. The result is the full computation's,
- * row for row; whenever that cannot be shown the graph is computed from scratch.
+ * the new commits and a fixed window of rows before them are laid out and presented again: the
+ * rows built per page no longer grow with the rows loaded (a few cheaper passes over the whole list
+ * remain). The result is the full computation's, row for row; whenever that cannot be shown the
+ * graph is computed from scratch.
  *
  * Why each pass allows it:
  *
