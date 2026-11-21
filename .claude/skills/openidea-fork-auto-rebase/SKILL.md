@@ -141,7 +141,7 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
 
    - **其餘 finding**：能用證據證明不成立的，寫進留言駁回；成立的就修（修正 commit），修完回第 2、3 步重跑閘門與 CI，再從本步**第 1 點**重審一次。修正 commit 也可能碰到保留路徑，所以要從第 1 點開始。
    - **通過**：三者都沒有剩下的 finding（列為已知問題、或以 fork 開關處理的上游功能 finding 不算），對帳項目也都解釋了。
-   - **交人**：第二輪還有成立、又不符合已知問題或上游功能條件的 finding，或你判斷不了、問過 advisor 也判斷不了。needs-human 留言列出 finding 與你的看法。交人前，最後一輪審查之後才加的修正 commit 也要審完：第 3 點的獨立審查者與第 4 點的 Codex 各看那幾個 commit 一次（不另算一輪，也不因此再修），結果寫進 needs-human 的細節。使用者核可的是整個 NT，不該由他當最後一個審查者（v0.1.49 的 needs-human 要使用者「看 4 個修正 commit」，其中 `9a38ecea7` 沒經過任何審查）。交人前，第 1 點命中的全是視窗 chrome（沒有命中其他保留項）、閘門與 Fork CI 也是綠的，就先做第 3c 步：使用者核可的是這個 NT，chrome 不該留給他在實機看。3c 的結果（chrome-verified 或失敗的那一項）寫進 needs-human。
+   - **交人**：第二輪還有成立、又不符合已知問題或上游功能條件的 finding，或你判斷不了、問過 advisor 也判斷不了。needs-human 留言列出 finding 與你的看法。交人前，最後一輪審查之後才加的修正 commit 也要審完：第 3 點的獨立審查者與第 4 點的 Codex 各看那幾個 commit 一次（不另算一輪，也不因此再修：審出的新問題連同證據列進 needs-human 的細節，跟剩下的 finding 一起交人）。使用者核可的是整個 NT，不該由他當最後一個審查者（v0.1.49 的 needs-human 要使用者「看 4 個修正 commit」，其中 `9a38ecea7` 沒經過任何審查）。交人前，第 1 點命中的全是視窗 chrome（沒有命中其他保留項）、閘門與 Fork CI 也是綠的，就先做第 3c 步：使用者核可的是這個 NT，chrome 不該留給他在實機看。3c 的結果（chrome-verified 或失敗的那一項）寫進 needs-human。
 6. 通過 → 確認 `git rev-parse HEAD` 等於這一輪審過的 NT（不等就回第 1 點），PR 留言第一行 `<!-- auto-rebase:self-reviewed <NT> -->`，下面寫三者的結果摘要，接第 3c 步（第 1 點有視窗 chrome 命中時）或第 4 步。這個標記只是稽核紀錄，precheck 不讀。run 在這之後、推 develop 之前死掉的話，鎖過期後會從頭重來。
 
 ## 3c. 視窗 chrome 實機檢查（任何模式）
@@ -246,7 +246,7 @@ lease 失敗（develop 在這期間合進了別的 PR）→ HEAD 不在 `fork/de
 
 develop 一移動（含已在 HEAD 不重推的情況）就列出這次 rebase 帶進 develop 的 workflow：`git diff --diff-filter=A --name-only OLD_DEVELOP <develop sha> -- .github/workflows/`，`<develop sha>` 在這裡是 HEAD。兩端都用 sha、不用 vOLD／vNEW：tag 可變（上游改過 v0.1.37 的 tag，第 0 步會強制更新 tags），恢復時重新解析會漏列。`gh workflow list -R audichuang/openidea --all --json path,state,name` 裡 path 在這份清單、state 是 active 的，照 FORK.md 馬上 `gh workflow disable`，寫進通知。只比對這份路徑清單：fork 自己的 workflow（包括已刪分支留下的 `zz-*` 註冊）也是 active、名稱也不是 Fork CI，用名稱篩會誤停。`pull_request_target` 從 PR 的 base 分支讀 workflow，develop 一動，下一個對 develop 開的 PR 就會觸發它（v0.1.35 的 `PR check` 幾秒內就在 PR 上貼了 needs-info）。清單裡還沒出現的，第 6 步移動 main 後再查一次。接第 5 步。
 
-不符合條件（MANUAL 而自審沒通過、碰到必交人路徑、第 3c 步沒過或做不了，或有修不掉的紅）→ 不移動，PR 留言 `<!-- auto-rebase:needs-human -->` 加上要使用者看什麼（自審做到哪、卡在哪），只寫使用者才能決定或才做得到的事：要他看的每一項都說明為什麼排程自己做不了（保留路徑、權限、判斷不了的產品取捨）。「請看這幾個修正 commit」「這個解法對不對」這類技術複核不列，交人前照第 3b 步第 5 點「交人」審完。這份 skill 或流程本身的缺口（規則沒有出口、字面和實際對不上）不拿來問使用者：照比較保守的判讀做完這一輪，`gh issue create -R audichuang/openidea` 開 issue 記下缺口與這次採用的判讀，編號寫進細節。最後一段固定寫交回方法：看完沒問題就另留一則第一行是 `<!-- auto-rebase:approved <HEAD 完整 sha> -->` 的留言，下一次排程（每小時 :37）會移動 develop 並發版。不要給使用者手動 lease 推送或發版的指令。跳第 7 步。
+不符合條件（MANUAL 而自審沒通過、碰到必交人路徑、第 3c 步沒過或做不了，或有修不掉的紅）→ 不移動，PR 留言 `<!-- auto-rebase:needs-human -->` 加上要使用者看什麼（自審做到哪、卡在哪），只寫使用者才能決定或才做得到的事：要他看的每一項都說明為什麼排程自己做不了（保留路徑、權限、判斷不了的產品取捨）。不在保留路徑上的技術複核（「請看這幾個修正 commit」「這個解法對不對」）不列，交人前照第 3b 步第 5 點「交人」審完。這份 skill 或流程本身的缺口（規則沒有出口、字面和實際對不上）不拿來問使用者：照比較保守的判讀做完這一輪，`gh issue create -R audichuang/openidea` 開 issue 記下缺口與這次採用的判讀，編號寫進細節。最後一段固定寫交回方法：看完沒問題就另留一則第一行是 `<!-- auto-rebase:approved <HEAD 完整 sha> -->` 的留言，下一次排程（每小時 :37）會移動 develop 並發版。不要給使用者手動 lease 推送或發版的指令。跳第 7 步。
 
 ## 5. 對 develop 開著的 PR
 
