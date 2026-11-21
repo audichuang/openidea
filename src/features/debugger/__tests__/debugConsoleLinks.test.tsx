@@ -132,17 +132,24 @@ describe("Debug console links", () => {
 
   it("renders clickable links across >10 KiB lines in DebugConsole", () => {
     const session = adoptSession(1);
-    const longLine = `src/start.go:1:1 ${"x".repeat(5_000)} src/mid.go:2:2 ${"y".repeat(5_000)} src/end.go:3:3\n`;
+    const longLine = `src/start.go:1:1 ${"x".repeat(2_582)} src/col2600.go:10:2 ${"x".repeat(2_400)} src/mid.go:2:2 ${"y".repeat(5_000)} src/end.go:3:3\n`;
     appendConsole(1, "stdout", longLine);
 
     render(<DebugConsole session={session} />);
     const log = screen.getByRole("log", { name: "Debug console" });
+    Object.defineProperty(log, "clientWidth", { configurable: true, value: 800 });
+    Object.defineProperty(log, "scrollLeft", { configurable: true, writable: true, value: 0 });
+    fireEvent.scroll(log);
 
     expect(screen.getByRole("link", { name: "src/start.go:1:1" })).toBeInTheDocument();
-    Object.defineProperty(log, "scrollLeft", { configurable: true, writable: true, value: 36_000 });
+    // At 13px * 0.60em (7.8px/ch), scrollLeft 20,280 in an 800px viewport displays cols 2,600..2,703.
+    Object.defineProperty(log, "scrollLeft", { configurable: true, writable: true, value: 20_280 });
+    fireEvent.scroll(log);
+    expect(screen.getByRole("link", { name: "src/col2600.go:10:2" })).toBeInTheDocument();
+    Object.defineProperty(log, "scrollLeft", { configurable: true, writable: true, value: 39_200 });
     fireEvent.scroll(log);
     expect(screen.getByRole("link", { name: "src/mid.go:2:2" })).toBeInTheDocument();
-    Object.defineProperty(log, "scrollLeft", { configurable: true, writable: true, value: 72_000 });
+    Object.defineProperty(log, "scrollLeft", { configurable: true, writable: true, value: 78_400 });
     fireEvent.scroll(log);
     expect(screen.getByRole("link", { name: "src/end.go:3:3" })).toBeInTheDocument();
   });
