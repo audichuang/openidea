@@ -21,8 +21,10 @@ import {
   type TreeHandle,
 } from "@/ui";
 import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import clsx from "clsx";
 import {
+  memo,
   useCallback,
   useContext,
   useEffect,
@@ -90,9 +92,12 @@ export function CommitDetails({ commits, fileHistory = false }: { commits: Commi
     const ids = new Set(selection);
     return commits.filter((c) => ids.has(commitKey(c)));
   }, [commits, selection]);
-  const commit = selected ? commits.find((c) => commitKey(c) === selected) : undefined;
+  const commit = useMemo(
+    () => (selected ? commits.find((c) => commitKey(c) === selected) : undefined),
+    [commits, selected],
+  );
   const many = chosen.length > 1;
-  const idsKey = chosen.map(commitKey).join(" ");
+  const idsKey = useMemo(() => chosen.map(commitKey).join(" "), [chosen]);
   const commitRoot = commit ? commitRepo(commit) : null;
   const [result, setResult] = useState<{
     key: string;
@@ -111,7 +116,10 @@ export function CommitDetails({ commits, fileHistory = false }: { commits: Commi
   const diffLocation = modal && savedLocation === "editor" ? "right" : savedLocation;
   const showLineStats = useLogOptions((s) => s.showLineStats);
   const filters = useGitLog((s) => s.filters);
-  const filesKey = JSON.stringify([idsKey, fromParents, parentIndex, commitRoot, showLineStats]);
+  const filesKey = useMemo(
+    () => `${idsKey}\n${JSON.stringify([fromParents, parentIndex, commitRoot, showLineStats])}`,
+    [idsKey, fromParents, parentIndex, commitRoot, showLineStats],
+  );
   const files = result?.key === filesKey ? result.files : null;
   const error = result?.key === filesKey ? result.error : null;
 
@@ -199,7 +207,11 @@ export function CommitDetails({ commits, fileHistory = false }: { commits: Commi
       removed: 0,
     });
   }, [changes, showLineStats]);
-  const multipleRoots = new Set(chosen.map(commitRepo)).size > 1;
+  const multipleRoots = useMemo(() => {
+    const first = chosen[0] ? commitRepo(chosen[0]) : undefined;
+    for (let i = 1; i < chosen.length; i++) if (commitRepo(chosen[i]!) !== first) return true;
+    return false;
+  }, [chosen]);
   const changeTreePath = useCallback(
     (f: LogChange) => `${multipleRoots ? `${repoName(f.repo ?? "")}/` : ""}${f.group ? `${f.group}/` : ""}${f.path}`,
     [multipleRoots],
@@ -311,19 +323,17 @@ export function CommitDetails({ commits, fileHistory = false }: { commits: Commi
     showContextMenu(e, changesMenu(target));
   };
 
+  const messageBoxClass = clsx(styles.messageBox, fileHistory && styles.historyMessageBox);
+  const messageLabel = fileHistory ? tx("Commit message") : undefined;
   const messagePanel = (
     <SplitPanel id="message" style={PANE_STYLE} minSize={fileHistory ? "30%" : "60px"}>
-      <div
-        className={clsx(styles.messageBox, fileHistory && styles.historyMessageBox)}
-        role={fileHistory ? "region" : undefined}
-        aria-label={fileHistory ? tx("Commit message") : undefined}
-      >
-        {many ? (
-          chosen.map((c) => <CommitMessage key={commitKey(c)} commit={c} compact />)
-        ) : (
+      {many ? (
+        <CommitMessageList commits={chosen} className={messageBoxClass} label={messageLabel} />
+      ) : (
+        <div className={messageBoxClass} role={messageLabel ? "region" : undefined} aria-label={messageLabel}>
           <CommitMessage commit={commit} />
-        )}
-      </div>
+        </div>
+      )}
     </SplitPanel>
   );
   const details = (
@@ -496,6 +506,55 @@ export function CommitDetails({ commits, fileHistory = false }: { commits: Commi
     </div>
   );
 }
+
+const CompactCommitMessage = memo(CommitMessage);
+
+/** Virtualized list of compact commit messages for a multi-commit selection. */
+const CommitMessageList = memo(function CommitMessageList({
+  commits,
+  className,
+  label,
+}: {
+  commits: readonly Commit[];
+  className: string;
+  /** Names the list as a region (file history's message pane). */
+  label?: string;
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const virtualizer = useVirtualizer({
+    count: commits.length,
+    getScrollElement: () => scrollRef.current,
+    getItemKey: (index) => commitKey(commits[index]!),
+    estimateSize: () => 96,
+    overscan: 6,
+  });
+
+  return (
+    <div
+      ref={scrollRef}
+      className={clsx(className, styles.messageBoxVirtual)}
+      role={label ? "region" : undefined}
+      aria-label={label}
+    >
+      <div className={styles.messageList} style={{ height: virtualizer.getTotalSize() }}>
+        {virtualizer.getVirtualItems().map((item) => {
+          const c = commits[item.index]!;
+          return (
+            <div
+              key={item.key}
+              data-index={item.index}
+              ref={virtualizer.measureElement}
+              className={clsx(styles.messageItem, item.index > 0 && styles.messageItemSeparated)}
+              style={{ transform: `translateY(${item.start}px)` }}
+            >
+              <CompactCommitMessage commit={c} compact />
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+});
 
 /** IDEA's changes browser context menu in the Git Log; `changes` = the files it acts on. */
 export function changesMenu(changes: LogChange[]): MenuItem[] {
