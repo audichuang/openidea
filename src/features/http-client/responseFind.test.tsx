@@ -2,6 +2,8 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EditorView } from "@codemirror/view";
 import type { HttpExchange } from "@/platform/ipc";
+import { registerAction } from "@/platform/actions";
+import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
 
 vi.mock("./store", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./store")>()),
@@ -65,5 +67,40 @@ describe("HTTP response find", () => {
     fireEvent.keyDown(input, { key: "Escape" });
     expect(screen.queryByLabelText("Find in response", { selector: "input" })).toBeNull();
     expect(body.querySelectorAll("mark")).toHaveLength(0);
+  });
+
+  it("keeps Escape and F3 in the find bar away from the IDE keymap", () => {
+    Element.prototype.scrollIntoView ??= () => {};
+    const keymap = useKeymap.getState();
+    useKeymap.setState({ preset: "intellij-macos", overrides: {}, extensions: {} });
+    const focusEditor = vi.fn();
+    const bookmark = vi.fn();
+    const disposers = [
+      registerAction({ id: "toolwindow.focusEditor", title: "Focus Editor", run: focusEditor }),
+      registerAction({ id: "navigate.toggleBookmark", title: "Toggle Bookmark", run: bookmark }),
+      installKeyboardDispatcher(window),
+    ];
+    try {
+      useHttpClient.setState({ history: [exchange.entry], exchanges: { e1: exchange }, selected: "e1" });
+      render(<HttpClientView />);
+      fireEvent.click(screen.getByRole("button", { name: /^Find/ }));
+      const input = screen.getByLabelText("Find in response", { selector: "input" });
+      act(() => {
+        fireEvent.change(input, { target: { value: "beta" } });
+      });
+      expect(screen.getByText("1/3")).toBeTruthy();
+      fireEvent.keyDown(input, { key: "F3", code: "F3" });
+      expect(screen.getByText("2/3")).toBeTruthy();
+      fireEvent.keyDown(input, { key: "Escape", code: "Escape" });
+      expect(focusEditor).not.toHaveBeenCalled();
+      expect(bookmark).not.toHaveBeenCalled();
+      expect(screen.queryByLabelText("Find in response", { selector: "input" })).toBeNull();
+      // Closed: the IDE keymap has Escape again.
+      fireEvent.keyDown(screen.getByLabelText("Response body"), { key: "Escape", code: "Escape" });
+      expect(focusEditor).toHaveBeenCalledTimes(1);
+    } finally {
+      disposers.reverse().forEach((d) => d());
+      useKeymap.setState(keymap, true);
+    }
   });
 });
