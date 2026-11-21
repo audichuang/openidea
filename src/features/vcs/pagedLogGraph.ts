@@ -3,8 +3,9 @@
  * pruned filtered merges), laid out again only from the first row that can change: when a page is
  * appended, the new commits and a fixed window of rows before them; when a Refresh returns the
  * history with a change somewhere, the rows from a kept lane state before that change on (none
- * when nothing in the graph changed). The result is the full computation's, row for row; whenever
- * that cannot be shown the graph is computed from scratch.
+ * when nothing in the graph changed), or, when the change is near the top (commits made on top),
+ * the rows down to a kept lane state below it ({@link resync}). The result is the full
+ * computation's, row for row; whenever that cannot be shown the graph is computed from scratch.
  *
  * Why each pass allows it:
  *
@@ -40,7 +41,7 @@ const LONG_EDGE_STUB = 2;
 /** Rows laid out again before a change: the long-edge window and the context of the passes after it. */
 const WINDOW = LONG_EDGE + 4;
 /** Rows between the lane states kept for laying out again from a change deep in the list. */
-const CHECKPOINT = 1024;
+const CHECKPOINT = 512;
 
 /** A segment as laid out, with what {@link resolveRow} needs to finish it. */
 interface LaidSegment extends GraphSegment {
@@ -88,6 +89,8 @@ interface Checkpoint {
   runs: ReadonlyMap<number, number>;
   /** The widest of rows `[0, row + 2)`. */
   width: number;
+  /** Whether its lanes are numbered for the layout of the list that keeps it. */
+  numbered: boolean;
 }
 
 interface Layout {
@@ -336,7 +339,8 @@ type Snapshot = LaneState & { ranks: number; tips: number };
  * keep their fallback numbers and a `colorKey`, edges keep the parent they lead to, and the last
  * row's arrows into unloaded parents are left to the presentation. `ranks` gets each new lane's
  * place among the lanes in use (see {@link replay}) and `rankRows` its row, `tips` the rows of
- * commits that start a lane; `snaps` gets the state before each row of `snapRows`.
+ * commits that start a lane; `snaps` gets the state before each row of `snapRows`. Stops before
+ * row `end`.
  */
 function layOut(
   commits: readonly GraphCommit[],
@@ -347,6 +351,7 @@ function layOut(
   rankRows: number[],
   tips: number[],
   snapRows: ReadonlySet<number>,
+  end = commits.length,
 ) {
   const { positions, refAware } = whole;
   const lanes = new LaneSlots(from.lanes);
@@ -377,7 +382,7 @@ function layOut(
   };
   const rows: LaidRow[] = [];
 
-  for (let row = start; row < commits.length; row++) {
+  for (let row = start; row < end; row++) {
     if (snapRows.has(row))
       snaps.set(row, { lanes: lanes.snapshot(), nextColor, nextIdentity, ranks: ranks.length, tips: tips.length });
     const c = commits[row]!;
@@ -480,6 +485,8 @@ function layOut(
   return { rows, snaps };
 }
 
+const START = { row: 0, lanes: { length: 0, slots: [] }, nextIdentity: 0 };
+
 /** Counts per lane number (a Fenwick tree): how many below a number, and the first one counted. */
 class Counts {
   private tree: Int32Array;
@@ -510,23 +517,42 @@ const FREE = 1;
 const USED = 2;
 
 /**
- * The lane choices of `layOut` over rows `[0, upTo)` with `whole`'s layout, without building rows:
- * each new lane's place among the lanes in use (`ranks`, as `layOut` records them), and the lane
- * slots before row `upTo` (`identities` of the lanes in use by slot). Lanes are keyed by the rows
- * and numbers of `index.links`, not by id.
+ * The lane choices of `layOut` over rows `[from.row, upTo)` with `whole`'s layout, without
+ * building rows: each new lane's place among the lanes in use (`ranks`, as `layOut` records them),
+ * and the lane slots before row `upTo` (`identities` of the lanes in use by slot). Lanes are keyed
+ * by the rows and numbers of `index.links`, not by id.
  */
-function replay(index: LayoutIndex, upTo: number, whole: Layout) {
+function replay(
+  index: LayoutIndex,
+  upTo: number,
+  whole: Layout,
+  from: { row: number; lanes: LaneSnapshot; nextIdentity: number } = START,
+) {
   // Lanes are either preferred ones or below the number of lanes in use.
-  let size = 2;
-  for (let row = 0; row < upTo; row++) size = Math.max(size, whole.layout[row]! + 1) + index.links[row]!.length;
+  let size = from.lanes.length + 2;
+  for (let row = from.row; row < upTo; row++) size = Math.max(size, whole.layout[row]! + 1) + index.links[row]!.length;
   const slots = new Uint8Array(size);
   const used = new Counts(size);
   const free = new Counts(size);
-  let length = 0;
+  let length = from.lanes.length;
   const identities: number[] = [];
   const lanesOf = new Map<number, number[]>();
   const ranks: number[] = [];
-  let nextIdentity = 0;
+  let nextIdentity = from.nextIdentity;
+  for (const [slot, lane] of from.lanes.slots) {
+    if (!lane) {
+      slots[slot] = FREE;
+      free.add(slot, 1);
+      continue;
+    }
+    slots[slot] = USED;
+    used.add(slot, 1);
+    identities[slot] = lane.identity;
+    const id = whole.positions.get(lane.id) ?? index.unloaded.get(lane.id)!;
+    const list = lanesOf.get(id);
+    if (list) list.push(slot);
+    else lanesOf.set(id, [slot]);
+  }
   const put = (i: number, id: number) => {
     if (slots[i] !== USED) {
       if (slots[i] === FREE) free.add(i, -1);
@@ -548,7 +574,7 @@ function replay(index: LayoutIndex, upTo: number, whole: Layout) {
     const i = free.first();
     return i < 0 ? length : i;
   };
-  for (let row = 0; row < upTo; row++) {
+  for (let row = from.row; row < upTo; row++) {
     const links = index.links[row]!;
     // The commit's lane goes on to its first parent: it stays in use (no counts to update).
     const continues = links.length > 0 && links[0] !== SHALLOW;
@@ -703,6 +729,8 @@ interface Paged {
   tips: number[];
   /** Ascending; the last one is where the next page lays out again. */
   checkpoints: Checkpoint[];
+  /** Rows with a long-edge arrow to another row, ascending. */
+  arrowRows: number[];
   /** The widest row. */
   width: number;
 }
@@ -732,11 +760,17 @@ function emptyPaged(longEdges: boolean): Paged {
         tips: 0,
         runs: new Map(),
         width: 0,
+        numbered: true,
       },
     ],
+    arrowRows: [],
     width: 0,
   };
 }
+
+const hasArrow = (row: GraphRow) =>
+  row.up.some((s) => s.targetRow !== undefined && s.targetRow >= 0) ||
+  row.down.some((s) => s.targetRow !== undefined && s.targetRow >= 0);
 
 /** `segment`'s copy with `targetRow`, in a copy of `row`. */
 function withTarget(row: LaidRow, index: number, targetRow: number): LaidRow {
@@ -804,7 +838,7 @@ function resume(prev: Paged, index: number, input: Input): Paged | Changed {
   const c = cp.row;
   const n = graph.length;
   const whole = { positions, layout, refAware };
-  const lanes = lanesAt(prev, cp, index === prev.checkpoints.length - 1, input.index, whole);
+  const lanes = lanesAt(prev, cp, cp.numbered && index === prev.checkpoints.length - 1, input.index, whole);
   if ("changed" in lanes) return lanes;
   const ranks = prev.ranks.slice(0, cp.ranks);
   const rankRows = prev.rankRows.slice(0, cp.ranks);
@@ -863,6 +897,8 @@ function resume(prev: Paged, index: number, input: Input): Paged | Changed {
   const skip = c > 0 ? 1 : 0;
   const presented = straightenLaneChanges(compactLanes(hidden.rows).slice(skip)).slice(skip) as LaidRow[];
   const rows = out.concat(presented);
+  const arrowRows = prev.arrowRows.slice(0, below(prev.arrowRows, outFrom));
+  for (let r = outFrom; r < n; r++) if (hasArrow(rows[r]!)) arrowRows.push(r);
 
   const checkpoints = prev.checkpoints
     .slice(0, index + 1)
@@ -884,10 +920,173 @@ function resume(prev: Paged, index: number, input: Input): Paged | Changed {
       tips: snap.tips,
       runs: new Map([...hidden.snaps.get(row)!].map(([lane, start]) => [identityAt.get(lane)!, start])),
       width,
+      numbered: true,
     });
   }
   for (; r < n; r++) width = Math.max(width, rows[r]!.width);
-  return { ...input, rows, ranks, rankRows, tips, checkpoints, width };
+  return { ...input, rows, ranks, rankRows, tips, checkpoints, arrowRows, width };
+}
+
+/** `row` with its arrows' target rows moved by `shift`. */
+function shifted(row: LaidRow, shift: number): LaidRow {
+  const move = (s: LaidSegment) =>
+    s.targetRow !== undefined && s.targetRow >= 0 ? { ...s, targetRow: s.targetRow + shift } : s;
+  return { ...row, up: row.up.map(move), down: row.down.map(move) };
+}
+
+/**
+ * Whether two lane states hold the same lanes in the same order (leading to the same commits, with
+ * the same colours, creation numbers `identities` apart), and the place of each slot in use.
+ */
+function sameOrder(a: LaneSnapshot, b: LaneSnapshot, identities: number, sameColor: (a: string, b: string) => boolean) {
+  const inUse = (lanes: LaneSnapshot) =>
+    lanes.slots.flatMap(([slot, lane]) => (lane ? [[slot, lane] as const] : [])).sort(([x], [y]) => x - y);
+  const x = inUse(a);
+  const y = inUse(b);
+  const same =
+    x.length === y.length &&
+    x.every(([, p], i) => {
+      const q = y[i]![1];
+      return (
+        p.id === q.id &&
+        p.source === q.source &&
+        sameColor(p.colorKey, q.colorKey) &&
+        p.dashed === q.dashed &&
+        p.loadedKind === q.loadedKind &&
+        p.identity === q.identity + identities
+      );
+    });
+  return same ? { a: new Map(x.map(([slot], i) => [slot, i])), b: new Map(y.map(([slot], i) => [slot, i])) } : null;
+}
+
+/**
+ * A Refresh whose changes are all near the top (commits made on top, a branch moved): from row
+ * `tail` on the new list is `prev`'s, `shift` rows further down. Lays out the new list from the
+ * top until its lanes and long-edge runs are the ones `prev` kept at a checkpoint, takes `prev`'s
+ * rows below that (arrows moved by `shift`), then lays out again where `prev`'s list ended. Null
+ * when no checkpoint matches.
+ */
+function resync(prev: Paged, input: Input, shift: number, tail: number): Paged | null {
+  const { graph, positions, refAware, layout, longEdges } = input;
+  const n = graph.length;
+  const n0 = prev.graph.length;
+  if (!refAware || !prev.refAware || !prev.index) return null;
+  const whole = { positions, layout, refAware };
+  const oldWhole = { positions: prev.positions, layout: prev.layout, refAware };
+  // Rows of the new list that are `prev`'s: up to the end of either list.
+  const shared = Math.min(n0 + shift, n);
+  for (const [cpIndex, cp] of prev.checkpoints.entries()) {
+    const c = cp.row;
+    const at = c + shift;
+    if (!c || at < tail || at < WINDOW) continue;
+    // One try: the first checkpoint below the changes, with the rows after it to compare.
+    if (at + 2 * WINDOW > shared) return null;
+    const latest = cp.numbered && cpIndex === prev.checkpoints.length - 1;
+    const old = lanesAt(prev, cp, latest, prev.index, oldWhole);
+    if ("changed" in old) return null;
+
+    const ranks: number[] = [];
+    const rankRows: number[] = [];
+    const tips: number[] = [];
+    const snapRows = new Set<number>([at]);
+    for (let row = CHECKPOINT; row < at; row += CHECKPOINT) snapRows.add(row);
+    const end = at + WINDOW;
+    const laid = layOut(graph, 0, { ...START, nextColor: 0 }, whole, ranks, rankRows, tips, snapRows, end);
+    const snap = laid.snaps.get(at)!;
+    const identities = snap.nextIdentity - cp.nextIdentity;
+    // The same lanes in the same order (the layout may number them otherwise)...
+    // A lane colours like the commit that started it: one further up the same chain does too.
+    const ownerOf = (key: string) => {
+      const row = positions.get(key);
+      return row === undefined ? key : input.owner(row);
+    };
+    const order = sameOrder(snap.lanes, old, identities, (x, y) => x === y || ownerOf(x) === ownerOf(y));
+    if (!order) return null;
+    // ... each later lane taking the same place among them...
+    const later = replay(input.index!, shared, whole, { row: at, ...snap });
+    const before = below(prev.rankRows, shared - shift);
+    if (later.ranks.length !== before - cp.ranks || later.ranks.some((rank, i) => rank !== prev.ranks[cp.ranks + i]))
+      return null;
+    // ... and the same long-edge runs through them.
+    const hidden = hideLongEdgesFrom(laid.rows, 0, new Map(), snapRows, longEdges ? Infinity : LONG_EDGE);
+    const runs = hidden.snaps.get(at)!;
+    const placeOf = new Map<number, number>();
+    for (const [slot, lane] of old.slots) if (lane) placeOf.set(lane.identity, order.b.get(slot)!);
+    const starts = new Map([...runs].map(([slot, start]) => [order.a.get(slot)!, start]));
+    if (
+      starts.size !== cp.runs.size ||
+      [...cp.runs].some(([id, start]) => starts.get(placeOf.get(id)!) !== start + shift)
+    )
+      return null;
+
+    // The rows above `at + 2`; down arrows of runs still open at `end` lead where `prev`'s did.
+    const rows = straightenLaneChanges(compactLanes(hidden.rows)).slice(0, at + 2) as LaidRow[];
+    for (const [r, row] of rows.entries())
+      for (const [i, s] of row.down.entries()) {
+        if (s.arrow !== "down" || s.targetRow !== end) continue;
+        const before = prev.rows[r - shift]?.down.find((x) => x.arrow === "down" && x.edge === s.edge);
+        if (!before) return null;
+        rows[r] = withTarget(rows[r]!, i, before.targetRow! + shift);
+      }
+    const arrowRows = rows.flatMap((row, r) => (hasArrow(row) ? [r] : []));
+    rows.push(...prev.rows.slice(c + 2));
+    for (const r of prev.arrowRows.slice(below(prev.arrowRows, c + 2))) {
+      rows[r + shift] = shifted(prev.rows[r]!, shift);
+      arrowRows.push(r + shift);
+    }
+
+    const checkpoints = [prev.checkpoints[0]!];
+    let width = 0;
+    let r = 0;
+    const widest = (upTo: number) => {
+      for (; r < upTo; r++) width = Math.max(width, rows[r]!.width);
+      return width;
+    };
+    for (const row of [...snapRows].sort((a, b) => a - b)) {
+      const fresh = laid.snaps.get(row)!;
+      const identityAt = new Map<number, number>();
+      for (const [slot, lane] of fresh.lanes.slots) if (lane) identityAt.set(slot, lane.identity);
+      checkpoints.push({
+        ...fresh,
+        row,
+        runs: new Map([...hidden.snaps.get(row)!].map(([lane, start]) => [identityAt.get(lane)!, start])),
+        width: widest(row + 2),
+        numbered: true,
+      });
+    }
+    for (const p of prev.checkpoints.slice(cpIndex + 1))
+      checkpoints.push({
+        row: p.row + shift,
+        lanes: {
+          length: p.lanes.length,
+          slots: p.lanes.slots.map(([slot, lane]) => [slot, lane && { ...lane, identity: lane.identity + identities }]),
+        },
+        nextColor: p.nextColor,
+        nextIdentity: p.nextIdentity + identities,
+        ranks: p.ranks - cp.ranks + snap.ranks,
+        tips: p.tips - cp.tips + snap.tips,
+        runs: new Map([...p.runs].map(([id, start]) => [id + identities, start + shift])),
+        width: widest(Math.min(p.row + shift + 2, rows.length)),
+        // Numbered for the layout `prev` had: laying out from it replays the lanes first.
+        numbered: false,
+      });
+    const synced: Paged = {
+      ...input,
+      rows,
+      ranks: ranks.slice(0, snap.ranks).concat(prev.ranks.slice(cp.ranks)),
+      rankRows: rankRows.slice(0, snap.ranks).concat(prev.rankRows.slice(cp.ranks).map((row) => row + shift)),
+      tips: tips.slice(0, snap.tips).concat(prev.tips.slice(cp.tips).map((row) => row + shift)),
+      checkpoints,
+      arrowRows,
+      width: widest(rows.length),
+    };
+    if (n === n0 + shift) return synced;
+    // `prev`'s rows end where its list did: lay out the rest as a page.
+    const last = checkpoints.findLastIndex((p) => p.row <= shared - WINDOW);
+    const next = resume(synced, last, input);
+    return "changed" in next ? null : next;
+  }
+  return null;
 }
 
 const prunable = (c: GraphCommit) =>
@@ -1035,6 +1234,19 @@ export function createPagedLogGraph() {
     const input = { all, graph, positions, children, refAware, longEdges, layout, owner, index };
     // Rows from here on may change; rows above it are kept when a checkpoint lies far enough above.
     let first = refAware === prev.refAware ? Math.min(unchanged, n0) : 0;
+    // Changes near the top only (commits made on top): keep the rows below them instead.
+    const anchor = !extending && first < CHECKPOINT + WINDOW ? prev.positions.get(graph[n - 1]!.id) : undefined;
+    if (anchor !== undefined && prev.graph[anchor]?.id === graph[n - 1]!.id) {
+      const shift = n - 1 - anchor;
+      let tail = n;
+      while (tail > 0 && tail - 1 - shift >= 0 && sameGraphCommit(prev.graph[tail - 1 - shift]!, graph[tail - 1]!))
+        tail--;
+      const synced = resync(prev, input, shift, tail);
+      if (synced) {
+        paged = synced;
+        return (result = toResult(paged));
+      }
+    }
     for (;;) {
       const index = prev.checkpoints.findLastIndex((cp) => cp.row === 0 || cp.row <= first - WINDOW);
       const next = resume(prev, index, input);
