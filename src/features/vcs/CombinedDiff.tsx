@@ -148,7 +148,7 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
   const [mode, setMode] = useState(() => loadDiffOptions().mode);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [heights] = useState(() => new Map<string, number>());
-  /** Blocks mounted as of the last change of the range. */
+  /** Blocks mounted as of the last commit. */
   const mountedRef = useRef<readonly number[]>([]);
 
   // Only the blocks around the viewport stay mounted. Blocks scrolled away are unmounted except
@@ -156,9 +156,8 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
   // release its working-tree document (triggering an unexpected autosave or, with autosave off,
   // detaching the editor and dropping its undo history and unsaved view state), which is why
   // blocks were previously kept mounted once loaded.
-  const rangeExtractor = useCallback(
-    (range: Range) => {
-      const shown = defaultRangeExtractor(range);
+  const pinnedIndexes = useCallback(
+    (already: ReadonlySet<number>) => {
       const scroller = scrollRef.current;
       const active = document.activeElement;
       const focused =
@@ -166,14 +165,19 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
           ? Number(active.closest("[data-combined-block]")?.parentElement?.dataset.index ?? -1)
           : -1;
       const dirtyDocs = new Set(maybeEditorService()?.dirtyDocumentIds?.() ?? []);
-      const kept = mountedRef.current.filter(
-        (i) => !shown.includes(i) && !!items[i] && (i === focused || hasUnsavedEdits(items[i], dirtyDocs)),
+      return mountedRef.current.filter(
+        (i) => !already.has(i) && !!items[i] && (i === focused || hasUnsavedEdits(items[i], dirtyDocs)),
       );
-      const next = kept.length ? [...shown, ...kept].sort((a, b) => a - b) : shown;
-      mountedRef.current = next;
-      return next;
     },
     [items],
+  );
+  const rangeExtractor = useCallback(
+    (range: Range) => {
+      const shown = defaultRangeExtractor(range);
+      const kept = pinnedIndexes(new Set(shown));
+      return kept.length ? [...shown, ...kept].sort((a, b) => a - b) : shown;
+    },
+    [pinnedIndexes],
   );
   const scrollToFn = useCallback(
     (
@@ -208,6 +212,22 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
     if (index >= 0 && index < items.length) virtualizer.scrollToIndex(index, { align: "start" });
   };
   const step = (dir: 1 | -1) => scrollToIndex(current() + dir);
+
+  const virtualItems = virtualizer.getVirtualItems();
+  // When the scroller collapses to height 0 (e.g. a maximized tool window sets `hidden`),
+  // virtual-core's `calculateRange()` returns null and `getVirtualItems()` returns [] without
+  // calling `rangeExtractor`. Keep pinned (dirty or focused) blocks mounted alongside the
+  // virtual items so a zero-height viewport never unmounts an editor or drops unsaved edits.
+  const pinned = pinnedIndexes(new Set(virtualItems.map((row) => row.index)));
+  const rows = pinned.length
+    ? [
+        ...virtualItems,
+        ...pinned.map((index) => virtualizer.measurementsCache[index] ?? { index, start: index * ESTIMATE }),
+      ].sort((a, b) => a.index - b.index)
+    : virtualItems;
+  useLayoutEffect(() => {
+    mountedRef.current = rows.map((row) => row.index);
+  });
 
   // Open at the file the diff was asked for.
   useLayoutEffect(() => {
@@ -280,7 +300,7 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
       <div ref={scrollRef} className={styles.scroll} data-combined-scroll>
         {items.length ? (
           <div className={styles.blocks} style={{ height: virtualizer.getTotalSize() }}>
-            {virtualizer.getVirtualItems().map((row) => {
+            {rows.map((row) => {
               const item = items[row.index]!;
               const itemKey = diffKey(item);
               return (
