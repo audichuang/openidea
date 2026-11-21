@@ -147,11 +147,19 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
     setFindOpen(false);
     (view.current ?? pane.current)?.focus();
   };
+  // A click on the toggle leaves the focus nowhere in WebKit (it does not focus buttons): give it to the body.
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (!refocus.current) return;
+    refocus.current = false;
+    const focused = document.activeElement;
+    if (!focused || focused === document.body) (view.current ?? pane.current)?.focus();
+  }, [raw]);
   const goToMatch = (step: number) => {
     const n = found.matches.length;
     if (n) setActive((activeIndex + step + n) % n);
   };
-  // ⌘F in the response, as in IDEA's response viewer: the find bar of the Run console.
+  // ⌘F in the response (its toolbar included), as in IDEA's response viewer: the find bar of the Run console.
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (showsEditor && e.key.toLowerCase() === "f" && hasPrimaryModifier(e) && !e.altKey && !e.shiftKey) {
       e.preventDefault();
@@ -160,7 +168,7 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
     }
   };
   return (
-    <div className={styles.exchange}>
+    <div className={styles.exchange} onKeyDown={onKeyDown}>
       <div className={styles.statusLine}>
         {r ? (
           <>
@@ -206,7 +214,10 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
                   icon="soft-wrap"
                   title={raw ? "Show Formatted" : "Show Raw"}
                   pressed={raw}
-                  onClick={() => setRaw((v) => !v)}
+                  onClick={() => {
+                    refocus.current = true;
+                    setRaw((v) => !v);
+                  }}
                 />
               )}
             </>
@@ -245,7 +256,6 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
         onFocus={(e) => {
           if (showsEditor && e.target === e.currentTarget) view.current?.focus();
         }}
-        onKeyDown={onKeyDown}
       >
         {tab === "body" &&
           (r == null ? (

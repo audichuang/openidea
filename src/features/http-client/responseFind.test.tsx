@@ -69,6 +69,31 @@ describe("HTTP response find", () => {
     expect(body.querySelectorAll("mark")).toHaveLength(0);
   });
 
+  it("opens the find bar with ⌘F after the Raw / Formatted toggle was clicked", () => {
+    Element.prototype.scrollIntoView ??= () => {};
+    const json: HttpExchange = {
+      ...exchange,
+      response: { ...exchange.response!, contentType: "application/json", body: '{"a":[1,2]}' },
+    };
+    useHttpClient.setState({ history: [json.entry], exchanges: { e1: json }, selected: "e1" });
+    render(<HttpClientView />);
+    const find = () => screen.queryByLabelText("Find in response", { selector: "input" });
+    // Where the click leaves the focus: on the button (Chromium) …
+    const toggle = screen.getByRole("button", { name: "Show Raw" });
+    toggle.focus();
+    fireEvent.click(toggle);
+    fireEvent.keyDown(document.activeElement!, { key: "f", metaKey: true, ctrlKey: true });
+    expect(find()).toBeTruthy();
+    fireEvent.keyDown(find()!, { key: "Escape" });
+    expect(find()).toBeNull();
+    // … or nowhere (WebKit does not focus a clicked button): the body takes it back.
+    act(() => (document.activeElement as HTMLElement | null)?.blur());
+    fireEvent.click(screen.getByRole("button", { name: "Show Formatted" }));
+    expect(screen.getByLabelText("Response body").contains(document.activeElement)).toBe(true);
+    fireEvent.keyDown(document.activeElement!, { key: "f", metaKey: true, ctrlKey: true });
+    expect(find()).toBeTruthy();
+  });
+
   it("keeps Escape and F3 in the find bar away from the IDE keymap", () => {
     Element.prototype.scrollIntoView ??= () => {};
     const keymap = useKeymap.getState();
