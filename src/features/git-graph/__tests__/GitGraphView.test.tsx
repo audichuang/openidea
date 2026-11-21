@@ -831,10 +831,10 @@ describe("Git Graph PR view", () => {
   it("lists the commits and shows one in the graph", async () => {
     await openPr();
     fireEvent.click(screen.getByRole("tab", { name: /Commits/ }));
-    const list = screen.getByRole("list", { name: "Commits" });
+    const list = screen.getByRole("listbox", { name: "Commits" });
     expect(
       within(list)
-        .getAllByRole("button")
+        .getAllByRole("option")
         .map((b) => b.textContent),
     ).toEqual([expect.stringContaining("second change"), expect.stringContaining("first change")]);
     fireEvent.click(within(list).getByText("first change"));
