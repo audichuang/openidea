@@ -143,29 +143,44 @@ function sameCommits(a: readonly Commit[], b: readonly Commit[]): boolean {
   return true;
 }
 
+type ReadyPrData = Extract<PrData, { status: "ready" }>;
+
+function sameCommitRange(a: ReadyPrData, b: ReadyPrData): boolean {
+  return a.mergeBase === b.mergeBase && a.ahead === b.ahead && sameCommits(a.commits, b.commits);
+}
+
 function samePrData(a: PrData, b: PrData): boolean {
   if (a.status !== b.status) return false;
   if (a.status === "error" && b.status === "error") return a.error === b.error;
   if (a.status !== "ready" || b.status !== "ready") return true;
-  return (
-    a.mergeBase === b.mergeBase &&
-    a.ahead === b.ahead &&
-    a.behind === b.behind &&
-    sameFiles(a.files, b.files) &&
-    sameCommits(a.commits, b.commits)
-  );
+  return a.behind === b.behind && sameCommitRange(a, b) && sameFiles(a.files, b.files);
 }
 
 /**
  * The previous result when a reload computed the same one: every vcs refresh reloads, and new
- * objects would rebuild the embedded diff each time (#362).
+ * objects would rebuild the embedded diff each time (#362). When only `behind` or `files` changed
+ * while `mergeBase`, `ahead` and the first page of commits match, keep the previous `snapshot`
+ * (and unchanged slices) so cached commit pages and selection stay intact.
  */
 function keepIfSame(
   prev: { key: string; data: PrData } | null,
   key: string,
   data: PrData,
 ): { key: string; data: PrData } {
-  return prev?.key === key && samePrData(prev.data, data) ? prev : { key, data };
+  if (prev?.key !== key) return { key, data };
+  if (samePrData(prev.data, data)) return prev;
+  if (prev.data.status === "ready" && data.status === "ready" && sameCommitRange(prev.data, data)) {
+    return {
+      key,
+      data: {
+        ...data,
+        snapshot: prev.data.snapshot,
+        commits: prev.data.commits,
+        files: sameFiles(prev.data.files, data.files) ? prev.data.files : data.files,
+      },
+    };
+  }
+  return { key, data };
 }
 
 /** Files and commits of a pull request from `head` into `base`; the last result stays while a refresh loads. */
