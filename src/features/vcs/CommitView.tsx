@@ -1072,7 +1072,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                 )}
                 {n.repo && <RepoSwatch root={n.repo} />}
                 {label}
-                {n.type !== "file" && <span className={styles.nodeCount}>{fileCount(n.files.length)}</span>}
+                {n.type !== "file" && <span className={styles.count}>{fileCount(n.files.length)}</span>}
                 {n.repo && <RepoHeadChip root={n.repo} className={styles.headChip} />}
                 {!staging && n.type === "file" && n.files[0] && isPartiallyStaged(n.files[0]) && (
                   <span className={styles.partial} title={tx("Partially staged: only staged hunks are committed")}>
