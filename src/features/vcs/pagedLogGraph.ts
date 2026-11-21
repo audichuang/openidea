@@ -693,17 +693,22 @@ export function createPagedLogGraph(): (all: readonly RepoCommit[], options: Log
     if (!next) return reset();
     paged = next;
     const { owners } = next;
+    // `positions` keeps growing with later pages: this result reads only its own rows.
+    const at = (id: string) => {
+      const index = positions.get(id);
+      return index != null && index < graph.length ? index : undefined;
+    };
     const colors = new Map<string, number>();
     const color = (key: string | undefined, fallback: number) => {
       if (!refAware || key === undefined) return fallback;
       let value = colors.get(key);
       if (value === undefined) {
-        const index = positions.get(key);
-        colors.set(key, (value = ownerColor(index == null ? key : owners[index]!)));
+        const index = at(key);
+        colors.set(key, (value = ownerColor(index === undefined ? key : owners[index]!)));
       }
       return value;
     };
-    const loaded = (id: string) => positions.has(id);
+    const loaded = (id: string) => at(id) !== undefined;
     const resolved = new Map<number, GraphRow>();
     const { rows } = next;
     result = {
