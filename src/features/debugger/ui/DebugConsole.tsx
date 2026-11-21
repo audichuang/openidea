@@ -16,7 +16,7 @@ import { formatBinding, hasPrimaryModifier, hostBinding, registerKeyClaim } from
 import { tx } from "@/platform/i18n";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { useConsoleFont } from "@/platform/consoleFont";
-import { spanStyle } from "@/ui/ansi";
+import { spanStyle, type Span } from "@/ui/ansi";
 import { logLineColor } from "@/ui/logColors";
 import { compileConsoleRules, matchConsoleRules, styleSpans, type ConsoleRuleMatch } from "@/ui/consoleRules";
 import { useConsoleRules } from "@/workbench/contributions";
@@ -80,7 +80,8 @@ const DebugLine = memo(
     line: ConsoleLine;
     marks?: readonly SegmentMark[];
     rules?: ConsoleRuleMatch;
-    length: number;
+    text: string;
+    spans: readonly Span[];
     cwd: string;
     colStart?: number;
     colEnd?: number;
@@ -144,7 +145,8 @@ const DebugLine = memo(
   },
   (a, b) =>
     a.line === b.line &&
-    a.length === b.length &&
+    a.text === b.text &&
+    a.spans === b.spans &&
     a.cwd === b.cwd &&
     a.rules === b.rules &&
     a.colStart === b.colStart &&
@@ -579,7 +581,8 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
                     line={l}
                     marks={marksByLine.get(item.index)}
                     rules={ruled}
-                    length={l.text.length}
+                    text={l.text}
+                    spans={l.spans}
                     cwd={cwd}
                     colStart={colWindow?.start}
                     colEnd={colWindow?.end}

@@ -16,7 +16,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { useConsoleFont } from "@/platform/consoleFont";
 import { Icon, showContextMenu } from "@/ui";
-import { spanStyle } from "@/ui/ansi";
+import { spanStyle, type Span } from "@/ui/ansi";
 import { logLineColor } from "@/ui/logColors";
 import { compileConsoleRules, matchConsoleRules, styleSpans, type ConsoleRuleMatch } from "@/ui/consoleRules";
 import { useConsoleRules } from "@/workbench/contributions";
@@ -79,12 +79,13 @@ const Line = memo(
     line: ConsoleLine;
     marks?: readonly SegmentMark[];
     rules?: ConsoleRuleMatch;
-    length: number;
+    text: string;
+    spans: readonly Span[];
     cwd: string;
     colStart?: number;
     colEnd?: number;
   }) {
-    // Not memoised: the open (last) line mutates in place; `memo` below re-renders on length changes only.
+    // Not memoised: the open (last) line mutates in place; `memo` below snapshots text/spans to catch \r overwrites.
     const spans = rules ? styleSpans(line.spans, rules) : line.spans;
     const rawLinks = line.kind === "system" ? [] : findOutputLinks(line.text);
     let links: readonly OutputLink[] = rawLinks;
@@ -146,7 +147,8 @@ const Line = memo(
   },
   (a, b) =>
     a.line === b.line &&
-    a.length === b.length &&
+    a.text === b.text &&
+    a.spans === b.spans &&
     a.cwd === b.cwd &&
     a.rules === b.rules &&
     a.colStart === b.colStart &&
@@ -169,7 +171,7 @@ export interface Fold {
  */
 export type DisplayRow = { kind: "line"; index: number; fold?: Fold } | { kind: "fold"; fold: Fold };
 
-const foldMatchCache = new WeakMap<readonly string[], WeakMap<ConsoleLine, { length: number; matched: boolean }>>();
+const foldMatchCache = new WeakMap<readonly string[], WeakMap<ConsoleLine, { text: string; matched: boolean }>>();
 
 function lineMatchesFold(line: ConsoleLine, patterns: readonly string[]): boolean {
   if (line.kind === "system" || patterns.length === 0) return false;
@@ -178,11 +180,10 @@ function lineMatchesFold(line: ConsoleLine, patterns: readonly string[]): boolea
     perPattern = new WeakMap();
     foldMatchCache.set(patterns, perPattern);
   }
-  const len = line.text.length;
   const cached = perPattern.get(line);
-  if (cached && cached.length === len) return cached.matched;
+  if (cached && cached.text === line.text) return cached.matched;
   const matched = patterns.some((p) => line.text.includes(p));
-  perPattern.set(line, { length: len, matched });
+  perPattern.set(line, { text: line.text, matched });
   return matched;
 }
 
@@ -404,10 +405,12 @@ export function ConsoleView({
 
   // Find (⌘F): search the whole buffer, not just the rendered rows, caching completed lines across flushes.
   const findCache = useRef<{
+    model: ConsoleModel;
+    lines: readonly ConsoleLine[];
     query: string;
     options: FindOptions;
     invalid: boolean;
-    byId: Map<number, { length: number; spans: Array<{ start: number; end: number }> }>;
+    byId: Map<number, { text: string; spans: Array<{ start: number; end: number }> }>;
   } | null>(null);
   const found = useMemo((): FindResult => {
     if (!findOpen || !query) {
@@ -417,13 +420,15 @@ export function ConsoleView({
     let cache = findCache.current;
     if (
       !cache ||
+      cache.model !== model ||
+      cache.lines !== lines ||
       cache.query !== query ||
       cache.options.caseSensitive !== findOptions.caseSensitive ||
       cache.options.wholeWord !== findOptions.wholeWord ||
       cache.options.regex !== findOptions.regex
     ) {
       const probe = findInLines([], query, findOptions, 1);
-      cache = { query, options: findOptions, invalid: probe.invalid, byId: new Map() };
+      cache = { model, lines, query, options: findOptions, invalid: probe.invalid, byId: new Map() };
       findCache.current = cache;
     }
     if (cache.invalid) return { matches: [], overflow: false, invalid: true };
@@ -437,7 +442,7 @@ export function ConsoleView({
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i]!;
       const hit = cache.byId.get(line.id);
-      if (hit && hit.length === line.text.length) {
+      if (hit && hit.text === line.text) {
         for (const s of hit.spans) {
           if (matches.length >= MAX_MATCHES) return { matches, overflow: true, invalid: false };
           matches.push({ line: i, lineId: line.id, start: s.start, end: s.end });
@@ -452,16 +457,18 @@ export function ConsoleView({
       }
       if (!res.overflow) {
         cache.byId.set(line.id, {
-          length: line.text.length,
+          text: line.text,
           spans: res.matches.map((m) => ({ start: m.start, end: m.end })),
         });
+      } else {
+        cache.byId.delete(line.id);
       }
       for (const m of res.matches) matches.push({ line: i, lineId: line.id, start: m.start, end: m.end });
       if (res.overflow) return { matches, overflow: true, invalid: false };
     }
     return { matches, overflow: false, invalid: false };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `version` marks in-place appends to `lines`
-  }, [findOpen, lines, version, query, findOptions]);
+  }, [findOpen, model, lines, version, query, findOptions]);
   const activeIndex = found.matches.length ? Math.min(Math.max(active, 0), found.matches.length - 1) : -1;
   const activeMatch = activeIndex >= 0 ? found.matches[activeIndex] : undefined;
   const marksByLine = useMemo(() => {
@@ -837,7 +844,8 @@ export function ConsoleView({
                   line={line}
                   marks={marksByLine.get(row.index)}
                   rules={ruled}
-                  length={line.text.length}
+                  text={line.text}
+                  spans={line.spans}
                   cwd={cwd}
                   colStart={colWindow?.start}
                   colEnd={colWindow?.end}
