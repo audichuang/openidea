@@ -809,8 +809,8 @@ const COMBINED_FILES = Number(process.env.OPENIDEA_PERF_COMBINED_FILES ?? 500);
 
 /**
  * An all-in-one diff of many files (`COMBINED_FILES`, mixed binary and large ones, one with
- * up to 50,000 changed lines) scrolled top → bottom → top, at most 300 steps each way
- * (a screen, or more to cross a long diff in 300 steps), 60 s at most. `peakEditors` /
+ * up to 50,000 changed lines) scrolled top → bottom → top, at most 600 steps each way
+ * (a screen, or more to cross a long diff in 300 steps; measured blocks grow the total), 60 s at most. `peakEditors` /
  * `editorsAfter`: CodeMirror editors mounted at most / once back at the top. Then a working
  * file half-way down is edited, the diff scrolled to the end and back, and the edit must
  * still be in the same editor, unsaved (the scenario fails otherwise).
@@ -847,7 +847,7 @@ const combinedDiff: Scenario = {
       let peak = editors();
       let steps = 0;
       let reachedEnd = false;
-      for (let i = 0; i < 300 && performance.now() - started < 30_000; i++, steps++) {
+      for (let i = 0; i < 600 && performance.now() - started < 30_000; i++, steps++) {
         if (el.scrollTop + el.clientHeight >= el.scrollHeight - 1) {
           reachedEnd = true;
           break;
@@ -856,7 +856,7 @@ const combinedDiff: Scenario = {
         await frame();
         peak = Math.max(peak, editors());
       }
-      for (let i = 0; i < 300 && el.scrollTop > 0 && performance.now() - started < 60_000; i++, steps++) {
+      for (let i = 0; i < 600 && el.scrollTop > 0 && performance.now() - started < 60_000; i++, steps++) {
         el.scrollTop -= step();
         await frame();
         peak = Math.max(peak, editors());
@@ -869,37 +869,48 @@ const combinedDiff: Scenario = {
     const editorsAfter = await scroller.evaluate((el) => el.querySelectorAll(".cm-editor").length);
     const domNodes = (await h.counters()).Nodes ?? NaN;
 
+    // Brings a file's block to the top of the view and waits for its diff. Blocks are mounted only
+    // near the viewport and load their diff once mounted, so stop at the block rather than at its
+    // diff (scrolling a screen per frame would pass a block before its diff loads).
+    const reveal = (sel: string) =>
+      scroller.evaluate(async (el, sel) => {
+        const frame = () => new Promise(requestAnimationFrame);
+        el.scrollTop = 0;
+        for (let i = 0; i < 5000; i++) {
+          if (el.querySelector(sel)) {
+            // Blocks around it settle to their measured heights meanwhile: keep it at the top.
+            for (let j = 0; j < 600 && !el.querySelector(`${sel} .cm-content`); j++) {
+              el.querySelector(sel)?.scrollIntoView({ block: "start" });
+              await frame();
+            }
+            el.querySelector(sel)?.scrollIntoView({ block: "start" });
+            await frame();
+            if (el.querySelector(`${sel} .cm-content`)) return true;
+          }
+          if (el.scrollTop + el.clientHeight >= el.scrollHeight - 1) return false;
+          el.scrollTop += el.clientHeight;
+          await frame();
+        }
+        return false;
+      }, sel);
+
     // The header of a file stays at the top while its diff scrolls by.
-    const sticky = await scroller.evaluate(async (el, path) => {
-      const sel = `[data-combined-block="${path}"]`;
-      el.scrollTop = 0;
-      for (let i = 0; i < 2000 && !el.querySelector(`${sel} .cm-content`); i++) {
-        el.scrollTop += el.clientHeight;
-        await new Promise(requestAnimationFrame);
-      }
+    const bigBlock = `[data-combined-block="${big}"]`;
+    if (!(await reveal(bigBlock))) throw new Error(`the diff of ${big} never loaded`);
+    const sticky = await scroller.evaluate(async (el, sel) => {
       const block = el.querySelector<HTMLElement>(sel)!;
-      block.scrollIntoView({ block: "start" });
-      await new Promise(requestAnimationFrame);
       el.scrollTop += Math.min(2000, block.offsetHeight / 2);
       await new Promise(requestAnimationFrame);
+      const now = el.querySelector<HTMLElement>(sel);
+      if (now !== block) return { off: NaN, remounted: true };
       const header = block.firstElementChild!.getBoundingClientRect().top;
-      return Math.abs(header - el.getBoundingClientRect().top);
-    }, big);
-    if (sticky > 1) throw new Error(`the file header did not stay at the top (${sticky}px off)`);
+      return { off: Math.abs(header - el.getBoundingClientRect().top), remounted: false };
+    }, bigBlock);
+    if (!(sticky.off <= 1)) throw new Error(`the file header did not stay at the top (${JSON.stringify(sticky)})`);
 
     // Edit the working file half-way down, scroll it far away and come back.
     const block = `[data-combined-block="${editable}"]`;
-    const reveal = () =>
-      scroller.evaluate(async (el, sel) => {
-        el.scrollTop = 0;
-        for (let i = 0; i < 2000 && !el.querySelector(`${sel} .cm-content`); i++) {
-          el.scrollTop += el.clientHeight;
-          await new Promise(requestAnimationFrame);
-        }
-        el.querySelector(sel)?.scrollIntoView({ block: "start" });
-        await new Promise(requestAnimationFrame);
-      }, block);
-    await reveal();
+    if (!(await reveal(block))) throw new Error(`the diff of ${editable} never loaded`);
     const pane = h.page.locator(`${block} .cm-content`).last();
     await pane.click();
     await h.page.keyboard.press("End");
@@ -915,7 +926,7 @@ const combinedDiff: Scenario = {
       }
     });
     await h.page.waitForTimeout(300);
-    await reveal();
+    await reveal(block);
     const kept = await h.page.evaluate(
       ({ sel, path }) => {
         const cm = document.querySelector<HTMLElement>(`${sel} .cm-editor[data-perf-mark]`);
