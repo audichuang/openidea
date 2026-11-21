@@ -346,6 +346,26 @@ describe("paged Git Log graph", () => {
     }
   });
 
+  it("keeps the rows below a commit made on top of a history too long to pass as call arguments", () => {
+    const count = 150_000;
+    const base = Array.from({ length: count }, (_, i) =>
+      commit(`c${i}`, i + 1 < count ? [`c${i + 1}`] : [], i ? [] : ["HEAD -> main"]),
+    );
+    const present = createLogGraphPresenter();
+    present(base, DEFAULT_LOG_OPTIONS, fragments, keep);
+    const list = [commit("new0", ["c0"], ["HEAD -> main"]), { ...base[0]!, refs: [] }, ...base.slice(1)];
+    const got = present(list, DEFAULT_LOG_OPTIONS, fragments, keep);
+    expect(got.rows).toHaveLength(count + 1);
+    expect(got.graph[0]!.id).toBe("new0");
+    expect(got.graph[count]!.id).toBe(`c${count - 1}`);
+    expect(got.rows.every((row, i) => row.id === list[i]!.id)).toBe(true);
+    // The root: one lane coming in from above, none going on.
+    expectStrictEqual(
+      got.row(count),
+      full([commit(`c${count - 2}`, [`c${count - 1}`], ["HEAD -> main"]), list[count]!]).rows[1],
+    );
+  }, 30_000);
+
   it("starts over when the list is not an extension of the last one", () => {
     const present = createLogGraphPresenter();
     const a = history(12, 600, 20);
