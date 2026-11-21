@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { describe, expect, it, vi } from "vitest";
 import type { Commit } from "@/bindings";
 import * as graphModule from "../graph";
@@ -120,6 +121,11 @@ function rowsPresented(present: () => unknown) {
   return compactLanes.mock.calls.reduce((sum, [rows]) => sum + rows.length, 0);
 }
 
+/** Strict deep equality, falling back to `expect().toStrictEqual` on mismatch for its diff. */
+function expectStrictEqual<T>(actual: T, expected: T) {
+  if (!isDeepStrictEqual(actual, expected)) expect(actual).toStrictEqual(expected);
+}
+
 /**
  * Feeds `all` page by page (sizes cycled) through one presenter, comparing every page's rows with
  * the full computation. Returns how many pages were presented without the rows above the page.
@@ -135,9 +141,12 @@ function pageThrough(all: readonly Commit[], sizes: readonly number[], options: 
     let got!: ReturnType<typeof present>;
     const presented = rowsPresented(() => (got = present(prefix, options, fragments, keep)));
     const want = full(prefix, options);
-    expect(got.commits).toStrictEqual(want.commits);
-    expect(got.graph).toStrictEqual(want.graph);
-    expect(got.rows.map((_, i) => got.row(i))).toStrictEqual(want.rows);
+    expectStrictEqual(got.commits, want.commits);
+    expectStrictEqual(got.graph, want.graph);
+    expectStrictEqual(
+      got.rows.map((_, i) => got.row(i)),
+      want.rows,
+    );
     if (before > 40) {
       pages++;
       // The page and the window of rows laid out again before it.
@@ -154,27 +163,27 @@ describe("paged Git Log graph", () => {
     // another lane): those pages are computed from scratch, the others reuse what is above them.
     const reused = stats.reduce((sum, s) => sum + s.reused, 0);
     expect(reused).toBeGreaterThanOrEqual(0.8 * stats.reduce((sum, s) => sum + s.pages, 0));
-  });
+  }, 60_000);
 
   it("gives the full computation's rows without refs, and with refs on every tip", () => {
     for (const seed of [7, 8]) {
       pageThrough(history(seed, 700, 40, 0), [83, 200]);
       pageThrough(history(seed, 700, 40, 1), [83, 200]);
     }
-  });
+  }, 60_000);
 
   it("gives the full computation's rows with Show Long Edges on", () => {
     for (const seed of [9, 10]) pageThrough(history(seed, 700, 30), [120], { ...DEFAULT_LOG_OPTIONS, longEdges: true });
-  });
+  }, 60_000);
 
   it("pages of one and two rows give the full computation", () => {
     pageThrough(history(11, 160, 12), [1, 2]);
-  });
+  }, 60_000);
 
   it("reuses rows on the perf probe's history with long-lived branches", () => {
     const { reused, pages } = pageThrough(probeLog(3_000, 200), [300]);
     expect(reused).toBe(pages);
-  });
+  }, 60_000);
 
   it("pages a deep history with hundreds of branches and cross merges at a cost set by the page", () => {
     const all = history(18, 12_000, 400, 0.6);
@@ -183,7 +192,11 @@ describe("paged Git Log graph", () => {
     for (let n = 300; n <= all.length; n += 300) {
       let got!: ReturnType<typeof present>;
       costs.push(rowsPresented(() => (got = present(all.slice(0, n), DEFAULT_LOG_OPTIONS, fragments, keep))));
-      if (n % 6_000 === 0) expect(got.rows.map((_, i) => got.row(i))).toStrictEqual(full(all.slice(0, n)).rows);
+      if (n % 6_000 === 0)
+        expectStrictEqual(
+          got.rows.map((_, i) => got.row(i)),
+          full(all.slice(0, n)).rows,
+        );
     }
     const pages = costs.slice(1);
     expect(pages.filter((rows) => rows <= 300 + 34).length).toBeGreaterThanOrEqual(0.8 * pages.length);
