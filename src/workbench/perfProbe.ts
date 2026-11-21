@@ -57,11 +57,14 @@ export interface PerfProbe {
   fakeGitLog(commits: number, latencyMs?: number, longBranches?: number): void;
   /**
    * Opens an all-in-one diff of `files` generated files, answering the Git and file reads its
-   * blocks make: small edits between two revisions, every 25th file binary, every 100th one of
-   * 2,000 lines, one of `bigLines` changed lines, and one working file (editable) half-way down.
-   * Resolves with the paths of the big and the editable file.
+   * blocks make: small edits between two revisions, every 25th file binary (except the last),
+   * every 100th one of 2,000 lines, one of `bigLines` changed lines, and editable working files
+   * half-way down and at the end. Resolves with key paths to verify across the range.
    */
-  openCombinedDiff(files: number, bigLines: number): Promise<{ big: string; editable: string }>;
+  openCombinedDiff(
+    files: number,
+    bigLines: number,
+  ): Promise<{ first: string; big: string; editable: string; last: string; samples: string[] }>;
   /** Whether a document of `path` shown in a view (an editor, a diff pane) has unsaved changes. */
   unsaved(path: string): boolean;
 }
@@ -237,19 +240,27 @@ export function installPerfProbe(): () => void {
       const dir = (i: number) => `${PERF_ROOT}/src/gen/pkg${Math.floor(i / 50)}`;
       const bigAt = Math.floor(files / 3);
       const editAt = Math.floor(files / 2);
+      const lastAt = files - 1;
       const path = (i: number) =>
         i === bigAt
           ? `${dir(i)}/Generated${i}.ts`
-          : i % 25 === 24
+          : i % 25 === 24 && i !== lastAt
             ? `${dir(i)}/image${i}.png`
             : `${dir(i)}/File${i}.ts`;
+      const first = path(0);
       const big = path(bigAt);
       const editable = path(editAt);
+      const last = path(lastAt);
+      const sampleAt = (frac: number) => {
+        const raw = Math.min(lastAt, Math.max(0, Math.floor(files * frac)));
+        return raw % 25 === 24 && raw !== lastAt ? raw - 1 : raw;
+      };
+      const samples = [...new Set([0, sampleAt(0.17), sampleAt(0.63), sampleAt(0.87), lastAt])].map(path);
       const lines = (i: number) => (i === bigAt ? bigLines : i % 100 === 50 ? 2_000 : 40);
       const index = new Map(Array.from({ length: files }, (_, i) => [path(i), i]));
       const items = Array.from({ length: files }, (_, i) => {
         const p = path(i);
-        const worktree = i === editAt || p.endsWith(".png");
+        const worktree = i === editAt || i === lastAt || p.endsWith(".png");
         return {
           path: p,
           left: { type: "rev", rev: "HEAD~1" },
@@ -259,6 +270,7 @@ export function installPerfProbe(): () => void {
       const backend = docBackend() as Partial<MemoryBackend>;
       if (!backend.files) throw new Error("openCombinedDiff() needs the in-memory backend");
       backend.files.set(editable, combinedSource(editAt, lines(editAt), "HEAD"));
+      backend.files.set(last, combinedSource(lastAt, lines(lastAt), "HEAD"));
       for (const item of items)
         if (item.path.endsWith(".png")) backend.files.set(item.path, "\u0089PNG\r\n\u001a\n\u0000");
       setRoute("combinedDiff", (cmd, args) => {
@@ -281,7 +293,7 @@ export function installPerfProbe(): () => void {
         path: items[0]?.path ?? "",
         data: { items, title: "Combined Changes Diff" },
       });
-      return { big, editable };
+      return { first, big, editable, last, samples };
     },
     unsaved(path) {
       const dirty = new Set(editorService().dirtyDocumentIds?.() ?? []);
