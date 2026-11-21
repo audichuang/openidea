@@ -120,6 +120,7 @@ import { isVirtualUri, virtualDocument } from "@/platform/virtualDocs";
 import type { VirtualDocument } from "@/platform/ipc";
 import type { Scheduler } from "./sync/DocSync";
 import { selectedLineContext, selectedLines } from "./selectedLines";
+import { forkDiskConflict } from "./forkDiskConflict";
 
 export const fileKey = (path: string) => `file:${path}`;
 export const fileInput = (path: string): EditorInput => ({ kind: "file", key: fileKey(path), path });
@@ -1889,23 +1890,25 @@ export class EditorController implements SlotHost {
       body: tx(
         "The file was changed outside the IDE while it has unsaved changes in the editor. Saving keeps the editor's version and overwrites the file.",
       ),
-      actions: [
-        {
-          label: tx("Load Changes from Disk"),
-          run: () => {
-            const doc = this.manager.get(path)?.getMeta().doc;
-            if (doc === undefined || !this.manager.backend.reloadDiscarding) return;
-            this.manager.backend.reloadDiscarding(doc).catch((e: unknown) =>
-              notifications().notify({
-                level: "error",
-                title: tx("Cannot reload from disk"),
-                body: e instanceof Error ? e.message : String(e),
-              }),
-            );
-          },
-        },
-        { label: tx("Keep Editor Changes"), run: () => {} },
-      ],
+      actions: forkDiskConflict.upstream
+        ? [
+            {
+              label: tx("Load Changes from Disk"),
+              run: () => {
+                const doc = this.manager.get(path)?.getMeta().doc;
+                if (doc === undefined || !this.manager.backend.reloadDiscarding) return;
+                this.manager.backend.reloadDiscarding(doc).catch((e: unknown) =>
+                  notifications().notify({
+                    level: "error",
+                    title: tx("Cannot reload from disk"),
+                    body: e instanceof Error ? e.message : String(e),
+                  }),
+                );
+              },
+            },
+            { label: tx("Keep Editor Changes"), run: () => {} },
+          ]
+        : undefined,
     });
   }
   async reloadFromDisk(paths: string[]) {
