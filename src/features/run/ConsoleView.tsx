@@ -15,6 +15,7 @@ import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { useConsoleFont } from "@/platform/consoleFont";
+import { fontsLoaded, monoStack } from "@/platform/fonts";
 import { Icon, showContextMenu } from "@/ui";
 import { spanStyle, type Span } from "@/ui/ansi";
 import { logLineColor } from "@/ui/logColors";
@@ -342,14 +343,12 @@ export function ConsoleView({
     let active = true;
     charWidthRef.current = el.clientWidth > 0 ? measureMonoCharWidth(el) : undefined;
     syncHorizontalWindow(el);
-    const fonts = el.ownerDocument?.fonts;
-    if (fonts?.ready) {
-      void fonts.ready.then(() => {
-        if (!active) return;
-        charWidthRef.current = el.clientWidth > 0 ? measureMonoCharWidth(el) : undefined;
-        syncHorizontalWindow(el);
-      });
-    }
+    const fontStack = consoleFont.family.replaceAll("var(--font-mono)", monoStack());
+    void fontsLoaded(fontStack, consoleFont.size).then(() => {
+      if (!active) return;
+      charWidthRef.current = el.clientWidth > 0 ? measureMonoCharWidth(el) : undefined;
+      syncHorizontalWindow(el);
+    });
     const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => syncHorizontalWindow(el)) : null;
     ro?.observe(el);
     return () => {
@@ -399,8 +398,6 @@ export function ConsoleView({
 
   // Find (⌘F): search the whole buffer, not just the rendered rows, caching completed lines across flushes.
   const findCache = useRef<{
-    model: ConsoleModel;
-    lines: readonly ConsoleLine[];
     query: string;
     options: FindOptions;
     invalid: boolean;
@@ -414,22 +411,21 @@ export function ConsoleView({
     let cache = findCache.current;
     if (
       !cache ||
-      cache.model !== model ||
-      cache.lines !== lines ||
       cache.query !== query ||
       cache.options.caseSensitive !== findOptions.caseSensitive ||
       cache.options.wholeWord !== findOptions.wholeWord ||
       cache.options.regex !== findOptions.regex
     ) {
       const probe = findInLines([], query, findOptions, 1);
-      cache = { model, lines, query, options: findOptions, invalid: probe.invalid, byId: new Map() };
+      cache = { query, options: findOptions, invalid: probe.invalid, byId: new Map() };
       findCache.current = cache;
     }
     if (cache.invalid) return { matches: [], overflow: false, invalid: true };
     const firstId = lines[0]?.id ?? 0;
+    const lastId = lines[lines.length - 1]?.id ?? -1;
     if (cache.byId.size > lines.length + 512) {
       for (const id of cache.byId.keys()) {
-        if (id < firstId) cache.byId.delete(id);
+        if (id < firstId || id > lastId) cache.byId.delete(id);
       }
     }
     const matches: ConsoleMatch[] = [];
@@ -462,7 +458,7 @@ export function ConsoleView({
     }
     return { matches, overflow: false, invalid: false };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `version` marks in-place appends to `lines`
-  }, [findOpen, model, lines, version, query, findOptions]);
+  }, [findOpen, lines, version, query, findOptions]);
   const activeIndex = found.matches.length ? Math.min(Math.max(active, 0), found.matches.length - 1) : -1;
   const activeMatch = activeIndex >= 0 ? found.matches[activeIndex] : undefined;
   const marksByLine = useMemo(() => {
