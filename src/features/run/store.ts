@@ -1764,6 +1764,78 @@ const SAMPLE_LINES = [
     `2026-11-05 10:42:01.${String(i % 1000).padStart(3, "0")} DEBUG 4242 --- [           main] o.s.web.servlet.DispatcherServlet        : GET "/api/orders/${i}", parameters={}`,
 ];
 
+export interface SampleConsoleOptions {
+  mode: "long" | "no-lf";
+  /** Number of long lines (`long`) or 63-char records (`no-lf`). */
+  count: number;
+  /** Items emitted per animation frame. */
+  perFrame: number;
+  /** Physical line length for `long` mode (default 10 KiB). */
+  lineLength?: number;
+}
+
+/**
+ * Development and the performance harness only: streams either very long lines
+ * (10 KiB each, splitting across `MAX_LINE_LENGTH`) or high-rate output without
+ * newlines into a Run console session. Resolves once all output is flushed.
+ */
+export async function startSampleConsoleOutput({
+  mode,
+  count,
+  perFrame,
+  lineLength = 10_240,
+}: SampleConsoleOptions): Promise<{ lines: number; dropped: number }> {
+  const config: RunConfig = {
+    id: `sample-${mode}-${sessionSeq + 1}`,
+    name: `Sample ${mode}`,
+    kind: "shell",
+    command: "",
+    args: [],
+    cwd: null,
+    env: {},
+    detected: false,
+    isTest: false,
+    debugAdapter: null,
+  };
+  const session: RunSession = {
+    id: `run${++sessionSeq}`,
+    config,
+    runId: null,
+    status: "running",
+    exitCode: null,
+    startedAt: Date.now(),
+    endedAt: null,
+    stdinClosed: true,
+  };
+  const rt = newRuntime(config);
+  runtimes.set(session.id, rt);
+  useRun.setState((s) => ({ sessions: [...s.sessions, session], activeSession: session.id }));
+  bump(session.id);
+  try {
+    toolWindowService().show("run");
+  } catch {
+    /* no workbench (tests) */
+  }
+  const prefix = "target.txt:1:1 ";
+  const longLine = `${prefix}${"x".repeat(Math.max(0, lineLength - prefix.length - 1))}\n`;
+  const noLfUnit = `${prefix}${"x".repeat(47)} `;
+  const beginText = `${prefix}begin\n`;
+  enqueue(session.id, { kind: "stdout", text: beginText });
+  for (let i = 0; i < count;) {
+    await new Promise(requestAnimationFrame);
+    const take = Math.min(perFrame, count - i);
+    const chunkText = mode === "long" ? `${longLine.repeat(take)}${prefix}batch ${i}\n` : noLfUnit.repeat(take);
+    enqueue(session.id, { kind: "stdout", text: chunkText });
+    i += take;
+  }
+  const doneText = "\nstream-done\n";
+  enqueue(session.id, { kind: "stdout", text: doneText });
+  await new Promise(requestAnimationFrame);
+  flush(session.id);
+  finishSession(session.id, 0);
+  return { lines: rt.console.size, dropped: rt.console.dropped };
+}
+
 /**
  * Development and the performance harness only: a session whose console gets
  * `lines` generated log lines (stack frames among them), `perFrame` per
