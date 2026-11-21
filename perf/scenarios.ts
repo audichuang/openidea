@@ -194,6 +194,108 @@ const consoleOutput: Scenario = {
 };
 
 /**
+ * Run console with 10 KiB long lines and high-rate output without newlines
+ * (with Find open while streaming). `OPENIDEA_PERF_SCALE` scales counts across
+ * 1× / 10× / 100× (default 10×).
+ */
+const consoleLongLines: Scenario = {
+  id: "consoleLongLines",
+  title: "Stream 10 KiB long lines and no-newline output in the Run console",
+  async run(h) {
+    const scale = Math.max(1, Number(process.env.OPENIDEA_PERF_SCALE ?? "10"));
+    const longCount = Math.round(100 * scale);
+    const longPerFrame = Math.max(2, Math.ceil(longCount / 50));
+    const noLfCount = Math.round(1_000 * scale);
+    const noLfPerFrame = Math.max(20, Math.ceil(noLfCount / 60));
+
+    await h.openFile(SAMPLE);
+    const refresh = await h.refreshMs();
+
+    // Phase 1: 10 KiB long lines streaming (each splits at 8,000 + 2,239 chars in ConsoleModel).
+    const tLong = await h.now();
+    await h.inPage((p) => p.startFrames());
+    const longStream = h.page.evaluate(
+      async ({ count, perFrame }) => {
+        const w = window as never as {
+          __openideaPerf: {
+            streamConsoleOutput(o: { mode: "long" | "no-lf"; count: number; perFrame: number }): Promise<{
+              lines: number;
+              dropped: number;
+            }>;
+          };
+        };
+        const started = performance.now();
+        await w.__openideaPerf.streamConsoleOutput({ mode: "long", count, perFrame });
+        return performance.now() - started;
+      },
+      { count: longCount, perFrame: longPerFrame },
+    );
+    const longLog = h.page.locator('section[aria-label="Run"] [role="log"]').first();
+    await longLog.waitFor({ timeout: 10_000 });
+    const longBox = await longLog.boundingBox();
+    if (longBox) {
+      await h.page.mouse.move(longBox.x + longBox.width / 2, longBox.y + longBox.height / 2);
+      for (let i = 0; i < 6; i++) {
+        await h.page.mouse.wheel(0, -180);
+        await h.page.waitForTimeout(40);
+      }
+    }
+    const longStreamMs = await longStream;
+    const longFrames = await h.inPage((p) => p.stopFrames());
+    const longSummary = frameSummary(longFrames, refresh);
+    const longTbtMs = totalBlockingTime(await h.longTasksSince(tLong));
+    const longDomNodes = await h.page.evaluate(() => document.querySelectorAll("*").length);
+
+    // Phase 2: high-rate output without newlines + Find ("t") open while streaming.
+    const noLfStream = h.page.evaluate(
+      async ({ count, perFrame }) => {
+        const w = window as never as {
+          __openideaPerf: {
+            streamConsoleOutput(o: { mode: "long" | "no-lf"; count: number; perFrame: number }): Promise<{
+              lines: number;
+              dropped: number;
+            }>;
+          };
+        };
+        const started = performance.now();
+        await w.__openideaPerf.streamConsoleOutput({ mode: "no-lf", count, perFrame });
+        return performance.now() - started;
+      },
+      { count: noLfCount, perFrame: noLfPerFrame },
+    );
+    const findBtn = h.page.locator('section[aria-label="Run"] button[aria-label="Find…"]').first();
+    await findBtn.waitFor({ timeout: 10_000 });
+    await findBtn.click();
+    const findInput = h.page.locator("[data-console-find] input").first();
+    await findInput.waitFor({ timeout: 10_000 });
+    await findInput.fill("t");
+
+    const tNoLf = await h.now();
+    await h.inPage((p) => p.startFrames());
+    const noLfStreamMs = await noLfStream;
+    const noLfFrames = await h.inPage((p) => p.stopFrames());
+    const noLfSummary = frameSummary(noLfFrames, refresh);
+    const noLfTbtMs = totalBlockingTime(await h.longTasksSince(tNoLf));
+    const noLfDomNodes = await h.page.evaluate(() => document.querySelectorAll("*").length);
+
+    return {
+      longStreamMs,
+      longFrameP95Ms: longSummary.frameP95Ms,
+      longFrameMaxMs: longSummary.frameMaxMs,
+      longDroppedFramesPct: longSummary.droppedFramesPct,
+      longTbtMs,
+      longDomNodes,
+      noLfStreamMs,
+      noLfFrameP95Ms: noLfSummary.frameP95Ms,
+      noLfFrameMaxMs: noLfSummary.frameMaxMs,
+      noLfDroppedFramesPct: noLfSummary.droppedFramesPct,
+      noLfTbtMs,
+      noLfDomNodes,
+    };
+  },
+};
+
+/**
  * A full-screen agent TUI (Claude Code, Grok) repainting the terminal 10 times a second
  * for 6 s — every row rewritten, only the spinner row changed — while the user types in
  * an editor. Guards the terminal's unchanged-row skip: without it every frame restyles
@@ -2386,6 +2488,7 @@ export const SCENARIOS: Scenario[] = [
   typingAngular,
   completion,
   consoleOutput,
+  consoleLongLines,
   terminalTui,
   gitLog,
   gitLogScrollbar,
