@@ -799,6 +799,670 @@ const projectTree: Scenario = {
   },
 };
 
+interface CombinedProbe {
+  openCombinedDiff(
+    files: number,
+    bigLines: number,
+    options?: { allEditable?: boolean; lines?: number; tag?: string },
+  ): Promise<{ first: string; big: string; editable: string; last: string; binary: string; paths: string[] }>;
+  hasEditor(path: string): boolean;
+  editAndSaveDiff(path: string, marker: string): Promise<{ text: string; unsaved: boolean; savedText: string }>;
+  unsaved(path: string): boolean;
+  runAction(id: string): Promise<boolean>;
+}
+
+/** Files in the `combinedDiff` / `combinedDiffAcceptance` scenarios (`OPENIDEA_PERF_COMBINED_FILES`, default 500). */
+const COMBINED_FILES = Number(process.env.OPENIDEA_PERF_COMBINED_FILES ?? 500);
+
+/**
+ * Brings a file's block to the top of `[data-combined-scroll]` and waits for its content (unless
+ * `waitContent` is false). Works for both unvirtualized (all blocks in DOM) and virtualized
+ * (`[data-index]` slots) implementations.
+ */
+function revealCombinedBlock(
+  scroller: ReturnType<Harness["page"]["locator"]>,
+  path: string,
+  opts: { waitContent?: boolean; waitText?: string } = {},
+) {
+  const { waitContent = true, waitText = "" } = opts;
+  return scroller.evaluate(
+    async (el, { sel, target, expectContent, expectText }) => {
+      const frames = async (n: number) => {
+        for (let k = 0; k < n; k++) await new Promise(requestAnimationFrame);
+      };
+      const loaded = () => {
+        const block = el.querySelector<HTMLElement>(sel);
+        if (!block) return false;
+        if (expectText) return !!block.textContent?.includes(expectText);
+        if (!expectContent) return true;
+        const content = block.querySelector<HTMLElement>(".cm-content");
+        return !!content && !content.closest("[hidden]");
+      };
+      const started = performance.now();
+      let lo = 0;
+      let hi = el.scrollHeight;
+      while (performance.now() - started < 60_000) {
+        if (el.querySelector(sel)) {
+          // Until its diff is loaded and it has stayed at the top (or visible at bottom) for 10 frames.
+          let still = 0;
+          for (let j = 0; j < 1200 && still < 10; j++) {
+            const block = el.querySelector(sel);
+            if (!block) break;
+            const blockRect = block.getBoundingClientRect();
+            const elRect = el.getBoundingClientRect();
+            const atTop = Math.abs(blockRect.top - elRect.top) <= 1;
+            const inView = blockRect.top >= elRect.top - 1 && blockRect.bottom <= elRect.bottom + 1;
+            const atBottom = inView && el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+            if (loaded() && (atTop || atBottom)) still++;
+            else {
+              still = 0;
+              block.scrollIntoView({ block: "start" });
+            }
+            await frames(1);
+          }
+          if (still >= 10) return true;
+          if (el.querySelector(sel)) return false;
+          // Moved out of view as the blocks around it were measured: bisect again from here.
+          lo = 0;
+          hi = el.scrollHeight;
+          continue;
+        }
+        const slots = [...el.querySelectorAll<HTMLElement>("[data-index]")];
+        if (!slots.length) {
+          await frames(1);
+          continue;
+        }
+        // Pick the slot closest to the viewport top so far-away pinned dirty blocks cannot skew bisection.
+        const elTop = el.getBoundingClientRect().top;
+        let nearest = slots[0]!;
+        let bestDist = Math.abs(nearest.getBoundingClientRect().top - elTop);
+        for (let k = 1; k < slots.length; k++) {
+          const dist = Math.abs(slots[k]!.getBoundingClientRect().top - elTop);
+          if (dist < bestDist) {
+            bestDist = dist;
+            nearest = slots[k]!;
+          }
+        }
+        const cur = Number(nearest.dataset.index);
+        const below = target > cur;
+        if (below) lo = el.scrollTop;
+        else hi = el.scrollTop;
+        if (below && hi - lo < el.clientHeight) hi = el.scrollHeight;
+        el.scrollTop =
+          hi - lo < el.clientHeight
+            ? el.scrollTop + (below ? 1 : -1) * (el.clientHeight / 2)
+            : Math.round((lo + hi) / 2);
+        await frames(2);
+      }
+      return false;
+    },
+    {
+      sel: `[data-combined-block="${path}"]`,
+      target: Number(/(\d+)\.\w+$/.exec(path)![1]),
+      expectContent: waitContent,
+      expectText: waitText,
+    },
+  );
+}
+
+/**
+ * Timed performance benchmark for an all-in-one diff of many mixed files (`COMBINED_FILES`,
+ * binary `.png` files, 2,000-line files, and one large file with up to 50,000 changed lines).
+ * Runs identically against both unvirtualized (before) and virtualized (after) implementations:
+ * scrolls top → bottom → top (cap 1,200 steps / 60 s per direction), records `reachedEnd`,
+ * verifies sticky header on the large diff, verifies blurred unsaved-edit retention on a
+ * working file half-way down, and measures `Next File` header alignment (`nextFileOffPx`).
+ * Full per-file reachability, expansion, editing, and read-back across all files live in
+ * `combinedDiffAcceptance`.
+ */
+const combinedDiff: Scenario = {
+  id: "combinedDiff",
+  title: `Scroll an all-in-one diff of ${COMBINED_FILES} files and edit one`,
+  async run(h) {
+    const files = COMBINED_FILES;
+    const bigLines = Math.min(50_000, files * 10);
+    let first = "";
+    let editable = "";
+    let big = "";
+    let last = "";
+    const openMs = await h.measure(
+      async () => {
+        ({ first, editable, big, last } = await h.page.evaluate(
+          ([f, b]) => (window as never as { __openideaPerf: CombinedProbe }).__openideaPerf.openCombinedDiff(f!, b!),
+          [files, bigLines],
+        ));
+      },
+      "[data-combined-scroll] .cm-content",
+      null,
+      30_000,
+    );
+    const scroller = h.page.locator("[data-combined-scroll]");
+    await h.page.waitForTimeout(500);
+    await h.page.evaluate(() => {
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    });
+    const refresh = await h.refreshMs();
+    const t0 = await h.now();
+    await h.inPage((p) => p.startFrames());
+    const pass = await scroller.evaluate(
+      async (el, { firstPath, lastPath }) => {
+        const editors = () => el.querySelectorAll(".cm-editor").length;
+        const frame = () => new Promise(requestAnimationFrame);
+        const started = performance.now();
+        const step = () => Math.max(el.clientHeight, Math.ceil((el.scrollHeight - el.clientHeight) / 300));
+        let peak = editors();
+        let steps = 0;
+        let reachedEnd = false;
+        for (let i = 0; i < 1200 && performance.now() - started < 60_000; i++, steps++) {
+          if (
+            el.scrollTop + el.clientHeight >= el.scrollHeight - 1 &&
+            el.querySelector(`[data-combined-block="${lastPath}"]`)
+          ) {
+            reachedEnd = true;
+            break;
+          }
+          el.scrollTop += step();
+          await frame();
+          peak = Math.max(peak, editors());
+        }
+        let backAtTop = false;
+        for (let i = 0; i < 1200 && performance.now() - started < 120_000; i++, steps++) {
+          if (el.scrollTop <= 0 && el.querySelector(`[data-combined-block="${firstPath}"]`)) {
+            backAtTop = true;
+            break;
+          }
+          el.scrollTop = Math.max(0, el.scrollTop - step());
+          await frame();
+          peak = Math.max(peak, editors());
+        }
+        return { peak, steps, reachedEnd, backAtTop, ms: performance.now() - started };
+      },
+      { firstPath: first, lastPath: last },
+    );
+    const frames = await h.inPage((p) => p.stopFrames());
+    const longTasks = await h.longTasksSince(t0);
+    await h.page.waitForTimeout(500);
+    const editorsAfter = await scroller.evaluate((el) => el.querySelectorAll(".cm-editor").length);
+    const domNodes = (await h.counters()).Nodes ?? NaN;
+
+    // The header of a file stays at the top while its diff scrolls by.
+    const bigBlock = `[data-combined-block="${big}"]`;
+    if (!(await revealCombinedBlock(scroller, big))) throw new Error(`the diff of ${big} never loaded`);
+    const sticky = await scroller.evaluate(async (el, sel) => {
+      const block = el.querySelector<HTMLElement>(sel)!;
+      el.scrollTop += Math.min(2000, block.offsetHeight / 2);
+      await new Promise(requestAnimationFrame);
+      const now = el.querySelector<HTMLElement>(sel);
+      if (now !== block) return { off: NaN, remounted: true };
+      const header = block.firstElementChild!.getBoundingClientRect().top;
+      return { off: Math.abs(header - el.getBoundingClientRect().top), remounted: false };
+    }, bigBlock);
+    if (!(sticky.off <= 1)) throw new Error(`the file header did not stay at the top (${JSON.stringify(sticky)})`);
+
+    // Edit the working file half-way down, blur, scroll it far away and come back.
+    const block = `[data-combined-block="${editable}"]`;
+    if (!(await revealCombinedBlock(scroller, editable))) throw new Error(`the diff of ${editable} never loaded`);
+    const pane = h.page.locator(`${block} .cm-content`).last();
+    await pane.click();
+    await h.page.keyboard.press("End");
+    await h.page.keyboard.type(" // PERF_EDIT");
+    await h.page
+      .locator(`${block} .cm-editor`)
+      .last()
+      .evaluate((el) => ((el as HTMLElement).dataset.perfMark = "1"));
+    // Blur before scrolling away so the dirty-document guard (not keyboard focus) keeps the block mounted.
+    await h.page.evaluate(() => {
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    });
+    const preScroll = await scroller.evaluate(
+      (el, path) => ({
+        focused: el.contains(document.activeElement),
+        unsaved: (window as never as { __openideaPerf: CombinedProbe }).__openideaPerf.unsaved(path),
+      }),
+      editable,
+    );
+    if (preScroll.focused || !preScroll.unsaved)
+      throw new Error(`expected blurred dirty editor before scrolling away: ${JSON.stringify(preScroll)}`);
+    await scroller.evaluate(async (el) => {
+      for (let i = 0; i < 300 && el.scrollTop + el.clientHeight < el.scrollHeight - 1; i++) {
+        el.scrollTop += Math.max(el.clientHeight, Math.ceil((el.scrollHeight - el.clientHeight) / 300));
+        await new Promise(requestAnimationFrame);
+      }
+    });
+    await h.page.waitForTimeout(300);
+    await revealCombinedBlock(scroller, editable);
+    const kept = await h.page.evaluate(
+      ({ sel, path }) => {
+        const cm = document.querySelector<HTMLElement>(`${sel} .cm-editor[data-perf-mark]`);
+        return {
+          sameEditor: !!cm,
+          text: !!cm?.textContent?.includes("PERF_EDIT"),
+          unsaved: (window as never as { __openideaPerf: CombinedProbe }).__openideaPerf.unsaved(path),
+        };
+      },
+      { sel: block, path: editable },
+    );
+    if (!kept.sameEditor || !kept.text || !kept.unsaved)
+      throw new Error(`the edit did not survive scrolling away: ${JSON.stringify(kept)}`);
+
+    // Next File from there: how far the next file's header lands from the top of the view.
+    const toolbar = h.page.getByRole("toolbar", { name: "Combined Changes Diff" });
+    await toolbar.getByRole("button", { name: "Next File" }).click();
+    await h.page.waitForTimeout(500);
+    const nextFileOffPx = await scroller.evaluate((el, sel) => {
+      const blocks = [...el.querySelectorAll("[data-combined-block]")];
+      const next = blocks[blocks.findIndex((b) => b.matches(sel)) + 1];
+      return next ? Math.abs(next.getBoundingClientRect().top - el.getBoundingClientRect().top) : NaN;
+    }, block);
+
+    return {
+      openMs,
+      ...frameSummary(frames, refresh),
+      longTasks: longTasks.length,
+      longTasksOver200: longTasks.filter((t) => t.duration > 200).length,
+      tbtMs: totalBlockingTime(longTasks),
+      peakEditors: pass.peak,
+      editorsAfter,
+      domNodes,
+      scrollSteps: pass.steps,
+      scrollMs: pass.ms,
+      reachedEnd: pass.reachedEnd ? 1 : 0,
+      nextFileOffPx,
+    };
+  },
+};
+
+/**
+ * Exhaustive per-file acceptance pass separated from timed perf (`OPENIDEA_PERF_COMBINED_FILES`,
+ * default 500; run with `5000` and `--warmup 0 --runs 1` for full 5,000-file proof):
+ * 1. Opens `N` editable working-tree text files, collapses all, steps by at most ~0.75 viewport
+ *    keeping a set of seen indexes/paths across frames with strict contiguity (no skipped ranges),
+ *    and verifies EVERY SINGLE file `0..N-1`: index/path, expand, write, read back, save/cleanup,
+ *    plus bounded editor count and zero leak back at top.
+ * 2. Opens `N` mixed files (binary `.png` every 25th, 2,000-line every 100th, one large diff up
+ *    to 50,000 changed lines), steps by at most ~0.75 viewport asserting all `N` indexes/paths
+ *    are seen without skips, then verifies expansion of binary, large (with sticky header),
+ *    2,000-line, blurred-dirty-retention, and last editable files.
+ */
+const combinedDiffAcceptance: Scenario = {
+  id: "combinedDiffAcceptance",
+  title: `Per-file acceptance across all ${COMBINED_FILES} editable and mixed combined diff files`,
+  async run(h) {
+    const files = COMBINED_FILES;
+    const scroller = h.page.locator("[data-combined-scroll]");
+    const toolbar = h.page.getByRole("toolbar", { name: "Combined Changes Diff" });
+
+    // Pass 1: all `files` editable worktree text files — reach, expand, write, read back, clean up every one.
+    const editableData = await h.page.evaluate(
+      (f) =>
+        (window as never as { __openideaPerf: CombinedProbe }).__openideaPerf.openCombinedDiff(f, 0, {
+          allEditable: true,
+          lines: 4,
+          tag: "acceptance-editable",
+        }),
+      files,
+    );
+    await h.page.locator("[data-combined-scroll] .cm-content").first().waitFor({ state: "visible", timeout: 30_000 });
+    await h.page.evaluate(() => {
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    });
+    await toolbar.getByRole("button", { name: "Collapse All Files" }).click();
+
+    const editablePass = await scroller.evaluate(
+      async (el, { expectedPaths }) => {
+        const probe = (window as never as { __openideaPerf: CombinedProbe }).__openideaPerf;
+        const frames = async (n = 1) => {
+          for (let k = 0; k < n; k++) await new Promise(requestAnimationFrame);
+        };
+        const total = expectedPaths.length;
+        const seenIndexes = new Set<number>();
+        const seenPaths = new Set<string>();
+        let verified = 0;
+        let nextExpected = 0;
+        let peakEditors = el.querySelectorAll(".cm-editor").length;
+        const started = performance.now();
+        await frames(2);
+
+        const maxStep = () => Math.max(1, Math.floor(el.clientHeight * 0.75));
+
+        while (nextExpected < total) {
+          if (performance.now() - started > 600_000)
+            throw new Error(`editable acceptance timed out at index ${nextExpected}/${total}`);
+
+          const slots = [...el.querySelectorAll<HTMLElement>("[data-index]")];
+          if (!slots.length) {
+            await frames(1);
+            continue;
+          }
+          const idxs = slots.map((s) => Number(s.dataset.index));
+          for (let k = 1; k < idxs.length; k++) {
+            if (idxs[k]! !== idxs[k - 1]! + 1)
+              throw new Error(`non-contiguous slots at index ${nextExpected}: [${idxs.join(",")}]`);
+          }
+          for (let k = 0; k < slots.length; k++) {
+            const idx = idxs[k]!;
+            const block = slots[k]!.querySelector<HTMLElement>("[data-combined-block]");
+            const gotPath = block?.dataset.combinedBlock;
+            if (gotPath !== expectedPaths[idx])
+              throw new Error(`path mismatch at index ${idx}: expected ${expectedPaths[idx]}, got ${gotPath}`);
+            seenIndexes.add(idx);
+            seenPaths.add(gotPath!);
+          }
+          if (idxs[0]! > nextExpected)
+            throw new Error(`skipped range before index ${nextExpected}: first mounted slot is ${idxs[0]}`);
+
+          const elRect = el.getBoundingClientRect();
+          const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+          const batch: Array<{ idx: number; path: string; block: HTMLElement }> = [];
+          for (let idx = nextExpected; idx < total && batch.length < 4; idx++) {
+            const pos = idxs.indexOf(idx);
+            if (pos < 0) break;
+            const slot = slots[pos]!;
+            if (!atBottom && slot.getBoundingClientRect().top >= elRect.bottom) break;
+            const block = slot.querySelector<HTMLElement>("[data-combined-block]")!;
+            batch.push({ idx, path: expectedPaths[idx]!, block });
+          }
+
+          if (!batch.length) {
+            const before = el.scrollTop;
+            el.scrollTop = Math.min(el.scrollHeight, el.scrollTop + maxStep());
+            await frames(2);
+            if (el.scrollTop === before && el.scrollTop + el.clientHeight >= el.scrollHeight - 1) {
+              // At bottom but nextExpected still not mounted: let layout settle once more.
+              await frames(2);
+            }
+            continue;
+          }
+
+          // Expand every block in the small batch.
+          for (const entry of batch) {
+            const btn = entry.block.querySelector<HTMLButtonElement>('button[aria-label="Expand File"]');
+            if (btn) btn.click();
+          }
+
+          // Wait for every expanded block in the batch to render `.cm-content` and attach its editor handle.
+          const waitStart = performance.now();
+          while (true) {
+            const ready = batch.every(({ path }) => {
+              const block = el.querySelector<HTMLElement>(`[data-combined-block="${path}"]`);
+              const content = block?.querySelector<HTMLElement>(".cm-content");
+              return !!content && !content.closest("[hidden]") && probe.hasEditor(path);
+            });
+            if (ready) break;
+            if (performance.now() - waitStart > 15_000)
+              throw new Error(`batch starting at ${batch[0]!.idx} (${batch[0]!.path}) never loaded`);
+            await frames(1);
+          }
+          peakEditors = Math.max(peakEditors, el.querySelectorAll(".cm-editor").length);
+
+          // Write a unique marker to each file, read back from editor + dirty state + saved backend, then collapse.
+          for (const { idx, path } of batch) {
+            const marker = ` // ACC_${idx}`;
+            const res = await probe.editAndSaveDiff(path, marker);
+            if (!res.text.includes(marker)) throw new Error(`editor read-back failed for ${idx} (${path})`);
+            if (!res.unsaved) throw new Error(`expected dirty state after write for ${idx} (${path})`);
+            if (!res.savedText.includes(marker)) throw new Error(`saved read-back failed for ${idx} (${path})`);
+            if (probe.unsaved(path)) throw new Error(`expected clean state after save for ${idx} (${path})`);
+            const block = el.querySelector<HTMLElement>(`[data-combined-block="${path}"]`);
+            const collapseBtn = block?.querySelector<HTMLButtonElement>('button[aria-label="Collapse File"]');
+            if (collapseBtn) collapseBtn.click();
+            verified++;
+            nextExpected = idx + 1;
+          }
+          await frames(1);
+
+          // Gently scroll verified blocks off the top (always <= 0.75 viewport) so virtualizer unmounts them promptly.
+          if (nextExpected < total) {
+            const nextSlot = el.querySelector<HTMLElement>(`[data-index="${nextExpected}"]`);
+            if (nextSlot) {
+              const delta = nextSlot.getBoundingClientRect().top - el.getBoundingClientRect().top;
+              if (delta > 0) {
+                el.scrollTop += Math.min(maxStep(), delta);
+                await frames(1);
+              }
+            }
+          }
+        }
+
+        // Return to top and verify editors unmount cleanly (no leak).
+        el.scrollTop = 0;
+        await frames(3);
+        const editorsAfter = el.querySelectorAll(".cm-editor").length;
+        return {
+          seenIndexes: seenIndexes.size,
+          seenPaths: seenPaths.size,
+          verified,
+          peakEditors,
+          editorsAfter,
+          ms: performance.now() - started,
+        };
+      },
+      { expectedPaths: editableData.paths },
+    );
+
+    if (editablePass.seenIndexes !== files || editablePass.seenPaths !== files || editablePass.verified !== files)
+      throw new Error(`editable acceptance incomplete: ${JSON.stringify(editablePass)} (expected ${files})`);
+    if (editablePass.editorsAfter > 16)
+      throw new Error(`editable acceptance leaked editors back at top: ${editablePass.editorsAfter}`);
+
+    // Pass 2: mixed data (binary .png, 2,000-line files, 50,000-line large file, editable worktree files).
+    await h.page.evaluate(() =>
+      (window as never as { __openideaPerf: CombinedProbe }).__openideaPerf.runAction("editor.closeAllTabs"),
+    );
+    await scroller.waitFor({ state: "detached", timeout: 15_000 });
+
+    const bigLines = Math.min(50_000, files * 10);
+    const mixedData = await h.page.evaluate(
+      ([f, b]) =>
+        (window as never as { __openideaPerf: CombinedProbe }).__openideaPerf.openCombinedDiff(f!, b!, {
+          tag: "acceptance-mixed",
+        }),
+      [files, bigLines],
+    );
+    await h.page.locator("[data-combined-scroll] .cm-content").first().waitFor({ state: "visible", timeout: 30_000 });
+    await h.page.evaluate(() => {
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    });
+    await toolbar.getByRole("button", { name: "Collapse All Files" }).click();
+
+    const mixedSweep = await scroller.evaluate(
+      async (el, { expectedPaths }) => {
+        const frames = async (n = 1) => {
+          for (let k = 0; k < n; k++) await new Promise(requestAnimationFrame);
+        };
+        const total = expectedPaths.length;
+        const seenIndexes = new Set<number>();
+        const seenPaths = new Set<string>();
+        let maxSeen = -1;
+        let peakEditors = el.querySelectorAll(".cm-editor").length;
+        const started = performance.now();
+        await frames(2);
+
+        const maxStep = () => Math.max(1, Math.floor(el.clientHeight * 0.75));
+
+        for (let iter = 0; iter < total * 4 && performance.now() - started < 120_000; iter++) {
+          const slots = [...el.querySelectorAll<HTMLElement>("[data-index]")];
+          if (!slots.length) {
+            await frames(1);
+            continue;
+          }
+          const idxs = slots.map((s) => Number(s.dataset.index));
+          for (let k = 1; k < idxs.length; k++) {
+            if (idxs[k]! !== idxs[k - 1]! + 1) throw new Error(`mixed sweep non-contiguous slots: [${idxs.join(",")}]`);
+          }
+          if (maxSeen >= 0 && idxs[0]! > maxSeen + 1)
+            throw new Error(`mixed sweep skipped range (${maxSeen + 1}..${idxs[0]! - 1})`);
+          for (let k = 0; k < slots.length; k++) {
+            const idx = idxs[k]!;
+            const block = slots[k]!.querySelector<HTMLElement>("[data-combined-block]");
+            const gotPath = block?.dataset.combinedBlock;
+            if (gotPath !== expectedPaths[idx])
+              throw new Error(`mixed path mismatch at ${idx}: expected ${expectedPaths[idx]}, got ${gotPath}`);
+            seenIndexes.add(idx);
+            seenPaths.add(gotPath!);
+            if (idx > maxSeen) maxSeen = idx;
+          }
+          peakEditors = Math.max(peakEditors, el.querySelectorAll(".cm-editor").length);
+          if (seenIndexes.has(total - 1) && el.scrollTop + el.clientHeight >= el.scrollHeight - 1) break;
+          const elRect = el.getBoundingClientRect();
+          const lastSlot = slots[slots.length - 1]!;
+          if (idxs[idxs.length - 1]! < total - 1 && lastSlot.getBoundingClientRect().bottom < elRect.bottom) {
+            // Virtualizer is still filling the viewport as newly mounted collapsed headers shrink from ESTIMATE.
+            await frames(1);
+            continue;
+          }
+          // Step at most 0.75 viewport and never past the last mounted visible slot so no unmeasured block is skipped.
+          let targetDelta = maxStep();
+          for (let k = slots.length - 1; k >= 0; k--) {
+            const top = slots[k]!.getBoundingClientRect().top - elRect.top;
+            if (top > 0 && top <= targetDelta) {
+              targetDelta = Math.floor(top);
+              break;
+            }
+          }
+          el.scrollTop = Math.min(el.scrollHeight, el.scrollTop + Math.max(1, targetDelta));
+          await frames(2);
+        }
+        return {
+          seenIndexes: seenIndexes.size,
+          seenPaths: seenPaths.size,
+          peakEditors,
+          ms: performance.now() - started,
+        };
+      },
+      { expectedPaths: mixedData.paths },
+    );
+
+    if (mixedSweep.seenIndexes !== files || mixedSweep.seenPaths !== files)
+      throw new Error(`mixed sweep incomplete: ${JSON.stringify(mixedSweep)} (expected ${files})`);
+
+    // Expand binary .png file and verify binary notice renders.
+    if (mixedData.binary) {
+      if (!(await revealCombinedBlock(scroller, mixedData.binary, { waitContent: false })))
+        throw new Error(`collapsed binary file ${mixedData.binary} could not be reached`);
+      const binSel = `[data-combined-block="${mixedData.binary}"]`;
+      await h.page.locator(`${binSel} button[aria-label="Expand File"]`).click();
+      if (
+        !(await revealCombinedBlock(scroller, mixedData.binary, { waitText: "Binary files cannot be shown as text" }))
+      )
+        throw new Error(`binary file ${mixedData.binary} did not render binary notice`);
+    }
+
+    // Expand the large diff (50,000 changed lines at 5,000 files) and verify content + sticky header.
+    if (!(await revealCombinedBlock(scroller, mixedData.big, { waitContent: false })))
+      throw new Error(`collapsed large file ${mixedData.big} could not be reached`);
+    const bigSel = `[data-combined-block="${mixedData.big}"]`;
+    if ((await h.page.locator(`${bigSel} .cm-content`).count()) !== 0)
+      throw new Error(`collapsed large file ${mixedData.big} unexpectedly mounted editors before expand`);
+    await h.page.locator(`${bigSel} button[aria-label="Expand File"]`).click();
+    if (!(await revealCombinedBlock(scroller, mixedData.big)))
+      throw new Error(`large file ${mixedData.big} never loaded after expand`);
+    const sticky = await scroller.evaluate(async (el, sel) => {
+      const block = el.querySelector<HTMLElement>(sel)!;
+      el.scrollTop += Math.min(2000, block.offsetHeight / 2);
+      await new Promise(requestAnimationFrame);
+      const now = el.querySelector<HTMLElement>(sel);
+      if (now !== block) return { off: NaN, remounted: true };
+      const header = block.firstElementChild!.getBoundingClientRect().top;
+      return { off: Math.abs(header - el.getBoundingClientRect().top), remounted: false };
+    }, bigSel);
+    if (!(sticky.off <= 1)) throw new Error(`large file sticky header off: ${JSON.stringify(sticky)}`);
+
+    // Expand a 2,000-line file when present.
+    if (files > 50) {
+      const medium = mixedData.paths[50]!;
+      if (!(await revealCombinedBlock(scroller, medium, { waitContent: false })))
+        throw new Error(`collapsed medium file ${medium} could not be reached`);
+      await h.page.locator(`[data-combined-block="${medium}"] button[aria-label="Expand File"]`).click();
+      if (!(await revealCombinedBlock(scroller, medium)))
+        throw new Error(`medium file ${medium} never loaded after expand`);
+    }
+
+    // Expand editable file half-way down, edit, blur, scroll away and back: unsaved edit survives without focus.
+    if (!(await revealCombinedBlock(scroller, mixedData.editable, { waitContent: false })))
+      throw new Error(`collapsed editable file ${mixedData.editable} could not be reached`);
+    const editSel = `[data-combined-block="${mixedData.editable}"]`;
+    await h.page.locator(`${editSel} button[aria-label="Expand File"]`).click();
+    if (!(await revealCombinedBlock(scroller, mixedData.editable)))
+      throw new Error(`editable file ${mixedData.editable} never loaded after expand`);
+    await h.page.locator(`${editSel} .cm-content`).last().click();
+    await h.page.keyboard.press("End");
+    await h.page.keyboard.type(" // MIXED_EDIT");
+    await h.page
+      .locator(`${editSel} .cm-editor`)
+      .last()
+      .evaluate((el) => ((el as HTMLElement).dataset.perfMark = "1"));
+    await h.page.evaluate(() => {
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    });
+    const preScroll = await scroller.evaluate(
+      (el, path) => ({
+        focused: el.contains(document.activeElement),
+        unsaved: (window as never as { __openideaPerf: CombinedProbe }).__openideaPerf.unsaved(path),
+      }),
+      mixedData.editable,
+    );
+    if (preScroll.focused || !preScroll.unsaved)
+      throw new Error(`expected blurred dirty editor before scroll: ${JSON.stringify(preScroll)}`);
+    await scroller.evaluate(async (el) => {
+      el.scrollTop = 0;
+      await new Promise(requestAnimationFrame);
+    });
+    await h.page.waitForTimeout(200);
+    if (!(await revealCombinedBlock(scroller, mixedData.editable)))
+      throw new Error(`editable file ${mixedData.editable} could not be re-revealed`);
+    const kept = await h.page.evaluate(
+      ({ sel, path }) => {
+        const cm = document.querySelector<HTMLElement>(`${sel} .cm-editor[data-perf-mark]`);
+        return {
+          sameEditor: !!cm,
+          text: !!cm?.textContent?.includes("MIXED_EDIT"),
+          unsaved: (window as never as { __openideaPerf: CombinedProbe }).__openideaPerf.unsaved(path),
+        };
+      },
+      { sel: editSel, path: mixedData.editable },
+    );
+    if (!kept.sameEditor || !kept.text || !kept.unsaved)
+      throw new Error(`mixed unsaved edit did not survive scroll: ${JSON.stringify(kept)}`);
+
+    // Expand and edit the last file (`N - 1`).
+    if (!(await revealCombinedBlock(scroller, mixedData.last, { waitContent: false })))
+      throw new Error(`collapsed last file ${mixedData.last} could not be reached`);
+    const lastSel = `[data-combined-block="${mixedData.last}"]`;
+    if ((await h.page.locator(`${lastSel} .cm-content`).count()) !== 0)
+      throw new Error(`collapsed last file ${mixedData.last} unexpectedly mounted editors before expand`);
+    await h.page.locator(`${lastSel} button[aria-label="Expand File"]`).click();
+    if (!(await revealCombinedBlock(scroller, mixedData.last)))
+      throw new Error(`last file ${mixedData.last} never loaded after expand`);
+    await h.page.locator(`${lastSel} .cm-content`).last().click();
+    await h.page.keyboard.press("End");
+    await h.page.keyboard.type(" // LAST_EDIT");
+    await h.page.evaluate(() => {
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    });
+    const lastKept = await h.page.evaluate(
+      ({ sel, path }) => ({
+        text: [...document.querySelectorAll<HTMLElement>(`${sel} .cm-editor`)].some((e) =>
+          e.textContent?.includes("LAST_EDIT"),
+        ),
+        unsaved: (window as never as { __openideaPerf: CombinedProbe }).__openideaPerf.unsaved(path),
+      }),
+      { sel: lastSel, path: mixedData.last },
+    );
+    if (!lastKept.text || !lastKept.unsaved)
+      throw new Error(`editing the last file ${mixedData.last} failed: ${JSON.stringify(lastKept)}`);
+
+    return {
+      editableVerified: editablePass.verified,
+      mixedSeen: mixedSweep.seenIndexes,
+      peakEditors: Math.max(editablePass.peakEditors, mixedSweep.peakEditors),
+      editableEditorsAfter: editablePass.editorsAfter,
+      editableMs: editablePass.ms,
+      mixedMs: mixedSweep.ms,
+    };
+  },
+};
+
 /** Opening and closing editors repeatedly must not grow the heap or the DOM. */
 const leaks: Scenario = {
   id: "leaks",
@@ -848,5 +1512,7 @@ export const SCENARIOS: Scenario[] = [
   popups,
   toolWindows,
   projectTree,
+  combinedDiff,
+  combinedDiffAcceptance,
   leaks,
 ];

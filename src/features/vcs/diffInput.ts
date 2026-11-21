@@ -130,7 +130,7 @@ export function sideLabel(s: DiffSide): string {
   }
 }
 
-const diffKey = (data: DiffData) => `diff:${data.path}:${sideKey(data.left)}:${sideKey(data.right)}`;
+export const diffKey = (data: DiffData) => `diff:${data.path}:${sideKey(data.left)}:${sideKey(data.right)}`;
 
 /** Each diff's caret by tab key, most recent last, so Back returns to it there. */
 const carets = new Map<string, { line: number; col: number; side: "left" | "right" }>();
@@ -176,7 +176,7 @@ export function diffTitle(data: DiffData): string {
 
 export async function openDiff(data: DiffData, opts: { preview?: boolean; focus?: boolean } = {}) {
   const combined = combinedOf(data);
-  const input = combined ? combinedDiffInput(combined) : diffInput(data);
+  const input = combined ? combinedDiffInput({ ...combined, revealKey: diffKey(data) }) : diffInput(data);
   await editorService().openInput(input, { preview: opts.preview, focus: opts.focus ?? true });
 }
 

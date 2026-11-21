@@ -1,17 +1,20 @@
 /**
  * The all-in-one diff tab (`combined-diff`): one block per file of a change, each a diff
- * as tall as its content under a sticky header, in one scrolling view. Blocks load as they
- * come near the viewport; a header collapses its block or opens the file's own diff tab.
+ * as tall as its content under a sticky header, in one scrolling view. Only the blocks near
+ * the viewport are mounted, so a change of thousands of files costs what a screenful does;
+ * a header collapses its block or opens the file's own diff tab.
  */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
 import clsx from "clsx";
+import { editorsFor } from "@/editor/api";
 import { tx } from "@/platform/i18n";
 import { relativeDir, useProject } from "@/platform/project";
 import { Icon, IconButton, T, fileIconName } from "@/ui";
-import { editorService, type EditorInput } from "@/workbench/contributions";
+import { editorService, maybeEditorService, type EditorInput } from "@/workbench/contributions";
 import { setAllInOneDiff, type CombinedDiffData } from "./allInOneDiff";
 import { DiffEditor } from "./DiffEditor";
-import { diffInput, openDiff, withChain, type DiffData } from "./diffInput";
+import { diffInput, diffKey, openDiff, sideFile, withChain, type DiffData } from "./diffInput";
 import { loadDiffOptions, saveDiffOptions } from "./diffOptions";
 import { KIND_COLOR, KIND_LABEL, baseName, fileCount } from "./model";
 import styles from "./CombinedDiff.module.css";
@@ -24,53 +27,82 @@ export function blockKind(item: DiffData): Kind {
   return absent(item.left) ? "added" : absent(item.right) ? "deleted" : "modified";
 }
 
-/** How far below the viewport a block starts loading (above it, only once scrolled to). */
-const PRELOAD = "0px 0px 800px 0px";
+/** Height of a block not measured yet: its header and a short diff. */
+const ESTIMATE = 200;
+/** Blocks mounted past each edge of the viewport. */
+const OVERSCAN = 2;
+/** Longest a block coming back into view keeps its last height while its diff reloads. */
+const HOLD_MS = 1000;
 
-function Block({
+/** Whether a file of `item` has unsaved changes in a document open in a view (its diff panes, an editor). */
+function hasUnsavedEdits(item: DiffData, dirtyDocs: ReadonlySet<number>): boolean {
+  if (!dirtyDocs.size) return false;
+  return [sideFile(item.left, item.path), sideFile(item.right, item.path)].some(
+    (file) => !!file && editorsFor(file).some((e) => dirtyDocs.has(e.ctx.doc)),
+  );
+}
+
+const Block = memo(function Block({
   item,
+  itemKey,
   index,
   items,
   collapsed,
   onToggle,
   mode,
+  heights,
 }: {
   item: DiffData;
+  itemKey: string;
   index: number;
   items: readonly DiffData[];
   collapsed: boolean;
-  onToggle: () => void;
+  onToggle: (key: string) => void;
   mode: "split" | "unified";
+  /** Last height of each block's diff, by layout and diff entry, kept while blocks are unmounted. */
+  heights: Map<string, number>;
 }) {
-  const ref = useRef<HTMLElement>(null);
-  // Without IntersectionObserver (tests), every block loads at once.
-  const [near, setNear] = useState(() => typeof IntersectionObserver === "undefined");
-  useEffect(() => {
-    const el = ref.current;
-    if (!el || near) return;
-    const io = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((e) => e.isIntersecting)) setNear(true);
-      },
-      { root: el.closest("[data-combined-scroll]"), rootMargin: PRELOAD },
-    );
-    io.observe(el);
-    return () => io.disconnect();
-  }, [near]);
+  // A block mounted collapsed loads its diff once expanded.
+  const [loaded, setLoaded] = useState(!collapsed);
+  if (!collapsed && !loaded) setLoaded(true);
   const input: EditorInput = useMemo(() => diffInput({ ...item, mode }), [item, mode]);
   const kind = blockKind(item);
   const name = baseName(item.path);
   const root = useProject((s) => s.project?.root ?? "");
   const dir = relativeDir(root, item.path);
+
+  // Back in view, the diff reloads: until it is as tall as before (or for `HOLD_MS`), the block
+  // keeps its last height, so the blocks around it don't jump while the view scrolls.
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const heightKey = `${mode}:${itemKey}`;
+  const [hold, setHold] = useState(() => heights.get(heightKey) ?? 0);
+  useEffect(() => {
+    const content = bodyRef.current?.firstElementChild;
+    if (!(content instanceof HTMLElement)) return;
+    const timer = hold ? setTimeout(() => setHold(0), HOLD_MS) : undefined;
+    const observer = new ResizeObserver(() => {
+      const height = content.offsetHeight;
+      // Collapsed (hidden), or still loading after coming back.
+      if (!height || height < hold) return;
+      if (hold) setHold(0);
+      else heights.set(heightKey, height);
+    });
+    observer.observe(content);
+    return () => {
+      observer.disconnect();
+      clearTimeout(timer);
+    };
+  }, [loaded, hold, heightKey, heights]);
+
   return (
-    <section ref={ref} className={styles.block} data-combined-block={item.path} aria-label={name}>
+    <section className={styles.block} data-combined-block={item.path} aria-label={name}>
       <div className={styles.header}>
         <IconButton
           icon={collapsed ? "chevron-right" : "chevron-down"}
           title={collapsed ? "Expand File" : "Collapse File"}
           size="small"
           aria-expanded={!collapsed}
-          onClick={onToggle}
+          onClick={() => onToggle(itemKey)}
         />
         <Icon name={fileIconName(name)} size={16} />
         <span className={styles.name} style={{ color: KIND_COLOR[kind] }} title={tx(KIND_LABEL[kind])}>
@@ -100,16 +132,14 @@ function Block({
       </div>
       {/* A collapsed block keeps its loaded diff, hidden: unmounting it would release the
           working-tree document and, with autosave off, drop its unsaved edits. */}
-      {near ? (
-        <div className={styles.body} hidden={collapsed}>
+      {loaded && (
+        <div ref={bodyRef} className={styles.body} hidden={collapsed} style={hold ? { minHeight: hold } : undefined}>
           <DiffEditor input={input} fit />
         </div>
-      ) : (
-        !collapsed && <div className={styles.placeholder} />
       )}
     </section>
   );
-}
+});
 
 export function CombinedDiffTab({ input }: { input: EditorInput }) {
   const data = input.data as CombinedDiffData;
@@ -117,28 +147,93 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
   const [mode, setMode] = useState(() => loadDiffOptions().mode);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [heights] = useState(() => new Map<string, number>());
+  /** Blocks mounted as of the last commit. */
+  const mountedRef = useRef<readonly number[]>([]);
 
-  const blocks = () => [...(scrollRef.current?.querySelectorAll<HTMLElement>("[data-combined-block]") ?? [])];
-  /** The block at the top of the view. */
-  const current = () => {
-    const top = scrollRef.current?.getBoundingClientRect().top ?? 0;
-    const all = blocks();
-    const at = all.findIndex((b) => b.getBoundingClientRect().bottom > top + 1);
-    return at < 0 ? all.length - 1 : at;
+  // Only the blocks around the viewport stay mounted. Blocks scrolled away are unmounted except
+  // those with unsaved edits or holding the keyboard focus: unmounting a dirty block would
+  // release its working-tree document (triggering an unexpected autosave or, with autosave off,
+  // detaching the editor and dropping its undo history and unsaved view state), which is why
+  // blocks were previously kept mounted once loaded.
+  const pinnedIndexes = useCallback(
+    (already: ReadonlySet<number>) => {
+      const scroller = scrollRef.current;
+      const active = document.activeElement;
+      const focused =
+        scroller && active && scroller.contains(active)
+          ? Number(active.closest("[data-combined-block]")?.parentElement?.dataset.index ?? -1)
+          : -1;
+      const dirtyDocs = new Set(maybeEditorService()?.dirtyDocumentIds?.() ?? []);
+      return mountedRef.current.filter(
+        (i) => !already.has(i) && !!items[i] && (i === focused || hasUnsavedEdits(items[i], dirtyDocs)),
+      );
+    },
+    [items],
+  );
+  const rangeExtractor = useCallback(
+    (range: Range) => {
+      const shown = defaultRangeExtractor(range);
+      const kept = pinnedIndexes(new Set(shown));
+      return kept.length ? [...shown, ...kept].sort((a, b) => a - b) : shown;
+    },
+    [pinnedIndexes],
+  );
+  const scrollToFn = useCallback(
+    (
+      offset: number,
+      options: { adjustments?: number; behavior?: ScrollBehavior },
+      instance: { scrollElement: HTMLDivElement | null },
+    ) => {
+      const el = instance.scrollElement;
+      if (!el) return;
+      // ResizeObserver can run after a scrollTop write (e.g. inside rAF) and before the
+      // browser dispatches its scroll event; `offset` is then stale, so apply size
+      // adjustments relative to the live scrollTop instead of reverting pending movement.
+      const base = options.adjustments ? el.scrollTop : offset;
+      el.scrollTo({ top: base + (options.adjustments ?? 0), behavior: options.behavior });
+    },
+    [],
+  );
+  const virtualizer = useVirtualizer({
+    count: items.length,
+    getScrollElement: () => scrollRef.current,
+    getItemKey: useCallback((i: number) => diffKey(items[i]!), [items]),
+    estimateSize: useCallback(() => ESTIMATE, []),
+    overscan: OVERSCAN,
+    rangeExtractor,
+    scrollToFn,
+  });
+
+  /** Index of the block at the top of the view. */
+  const current = () =>
+    virtualizer.getVirtualItemForOffset((scrollRef.current?.scrollTop ?? 0) + 1)?.index ?? items.length - 1;
+  const scrollToIndex = (index: number) => {
+    if (index >= 0 && index < items.length) virtualizer.scrollToIndex(index, { align: "start" });
   };
-  const scrollTo = (path: string) => {
-    const el = blocks().find((b) => b.dataset.combinedBlock === path);
-    const scroller = scrollRef.current;
-    if (el && scroller) scroller.scrollTop += el.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
-  };
-  const step = (dir: 1 | -1) => {
-    const next = items[current() + dir];
-    if (next) scrollTo(next.path);
-  };
+  const step = (dir: 1 | -1) => scrollToIndex(current() + dir);
+
+  const virtualItems = virtualizer.getVirtualItems();
+  // When the scroller collapses to height 0 (e.g. a maximized tool window sets `hidden`),
+  // virtual-core's `calculateRange()` returns null and `getVirtualItems()` returns [] without
+  // calling `rangeExtractor`. Keep pinned (dirty or focused) blocks mounted alongside the
+  // virtual items so a zero-height viewport never unmounts an editor or drops unsaved edits.
+  const pinned = pinnedIndexes(new Set(virtualItems.map((row) => row.index)));
+  const rows = pinned.length
+    ? [
+        ...virtualItems,
+        ...pinned.map((index) => virtualizer.measurementsCache[index] ?? { index, start: index * ESTIMATE }),
+      ].sort((a, b) => a.index - b.index)
+    : virtualItems;
+  useLayoutEffect(() => {
+    mountedRef.current = rows.map((row) => row.index);
+  });
 
   // Open at the file the diff was asked for.
   useLayoutEffect(() => {
-    if (data.reveal) scrollTo(data.reveal);
+    const byKey = data.revealKey ? items.findIndex((i) => diffKey(i) === data.revealKey) : -1;
+    const at = byKey >= 0 ? byKey : data.reveal ? items.findIndex((i) => i.path === data.reveal) : -1;
+    if (at >= 0) scrollToIndex(at);
     // Once per tab: later revisits keep their scroll position.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -147,14 +242,20 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
     setMode(next);
     saveDiffOptions({ ...loadDiffOptions(), mode: next });
   };
-  const toggle = (path: string) =>
-    setCollapsed((c) => {
-      const s = new Set(c);
-      if (s.has(path)) s.delete(path);
-      else s.add(path);
-      return s;
-    });
-  const allCollapsed = items.length > 0 && items.every((i) => collapsed.has(i.path));
+  const toggle = useCallback(
+    (key: string) =>
+      setCollapsed((c) => {
+        const s = new Set(c);
+        if (s.has(key)) s.delete(key);
+        else s.add(key);
+        return s;
+      }),
+    [],
+  );
+  const allCollapsed = useMemo(
+    () => items.length > 0 && items.every((i) => collapsed.has(diffKey(i))),
+    [items, collapsed],
+  );
 
   return (
     <div className={styles.root}>
@@ -165,7 +266,7 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
           icon={allCollapsed ? "expand-all" : "collapse-all"}
           title={allCollapsed ? "Expand All Files" : "Collapse All Files"}
           size="small"
-          onClick={() => setCollapsed(allCollapsed ? new Set() : new Set(items.map((i) => i.path)))}
+          onClick={() => setCollapsed(allCollapsed ? new Set() : new Set(items.map(diffKey)))}
         />
         <span className={styles.sep} />
         <IconButton
@@ -198,18 +299,34 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
       </div>
       <div ref={scrollRef} className={styles.scroll} data-combined-scroll>
         {items.length ? (
-          items.map((item, index) => (
-            <Block
-              // Keyed by file alone: switching the layout keeps each block's diff and its documents.
-              key={item.path}
-              item={item}
-              index={index}
-              items={items}
-              collapsed={collapsed.has(item.path)}
-              onToggle={() => toggle(item.path)}
-              mode={mode}
-            />
-          ))
+          <div className={styles.blocks} style={{ height: virtualizer.getTotalSize() }}>
+            {rows.map((row) => {
+              const item = items[row.index]!;
+              const itemKey = diffKey(item);
+              return (
+                <div
+                  // Keyed by diff identity (not layout mode): switching the layout keeps each block's diff and its documents.
+                  key={itemKey}
+                  ref={virtualizer.measureElement}
+                  data-index={row.index}
+                  className={styles.slot}
+                  // `top`, not a transform: a sticky header inside a transformed box sticks off by the transform.
+                  style={{ top: row.start }}
+                >
+                  <Block
+                    item={item}
+                    itemKey={itemKey}
+                    index={row.index}
+                    items={items}
+                    collapsed={collapsed.has(itemKey)}
+                    onToggle={toggle}
+                    mode={mode}
+                    heights={heights}
+                  />
+                </div>
+              );
+            })}
+          </div>
         ) : (
           <div className={clsx(styles.placeholder, styles.empty)}>
             <T>No changes</T>
