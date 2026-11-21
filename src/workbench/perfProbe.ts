@@ -7,6 +7,7 @@ import { completionStatus, currentCompletions } from "@codemirror/autocomplete";
 import { syntaxParserRunning } from "@codemirror/language";
 import { forEachDiagnostic } from "@codemirror/lint";
 import { executeAction } from "@/platform/actions";
+import { setContext } from "@/platform/context";
 import { bindingsFor } from "@/platform/keymap";
 import { activeEditor } from "@/editor/api";
 import { docBackend, type MemoryBackend } from "@/editor/core/backend";
@@ -55,6 +56,11 @@ export interface PerfProbe {
    * `latencyMs` (a `git log` call). `0` commits removes it.
    */
   fakeGitLog(commits: number, latencyMs?: number, longBranches?: number): void;
+  /**
+   * Installs a linear commit history of `commits` commits for interactive rebase
+   * and returns the oldest commit (the target to rebase from). `0` removes it.
+   */
+  fakeInteractiveRebase(commits: number): Commit | null;
 }
 
 const KINDS: CompletionKind[] = [
@@ -208,6 +214,57 @@ export function installPerfProbe(): () => void {
             }
           : null,
       );
+    },
+    fakeInteractiveRebase(count) {
+      if (!count) {
+        setRoute("interactiveRebase", null);
+        setContext("vcsAvailable", false);
+        return null;
+      }
+      const hex = (n: number) => n.toString(16).padStart(8, "0").padEnd(40, "a");
+      const baseId = hex(0);
+      // Oldest commit is index 0 in chronological order; git log returns newest first.
+      const chronological: Commit[] = Array.from({ length: count }, (_, idx) => {
+        const id = hex(idx + 1);
+        const parent = idx === 0 ? baseId : hex(idx);
+        const time = Date.UTC(2026, 10, 5) - (count - idx) * 60_000;
+        const summary = `Commit ${idx}: update order pipeline step ${idx}`;
+        return {
+          id,
+          shortId: id.slice(0, 8),
+          parents: [parent],
+          author: "Ada Lovelace",
+          email: "ada@acme.dev",
+          committer: "CI",
+          committerEmail: "ci@acme.dev",
+          timeMs: time,
+          commitTimeMs: time,
+          summary,
+          message: summary,
+          messageTruncated: false,
+          refs: idx === count - 1 ? ["HEAD -> main"] : [],
+        };
+      });
+      const history = [...chronological].reverse();
+      setContext("vcsAvailable", true);
+      setRoute("interactiveRebase", (cmd) => {
+        if (cmd === "vcs_log") return Promise.resolve(history);
+        if (cmd === "vcs_branch_info") {
+          return Promise.resolve({
+            head: "main",
+            headCommit: history[0]!.id,
+            upstream: null,
+            ahead: count,
+            behind: 0,
+            operation: null,
+          });
+        }
+        if (cmd === "vcs_roots" || cmd === "vcs_status" || cmd === "vcs_branches" || cmd === "vcs_stashes") {
+          return Promise.resolve([]);
+        }
+        return null;
+      });
+      return chronological[0]!;
     },
     editorText: () => activeEditor()?.view.state.doc.toString() ?? null,
     insertAfter(after, text) {
