@@ -155,7 +155,43 @@
   user-select: text;
 }
 .truncated {
+  flex: none;
+  padding: 0 8px 8px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  line-height: var(--lh-code);
   color: var(--fg-muted);
+}
+/* The response body: a read-only editor view with the look of `.pre`. */
+.bodyView {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.responseBody {
+  flex: 1;
+  min-height: 0;
+}
+.responseBody :global(.cm-editor) {
+  height: 100%;
+}
+.responseBody :global(.cm-editor.cm-focused) {
+  outline: none;
+}
+.responseBody :global(.cm-scroller) {
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  line-height: var(--lh-code);
+}
+.responseBody :global(.cm-content) {
+  padding: 8px;
+  color: var(--fg-editor);
+}
+.responseBody :global(.cm-line) {
+  padding: 0;
+}
+.responseBody :global(.cm-lineWrapping) {
+  word-break: break-all;
 }
 .headers {
   border-collapse: collapse;

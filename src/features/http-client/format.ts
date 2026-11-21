@@ -114,6 +114,9 @@ export function prettyMarkup(body: string, html = false, indent = "  "): string 
   return out.join("\n");
 }
 
+/** Bodies up to this length are formatted inline; longer ones in a worker, off the main thread. */
+export const PRETTY_INLINE_LIMIT = 256_000;
+
 export function prettyBody(kind: BodyKind, body: string): string {
   switch (kind) {
     case "json":

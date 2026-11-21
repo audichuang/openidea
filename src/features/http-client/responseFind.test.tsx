@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { EditorView } from "@codemirror/view";
 import type { HttpExchange } from "@/platform/ipc";
 
 vi.mock("./store", async (importOriginal) => ({
@@ -53,7 +54,8 @@ describe("HTTP response find", () => {
     const marks = body.querySelectorAll("mark");
     expect([...marks].map((m) => m.textContent)).toEqual(["beta", "beta", "Beta"]);
     expect(screen.getByText("1/3")).toBeTruthy();
-    expect(body.textContent).toBe("alpha beta\nbeta gamma\nBeta");
+    // The text itself is unchanged (the body is an editor view: one element per line).
+    expect(EditorView.findFromDOM(body)?.state.doc.toString()).toBe("alpha beta\nbeta gamma\nBeta");
     fireEvent.keyDown(input, { key: "Enter" });
     expect(screen.getByText("2/3")).toBeTruthy();
     expect(
