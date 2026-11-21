@@ -1463,6 +1463,202 @@ const combinedDiffAcceptance: Scenario = {
   },
 };
 
+/**
+ * Frame pacing against the acceptance bar: frames of two refresh intervals or more (`Over33`,
+ * ≥ 33 ms), of three or more (`Over50`, ≥ 49 ms so a 50.0 ms frame counts) and over the idle
+ * baseline's longest frame (`OverIdle`), next to the usual summary.
+ */
+function combinedDiffPacing(prefix: string, frames: readonly number[], refresh: number, idleMaxMs: number): Metrics {
+  const s = frameSummary(frames, refresh);
+  const share = (ms: number) => (frames.length ? (100 * frames.filter((f) => f >= ms).length) / frames.length : 0);
+  return {
+    [`${prefix}P95Ms`]: s.frameP95Ms,
+    [`${prefix}MaxMs`]: s.frameMaxMs,
+    [`${prefix}DroppedPct`]: s.droppedFramesPct,
+    [`${prefix}Over33Pct`]: share(33),
+    [`${prefix}Over50`]: frames.filter((f) => f >= 49).length,
+    [`${prefix}OverIdle`]: frames.filter((f) => f > Math.max(50, idleMaxMs)).length,
+    [`${prefix}Frames`]: frames.length,
+  };
+}
+
+/**
+ * Frame pacing of the all-in-one diff of `combinedDiff`'s files, measured until the diffs are
+ * shown rather than until the scrolling stops:
+ * 1. 3 s idle, the baseline for long frames.
+ * 2. A fling, the `combinedDiff` sweep (at least a viewport a frame) top → bottom → top, whose
+ *    recording goes on until every block in view at the top shows its diff (`settleMs`).
+ * 3. A read at 40 px a frame (≈ 2,400 px/s) from the top for up to 600 frames, during which the
+ *    diffs coming into view mount as they scroll in; `readBlankPct` is the share of frames with
+ *    a block in view whose diff isn't shown yet.
+ * Diff editors mounted in each phase are counted from the DOM (`.cm-editor` elements added).
+ */
+const combinedDiffSmooth: Scenario = {
+  id: "combinedDiffSmooth",
+  title: `Frame pacing of an all-in-one diff of ${COMBINED_FILES} files until its diffs show`,
+  async run(h) {
+    const files = COMBINED_FILES;
+    const bigLines = Math.min(50_000, files * 10);
+    let first = "";
+    let last = "";
+    const openMs = await h.measure(
+      async () => {
+        ({ first, last } = await h.page.evaluate(
+          ([f, b]) => (window as never as { __openideaPerf: CombinedProbe }).__openideaPerf.openCombinedDiff(f!, b!),
+          [files, bigLines],
+        ));
+      },
+      "[data-combined-scroll] .cm-content",
+      null,
+      30_000,
+    );
+    const scroller = h.page.locator("[data-combined-scroll]");
+    await h.page.waitForTimeout(500);
+    await h.page.evaluate(() => {
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    });
+    // Counts the diff editors added under the scroller from now on.
+    await scroller.evaluate((el) => {
+      const w = window as never as { __combinedMounts: number; __combinedMountObserver?: MutationObserver };
+      w.__combinedMounts = 0;
+      w.__combinedMountObserver?.disconnect();
+      w.__combinedMountObserver = new MutationObserver((records) => {
+        for (const r of records)
+          for (const n of r.addedNodes)
+            if (n instanceof Element)
+              w.__combinedMounts += (n.matches(".cm-editor") ? 1 : 0) + n.querySelectorAll(".cm-editor").length;
+      });
+      w.__combinedMountObserver.observe(el, { childList: true, subtree: true });
+    });
+    const mounts = () => h.page.evaluate(() => (window as never as { __combinedMounts: number }).__combinedMounts);
+    const refresh = await h.refreshMs();
+
+    await h.inPage((p) => p.startFrames());
+    await h.page.waitForTimeout(3_000);
+    const idle = await h.inPage((p) => p.stopFrames());
+    const idleMaxMs = idle.length ? Math.max(...idle) : NaN;
+
+    // Fling down and back, then wait for the blocks in view to show their diffs.
+    const flingMounts0 = await mounts();
+    const t0 = await h.now();
+    await h.inPage((p) => p.startFrames());
+    const fling = await scroller.evaluate(
+      async (el, { firstPath, lastPath }) => {
+        const editors = () => el.querySelectorAll(".cm-editor").length;
+        const frame = () => new Promise(requestAnimationFrame);
+        const started = performance.now();
+        const step = () => Math.max(el.clientHeight, Math.ceil((el.scrollHeight - el.clientHeight) / 300));
+        let peak = editors();
+        let reachedEnd = false;
+        for (let i = 0; i < 1200 && performance.now() - started < 60_000; i++) {
+          if (
+            el.scrollTop + el.clientHeight >= el.scrollHeight - 1 &&
+            el.querySelector(`[data-combined-block="${lastPath}"]`)
+          ) {
+            reachedEnd = true;
+            break;
+          }
+          el.scrollTop += step();
+          await frame();
+          peak = Math.max(peak, editors());
+        }
+        for (let i = 0; i < 1200 && performance.now() - started < 120_000; i++) {
+          if (el.scrollTop <= 0 && el.querySelector(`[data-combined-block="${firstPath}"]`)) break;
+          el.scrollTop = Math.max(0, el.scrollTop - step());
+          await frame();
+          peak = Math.max(peak, editors());
+        }
+        const stopped = performance.now();
+        // Every expanded block in view shows its diff (or its binary notice).
+        const shown = () => {
+          const view = el.getBoundingClientRect();
+          return [...el.querySelectorAll<HTMLElement>("[data-combined-block]")].every((b) => {
+            const r = b.getBoundingClientRect();
+            if (r.bottom <= view.top || r.top >= view.bottom) return true;
+            if (b.querySelector('[aria-expanded="false"]')) return true;
+            const content = b.querySelector(".cm-content");
+            return (
+              (!!content && !content.closest("[hidden]")) ||
+              !!b.textContent?.includes("Binary files cannot be shown as text")
+            );
+          });
+        };
+        let settled = false;
+        while (performance.now() - stopped < 10_000) {
+          if (shown()) {
+            settled = true;
+            break;
+          }
+          await frame();
+          peak = Math.max(peak, editors());
+        }
+        return { peak, reachedEnd, settled, scrollMs: stopped - started, settleMs: performance.now() - stopped };
+      },
+      { firstPath: first, lastPath: last },
+    );
+    const flingFrames = await h.inPage((p) => p.stopFrames());
+    const flingLong = await h.longTasksSince(t0);
+    const flingMounts = (await mounts()) - flingMounts0;
+
+    // Read down at 40 px a frame: the diffs scrolling in mount as they come.
+    await h.page.waitForTimeout(500);
+    const readMounts0 = await mounts();
+    const t1 = await h.now();
+    await h.inPage((p) => p.startFrames());
+    const read = await scroller.evaluate(async (el) => {
+      const frame = () => new Promise(requestAnimationFrame);
+      const blank = () => {
+        const view = el.getBoundingClientRect();
+        return [...el.querySelectorAll<HTMLElement>("[data-combined-block]")].some((b) => {
+          const r = b.getBoundingClientRect();
+          if (r.bottom <= view.top || r.top >= view.bottom) return false;
+          if (b.querySelector('[aria-expanded="false"]')) return false;
+          const content = b.querySelector(".cm-content");
+          return !(
+            (!!content && !content.closest("[hidden]")) ||
+            b.textContent?.includes("Binary files cannot be shown as text")
+          );
+        });
+      };
+      let frames = 0;
+      let blankFrames = 0;
+      for (; frames < 600 && el.scrollTop + el.clientHeight < el.scrollHeight - 1; frames++) {
+        el.scrollTop += 40;
+        await frame();
+        if (blank()) blankFrames++;
+      }
+      return { frames, blankFrames };
+    });
+    const readFrames = await h.inPage((p) => p.stopFrames());
+    const readLong = await h.longTasksSince(t1);
+    const readMounts = (await mounts()) - readMounts0;
+    await h.page.waitForTimeout(500);
+    const editorsAfter = await scroller.evaluate((el) => el.querySelectorAll(".cm-editor").length);
+    const domNodes = (await h.counters()).Nodes ?? NaN;
+    if (!fling.reachedEnd) throw new Error("the fling never reached the last file");
+    if (!fling.settled) throw new Error("the blocks in view never showed their diffs after the fling");
+
+    return {
+      openMs,
+      idleMaxMs,
+      ...combinedDiffPacing("fling", flingFrames, refresh, idleMaxMs),
+      flingLongTasks: flingLong.length,
+      flingTbtMs: totalBlockingTime(flingLong),
+      flingMounts,
+      flingScrollMs: fling.scrollMs,
+      settleMs: fling.settleMs,
+      ...combinedDiffPacing("read", readFrames, refresh, idleMaxMs),
+      readLongTasks: readLong.length,
+      readTbtMs: totalBlockingTime(readLong),
+      readMounts,
+      readBlankPct: read.frames ? (100 * read.blankFrames) / read.frames : 0,
+      peakEditors: fling.peak,
+      editorsAfter,
+      domNodes,
+    };
+  },
+};
+
 /** Opening and closing editors repeatedly must not grow the heap or the DOM. */
 const leaks: Scenario = {
   id: "leaks",
@@ -1514,5 +1710,6 @@ export const SCENARIOS: Scenario[] = [
   projectTree,
   combinedDiff,
   combinedDiffAcceptance,
+  combinedDiffSmooth,
   leaks,
 ];
