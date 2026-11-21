@@ -458,6 +458,93 @@ const gitLogWide: Scenario = {
   },
 };
 
+type FindProbe = { __openideaPerf: { fakeFindStream(files: number, hits?: number, len?: number): Promise<void> } };
+
+/**
+ * Streams one Find search into the Find tool window while its results are
+ * scrolled every frame; times until the final count is painted.
+ */
+async function streamFind(h: Harness, files: number, hits: number, lineLength: number, refresh: number) {
+  const t0 = await h.now();
+  const before = await h.counters();
+  const run = await h.page.evaluate(
+    async ({ files, hits, lineLength }) => {
+      const started = performance.now();
+      const frames: number[] = [];
+      let last = -1;
+      let finished = false;
+      // The count reads e.g. "10,000 matches in 10,000 files" once the search is done.
+      const final = `${files * hits}matchesin${files}file`;
+      // Done: the final count is shown and the Stop button turned back into Rerun.
+      const shown = () =>
+        !!document.querySelector('button[aria-label="Rerun"]') &&
+        (document.body.textContent ?? "").replace(/[\s,.\u202f]/g, "").includes(final);
+      const tick = (now: number) => {
+        if (last >= 0) frames.push(now - last);
+        last = now;
+        const tree = document.querySelector<HTMLElement>('[role="tree"][aria-label="Find results"]');
+        // Keep scrolling while results stream in; turn back at the end.
+        if (tree) {
+          tree.scrollTop = tree.scrollTop + 96 >= tree.scrollHeight - tree.clientHeight ? 0 : tree.scrollTop + 96;
+        }
+        if (!finished) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+      // Slow builds give up after two minutes (reported as timedOut, streamMs then a lower bound).
+      const deadline = started + 120_000;
+      const delivered = (window as never as FindProbe).__openideaPerf.fakeFindStream(files, hits, lineLength);
+      await Promise.race([delivered, new Promise((r) => setTimeout(r, 120_000))]);
+      const deliveredMs = performance.now() - started;
+      while (!shown() && performance.now() < deadline) await new Promise(requestAnimationFrame);
+      const streamMs = performance.now() - started;
+      finished = true;
+      return { frames, deliveredMs, streamMs, timedOut: shown() ? 0 : 1 };
+    },
+    { files, hits, lineLength },
+  );
+  const work = Harness.delta(before, await h.counters());
+  const longTasks = await h.longTasksSince(t0);
+  return {
+    streamMs: run.streamMs,
+    deliveredMs: run.deliveredMs,
+    timedOut: run.timedOut,
+    ...frameSummary(run.frames, refresh),
+    framesOver33: run.frames.filter((f) => f > 33).length,
+    longTasks: longTasks.length,
+    tbtMs: totalBlockingTime(longTasks),
+    scriptMs: work.scriptMs,
+    taskMs: work.taskMs,
+  };
+}
+
+/**
+ * Find in Files results opened in the Find tool window, streamed one file per
+ * channel message as the backend sends them: 1,000, 4,000 and 10,000 files (the
+ * backend's default match limit) with one match each, one file with 10,000
+ * matches, and 2,000 files whose matching lines are 4,000 characters long.
+ */
+const findStream: Scenario = {
+  id: "findStream",
+  title: "Stream up to 10,000 results into the Find tool window",
+  async run(h) {
+    const refresh = await h.refreshMs();
+    const shapes: Array<[string, number, number, number]> = [
+      ["files1k", 1_000, 1, 80],
+      ["files4k", 4_000, 1, 80],
+      ["files10k", 10_000, 1, 80],
+      ["hits10k", 1, 10_000, 80],
+      ["longLines", 2_000, 1, 4_000],
+    ];
+    const out: Metrics = {};
+    for (const [name, files, hits, lineLength] of shapes) {
+      const m = await streamFind(h, files, hits, lineLength, refresh);
+      for (const [k, v] of Object.entries(m)) out[`${name}${k[0]!.toUpperCase()}${k.slice(1)}`] = v;
+      await h.page.waitForTimeout(300);
+    }
+    return out;
+  },
+};
+
 /**
  * Dragging the splitters with an editor, the Project tree and the Git Log
  * open: every pointer move resizes the islands, so each frame relays them out.
@@ -840,6 +927,7 @@ export const SCENARIOS: Scenario[] = [
   gitLog,
   gitLogScrollbar,
   gitLogWide,
+  findStream,
   resizePanels,
   keyRepeat,
   scroll,

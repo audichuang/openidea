@@ -10,9 +10,18 @@ import { executeAction } from "@/platform/actions";
 import { bindingsFor } from "@/platform/keymap";
 import { activeEditor } from "@/editor/api";
 import { docBackend, type MemoryBackend } from "@/editor/core/backend";
-import type { Commit, CompletionItem, CompletionKind, LogQuery } from "@/bindings";
+import type {
+  Commit,
+  CompletionItem,
+  CompletionKind,
+  FileMatches,
+  LogQuery,
+  SearchQuery,
+  SearchSummary,
+} from "@/bindings";
 import { openProject } from "@/platform/project";
 import { setInvokeRoute } from "@/platform/tauriCore";
+import { nextRequestId } from "@/platform/ipc";
 import { editorService } from "./contributions";
 
 export interface PerfProbe {
@@ -55,6 +64,14 @@ export interface PerfProbe {
    * `latencyMs` (a `git log` call). `0` commits removes it.
    */
   fakeGitLog(commits: number, latencyMs?: number, longBranches?: number): void;
+  /**
+   * Opens a Find tool window tab whose search streams `files` generated files
+   * with `hitsPerFile` matching lines of about `lineLength` characters each, one
+   * file per task as the backend's channel delivers them, at most 4 files a
+   * millisecond (a backend that finds 4,000 files in about a second). Resolves
+   * once the last file and the summary were delivered (or the search was cancelled).
+   */
+  fakeFindStream(files: number, hitsPerFile?: number, lineLength?: number): Promise<void>;
 }
 
 const KINDS: CompletionKind[] = [
@@ -208,6 +225,74 @@ export function installPerfProbe(): () => void {
             }
           : null,
       );
+    },
+    async fakeFindStream(files, hitsPerFile = 1, lineLength = 80) {
+      // Dev / perf builds only: the harness needs a Find tab without a Tauri channel.
+      const { openInFindWindow } = await import("@/features/search/find/windowStore");
+      const filler = "x".repeat(Math.max(0, lineLength - 24));
+      // Synthetic source lines as search reports them (code, not UI text).
+      const lineText = (line: number) => `    val needle${line} = "${filler}"`;
+      const file = (i: number): FileMatches => {
+        const relPath = `src/module${i % 40}/pkg${i % 7}/Orders${i}.kt`;
+        return {
+          path: `/dev/acme-api/${relPath}`,
+          relPath,
+          matches: Array.from({ length: hitsPerFile }, (_, line) => ({
+            line,
+            text: lineText(line),
+            ranges: [[8, 14]],
+            textOffset: 0,
+          })),
+        };
+      };
+      const query: SearchQuery = {
+        pattern: "needle",
+        isRegex: false,
+        caseSensitive: false,
+        wholeWord: false,
+        include: [],
+        exclude: [],
+        scope: { kind: "project" },
+        maxMatches: 0,
+      };
+      await new Promise<void>((delivered) => {
+        let cancelled = false;
+        openInFindWindow(query, "needle", {
+          deps: {
+            validate: async () => {},
+            nextRequestId,
+            cancel: () => void (cancelled = true),
+            start: (_request, _query, onFile) =>
+              new Promise((resolve) => {
+                // One message per file, each in its own task, like a Tauri channel.
+                const port = new MessageChannel();
+                const start = performance.now();
+                let i = 0;
+                const finish = (summary: SearchSummary | null) => {
+                  port.port1.close();
+                  resolve(summary);
+                  delivered();
+                };
+                port.port1.onmessage = () => {
+                  if (cancelled) return finish(null);
+                  const wait = start + i / 4 - performance.now();
+                  if (wait > 0) return void setTimeout(() => port.port2.postMessage(0), wait);
+                  onFile(file(i++));
+                  if (i < files) port.port2.postMessage(0);
+                  else
+                    finish({
+                      files,
+                      matches: files * hitsPerFile,
+                      limitHit: false,
+                      cancelled: false,
+                      elapsedMs: 0,
+                    });
+                };
+                port.port2.postMessage(0);
+              }),
+          },
+        });
+      });
     },
     editorText: () => activeEditor()?.view.state.doc.toString() ?? null,
     insertAfter(after, text) {

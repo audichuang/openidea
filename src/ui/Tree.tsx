@@ -62,6 +62,39 @@ export interface TreeOccurrence {
   total: number;
 }
 
+/** A visible row of a `TreeModel`, with its place among its siblings (`aria-posinset` / `aria-setsize`). */
+export interface TreeModelRow<T> {
+  node: T;
+  key: string;
+  depth: number;
+  parentKey: string | null;
+  expandable: boolean;
+  expanded: boolean;
+  posInSet: number;
+  setSize: number;
+}
+
+/**
+ * The visible rows of a tree that the caller indexes itself, for results that stream in: `Tree`
+ * reads the rows in view and the lead row instead of walking every node on each update.
+ * Expansion is the model's: `setExpanded` is called instead of `onExpandedChange`.
+ * Pass a new model object whenever its rows change: speed search and the row lookups are memoized on it.
+ */
+export interface TreeModel<T> {
+  rowCount: number;
+  rowAt(index: number): TreeModelRow<T> | undefined;
+  indexOfKey(key: string): number;
+  /** Every visible row in order; only used by speed search, Select All and dragging. */
+  forEachRow(visit: (row: TreeModelRow<T>) => void): void;
+  setExpanded(node: T, open: boolean): void;
+  /** `findOccurrence` over the loaded nodes (collapsed ones included). */
+  findOccurrence(
+    lead: string | null,
+    dir: 1 | -1,
+    options: { skipSubtree?: boolean; isOccurrence?: (node: T) => boolean },
+  ): { node: T; ancestors: T[]; index: number; total: number } | null;
+}
+
 export interface TreeHandle {
   focus(): void;
   /** Selects `key` (must be visible, i.e. ancestors expanded) and scrolls to it; false when no row has `key`. */
@@ -80,7 +113,9 @@ export interface TreeHandle {
 }
 
 export interface TreeProps<T> {
-  roots: readonly T[];
+  roots?: readonly T[];
+  /** Replaces `roots`, `expanded` and `onExpandedChange` with an index maintained by the caller. */
+  model?: TreeModel<T>;
   getKey: (node: T) => string;
   getLabel: (node: T) => string;
   /** Loaded children; `undefined` for unloaded (or leaf) nodes. */
@@ -249,6 +284,14 @@ interface Row<T> {
   loading?: boolean;
 }
 
+const NO_ROOTS: readonly never[] = [];
+const NO_ROWS: readonly Row<never>[] = [];
+/** Rows have one height, so a model's index is a key as good as any (and costs no lookup per row). */
+const indexItemKey = (i: number) => i;
+
+/** What the tree reads of a row, whether it flattened `roots` or got the row from a model. */
+type VisibleRow<T> = Omit<Row<T>, "parent"> & Partial<Pick<TreeModelRow<T>, "posInSet" | "setSize">>;
+
 function useControllableSet(value: ReadonlySet<string> | undefined, initial: Iterable<string> | undefined) {
   const [inner, setInner] = useState<ReadonlySet<string>>(() => new Set(initial ?? []));
   return [value ?? inner, setInner, value !== undefined] as const;
@@ -257,7 +300,8 @@ function useControllableSet(value: ReadonlySet<string> | undefined, initial: Ite
 export function Tree<T>(props: TreeProps<T>) {
   const given = useGivenTx();
   const {
-    roots,
+    roots = NO_ROOTS,
+    model,
     getKey,
     getLabel,
     getChildren,
@@ -295,7 +339,8 @@ export function Tree<T>(props: TreeProps<T>) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const baseId = useId();
 
-  const allRows = useMemo(() => {
+  const allRows = useMemo((): readonly Row<T>[] => {
+    if (model) return NO_ROWS;
     const rows: Row<T>[] = [];
     const walk = (nodes: readonly T[], depth: number, parent: number, parentKey: string | null) => {
       for (const node of nodes) {
@@ -323,46 +368,90 @@ export function Tree<T>(props: TreeProps<T>) {
     };
     walk(roots, 0, -1, null);
     return rows;
-  }, [roots, expanded, getKey, isExpandable, getChildren]);
+  }, [model, roots, expanded, getKey, isExpandable, getChildren]);
 
   const matchMap = useMemo(() => {
     const m = new Map<string, number[]>();
     if (!query) return m;
-    for (const r of allRows) {
-      if (r.loading) continue;
+    const check = (r: VisibleRow<T>) => {
+      if (r.loading) return;
       const hit = fuzzyMatch(getLabel(r.node), query);
       if (hit) m.set(r.key, hit);
-    }
+    };
+    if (model) model.forEachRow(check);
+    else allRows.forEach(check);
     return m;
-  }, [allRows, query, getLabel]);
+  }, [model, allRows, query, getLabel]);
 
-  const rows = useMemo(() => {
-    if (!query || !filterMatches) return allRows;
+  // The rows to show when they are not the model's own: speed search filtering, or `roots` flattened.
+  const shown = useMemo((): readonly VisibleRow<T>[] | null => {
+    if (!query || !filterMatches) return model ? null : allRows;
+    if (model) {
+      const kept: VisibleRow<T>[] = [];
+      const keptKeys = new Set<string>();
+      const ancestors: VisibleRow<T>[] = [];
+      model.forEachRow((r) => {
+        ancestors.length = r.depth + 1;
+        ancestors[r.depth] = r;
+        if (!matchMap.has(r.key)) return;
+        for (const a of ancestors) {
+          if (keptKeys.has(a.key)) continue;
+          keptKeys.add(a.key);
+          kept.push(a);
+        }
+      });
+      return kept;
+    }
     const keep = new Set<number>();
     allRows.forEach((r, i) => {
       if (!matchMap.has(r.key)) return;
       for (let j = i; j >= 0 && !keep.has(j); j = allRows[j]!.parent) keep.add(j);
     });
     return allRows.filter((_, i) => keep.has(i));
-  }, [allRows, matchMap, query, filterMatches]);
+  }, [model, allRows, matchMap, query, filterMatches]);
 
-  const byKey = useMemo(() => new Map(allRows.map((r) => [r.key, r])), [allRows]);
-  const emptyState = !rows.length && !!empty && !query;
-  const contentWidth = useContentWidth(scrollRef, rows, !!props.horizontalScroll);
-  const reordering = useTreeReorder(scrollRef, rows, emptyState ? undefined : props.reorder);
-  // aria-posinset / aria-setsize among visible siblings (rows are virtualised).
-  const positions = useMemo(() => siblingPositions(rows), [rows]);
-  const indexOfKey = useMemo(() => new Map(rows.map((r, i) => [r.key, i])), [rows]);
-  const leadIndex = lead != null ? (indexOfKey.get(lead) ?? -1) : -1;
+  const rowCount = shown ? shown.length : model!.rowCount;
+  const rowAt = useCallback(
+    (i: number): VisibleRow<T> | undefined => (shown ? shown[i] : model!.rowAt(i)),
+    [shown, model],
+  );
+  const emptyState = !rowCount && !!empty && !query;
+  /** Every visible row, for what needs them all (Select All, dragging the selection). */
+  const visibleRows = (): readonly VisibleRow<T>[] => {
+    if (shown) return shown;
+    const all: VisibleRow<T>[] = [];
+    model!.forEachRow((r) => all.push(r));
+    return all;
+  };
+  // `horizontalScroll` and `reorder` look at every row, so they materialise a model's rows.
+  const effectRows = useMemo((): readonly Row<T>[] => {
+    if (!props.horizontalScroll && !props.reorder) return NO_ROWS;
+    if (shown) return shown as readonly Row<T>[];
+    const all: Row<T>[] = [];
+    model!.forEachRow((r) => all.push({ ...r, parent: -1 }));
+    return all;
+  }, [shown, model, props.horizontalScroll, props.reorder]);
+  const contentWidth = useContentWidth(scrollRef, effectRows, !!props.horizontalScroll);
+  const reordering = useTreeReorder(scrollRef, effectRows, emptyState ? undefined : props.reorder);
+  // aria-posinset / aria-setsize among visible siblings (rows are virtualised); a model knows its own.
+  const positions = useMemo(() => (shown ? siblingPositions(shown) : null), [shown]);
+  const indexOfKey = useMemo(() => (shown ? new Map(shown.map((r, i) => [r.key, i])) : null), [shown]);
+  const keyIndex = useCallback(
+    (key: string) => (indexOfKey ? (indexOfKey.get(key) ?? -1) : model!.indexOfKey(key)),
+    [indexOfKey, model],
+  );
+  const leadIndex = lead != null ? keyIndex(lead) : -1;
 
   const themedRowHeight = useIconRowHeight();
   const rowHeight = fixedRowHeight ?? themedRowHeight ?? DEFAULT_ROW_HEIGHT;
+  // A new `getItemKey` makes the virtualizer remeasure every row, so it changes only with the rows.
+  const getItemKey = useMemo(() => (shown ? (i: number) => shown[i]!.key : indexItemKey), [shown]);
   const virtualizer = useVirtualizer({
-    count: rows.length,
+    count: rowCount,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => rowHeight,
     overscan: 12,
-    getItemKey: (i) => rows[i]!.key,
+    getItemKey,
   });
   useEffect(() => virtualizer.measure(), [virtualizer, rowHeight]);
 
@@ -379,11 +468,11 @@ export function Tree<T>(props: TreeProps<T>) {
   useEffect(() => {
     const key = pendingScrollToLead.current;
     if (key == null) return;
-    const i = indexOfKey.get(key);
-    if (i === undefined) return;
+    const i = keyIndex(key);
+    if (i < 0) return;
     virtualizer.scrollToIndex(i, { align: "auto" });
     pendingScrollToLead.current = null;
-  }, [lead, indexOfKey, virtualizer]);
+  }, [lead, keyIndex, virtualizer]);
 
   // Speed search owns Escape while active, and ⌫ with any modifier: the query is edited like a
   // text field instead of the view's shortcuts running (⌘⌫ is Drop… in the Database view).
@@ -399,8 +488,13 @@ export function Tree<T>(props: TreeProps<T>) {
     };
   }, [query]);
 
-  const setExpanded = (row: Row<T>, open: boolean) => {
+  const setExpanded = (row: VisibleRow<T>, open: boolean) => {
     if (!row.expandable || row.expanded === open) return;
+    if (model) {
+      model.setExpanded(row.node, open);
+      if (open && getChildren(row.node) === undefined) void loadChildren?.(row.node);
+      return;
+    }
     const next = new Set(expanded);
     if (open) next.add(row.key);
     else {
@@ -410,7 +504,8 @@ export function Tree<T>(props: TreeProps<T>) {
       const stack = [...(getChildren(row.node) ?? [])];
       while (next.size && stack.length) {
         const n = stack.pop()!;
-        if (next.delete(getKey(n)) || isExpandable(n)) stack.push(...(getChildren(n) ?? []));
+        // One push per child: spreading them as call arguments overflows the stack for huge folders.
+        if (next.delete(getKey(n)) || isExpandable(n)) for (const c of getChildren(n) ?? []) stack.push(c);
       }
     }
     if (!expandedControlled) setExpandedInner(next);
@@ -422,15 +517,15 @@ export function Tree<T>(props: TreeProps<T>) {
     (next: Set<string>, leadKey: string | null) => {
       if (!selectedControlled) setSelectedInner(next);
       setLead(leadKey);
-      const leadRow = leadKey != null ? rows[indexOfKey.get(leadKey) ?? -1] : undefined;
+      const leadRow = leadKey != null ? rowAt(keyIndex(leadKey)) : undefined;
       props.onSelectionChange?.(next, leadRow?.node ?? null);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [rows, indexOfKey, selectedControlled, props.onSelectionChange],
+    [rowAt, keyIndex, selectedControlled, props.onSelectionChange],
   );
 
   const selectIndex = (i: number, mode: "single" | "toggle" | "range" = "single") => {
-    const row = rows[i];
+    const row = rowAt(i);
     if (!row || row.loading) return;
     if (mode === "single" || !multiSelect) {
       setAnchor(row.key);
@@ -442,11 +537,14 @@ export function Tree<T>(props: TreeProps<T>) {
       setAnchor(row.key);
       commitSelection(next, row.key);
     } else {
-      const a = anchor != null ? (indexOfKey.get(anchor) ?? i) : leadIndex >= 0 ? leadIndex : i;
-      setAnchor(rows[a]!.key);
+      const a = anchor != null ? (keyIndex(anchor) >= 0 ? keyIndex(anchor) : i) : leadIndex >= 0 ? leadIndex : i;
+      setAnchor(rowAt(a)!.key);
       const [s, e] = a < i ? [a, i] : [i, a];
       const next = new Set<string>();
-      for (let j = s; j <= e; j++) if (!rows[j]!.loading) next.add(rows[j]!.key);
+      for (let j = s; j <= e; j++) {
+        const r = rowAt(j)!;
+        if (!r.loading) next.add(r.key);
+      }
       commitSelection(next, row.key);
     }
   };
@@ -454,8 +552,8 @@ export function Tree<T>(props: TreeProps<T>) {
   useImperativeHandle(handleRef, () => ({
     focus: () => scrollRef.current?.focus(),
     reveal: (key: string) => {
-      const i = indexOfKey.get(key);
-      if (i === undefined) return false;
+      const i = keyIndex(key);
+      if (i < 0) return false;
       setAnchor(key);
       commitSelection(new Set([key]), key);
       virtualizer.scrollToIndex(i, { align: "center" });
@@ -468,13 +566,25 @@ export function Tree<T>(props: TreeProps<T>) {
     leadKey: () => lead,
     moveSelection: (dir: 1 | -1) => {
       const key = lead != null && selected.has(lead) ? lead : ([...selected][0] ?? null);
-      const from = key != null ? (indexOfKey.get(key) ?? -1) : -1;
+      const from = key != null ? keyIndex(key) : -1;
       const i = from < 0 ? step(-1, 1) : step(from, dir);
-      if (i < 0 || i === from || !rows[i]) return;
+      if (i < 0 || i === from || !rowAt(i)) return;
       selectIndex(i);
       virtualizer.scrollToIndex(i);
     },
     selectOccurrence: (dir: 1 | -1, options?: { skipSubtree?: boolean }) => {
+      if (model) {
+        const found = model.findOccurrence(lead, dir, { ...options, isOccurrence: props.isOccurrence });
+        if (!found) return null;
+        for (const a of found.ancestors) model.setExpanded(a, true);
+        const key = getKey(found.node);
+        const sel = new Set([key]);
+        setAnchor(key);
+        if (!selectedControlled) setSelectedInner(sel);
+        setLead(key);
+        props.onSelectionChange?.(sel, found.node);
+        return { key, node: found.node, index: found.index, total: found.total };
+      }
       const found = findOccurrence(
         roots,
         lead,
@@ -504,9 +614,9 @@ export function Tree<T>(props: TreeProps<T>) {
 
   const findMatch = (from: number, dir: 1 | -1, inclusive: boolean, q = query, wrap = true): number => {
     if (!q) return -1;
-    const n = rows.length;
+    const n = rowCount;
     const test = (i: number) => {
-      const r = rows[i]!;
+      const r = rowAt(i)!;
       return !r.loading && fuzzyMatch(getLabel(r.node), q) !== null;
     };
     const start = from < 0 ? (dir === 1 ? 0 : n - 1) : from;
@@ -519,7 +629,7 @@ export function Tree<T>(props: TreeProps<T>) {
     return -1;
   };
 
-  const activate = (row: Row<T>, e: KeyboardEvent | MouseEvent) => {
+  const activate = (row: VisibleRow<T>, e: KeyboardEvent | MouseEvent) => {
     if (row.loading) return;
     const activates = typeof activateExpandable === "function" ? activateExpandable(row.node) : activateExpandable;
     if (row.expandable && !activates) setExpanded(row, !row.expanded);
@@ -527,12 +637,12 @@ export function Tree<T>(props: TreeProps<T>) {
   };
 
   const step = (i: number, dir: 1 | -1) => {
-    for (let j = i + dir; j >= 0 && j < rows.length; j += dir) if (!rows[j]!.loading) return j;
+    for (let j = i + dir; j >= 0 && j < rowCount; j += dir) if (!rowAt(j)!.loading) return j;
     return i;
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
-    const row = leadIndex >= 0 ? rows[leadIndex] : undefined;
+    const row = leadIndex >= 0 ? rowAt(leadIndex) : undefined;
     const pageSize = Math.max(1, Math.floor((scrollRef.current?.clientHeight ?? 300) / rowHeight) - 1);
     const typed =
       speedSearch && e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey && !(e.key === " " && !query);
@@ -583,7 +693,7 @@ export function Tree<T>(props: TreeProps<T>) {
         setQuery("");
         if (!row) return;
         if (row.expandable && !row.expanded) setExpanded(row, true);
-        else if (row.expanded && rows[leadIndex + 1]?.parentKey === row.key && !rows[leadIndex + 1]!.loading)
+        else if (row.expanded && rowAt(leadIndex + 1)?.parentKey === row.key && !rowAt(leadIndex + 1)!.loading)
           selectIndex(leadIndex + 1);
         break;
       case "ArrowLeft":
@@ -591,8 +701,8 @@ export function Tree<T>(props: TreeProps<T>) {
         if (!row) return;
         if (row.expanded) setExpanded(row, false);
         else if (row.parentKey != null) {
-          const pi = indexOfKey.get(row.parentKey);
-          if (pi !== undefined) selectIndex(pi);
+          const pi = keyIndex(row.parentKey);
+          if (pi >= 0) selectIndex(pi);
         }
         break;
       case "Home":
@@ -601,12 +711,12 @@ export function Tree<T>(props: TreeProps<T>) {
         if (query) {
           const hit = findMatch(-1, first ? 1 : -1, true, query, false);
           if (hit >= 0) selectIndex(hit);
-        } else selectIndex(first ? step(-1, 1) : step(rows.length, -1), range ? "range" : "single");
+        } else selectIndex(first ? step(-1, 1) : step(rowCount, -1), range ? "range" : "single");
         break;
       }
       case "PageDown":
         setQuery("");
-        selectIndex(Math.min(rows.length - 1, Math.max(0, leadIndex) + pageSize), range ? "range" : "single");
+        selectIndex(Math.min(rowCount - 1, Math.max(0, leadIndex) + pageSize), range ? "range" : "single");
         break;
       case "PageUp":
         setQuery("");
@@ -620,7 +730,14 @@ export function Tree<T>(props: TreeProps<T>) {
       case "a":
       case "A":
         if (!(e.metaKey || e.ctrlKey) || !multiSelect) return;
-        commitSelection(new Set(rows.filter((r) => !r.loading).map((r) => r.key)), lead);
+        commitSelection(
+          new Set(
+            visibleRows()
+              .filter((r) => !r.loading)
+              .map((r) => r.key),
+          ),
+          lead,
+        );
         break;
       default:
         return;
@@ -631,7 +748,7 @@ export function Tree<T>(props: TreeProps<T>) {
 
   const onRowMouseDown = (e: MouseEvent, i: number) => {
     if (e.button === 2) {
-      if (!selected.has(rows[i]!.key)) selectIndex(i);
+      if (!selected.has(rowAt(i)!.key)) selectIndex(i);
       return;
     }
     if (e.button !== 0) return;
@@ -652,7 +769,7 @@ export function Tree<T>(props: TreeProps<T>) {
     else selectIndex(i);
   };
 
-  const leadRow = leadIndex >= 0 ? rows[leadIndex] : undefined;
+  const leadRow = leadIndex >= 0 ? rowAt(leadIndex) : undefined;
   useTreeDirectoryContext(
     scrollRef,
     leadRow && !leadRow.loading && selected.has(leadRow.key) ? props.getDirectory?.(leadRow.node) : undefined,
@@ -711,7 +828,7 @@ export function Tree<T>(props: TreeProps<T>) {
                 e.preventDefault();
                 const rowEl = (e.target as HTMLElement).closest<HTMLElement>("[data-row]");
                 const i = rowEl ? Number(rowEl.dataset.row) : -1;
-                const row = rows[i];
+                const row = i >= 0 ? rowAt(i) : undefined;
                 const sel =
                   row && selected.has(row.key) ? new Set(selected) : row ? new Set([row.key]) : new Set<string>();
                 onContextMenu(row && !row.loading ? row.node : null, sel, e);
@@ -724,7 +841,7 @@ export function Tree<T>(props: TreeProps<T>) {
             <div aria-hidden data-content-width className={styles.contentWidth} style={{ width: contentWidth }} />
           )}
           {virtualizer.getVirtualItems().map((v) => {
-            const row = rows[v.index]!;
+            const row = rowAt(v.index)!;
             // Settings › Appearance › "Use smaller indents in trees" sets `--tree-indent`
             // on the root; reading it here applies the setting to every tree at once,
             // instantly, and keeps chevrons and level alignment consistent with it.
@@ -733,7 +850,7 @@ export function Tree<T>(props: TreeProps<T>) {
             if (row.loading) {
               return (
                 <div
-                  key={v.key}
+                  key={row.key}
                   className={clsx(styles.row, styles.loading)}
                   style={{ ...style, paddingLeft: pad(20) }}
                   role="presentation"
@@ -743,8 +860,8 @@ export function Tree<T>(props: TreeProps<T>) {
               );
             }
             const isSelected = selected.has(row.key);
-            const prevRow = rows[v.index - 1];
-            const nextRow = rows[v.index + 1];
+            const prevRow = isSelected ? rowAt(v.index - 1) : undefined;
+            const nextRow = isSelected ? rowAt(v.index + 1) : undefined;
             const joinPrev = isSelected && !!prevRow && !prevRow.loading && selected.has(prevRow.key);
             const joinNext = isSelected && !!nextRow && !nextRow.loading && selected.has(nextRow.key);
             const isLead = v.index === leadIndex;
@@ -764,13 +881,13 @@ export function Tree<T>(props: TreeProps<T>) {
             const swatch = getSwatch?.(row.node);
             return (
               <div
-                key={v.key}
+                key={row.key}
                 id={`${baseId}-${v.index}`}
                 data-row={v.index}
                 role="treeitem"
                 aria-level={row.depth + 1}
-                aria-posinset={positions[v.index]![0]}
-                aria-setsize={positions[v.index]![1]}
+                aria-posinset={positions ? positions[v.index]![0] : row.posInSet}
+                aria-setsize={positions ? positions[v.index]![1] : row.setSize}
                 aria-expanded={row.expandable ? row.expanded : undefined}
                 aria-selected={isSelected}
                 className={clsx(
@@ -791,7 +908,9 @@ export function Tree<T>(props: TreeProps<T>) {
                     : props.getDragData
                       ? (e) => {
                           const nodes = selected.has(row.key)
-                            ? rows.filter((r) => selected.has(r.key)).map((r) => r.node)
+                            ? visibleRows()
+                                .filter((r) => selected.has(r.key))
+                                .map((r) => r.node)
                             : [row.node];
                           const data = props.getDragData!(nodes);
                           if (data) startPointerDrag(e, e.currentTarget, data, { always: true });
@@ -809,9 +928,13 @@ export function Tree<T>(props: TreeProps<T>) {
                   onMouseDown={(e) => {
                     if (!row.expandable || e.button !== 0) return;
                     e.stopPropagation();
+                    // Checked before collapsing: a model may hide the descendants right away.
+                    const leadInside =
+                      row.expanded &&
+                      !!leadRow &&
+                      isDescendant((k) => rowAt(keyIndex(k))?.parentKey ?? null, leadRow.key, row.key);
                     setExpanded(row, !row.expanded);
-                    if (!row.expanded) return;
-                    if (leadRow && isDescendant(byKey, leadRow.key, row.key)) selectIndex(v.index);
+                    if (leadInside) selectIndex(v.index);
                   }}
                   onDoubleClick={(e) => e.stopPropagation()}
                 >
@@ -871,9 +994,8 @@ export function Tree<T>(props: TreeProps<T>) {
   );
 }
 
-function isDescendant<T>(byKey: Map<string, Row<T>>, key: string, ancestor: string): boolean {
-  for (let k = byKey.get(key)?.parentKey ?? null; k != null; k = byKey.get(k)?.parentKey ?? null)
-    if (k === ancestor) return true;
+function isDescendant(parentKeyOf: (key: string) => string | null, key: string, ancestor: string): boolean {
+  for (let k = parentKeyOf(key); k != null; k = parentKeyOf(k)) if (k === ancestor) return true;
   return false;
 }
 
