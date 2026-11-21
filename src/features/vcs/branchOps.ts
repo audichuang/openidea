@@ -863,8 +863,8 @@ export async function renameInRepos(name: string, roots: readonly string[], upst
     { undo: tx`rename it back to ${name}`, run: (root) => call(commands.vcsRenameBranch(root, to, name, false)) },
   );
   if (!renamed) return;
-  // Each repository keeps its own recents.
-  for (const root of roots) renameRecent(name, to, root);
+  // Each repository keeps its own recents; `eachRepo` stops at the first failure, so the renamed ones lead.
+  for (const root of roots.slice(0, renamed)) renameRecent(name, to, root);
   // The upstream goes once the rename is final: a rollback could not restore it.
   if (upstream && r.checked && renamed === roots.length)
     for (const root of roots)
