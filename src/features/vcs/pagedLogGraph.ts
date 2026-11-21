@@ -1069,8 +1069,8 @@ function resync(prev: Paged, input: Input, shift: number, tail: number): Paged |
     const identities = snap.nextIdentity - cp.nextIdentity;
     // The same lanes in the same order (the layout may number them otherwise)...
     // A lane through the old head now colours like a commit made on top: the rows kept below
-    // read their keys through `keys`. Only keys of commits above `at` can stand for another, as
-    // no lane started below it has them.
+    // read their keys through `keys`. Only keys of commits above `at` can stand for another: a
+    // lane started below it has one only through a later parent, which falls back below.
     const keys = new Map<string, string>();
     const order = sameOrder(snap.lanes, old, identities, (fresh, kept) => {
       const mapped = keys.get(kept);
@@ -1081,6 +1081,14 @@ function resync(prev: Paged, input: Input, shift: number, tail: number): Paged |
     });
     if (!order) return null;
     for (const [kept, fresh] of keys) if (kept === fresh) keys.delete(kept);
+    // A commit below `at` with one of these as a later parent (listed after its parent) starts a
+    // lane keyed by that parent, which the rows kept below must not read through `keys`.
+    if (keys.size) {
+      const above = new Map<string, number>();
+      for (let r = 0; r < at; r++)
+        for (const p of graph[r]!.parents) if (keys.has(p)) above.set(p, (above.get(p) ?? 0) + 1);
+      for (const kept of keys.keys()) if ((input.children.get(kept) ?? 0) > (above.get(kept) ?? 0)) return null;
+    }
     // ... each later lane taking the same place among them. A list longer or shorter than `prev`'s
     // is laid out again from the last kept state before its end: keep the lanes there.
     const restart =
