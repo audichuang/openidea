@@ -254,12 +254,7 @@ export function installPerfProbe(): () => void {
     fakeHttpResponse(shape, bytes) {
       if (!bytes) return setRoute("http", null);
       const body = httpBody(shape, bytes);
-      const contentType = {
-        json: "application/json",
-        nested: "application/json",
-        xml: "application/xml",
-        text: "text/plain",
-      }[shape];
+      const contentType = shape === "xml" ? "application/xml" : shape === "text" ? "text/plain" : "application/json";
       const url = `http://localhost:8080/api/${shape}`;
       const entry: HttpHistoryEntry = {
         id: `perf-${shape}-${bytes}`,
