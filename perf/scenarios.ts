@@ -809,11 +809,12 @@ const COMBINED_FILES = Number(process.env.OPENIDEA_PERF_COMBINED_FILES ?? 500);
 
 /**
  * An all-in-one diff of many files (`COMBINED_FILES`, mixed binary and large ones, one with
- * up to 50,000 changed lines) scrolled top → bottom → top, at most 600 steps each way
- * (a screen, or more to cross a long diff in 300 steps; measured blocks grow the total), 60 s at most. `peakEditors` /
- * `editorsAfter`: CodeMirror editors mounted at most / once back at the top. Then a working
- * file half-way down is edited, the diff scrolled to the end and back, and the edit must
- * still be in the same editor, unsaved (the scenario fails otherwise).
+ * up to 50,000 changed lines) scrolled top → bottom → top, at most 600 steps and 60 s each
+ * way (a screen, or more to cross a long diff in 300 steps; measured blocks grow the total).
+ * `peakEditors` / `editorsAfter`: CodeMirror editors mounted at most / once back at the top.
+ * Then a working file half-way down is edited, the diff scrolled to the end and back, and the
+ * edit must still be in the same editor, unsaved (the scenario fails otherwise).
+ * `nextFileOffPx`: how far from the top of the view Next File then puts the next file's header.
  */
 const combinedDiff: Scenario = {
   id: "combinedDiff",
@@ -847,7 +848,7 @@ const combinedDiff: Scenario = {
       let peak = editors();
       let steps = 0;
       let reachedEnd = false;
-      for (let i = 0; i < 600 && performance.now() - started < 30_000; i++, steps++) {
+      for (let i = 0; i < 600 && performance.now() - started < 60_000; i++, steps++) {
         if (el.scrollTop + el.clientHeight >= el.scrollHeight - 1) {
           reachedEnd = true;
           break;
@@ -856,7 +857,7 @@ const combinedDiff: Scenario = {
         await frame();
         peak = Math.max(peak, editors());
       }
-      for (let i = 0; i < 600 && el.scrollTop > 0 && performance.now() - started < 60_000; i++, steps++) {
+      for (let i = 0; i < 600 && el.scrollTop > 0 && performance.now() - started < 120_000; i++, steps++) {
         el.scrollTop -= step();
         await frame();
         peak = Math.max(peak, editors());
@@ -870,33 +871,64 @@ const combinedDiff: Scenario = {
     const domNodes = (await h.counters()).Nodes ?? NaN;
 
     // Brings a file's block to the top of the view and waits for its diff. Blocks are mounted only
-    // near the viewport and load their diff once mounted, so stop at the block rather than at its
-    // diff (scrolling a screen per frame would pass a block before its diff loads).
-    const reveal = (sel: string) =>
-      scroller.evaluate(async (el, sel) => {
-        const frame = () => new Promise(requestAnimationFrame);
-        el.scrollTop = 0;
-        for (let i = 0; i < 5000; i++) {
-          if (el.querySelector(sel)) {
-            // Blocks around it settle to their measured heights meanwhile: keep it at the top.
-            for (let j = 0; j < 600 && !el.querySelector(`${sel} .cm-content`); j++) {
-              el.querySelector(sel)?.scrollIntoView({ block: "start" });
-              await frame();
+    // near the viewport, at estimated offsets until measured, and load their diff once mounted:
+    // bisect the scroll offset by the indexes of the blocks mounted, then keep the block at the
+    // top while its diff loads and the blocks around it settle to their measured heights.
+    const reveal = (path: string) =>
+      scroller.evaluate(
+        async (el, { sel, target }) => {
+          const frames = async (n: number) => {
+            for (let k = 0; k < n; k++) await new Promise(requestAnimationFrame);
+          };
+          const loaded = () => !!el.querySelector(`${sel} .cm-content`);
+          const started = performance.now();
+          let lo = 0;
+          let hi = el.scrollHeight;
+          while (performance.now() - started < 60_000) {
+            if (el.querySelector(sel)) {
+              // Until its diff is loaded and it has stayed at the top for 10 frames.
+              let still = 0;
+              for (let j = 0; j < 1200 && still < 10; j++) {
+                const block = el.querySelector(sel);
+                if (!block) break;
+                if (loaded() && Math.abs(block.getBoundingClientRect().top - el.getBoundingClientRect().top) <= 1)
+                  still++;
+                else {
+                  still = 0;
+                  block.scrollIntoView({ block: "start" });
+                }
+                await frames(1);
+              }
+              if (still >= 10) return true;
+              if (el.querySelector(sel)) return false;
+              // Moved out of view as the blocks around it were measured: bisect again from here.
+              lo = 0;
+              hi = el.scrollHeight;
+              continue;
             }
-            el.querySelector(sel)?.scrollIntoView({ block: "start" });
-            await frame();
-            if (el.querySelector(`${sel} .cm-content`)) return true;
+            const shown = [...el.querySelectorAll<HTMLElement>("[data-index]")].map((s) => Number(s.dataset.index));
+            if (!shown.length || (target >= Math.min(...shown) && target <= Math.max(...shown))) {
+              await frames(1);
+              continue;
+            }
+            const below = target > Math.max(...shown);
+            if (below) lo = el.scrollTop;
+            else hi = el.scrollTop;
+            if (below && hi - lo < el.clientHeight) hi = el.scrollHeight;
+            el.scrollTop =
+              hi - lo < el.clientHeight
+                ? el.scrollTop + (below ? 1 : -1) * (el.clientHeight / 2)
+                : Math.round((lo + hi) / 2);
+            await frames(2);
           }
-          if (el.scrollTop + el.clientHeight >= el.scrollHeight - 1) return false;
-          el.scrollTop += el.clientHeight;
-          await frame();
-        }
-        return false;
-      }, sel);
+          return false;
+        },
+        { sel: `[data-combined-block="${path}"]`, target: Number(/(\d+)\.\w+$/.exec(path)![1]) },
+      );
 
     // The header of a file stays at the top while its diff scrolls by.
     const bigBlock = `[data-combined-block="${big}"]`;
-    if (!(await reveal(bigBlock))) throw new Error(`the diff of ${big} never loaded`);
+    if (!(await reveal(big))) throw new Error(`the diff of ${big} never loaded`);
     const sticky = await scroller.evaluate(async (el, sel) => {
       const block = el.querySelector<HTMLElement>(sel)!;
       el.scrollTop += Math.min(2000, block.offsetHeight / 2);
@@ -910,7 +942,7 @@ const combinedDiff: Scenario = {
 
     // Edit the working file half-way down, scroll it far away and come back.
     const block = `[data-combined-block="${editable}"]`;
-    if (!(await reveal(block))) throw new Error(`the diff of ${editable} never loaded`);
+    if (!(await reveal(editable))) throw new Error(`the diff of ${editable} never loaded`);
     const pane = h.page.locator(`${block} .cm-content`).last();
     await pane.click();
     await h.page.keyboard.press("End");
@@ -926,7 +958,7 @@ const combinedDiff: Scenario = {
       }
     });
     await h.page.waitForTimeout(300);
-    await reveal(block);
+    await reveal(editable);
     const kept = await h.page.evaluate(
       ({ sel, path }) => {
         const cm = document.querySelector<HTMLElement>(`${sel} .cm-editor[data-perf-mark]`);
@@ -940,6 +972,18 @@ const combinedDiff: Scenario = {
     );
     if (!kept.sameEditor || !kept.text || !kept.unsaved)
       throw new Error(`the edit did not survive scrolling away: ${JSON.stringify(kept)}`);
+
+    // Next File from there: how far the next file's header lands from the top of the view.
+    await h.page
+      .getByRole("toolbar", { name: "Combined Changes Diff" })
+      .getByRole("button", { name: "Next File" })
+      .click();
+    await h.page.waitForTimeout(500);
+    const nextFileOffPx = await scroller.evaluate((el, sel) => {
+      const blocks = [...el.querySelectorAll("[data-combined-block]")];
+      const next = blocks[blocks.findIndex((b) => b.matches(sel)) + 1];
+      return next ? Math.abs(next.getBoundingClientRect().top - el.getBoundingClientRect().top) : NaN;
+    }, block);
     return {
       openMs,
       ...frameSummary(frames, refresh),
@@ -952,6 +996,7 @@ const combinedDiff: Scenario = {
       scrollSteps: pass.steps,
       scrollMs: pass.ms,
       reachedEnd: pass.reachedEnd ? 1 : 0,
+      nextFileOffPx,
     };
   },
 };
