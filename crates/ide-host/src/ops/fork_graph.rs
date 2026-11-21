@@ -27,7 +27,7 @@ pub async fn graph_working_state(host: &Host, window: &str, repo: Option<PathBuf
 }
 
 /// Ahead and behind commit counts of `head` relative to `base`.
-#[command(trust = trusted)]
+#[command(trust = always)]
 pub async fn graph_rev_counts(
     host: &Host,
     window: &str,
