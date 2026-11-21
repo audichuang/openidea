@@ -374,6 +374,49 @@ describe("the all-in-one diff with many files", () => {
     expect(readsPerToggle(4_000)).toBe(readsPerToggle(40));
   });
 
+  it("reads no other file's data when a block near the top changes height, however many files follow it", () => {
+    const observers: Array<{ cb: ResizeObserverCallback; targets: Set<Element> }> = [];
+    class ControlledResizeObserver {
+      private readonly targets = new Set<Element>();
+      constructor(cb: ResizeObserverCallback) {
+        observers.push({ cb, targets: this.targets });
+      }
+      observe(el: Element) {
+        this.targets.add(el);
+      }
+      unobserve(el: Element) {
+        this.targets.delete(el);
+      }
+      disconnect() {
+        this.targets.clear();
+      }
+    }
+    vi.stubGlobal("ResizeObserver", ControlledResizeObserver);
+    /** Reads of the files' paths while the first block grows, then shrinks back, with `n` files. */
+    const readsPerResize = (n: number) => {
+      let reads = 0;
+      const input = combinedDiffInput({ items: files(n) });
+      const data = input.data as { items: DiffData[] };
+      data.items = data.items.map(({ path, ...rest }) =>
+        Object.defineProperty({ ...rest }, "path", { enumerable: true, get: () => (reads++, path) }),
+      ) as DiffData[];
+      const { unmount } = render(<CombinedDiffTab input={input} />);
+      const slot = document.querySelector<HTMLElement>('[data-index="0"]')!;
+      const resize = (blockSize: number) =>
+        act(() => {
+          for (const o of observers.filter((o) => o.targets.has(slot)))
+            o.cb([{ target: slot, borderBoxSize: [{ blockSize, inlineSize: 800 }] } as never], {} as never);
+        });
+      reads = 0;
+      resize(BLOCK + 60);
+      resize(BLOCK);
+      unmount();
+      observers.length = 0;
+      return reads;
+    };
+    expect(readsPerResize(4_000)).toBe(readsPerResize(40));
+  });
+
   it("loads no diff for a collapsed file scrolled into view, and loads it when expanded", () => {
     const items = files(120);
     render(<CombinedDiffTab input={combinedDiffInput({ items })} />);

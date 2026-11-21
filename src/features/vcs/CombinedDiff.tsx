@@ -331,10 +331,13 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
     },
     [gate],
   );
+  // Built once per list: a block changing height has the virtualizer key every block after it,
+  // and every toggle checks whether all files are collapsed.
+  const keys = useMemo(() => items.map(diffKey), [items]);
   const virtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => scrollRef.current,
-    getItemKey: useCallback((i: number) => diffKey(items[i]!), [items]),
+    getItemKey: useCallback((i: number) => keys[i]!, [keys]),
     estimateSize: useCallback(() => ESTIMATE, []),
     overscan: OVERSCAN,
     rangeExtractor,
@@ -368,7 +371,7 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
 
   // Open at the file the diff was asked for.
   useLayoutEffect(() => {
-    const byKey = data.revealKey ? items.findIndex((i) => diffKey(i) === data.revealKey) : -1;
+    const byKey = data.revealKey ? keys.indexOf(data.revealKey) : -1;
     const at = byKey >= 0 ? byKey : data.reveal ? items.findIndex((i) => i.path === data.reveal) : -1;
     if (at >= 0) scrollToIndex(at);
     // Once per tab: later revisits keep their scroll position.
@@ -389,9 +392,7 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
       }),
     [],
   );
-  // Built once per list: every toggle checks whether all files are collapsed, which can only
-  // be so once as many keys are collapsed as there are files.
-  const keys = useMemo(() => items.map(diffKey), [items]);
+  // All files can only be collapsed once as many keys are collapsed as there are files.
   const distinct = useMemo(() => new Set(keys).size, [keys]);
   const allCollapsed = useMemo(
     () => distinct > 0 && collapsed.size >= distinct && keys.every((k) => collapsed.has(k)),
@@ -443,7 +444,7 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
           <div className={styles.blocks} style={{ height: virtualizer.getTotalSize() }}>
             {rows.map((row) => {
               const item = items[row.index]!;
-              const itemKey = diffKey(item);
+              const itemKey = keys[row.index]!;
               return (
                 <div
                   // Keyed by diff identity (not layout mode): switching the layout keeps each block's diff and its documents.
