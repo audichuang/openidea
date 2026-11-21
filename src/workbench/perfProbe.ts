@@ -480,7 +480,7 @@ export function installPerfProbe(): () => void {
           const ids = (args as { commits?: string[] })?.commits ?? [];
           return Promise.resolve(
             ids.map((id) => ({
-              message: `Commit ${id}`,
+              message: ["Commit", id].join(" "),
               containingBranches: ["main"],
               signature: "N",
               signer: "",
