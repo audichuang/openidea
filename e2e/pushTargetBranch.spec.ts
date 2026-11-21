@@ -200,9 +200,11 @@ test("Push keeps per-repository targets editable with long source branches", asy
       )
       .toBe(true);
   }
+  // The fork opens the multi-repository Push with no repository checked (#224): check one, then edit its target.
+  const repo = dialog.getByRole("checkbox", { name: "acme-api" });
+  await repo.check();
   await input.fill("release/checkout");
   await expect(input).toHaveValue("release/checkout");
   await expect(other).toHaveValue(/^feature\//);
-  // The fork opens the multi-repository Push with no repository checked (#224); editing a target does not check it.
-  await expect(dialog.getByRole("checkbox", { name: "acme-api" })).not.toBeChecked();
+  await expect(repo).toBeChecked();
 });
