@@ -162,6 +162,8 @@ export interface PerfProbe {
    * and returns the oldest commit (the target to rebase from). `0` removes it.
    */
   fakeInteractiveRebase(commits: number): Commit | null;
+  /** Makes `commits` new commits on top of the fake Git Log's newest one, which hands them its refs. */
+  fakeGitLogCommit(commits: number): void;
 }
 
 export type HttpBodyShape = "json" | "nested" | "xml" | "text";
@@ -294,6 +296,8 @@ function combinedSource(n: number, lines: number, rev: string, all = false): str
 
 type Route = (cmd: string, args: unknown) => Promise<unknown> | null;
 const routes = new Map<string, Route>();
+/** The fake Git Log's history, newest first (`fakeGitLog`). */
+let fakeLog: Commit[] = [];
 
 /** Installs (or with `null` removes) one fake backend; the first that answers a command wins. */
 function setRoute(name: string, next: Route | null) {
@@ -395,6 +399,7 @@ export function installPerfProbe(): () => void {
     },
     fakeGitLog(count, latencyMs = 0, longBranches = 0) {
       const commits = Array.from({ length: count }, (_, i) => commit(i, count));
+      fakeLog = commits;
       // Short merges alone miss the cost of several long-lived lanes crossing the same rows.
       for (let i = 0; i < longBranches; i++) {
         const tip = commits[i]!;
@@ -626,6 +631,29 @@ export function installPerfProbe(): () => void {
         return null;
       });
       return chronological[0]!;
+    },
+    fakeGitLogCommit(made) {
+      const top = fakeLog[0];
+      if (!top) throw new Error("fakeGitLog first");
+      // Ids above every generated one.
+      const id = (k: number) => (fakeLog.length + made - k).toString(16).padStart(40, "0");
+      const added = Array.from({ length: made }, (_, k) => {
+        const summary = `feat(orders): new work ${k}`;
+        const time = top.timeMs + (made - k) * 60_000;
+        return {
+          ...top,
+          id: id(k),
+          shortId: id(k).slice(-8),
+          parents: [k + 1 < made ? id(k + 1) : top.id],
+          refs: k ? [] : top.refs,
+          timeMs: time,
+          commitTimeMs: time,
+          summary,
+          message: summary,
+        };
+      });
+      fakeLog[0] = { ...top, refs: [] };
+      fakeLog.unshift(...added);
     },
     editorText: (from = 0, to) => activeEditor()?.view.state.doc.sliceString(from, to) ?? null,
     fakePrCommits(count) {
