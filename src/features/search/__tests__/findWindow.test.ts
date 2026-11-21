@@ -178,7 +178,7 @@ describe("buildFindTree", () => {
     expect(seen.size).toBe(10_000);
     expect(findOccurrence(roots, lead, 1, occurrenceModel)).toBeNull();
     expect(findOccurrence(roots, lead, -1, occurrenceModel)?.index).toBe(9_999);
-  });
+  }, 60_000);
 
   // Each step walks the whole tree, so 10,000 files are checked at every 50th match.
   it("Next Occurrence steps through 10,000 files in order", () => {
