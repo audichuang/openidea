@@ -18,6 +18,8 @@ import type {
   CompletionItem,
   CompletionKind,
   FileMatches,
+  HttpExchange,
+  HttpHistoryEntry,
   LogQuery,
   SearchQuery,
   SearchSummary,
@@ -120,7 +122,15 @@ export interface PerfProbe {
    * once the last file and the summary were delivered (or the search was cancelled).
    */
   fakeFindStream(files: number, hitsPerFile?: number, lineLength?: number): Promise<void>;
+  /**
+   * Adds one HTTP Client history entry whose response body is ~`bytes` of
+   * generated `shape` text (single-line JSON, deeply nested JSON, XML or plain
+   * text lines), ending in `last-item`. `0` bytes removes it.
+   */
+  fakeHttpResponse(shape: HttpBodyShape, bytes: number): void;
 }
+
+export type HttpBodyShape = "json" | "nested" | "xml" | "text";
 
 const KINDS: CompletionKind[] = [
   "method",
@@ -197,6 +207,40 @@ function revisionText(file: number, lines: number, rev: string): string {
       ? `export const v${file}_${i} = compute("${rev}", ${i});`
       : `export const v${file}_${i} = compute(${i});`,
   ).join("\n");
+}
+
+/** ~`bytes` of response body text of `shape`; the last record is named `last-item`. */
+function httpBody(shape: HttpBodyShape, bytes: number): string {
+  const parts: string[] = [];
+  let size = 0;
+  const push = (s: string) => {
+    parts.push(s);
+    size += s.length;
+  };
+  const record = (i: number) =>
+    `{"id":${i},"name":"item-${i}","price":${(i * 1.25).toFixed(2)},"tags":["a","b"],"owner":{"id":${i % 97},"active":${i % 2 === 0}}}`;
+  switch (shape) {
+    case "json":
+      for (let i = 0; size < bytes; i++) push((i ? "," : "[") + record(i));
+      return `${parts.join("")},{"name":"last-item"}]`;
+    case "nested": {
+      // Records 40 levels deep, side by side.
+      const depth = 40;
+      const open = Array.from({ length: depth }, (_, d) => `{"level${d}":`).join("");
+      const close = "}".repeat(depth);
+      for (let i = 0; size < bytes; i++) push(`${i ? "," : "["}${open}${record(i)}${close}`);
+      return `${parts.join("")},{"name":"last-item"}]`;
+    }
+    case "xml":
+      for (let i = 0; size < bytes; i++)
+        push(
+          `<item id="${i}"><name>item-${i}</name><price>${(i * 1.25).toFixed(2)}</price><tags><tag>a</tag></tags></item>`,
+        );
+      return `<root>${parts.join("")}<item><name>last-item</name></item></root>`;
+    case "text":
+      for (let i = 0; size < bytes; i++) push(`${i} INFO  order-service  processed order item-${i} in ${i % 50} ms\n`);
+      return `${parts.join("")}last-item`;
+  }
 }
 
 type Route = (cmd: string, args: unknown) => Promise<unknown> | null;
@@ -618,6 +662,49 @@ export function installPerfProbe(): () => void {
     prRefreshStats: () => ({ ...prStats }),
     resetPrRefreshStats() {
       prStats = { logCalls: 0, commitsFetched: 0, countCalls: 0, diffCalls: 0 };
+    },
+    fakeHttpResponse(shape, bytes) {
+      if (!bytes) return setRoute("http", null);
+      const body = httpBody(shape, bytes);
+      const contentType = {
+        json: "application/json",
+        nested: "application/json",
+        xml: "application/xml",
+        text: "text/plain",
+      }[shape];
+      const url = `http://localhost:8080/api/${shape}`;
+      const entry: HttpHistoryEntry = {
+        id: `perf-${shape}-${bytes}`,
+        timeMs: Date.UTC(2026, 10, 5),
+        name: null,
+        method: "GET",
+        url,
+        status: 200,
+        totalMs: 120,
+        file: null,
+        error: null,
+      };
+      const exchange: HttpExchange = {
+        entry,
+        request: { name: null, method: "GET", url, headers: [], body: null },
+        response: {
+          status: 200,
+          statusText: "OK",
+          version: "HTTP/1.1",
+          headers: [["content-type", contentType]],
+          contentType,
+          body,
+          size: body.length,
+          truncated: false,
+          ttfbMs: 40,
+          totalMs: 120,
+        },
+      };
+      setRoute("http", (cmd) => {
+        if (cmd === "http_history") return Promise.resolve([entry]);
+        if (cmd === "http_history_get") return Promise.resolve(exchange);
+        return null;
+      });
     },
     insertAfter(after, text) {
       const view = requireView();
