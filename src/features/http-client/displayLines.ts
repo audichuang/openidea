@@ -98,3 +98,12 @@ export function textBetween(state: EditorState, from: number, to: number): strin
   const d = state.field(displayed);
   return d.text.slice(textOffset(d, from), textOffset(d, to));
 }
+
+/** The line of the text as received (without its `\n`) at a document position. */
+export function lineAt(state: EditorState, pos: number): { from: number; text: string } {
+  const d = state.field(displayed);
+  const offset = textOffset(d, pos);
+  const from = d.text.lastIndexOf("\n", offset - 1) + 1;
+  const end = d.text.indexOf("\n", offset);
+  return { from, text: d.text.slice(from, end < 0 ? d.text.length : end) };
+}
