@@ -21,7 +21,14 @@ import { logLineColor } from "@/ui/logColors";
 import { compileConsoleRules, matchConsoleRules, styleSpans, type ConsoleRuleMatch } from "@/ui/consoleRules";
 import { useConsoleRules } from "@/workbench/contributions";
 import type { ConsoleLine, ConsoleModel } from "./console";
-import { findOutputLinks, type OutputLink } from "./links";
+import {
+  findOutputLinks,
+  horizontalColumnWindow,
+  sliceRangesInWindow,
+  visibleCharWindow,
+  type OutputLink,
+  type TextWindow,
+} from "./links";
 import { debugConsoleUrl, openTarget, openUrl } from "./navigate";
 import { segmentLine, type SegmentMark } from "./segments";
 import styles from "./Run.module.css";
@@ -31,10 +38,31 @@ import { WidestColumns } from "@/platform/consoleColumns";
 import { tx } from "@/platform/i18n";
 import { executeAction } from "@/platform/actions";
 import { ConsoleFindBar } from "@/ui/ConsoleFindBar";
-import { DEFAULT_FIND_OPTIONS, findInLines, type FindOptions } from "@/ui/consoleFind";
+import {
+  DEFAULT_FIND_OPTIONS,
+  MAX_MATCHES,
+  findInLines,
+  type ConsoleMatch,
+  type FindOptions,
+  type FindResult,
+} from "@/ui/consoleFind";
 
 const MARK_COLOR = "var(--bg-search-match)";
 const CURRENT_MARK_COLOR = "var(--bg-search-match-current)";
+const EMPTY_FIND: FindResult = { matches: [], overflow: false, invalid: false };
+const EMPTY_ROW_MAP = new Map<number, number>();
+const isCurrentMark = (m: SegmentMark) => !!m.current;
+
+function sameMarks(a: readonly SegmentMark[] | undefined, b: readonly SegmentMark[] | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]!;
+    const y = b[i]!;
+    if (x.start !== y.start || x.end !== y.end || !!x.current !== !!y.current) return false;
+  }
+  return true;
+}
 
 const Line = memo(
   function Line({
@@ -42,16 +70,28 @@ const Line = memo(
     marks,
     rules,
     cwd,
+    colStart,
+    colEnd,
   }: {
     line: ConsoleLine;
     marks?: readonly SegmentMark[];
     rules?: ConsoleRuleMatch;
     length: number;
     cwd: string;
+    colStart?: number;
+    colEnd?: number;
   }) {
     // Not memoised: the open (last) line mutates in place; `memo` below re-renders on length changes only.
     const spans = rules ? styleSpans(line.spans, rules) : line.spans;
-    const segments = segmentLine(spans, line.kind === "system" ? [] : findOutputLinks(line.text), marks);
+    const rawLinks = line.kind === "system" ? [] : findOutputLinks(line.text);
+    let links: readonly OutputLink[] = rawLinks;
+    let visibleMarks: readonly SegmentMark[] | undefined = marks;
+    if (colStart !== undefined && colEnd !== undefined && (colStart > 0 || line.text.length > colEnd)) {
+      const win = visibleCharWindow(line.text, colStart, colEnd);
+      links = sliceRangesInWindow(rawLinks, win.start, win.end);
+      if (marks) visibleMarks = sliceRangesInWindow(marks, win.start, win.end, isCurrentMark);
+    }
+    const segments = segmentLine(spans, links, visibleMarks);
     const activate = (e: MouseEvent, link: OutputLink) => {
       e.preventDefault();
       if (window.getSelection()?.toString()) return;
@@ -101,7 +141,14 @@ const Line = memo(
       </>
     );
   },
-  (a, b) => a.line === b.line && a.length === b.length && a.cwd === b.cwd && a.marks === b.marks && a.rules === b.rules,
+  (a, b) =>
+    a.line === b.line &&
+    a.length === b.length &&
+    a.cwd === b.cwd &&
+    a.rules === b.rules &&
+    a.colStart === b.colStart &&
+    a.colEnd === b.colEnd &&
+    sameMarks(a.marks, b.marks),
 );
 
 /** A run of folded lines (Settings › Console › Fold lines that contain). */
@@ -118,6 +165,23 @@ export interface Fold {
  * the `<N internal lines>` placeholder to the previous line), or a fold with no line before it.
  */
 export type DisplayRow = { kind: "line"; index: number; fold?: Fold } | { kind: "fold"; fold: Fold };
+
+const foldMatchCache = new WeakMap<readonly string[], WeakMap<ConsoleLine, { length: number; matched: boolean }>>();
+
+function lineMatchesFold(line: ConsoleLine, patterns: readonly string[]): boolean {
+  if (line.kind === "system" || patterns.length === 0) return false;
+  let perPattern = foldMatchCache.get(patterns);
+  if (!perPattern) {
+    perPattern = new WeakMap();
+    foldMatchCache.set(patterns, perPattern);
+  }
+  const len = line.text.length;
+  const cached = perPattern.get(line);
+  if (cached && cached.length === len) return cached.matched;
+  const matched = patterns.some((p) => line.text.includes(p));
+  perPattern.set(line, { length: len, matched });
+  return matched;
+}
 
 /**
  * IDEA's Fold Lines Like This: the selection when it stays on one line, else the clicked line;
@@ -138,11 +202,14 @@ export function foldRows(
   expanded: ReadonlySet<number>,
 ): DisplayRow[] {
   const rows: DisplayRow[] = [];
-  const matches = (l: ConsoleLine) => l.kind !== "system" && patterns.some((p) => l.text.includes(p));
+  if (patterns.length === 0) {
+    for (let i = 0; i < lines.length; i++) rows.push({ kind: "line", index: i });
+    return rows;
+  }
   for (let i = 0; i < lines.length;) {
-    if (patterns.length && matches(lines[i]!)) {
+    if (lineMatchesFold(lines[i]!, patterns)) {
       let j = i + 1;
-      while (j < lines.length && matches(lines[j]!)) j++;
+      while (j < lines.length && lineMatchesFold(lines[j]!, patterns)) j++;
       const fold: Fold = { start: i, count: j - i, id: lines[i]!.id, expanded: expanded.has(lines[i]!.id) };
       const prev = rows[rows.length - 1];
       if (prev?.kind === "line") prev.fold = fold;
@@ -250,6 +317,21 @@ export function ConsoleView({
       return next;
     });
   const programmatic = useRef(false);
+  const [colWindow, setColWindow] = useState<TextWindow | null>(null);
+  const syncHorizontalWindow = (el: HTMLDivElement | null) => {
+    const next = softWrap || !el ? null : horizontalColumnWindow(el.scrollLeft, el.clientWidth, consoleFont.size);
+    setColWindow((prev) => (prev?.start === next?.start && prev?.end === next?.end ? prev : next));
+  };
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    syncHorizontalWindow(el);
+    if (softWrap || !el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => syncHorizontalWindow(el));
+    ro.observe(el);
+    return () => ro.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- consoleFont.size and softWrap govern window width
+  }, [softWrap, consoleFont.size]);
 
   const { rangeExtractor, selecting } = useConsoleSelection(scrollRef, () => onFollowChange(false));
   const virtualizer = useVirtualizer({
@@ -257,7 +339,7 @@ export function ConsoleView({
     count,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => rowHeight,
-    overscan: 30,
+    overscan: 15,
     getItemKey: (i) => {
       const r = rows[i];
       if (!r) return "input";
@@ -281,18 +363,74 @@ export function ConsoleView({
 
   const onScroll = () => {
     const el = scrollRef.current;
-    if (!el || programmatic.current) return;
+    if (!el) return;
+    if (!softWrap) syncHorizontalWindow(el);
+    if (programmatic.current) return;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < rowHeight;
     if (atBottom && selecting) return;
     if (atBottom !== follow) onFollowChange(atBottom);
   };
 
-  // Find (⌘F): search the whole buffer, not just the rendered rows.
-  const found = useMemo(
-    () => (findOpen ? findInLines(lines, query, findOptions) : { matches: [], overflow: false, invalid: false }),
+  // Find (⌘F): search the whole buffer, not just the rendered rows, caching completed lines across flushes.
+  const findCache = useRef<{
+    query: string;
+    options: FindOptions;
+    invalid: boolean;
+    byId: Map<number, { length: number; spans: Array<{ start: number; end: number }> }>;
+  } | null>(null);
+  const found = useMemo((): FindResult => {
+    if (!findOpen || !query) {
+      findCache.current = null;
+      return EMPTY_FIND;
+    }
+    let cache = findCache.current;
+    if (
+      !cache ||
+      cache.query !== query ||
+      cache.options.caseSensitive !== findOptions.caseSensitive ||
+      cache.options.wholeWord !== findOptions.wholeWord ||
+      cache.options.regex !== findOptions.regex
+    ) {
+      const probe = findInLines([], query, findOptions, 1);
+      cache = { query, options: findOptions, invalid: probe.invalid, byId: new Map() };
+      findCache.current = cache;
+    }
+    if (cache.invalid) return { matches: [], overflow: false, invalid: true };
+    const firstId = lines[0]?.id ?? 0;
+    if (cache.byId.size > lines.length + 512) {
+      for (const id of cache.byId.keys()) {
+        if (id < firstId) cache.byId.delete(id);
+      }
+    }
+    const matches: ConsoleMatch[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]!;
+      const hit = cache.byId.get(line.id);
+      if (hit && hit.length === line.text.length) {
+        for (const s of hit.spans) {
+          if (matches.length >= MAX_MATCHES) return { matches, overflow: true, invalid: false };
+          matches.push({ line: i, lineId: line.id, start: s.start, end: s.end });
+        }
+        continue;
+      }
+      const remaining = MAX_MATCHES - matches.length;
+      const res = findInLines([line], query, findOptions, remaining);
+      if (res.invalid) {
+        cache.invalid = true;
+        return { matches: [], overflow: false, invalid: true };
+      }
+      if (!res.overflow) {
+        cache.byId.set(line.id, {
+          length: line.text.length,
+          spans: res.matches.map((m) => ({ start: m.start, end: m.end })),
+        });
+      }
+      for (const m of res.matches) matches.push({ line: i, lineId: line.id, start: m.start, end: m.end });
+      if (res.overflow) return { matches, overflow: true, invalid: false };
+    }
+    return { matches, overflow: false, invalid: false };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `version` marks in-place appends to `lines`
-    [findOpen, lines, version, query, findOptions],
-  );
+  }, [findOpen, lines, version, query, findOptions]);
   const activeIndex = found.matches.length ? Math.min(Math.max(active, 0), found.matches.length - 1) : -1;
   const activeMatch = activeIndex >= 0 ? found.matches[activeIndex] : undefined;
   const marksByLine = useMemo(() => {
@@ -306,12 +444,13 @@ export function ConsoleView({
     return byLine;
   }, [found, activeIndex]);
   const rowOfLine = useMemo(() => {
+    if (!findOpen) return EMPTY_ROW_MAP;
     const rowsByLine = new Map<number, number>();
     rows.forEach((row, i) => {
       if (row.kind === "line") rowsByLine.set(row.index, i);
     });
     return rowsByLine;
-  }, [rows]);
+  }, [findOpen, rows]);
 
   /** The line at the top of the viewport: typing searches from there, as IDEA does. */
   const topLine = () => {
@@ -669,6 +808,8 @@ export function ConsoleView({
                   rules={ruled}
                   length={line.text.length}
                   cwd={cwd}
+                  colStart={colWindow?.start}
+                  colEnd={colWindow?.end}
                 />
                 {row.fold && !row.fold.expanded && foldButton(row.fold, true)}
                 {inputInline && item.index === rows.length - 1 && pendingInput}
