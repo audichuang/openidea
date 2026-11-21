@@ -270,7 +270,8 @@ export function SelectionHistoryEditor({ input }: { input: EditorInput }) {
             <T>History for Selection</T>
           </span>
           <span className={styles.range} title={range}>
-            {range}
+            <span className={styles.file}>{baseName(data.path)}</span>
+            {`:${from + 1}-${to + 1}`}
           </span>
           {listing && !error && <Spinner size={12} />}
         </div>

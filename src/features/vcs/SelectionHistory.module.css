@@ -1,11 +1,16 @@
 .range {
+  display: flex;
   min-width: 0;
   max-width: min(60%, 52ch);
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--fg-subtle);
   font-size: var(--fs-small);
+}
+/* A long file name gives way; the line range after it stays whole. */
+.file {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .table {
   --list-inset: var(--space-1);
