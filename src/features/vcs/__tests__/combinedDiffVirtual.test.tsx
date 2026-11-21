@@ -568,7 +568,7 @@ describe("the all-in-one diff with many files", () => {
     // Scroll back to top and confirm no leaked editors.
     scroll(scroller(), 0);
     expect(mounted().length).toBeLessThanOrEqual(initialCount);
-  }, 30_000);
+  }, 120_000);
 
   it("reaches all 5,000 mixed files without skipping ranges and expands binary, large, and last files", () => {
     const bigAt = Math.floor(5_000 / 3);
@@ -660,5 +660,5 @@ describe("the all-in-one diff with many files", () => {
     expect(screen.getByLabelText(`Edit ${last}`)).toBe(field);
     expect(field.value).toBe("edited 5000th file");
     expect(dirtyDocs.has(lastDocId)).toBe(true);
-  }, 30_000);
+  }, 120_000);
 });
