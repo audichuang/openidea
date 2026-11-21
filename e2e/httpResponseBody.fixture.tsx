@@ -3,6 +3,7 @@ import type { EditorView } from "@codemirror/view";
 import { createRoot } from "react-dom/client";
 import "../src/styles/global.css";
 import { ResponseBody } from "../src/features/http-client/ResponseBody";
+import { displayed, textOffset } from "../src/features/http-client/displayLines";
 import { DEFAULT_FIND_OPTIONS, findInLines } from "../src/ui/consoleFind";
 
 // `?chars=<n>`: a response body that is one line of ~n characters (a minified body in Raw), ending in
@@ -31,8 +32,18 @@ const view: { current: EditorView | null } = { current: null };
 Object.assign(window, {
   drawn,
   rawLength: raw.length,
-  docLength: () => view.current?.state.doc.length,
-  selection: () => view.current?.state.selection.main.toJSON(),
+  // The document without the line breaks that split long lines for display.
+  docLength: () => {
+    const doc = view.current!.state.doc;
+    return doc.length - (doc.lines - 1) + (raw.split("\n").length - 1);
+  },
+  // In the text as received.
+  selection: () => {
+    const { state } = view.current!;
+    const d = state.field(displayed);
+    const { anchor, head } = state.selection.main;
+    return { anchor: textOffset(d, anchor), head: textOffset(d, head) };
+  },
 });
 
 const query = params.get("find") ?? "";
