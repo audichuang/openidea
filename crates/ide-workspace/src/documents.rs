@@ -1394,7 +1394,7 @@ impl Documents {
             st.has_bom = loaded.has_bom;
             st.encoding_unsaved = false;
             self.replace_locked(doc, st, &loaded.text)?;
-            st.synced(loaded.mtime_ms);
+            st.synced(loaded.mtime_ms, loaded.content_hash);
             self.set_dirty(doc, st, false);
             Ok(())
         })
