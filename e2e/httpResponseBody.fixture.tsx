@@ -8,6 +8,7 @@ import { DEFAULT_FIND_OPTIONS, findInLines } from "../src/ui/consoleFind";
 // `?chars=<n>`: a response body that is one line of ~n characters (a minified body in Raw), ending in
 // `last-item`. "Show Formatted" / "Show Raw" swap it with a multi-line text, as the response toggle does.
 // `&find=<query>`: the find bar's matches for that query, the first one current.
+// `&hidden`: the body starts in a hidden pane (as in a hidden tool window); "Show Pane" shows it.
 const params = new URLSearchParams(location.search);
 const chars = Number(params.get("chars") ?? 1_000_000);
 const record = (i: number) => `{"id":${i},"name":"item-${i}","tags":["a","b"]}`;
@@ -27,7 +28,12 @@ document.createTextNode = (text: string) => {
   return createTextNode(text);
 };
 const view: { current: EditorView | null } = { current: null };
-Object.assign(window, { drawn, rawLength: raw.length, docLength: () => view.current?.state.doc.length });
+Object.assign(window, {
+  drawn,
+  rawLength: raw.length,
+  docLength: () => view.current?.state.doc.length,
+  selection: () => view.current?.state.selection.main.toJSON(),
+});
 
 const query = params.get("find") ?? "";
 const matchesOf = (text: string) =>
@@ -40,11 +46,13 @@ const matches = { raw: matchesOf(raw), formatted: matchesOf(formatted) };
 
 function Fixture() {
   const [showRaw, setShowRaw] = useState(params.has("raw"));
+  const [hidden, setHidden] = useState(params.has("hidden"));
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
       <button onClick={() => setShowRaw((v) => !v)}>{showRaw ? "Show Formatted" : "Show Raw"}</button>
+      <button onClick={() => setHidden(false)}>Show Pane</button>
       {/* Sized like the response pane, so the body scrolls inside its own scroller. */}
-      <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+      <div style={{ flex: 1, minHeight: 0, display: hidden ? "none" : "flex", flexDirection: "column" }}>
         <ResponseBody
           text={showRaw ? raw : formatted}
           matches={showRaw ? matches.raw : matches.formatted}
