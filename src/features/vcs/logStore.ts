@@ -89,6 +89,21 @@ interface LogFragments {
 
 const emptyFragments = (): LogFragments => ({ expanded: new Set(), collapsed: new Set(), merges: new Set() });
 
+/** `fragments` with the linear chain `ids` shown (`expand`) or collapsed again. */
+export function toggleLinearFragment(fragments: LogFragments, ids: readonly string[], expand: boolean): LogFragments {
+  // A Set, not `ids.includes`: a chain can hold every loaded commit.
+  const moved = new Set(ids);
+  const without = (set: ReadonlySet<string>) => new Set([...set].filter((id) => !moved.has(id)));
+  const withIds = (set: ReadonlySet<string>) => {
+    const next = new Set(set);
+    for (const id of ids) next.add(id);
+    return next;
+  };
+  return expand
+    ? { ...fragments, expanded: withIds(fragments.expanded), collapsed: without(fragments.collapsed) }
+    : { ...fragments, expanded: without(fragments.expanded), collapsed: withIds(fragments.collapsed) };
+}
+
 function parseFragments(value: unknown): LogFragments {
   const raw = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
   const ids = (value: unknown) =>
