@@ -233,7 +233,7 @@
   content-visibility: auto;
 }
 /* Keep turns distinct and the work within a turn close to its author. */
-.stream > * + * {
+.stream > :where(:not(:first-child)) {
   margin-top: var(--space-4);
 }
 .stream > [data-process] + [data-process] {
