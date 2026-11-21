@@ -29,11 +29,8 @@ export function blockKind(item: DiffData): Kind {
 
 /** Height of a block not measured yet: its header and a short diff. */
 const ESTIMATE = 200;
-/**
- * Blocks mounted past each edge of the viewport. One: each mounted diff adds to the style
- * recalculation every later mount triggers, which is most of a mount's cost while reading down.
- */
-const OVERSCAN = 1;
+/** Blocks mounted past each edge of the viewport. */
+const OVERSCAN = 2;
 /** Longest a block coming back into view keeps its last height while its diff reloads. */
 const HOLD_MS = 1000;
 /** Scroll speed (px per ms) from which blocks coming into view wait for the scrolling to settle. */
