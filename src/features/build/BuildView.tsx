@@ -19,6 +19,7 @@ import {
 import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { basename, relativeDir, useProject } from "@/platform/project";
+import { fontsLoaded, monoStack } from "@/platform/fonts";
 import {
   EmptyState,
   Icon,
@@ -307,14 +308,11 @@ function BuildConsole({ font }: { font: ConsoleFont }) {
     let active = true;
     charWidthRef.current = el.clientWidth > 0 ? measureMonoCharWidth(el) : undefined;
     syncHorizontalWindow(el);
-    const fonts = el.ownerDocument?.fonts;
-    if (fonts?.ready) {
-      void fonts.ready.then(() => {
-        if (!active) return;
-        charWidthRef.current = el.clientWidth > 0 ? measureMonoCharWidth(el) : undefined;
-        syncHorizontalWindow(el);
-      });
-    }
+    void fontsLoaded(monoStack(), BUILD_FONT_PX).then(() => {
+      if (!active) return;
+      charWidthRef.current = el.clientWidth > 0 ? measureMonoCharWidth(el) : undefined;
+      syncHorizontalWindow(el);
+    });
     const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => syncHorizontalWindow(el)) : null;
     ro?.observe(el);
     return () => {
