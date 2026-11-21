@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { usePlatform } from "@/platform/platformInfo";
+import { useProject } from "@/platform/project";
+import { setInvokeRoute } from "@/platform/tauriCore";
 import { adoptSession, appendConsole, useDebug } from "../state";
 import { DebugConsole } from "../ui/DebugConsole";
 
@@ -152,5 +154,107 @@ describe("Debug console links", () => {
     Object.defineProperty(log, "scrollLeft", { configurable: true, writable: true, value: 78_400 });
     fireEvent.scroll(log);
     expect(screen.getByRole("link", { name: "src/end.go:3:3" })).toBeInTheDocument();
+  });
+
+  it("re-measures char width after delayed macOS user font registration so far links stay clickable", async () => {
+    const prevSettings = useProject.getState().settings;
+    const prevFonts = Object.getOwnPropertyDescriptor(document, "fonts");
+    let resolveFontData!: (buf: ArrayBuffer) => void;
+    let probeWidth = 780;
+    const fontDataPromise = new Promise<ArrayBuffer>((resolve) => {
+      resolveFontData = resolve;
+    });
+
+    vi.stubGlobal("isTauri", true);
+    setInvokeRoute((cmd) => (cmd === "user_font_data" ? fontDataPromise : null));
+    const ctxSpy = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
+      () =>
+        ({
+          font: "",
+          measureText: () => ({ width: 100 }),
+        }) as unknown as CanvasRenderingContext2D,
+    );
+    const rectSpy = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      const width = this.textContent === "0".repeat(100) ? probeWidth : 0;
+      return { width, height: 0, top: 0, left: 0, bottom: 0, right: width, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+    });
+    vi.stubGlobal(
+      "FontFace",
+      class {
+        constructor(
+          public family: string,
+          _bytes: ArrayBuffer,
+          public descriptors: unknown,
+        ) {}
+        load() {
+          probeWidth = 715;
+          return Promise.resolve(this);
+        }
+      },
+    );
+    const load = vi.fn().mockResolvedValue([]);
+    Object.defineProperty(document, "fonts", {
+      configurable: true,
+      value: { add: vi.fn(), delete: vi.fn(), load, ready: Promise.resolve() },
+    });
+
+    try {
+      useProject.setState({ settings: { editor: { fontFamily: "DelayedDebugMono", fontSize: 13 } } as never });
+      const session = adoptSession(1);
+      session.launch = {
+        name: "test",
+        adapter: "delve",
+        request: "launch",
+        program: "main.go",
+        args: [],
+        cwd: "/p",
+        env: {},
+        extraJson: null,
+      };
+      const linkText = "src/col6020.ts:4:2";
+      appendConsole(1, "stdout", `${"a".repeat(6_019)} ${linkText} ${"b".repeat(500)}\n`);
+
+      render(<DebugConsole session={session} />);
+      const log = screen.getByRole("log", { name: "Debug console" });
+      expect(log.style.fontFamily).toContain("OpenIDEA User Font");
+      Object.defineProperty(log, "clientWidth", { configurable: true, value: 800 });
+      Object.defineProperty(log, "scrollLeft", { configurable: true, writable: true, value: 14 + 6_000 * 7.15 });
+      fireEvent.scroll(log);
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(screen.queryByRole("link", { name: linkText })).not.toBeInTheDocument();
+
+      const header = new TextEncoder().encode(JSON.stringify([{ weight: 400, style: "normal", offset: 0, length: 2 }]));
+      const bundle = new Uint8Array(4 + header.length + 2);
+      new DataView(bundle.buffer).setUint32(0, header.length, true);
+      bundle.set(header, 4);
+      await act(async () => {
+        resolveFontData(bundle.buffer);
+        await fontDataPromise;
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      const link = screen.getByRole("link", { name: linkText });
+      fireEvent.click(link);
+      expect(nav.openTarget).toHaveBeenCalledWith(
+        expect.objectContaining({ path: "src/col6020.ts", line: 4, col: 2 }),
+        "/p",
+      );
+      expect(load).toHaveBeenCalled();
+      expect(load.mock.calls.every(([spec]) => !String(spec).includes("var("))).toBe(true);
+    } finally {
+      useProject.setState({ settings: prevSettings });
+      setInvokeRoute(null);
+      if (prevFonts) Object.defineProperty(document, "fonts", prevFonts);
+      else delete (document as unknown as { fonts?: unknown }).fonts;
+      vi.unstubAllGlobals();
+      ctxSpy.mockRestore();
+      rectSpy.mockRestore();
+    }
   });
 });
