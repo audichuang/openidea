@@ -16,7 +16,7 @@ import { formatBinding, hasPrimaryModifier, hostBinding, registerKeyClaim } from
 import { tx } from "@/platform/i18n";
 import { setConsoleSoftWrap, useWorkflowSettings } from "@/platform/workflowSettings";
 import { useConsoleFont } from "@/platform/consoleFont";
-import { spanStyle } from "@/ui/ansi";
+import { spanStyle, type Span } from "@/ui/ansi";
 import { logLineColor } from "@/ui/logColors";
 import { compileConsoleRules, matchConsoleRules, styleSpans, type ConsoleRuleMatch } from "@/ui/consoleRules";
 import { useConsoleRules } from "@/workbench/contributions";
@@ -84,7 +84,8 @@ const DebugLine = memo(
     line: ConsoleLine;
     marks?: readonly SegmentMark[];
     rules?: ConsoleRuleMatch;
-    length: number;
+    text: string;
+    spans: readonly Span[];
     cwd: string;
     /** The run's owning module, which picks between same-named files of a multi-module build. */
     module?: string | null;
@@ -150,7 +151,8 @@ const DebugLine = memo(
   },
   (a, b) =>
     a.line === b.line &&
-    a.length === b.length &&
+    a.text === b.text &&
+    a.spans === b.spans &&
     a.cwd === b.cwd &&
     a.module === b.module &&
     a.rules === b.rules &&
@@ -585,7 +587,8 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
                     line={l}
                     marks={marksByLine.get(item.index)}
                     rules={ruled}
-                    length={l.text.length}
+                    text={l.text}
+                    spans={l.spans}
                     cwd={cwd}
                     module={module}
                     colStart={colWindow?.start}
