@@ -549,7 +549,7 @@ export function CommitList({ fileHistory = false }: { fileHistory?: boolean }) {
         chain.push(current);
         current = node.parents[0];
       }
-      if (!expand || current === target) hidden.push(...chain);
+      if (!expand || current === target) for (const id of chain) hidden.push(id);
     }
     if (expand) {
       useGitLog.setState({
