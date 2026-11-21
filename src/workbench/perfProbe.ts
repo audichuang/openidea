@@ -639,7 +639,7 @@ export function installPerfProbe(): () => void {
       const id = (k: number) => (fakeLog.length + made - k).toString(16).padStart(40, "0");
       const added = Array.from({ length: made }, (_, k) => {
         const summary = `feat(orders): new work ${k}`;
-        const time = top.timeMs + (made - k) * 60_000;
+        const time = (top.timeMs ?? 0) + (made - k) * 60_000;
         return {
           ...top,
           id: id(k),
