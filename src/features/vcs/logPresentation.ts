@@ -45,9 +45,11 @@ export function presentLogGraph(
  * `pagedLogGraph.ts`). Rows are resolved one at a time: draw `row(index)`, not `rows[index]`.
  */
 export function createLogGraphPresenter() {
+  type Full = ReturnType<typeof presentLogGraph>;
+  type Presented = PagedLogGraph & { linear: Full["linear"]; collapsed: Full["collapsed"] };
   const paged = createPagedLogGraph();
-  let last: { result: PagedLogGraph; presented: PagedLogGraph & { linear: null; collapsed: null } } | null = null;
-  return (...args: Parameters<typeof presentLogGraph>) => {
+  let last: { result: PagedLogGraph; presented: Presented } | null = null;
+  return (...args: Parameters<typeof presentLogGraph>): Presented => {
     const [all, options, fragments] = args;
     const result = pagesLogGraph(options, fragments) ? paged(all, options) : null;
     if (result) {
