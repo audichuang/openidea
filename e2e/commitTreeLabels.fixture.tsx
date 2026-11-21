@@ -9,7 +9,7 @@ import { useProject } from "../src/platform/project";
 // `?width=<px>&flat`: the staging area's change tree over two repositories, in a panel that narrow.
 const params = new URLSearchParams(location.search);
 const width = Number(params.get("width") ?? 260);
-const repos = ["/w/openidea", "/w/openidea-plugins"];
+const repos = ["/w/openidea", "/w/openidea-plugins"] as const;
 const file = (root: string, relPath: string, staged: boolean): FileStatus => ({
   path: `${root}/${relPath}`,
   relPath,
@@ -21,7 +21,7 @@ const file = (root: string, relPath: string, staged: boolean): FileStatus => ({
 useProject.setState({ settings: { vcs: { git: { stagingArea: true } } } as never });
 useVcs.setState({
   root: repos[0],
-  roots: repos,
+  roots: [...repos],
   heads: {
     [repos[0]]: { head: "feat/commit-tree-labels-with-a-long-branch-name", headCommit: "17806ce3" },
     [repos[1]]: { head: "main", headCommit: "29da9754" },
