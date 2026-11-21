@@ -34,6 +34,14 @@ pub struct GraphWorkingState {
     pub conflicted: u32,
 }
 
+/// Ahead and behind commit counts of a head revision relative to a base revision.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphRevCounts {
+    pub ahead: u32,
+    pub behind: u32,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Type, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphReflogEntry {
@@ -111,6 +119,15 @@ fn name_arg<'a>(what: &str, s: &'a str) -> IdeResult<&'a str> {
     Ok(s)
 }
 
+/// Refuses option-looking, empty, range-looking or whitespace-containing revision names.
+fn rev_arg<'a>(what: &str, s: &'a str) -> IdeResult<&'a str> {
+    let s = name_arg(what, s)?;
+    if s.contains("..") || s.chars().any(char::is_whitespace) {
+        return Err(IdeError::invalid(format!("'{s}' is not a valid {what}")));
+    }
+    Ok(s)
+}
+
 impl Repo {
     fn fork_scope(&self) -> crate::ExecutionScope {
         crate::ExecutionScope::enter(self.execution_allowed.load(Ordering::Acquire))
@@ -142,6 +159,16 @@ impl Repo {
         let _scope = self.fork_scope();
         let out = run(self.root(), &["status", "--porcelain=v1", "-z", "--untracked-files=all"], None)?;
         Ok(parse_porcelain(&out.stdout_str()))
+    }
+
+    /// Ahead and behind commit counts of `head` relative to `base` (`git rev-list --left-right --count`).
+    pub fn graph_rev_counts(&self, base: &str, head: &str) -> IdeResult<GraphRevCounts> {
+        let _scope = self.fork_scope();
+        let base = rev_arg("revision", base)?;
+        let head = rev_arg("revision", head)?;
+        let range = format!("{base}...{head}");
+        let out = run(self.root(), &["rev-list", "--left-right", "--count", &range, "--"], None)?;
+        parse_left_right_count(&out.stdout_str())
     }
 
     pub fn graph_reflog(&self, reference: &str, limit: u32) -> IdeResult<Vec<GraphReflogEntry>> {
@@ -262,6 +289,16 @@ impl Repo {
         }
         Ok(())
     }
+}
+
+fn parse_left_right_count(text: &str) -> IdeResult<GraphRevCounts> {
+    let mut parts = text.split_whitespace();
+    let (Some(left), Some(right), None) = (parts.next(), parts.next(), parts.next()) else {
+        return Err(IdeError::internal(format!("unexpected rev-list --count output: {:?}", text.trim())));
+    };
+    let behind = left.parse::<u32>().map_err(|_| IdeError::internal(format!("invalid behind count: {left:?}")))?;
+    let ahead = right.parse::<u32>().map_err(|_| IdeError::internal(format!("invalid ahead count: {right:?}")))?;
+    Ok(GraphRevCounts { ahead, behind })
 }
 
 fn parse_porcelain(text: &str) -> GraphWorkingState {
@@ -407,5 +444,16 @@ mod tests {
         assert!(name_arg("tag", "--delete").is_err());
         assert!(name_arg("tag", "  ").is_err());
         assert_eq!(name_arg("tag", " v1 ").unwrap(), "v1");
+        assert!(rev_arg("revision", "a..b").is_err());
+        assert!(rev_arg("revision", "a b").is_err());
+        assert_eq!(rev_arg("revision", " origin/main ").unwrap(), "origin/main");
+    }
+
+    #[test]
+    fn parses_left_right_counts() {
+        assert_eq!(parse_left_right_count("100000\t42\n").unwrap(), GraphRevCounts { ahead: 42, behind: 100_000 });
+        assert_eq!(parse_left_right_count("0\t0\n").unwrap(), GraphRevCounts { ahead: 0, behind: 0 });
+        assert!(parse_left_right_count("42\n").is_err());
+        assert!(parse_left_right_count("x\t1\n").is_err());
     }
 }
