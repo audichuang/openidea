@@ -739,6 +739,28 @@ interface Paged {
   arrowRows: number[];
   /** The widest row. */
   width: number;
+  /** Colour keys of rows kept below commits made on top ({@link resync}), applied in order. */
+  recolor: Recolor[];
+}
+
+/**
+ * Rows `[from, to)` were laid out when a lane's colour came from another commit than it does now
+ * (a lane through the old head started there, and now starts at a commit made on top): each key
+ * in `keys` stands for its value. Lanes of kept lane states hold the keys as they are now.
+ */
+interface Recolor {
+  from: number;
+  to: number;
+  keys: ReadonlyMap<string, string>;
+}
+
+/** `recolor`'s entries for rows `[from, to)` of its list, `shift` rows further down. */
+function recolorRows(recolor: readonly Recolor[], from: number, to: number, shift = 0): Recolor[] {
+  return recolor.flatMap((e) =>
+    e.to <= from || e.from >= to
+      ? []
+      : [{ from: Math.max(e.from, from) + shift, to: Math.min(e.to, to) + shift, keys: e.keys }],
+  );
 }
 
 function emptyPaged(longEdges: boolean): Paged {
@@ -771,6 +793,7 @@ function emptyPaged(longEdges: boolean): Paged {
     ],
     arrowRows: [],
     width: 0,
+    recolor: [],
   };
 }
 
@@ -930,7 +953,8 @@ function resume(prev: Paged, index: number, input: Input): Paged | Changed {
     });
   }
   for (; r < n; r++) width = Math.max(width, rows[r]!.width);
-  return { ...input, rows, ranks, rankRows, tips, checkpoints, arrowRows, width };
+  const recolor = recolorRows(prev.recolor, 0, outFrom);
+  return { ...input, rows, ranks, rankRows, tips, checkpoints, arrowRows, width, recolor };
 }
 
 /** `row` with its arrows' target rows moved by `shift`. */
@@ -1001,13 +1025,19 @@ function resync(prev: Paged, input: Input, shift: number, tail: number): Paged |
     const snap = laid.snaps.get(at)!;
     const identities = snap.nextIdentity - cp.nextIdentity;
     // The same lanes in the same order (the layout may number them otherwise)...
-    // A lane colours like the commit that started it: one further up the same chain does too.
-    const ownerOf = (key: string) => {
-      const row = positions.get(key);
-      return row === undefined ? key : input.owner(row);
-    };
-    const order = sameOrder(snap.lanes, old, identities, (x, y) => x === y || ownerOf(x) === ownerOf(y));
+    // A lane through the old head now colours like a commit made on top: the rows kept below
+    // read their keys through `keys`. Only keys of commits above `at` can stand for another, as
+    // no lane started below it has them.
+    const keys = new Map<string, string>();
+    const order = sameOrder(snap.lanes, old, identities, (fresh, kept) => {
+      const mapped = keys.get(kept);
+      if (mapped !== undefined) return mapped === fresh;
+      if (fresh !== kept && !((positions.get(kept) ?? at) < at)) return false;
+      keys.set(kept, fresh);
+      return true;
+    });
     if (!order) return null;
+    for (const [kept, fresh] of keys) if (kept === fresh) keys.delete(kept);
     // ... each later lane taking the same place among them...
     const later = replay(input.index!, shared, whole, { row: at, ...snap });
     const before = below(prev.rankRows, shared - shift);
@@ -1066,7 +1096,14 @@ function resync(prev: Paged, input: Input, shift: number, tail: number): Paged |
         row: p.row + shift,
         lanes: {
           length: p.lanes.length,
-          slots: p.lanes.slots.map(([slot, lane]) => [slot, lane && { ...lane, identity: lane.identity + identities }]),
+          slots: p.lanes.slots.map(([slot, lane]) => [
+            slot,
+            lane && {
+              ...lane,
+              identity: lane.identity + identities,
+              colorKey: keys.get(lane.colorKey) ?? lane.colorKey,
+            },
+          ]),
         },
         nextColor: p.nextColor,
         nextIdentity: p.nextIdentity + identities,
@@ -1086,6 +1123,9 @@ function resync(prev: Paged, input: Input, shift: number, tail: number): Paged |
       checkpoints,
       arrowRows,
       width: widest(rows.length),
+      recolor: recolorRows(prev.recolor, c + 2, prev.rows.length, shift).concat(
+        keys.size ? [{ from: at + 2, to: rows.length, keys }] : [],
+      ),
     };
     if (n === n0 + shift) return synced;
     // `prev`'s rows end where its list did: lay out the rest as a page.
@@ -1165,6 +1205,12 @@ function toResult(paged: Paged): PagedLogGraph {
   };
   const loaded = (id: string) => at(id) !== undefined;
   const resolved = new Map<number, GraphRow>();
+  const colorOf = (index: number) => {
+    const entries = paged.recolor.filter((e) => index >= e.from && index < e.to);
+    if (!entries.length) return color;
+    return (key: string | undefined, fallback: number) =>
+      color(key === undefined ? key : entries.reduce((k, e) => e.keys.get(k) ?? k, key), fallback);
+  };
   return {
     commits: paged.all,
     graph,
@@ -1172,7 +1218,7 @@ function toResult(paged: Paged): PagedLogGraph {
     width: paged.width,
     row(index) {
       let row = resolved.get(index);
-      if (!row && rows[index]) resolved.set(index, (row = resolveRow(rows[index], color, loaded)));
+      if (!row && rows[index]) resolved.set(index, (row = resolveRow(rows[index], colorOf(index), loaded)));
       return row;
     },
     rowsOf(id) {
