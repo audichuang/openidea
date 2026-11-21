@@ -301,7 +301,7 @@ pub(crate) fn reopen_saved_window(app: &AppHandle, path: &Path) -> IdeResult<Opt
             .next()
             .filter(|n| !n.is_empty() && *n != "~")
             .map(str::to_owned);
-        return Ok(Some(create_window_for(app, title, launch, true)?));
+        return Ok(Some(create_window_for(app, title, launch, Tabbing::Never)?));
     }
     if let Some(w) = find_project_window(app, path) {
         return Ok(Some(w));
