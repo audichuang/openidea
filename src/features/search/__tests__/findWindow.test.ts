@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { provideToolWindowService, type ToolWindowService } from "@/workbench/contributions";
 import type { FileMatches, SearchQuery } from "@/platform/ipc";
-import { buildFindTree } from "../find/FindToolWindow";
+import { findOccurrence } from "@/ui/Tree";
+import { buildFindTree, createFindTreeBuilder } from "../find/FindToolWindow";
 import type { FindDeps } from "../find/session";
 import {
   closeFindTab,
@@ -93,6 +94,97 @@ describe("buildFindTree", () => {
       ["/", 1],
       ["src", 2],
     ]);
+  });
+
+  it("sorts paths exactly like localeCompare", () => {
+    const paths = [
+      "src/B.ts",
+      "src/a.ts",
+      "src/ä.ts",
+      "src/a10.ts",
+      "src/a2.ts",
+      "src/_x.ts",
+      "src/-y.ts",
+      "Src/z.ts",
+      "src/a b.ts",
+      "src/日本.ts",
+      "src/a/b.ts",
+      "src/a.b/c.ts",
+      "README",
+      "readme",
+      "a.ts",
+      "src/É.ts",
+      "src/e.ts",
+    ];
+    const expected = [...paths].sort((a, b) => a.localeCompare(b));
+    expect(buildFindTree(paths.map(file)).map((n) => n.key)).toEqual(expected.map((p) => `f:/p/${p}`));
+  });
+
+  // Streaming: the builder merges each batch of new files into the previous tree.
+  it.each([false, true])("builds a growing result list like a full rebuild (grouped: %s)", (grouped) => {
+    const all = Array.from({ length: 2_000 }, (_, i) => file(`src/m${(i * 7) % 23}/F${(i * 7919) % 2_000}.ts`));
+    const build = createFindTreeBuilder();
+    let shown = 0;
+    let previous: ReturnType<typeof buildFindTree> | null = null;
+    let previousKeys: string[] = [];
+    for (let batch = 1; shown < all.length; batch = (batch * 3) % 97 || 1) {
+      shown = Math.min(all.length, shown + batch);
+      const files = all.slice(0, shown);
+      const roots = build(files, grouped);
+      expect(roots).toEqual(buildFindTree(files, grouped));
+      if (previous) {
+        // Published trees are never changed afterwards.
+        expect(previous.map((n) => n.key)).toEqual(previousKeys);
+        if (!grouped) expect(roots.find((n) => n.key === previous![0]!.key)).toBe(previous[0]);
+      }
+      previous = roots;
+      previousKeys = roots.map((n) => n.key);
+    }
+    expect(build(all, !grouped)).toEqual(buildFindTree(all, !grouped));
+    expect(build(all, grouped)).toEqual(buildFindTree(all, grouped));
+  });
+
+  const occurrenceModel = {
+    getKey: (n: ReturnType<typeof buildFindTree>[number]) => n.key,
+    getChildren: (n: ReturnType<typeof buildFindTree>[number]) => (n.kind === "match" ? undefined : n.children),
+    isExpandable: (n: ReturnType<typeof buildFindTree>[number]) => n.kind !== "match",
+  };
+
+  it("Next Occurrence walks every match of one file with 10,000 matches", () => {
+    const roots = buildFindTree([
+      {
+        path: "/p/big.ts",
+        relPath: "big.ts",
+        matches: Array.from({ length: 10_000 }, (_, line) => ({ line, text: "foo", ranges: [[0, 3]], textOffset: 0 })),
+      },
+    ]);
+    const seen = new Set<string>();
+    let lead: string | null = null;
+    for (let i = 1; i <= 10_000; i++) {
+      const step = findOccurrence(roots, lead, 1, occurrenceModel);
+      expect(step).toMatchObject({ index: i, total: 10_000 });
+      const key: string = step!.node.key;
+      lead = key;
+      seen.add(key);
+    }
+    expect(seen.size).toBe(10_000);
+    expect(findOccurrence(roots, lead, 1, occurrenceModel)).toBeNull();
+    expect(findOccurrence(roots, lead, -1, occurrenceModel)?.index).toBe(9_999);
+  });
+
+  // Each step walks the whole tree, so 10,000 files are checked at every 50th match.
+  it("Next Occurrence steps through 10,000 files in order", () => {
+    const files = Array.from({ length: 10_000 }, (_, i) => file(`src/m${i % 50}/F${i}.ts`));
+    const roots = buildFindTree(files);
+    const matches = roots.map((f) => (f.kind === "file" ? f.children[0]!.key : ""));
+    expect(findOccurrence(roots, null, 1, occurrenceModel)).toMatchObject({ index: 1, total: 10_000 });
+    for (let i = 0; i < 10_000; i += 50) {
+      const step = findOccurrence(roots, matches[i]!, 1, occurrenceModel);
+      expect(step).toMatchObject({ index: i + 2, total: 10_000 });
+      expect(step!.node.key).toBe(matches[i + 1]);
+    }
+    expect(findOccurrence(roots, matches[9_998]!, 1, occurrenceModel)).toMatchObject({ index: 10_000 });
+    expect(findOccurrence(roots, matches[9_999]!, 1, occurrenceModel)).toBeNull();
   });
 });
 
