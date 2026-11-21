@@ -21,7 +21,7 @@ import {
 } from "@/ui";
 import { ConsoleFindBar } from "@/ui/ConsoleFindBar";
 import { DEFAULT_FIND_OPTIONS, findInLines, type FindOptions } from "@/ui/consoleFind";
-import { formatBinding, hasPrimaryModifier, hostBinding } from "@/platform/keymap";
+import { formatBinding, hasPrimaryModifier, hostBinding, registerKeyClaim } from "@/platform/keymap";
 import { bodyKind, formatMs, formatSize, prettyBody, PRETTY_INLINE_LIMIT, type BodyKind } from "./format";
 import { ResponseBody } from "./ResponseBody";
 import { cancelRunning, clearHistory, refreshHistory, selectEntry, useHttpClient } from "./store";
@@ -117,6 +117,11 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
     [searchable, lines, query, findOptions],
   );
   const activeIndex = found.matches.length ? Math.min(active, found.matches.length - 1) : -1;
+  // The bar owns Escape / Enter / F3 / ⌘G while it is focused; keep the IDE keymap out.
+  useEffect(() => {
+    if (!searchable) return;
+    return registerKeyClaim((e) => !!(e.target as Element | null)?.closest?.("[data-console-find]"));
+  }, [searchable]);
   const openFind = () => {
     setFindOpen(true);
     // The bar mounts with this render; focus it (and select the query) once it has.
