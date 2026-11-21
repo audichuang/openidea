@@ -381,6 +381,107 @@ describe("the all-in-one diff with many files", () => {
     }
   });
 
+  it("keeps dirty and focused blocks mounted when the scroller height collapses to 0 and restores", () => {
+    const observers: Array<{ cb: ResizeObserverCallback; targets: Set<Element> }> = [];
+    const origRO = window.ResizeObserver;
+    const origClientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight")!;
+    const origRAF = window.requestAnimationFrame;
+    const origCAF = window.cancelAnimationFrame;
+    let viewHeight = VIEW;
+    const rafs = new Map<number, FrameRequestCallback>();
+    let rafId = 1;
+    class ControlledResizeObserver {
+      private readonly targets = new Set<Element>();
+      constructor(cb: ResizeObserverCallback) {
+        observers.push({ cb, targets: this.targets });
+      }
+      observe(el: Element) {
+        this.targets.add(el);
+      }
+      unobserve(el: Element) {
+        this.targets.delete(el);
+      }
+      disconnect() {
+        this.targets.clear();
+      }
+    }
+    vi.stubGlobal("ResizeObserver", ControlledResizeObserver);
+    window.ResizeObserver = ControlledResizeObserver as unknown as typeof ResizeObserver;
+    window.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+      const id = rafId++;
+      rafs.set(id, cb);
+      return id;
+    }) as typeof window.requestAnimationFrame;
+    window.cancelAnimationFrame = ((id: number) => {
+      rafs.delete(id);
+    }) as typeof window.cancelAnimationFrame;
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get() {
+        return viewHeight;
+      },
+    });
+    const fireResize = (el: Element) => {
+      const matching = observers.filter((o) => o.targets.has(el));
+      expect(matching.length).toBeGreaterThan(0);
+      act(() => {
+        for (const o of matching) o.cb([{ target: el } as never], {} as never);
+        const pending = [...rafs.entries()];
+        rafs.clear();
+        for (const [, cb] of pending) cb(0);
+      });
+    };
+
+    const items = files(120);
+    const edited = items[2]!.path;
+    const focusedPath = items[1]!.path;
+    const handle = { view: {}, ctx: { doc: 43, path: edited } } as unknown as TextEditorHandle;
+    _addEditor(handle);
+    try {
+      render(<CombinedDiffTab input={combinedDiffInput({ items })} />);
+      const editedField = screen.getByLabelText(`Edit ${edited}`) as HTMLInputElement;
+      act(() => {
+        fireEvent.change(editedField, { target: { value: "unsaved across zero height" } });
+      });
+      dirtyDocs = [43];
+      const focusedField = screen.getByLabelText(`Edit ${focusedPath}`) as HTMLInputElement;
+      focusedField.focus();
+
+      scroll(scroller(), 60 * 200);
+      const mid = items[60]!.path;
+      expect(mounted()).toContain(edited);
+      expect(mounted()).toContain(focusedPath);
+      expect(mounted()).toContain(mid);
+
+      // Collapse viewport height to 0 (as when maximizing a tool window hides the editor area).
+      viewHeight = 0;
+      fireResize(scroller());
+      // Non-pinned viewport blocks unmount at height 0, confirming virtual-core saw outerSize === 0.
+      expect(mounted()).not.toContain(mid);
+      // Both the dirty block and the focused block stay mounted in place.
+      expect(mounted()).toContain(edited);
+      expect(mounted()).toContain(focusedPath);
+      expect(screen.getByLabelText(`Edit ${edited}`)).toBe(editedField);
+      expect(editedField.value).toBe("unsaved across zero height");
+      expect(document.activeElement).toBe(focusedField);
+
+      // Restore viewport height: the same editors remain mounted with edits and focus intact.
+      viewHeight = VIEW;
+      fireResize(scroller());
+      expect(mounted()).toContain(mid);
+      expect(screen.getByLabelText(`Edit ${edited}`)).toBe(editedField);
+      expect(editedField.value).toBe("unsaved across zero height");
+      expect(screen.getByLabelText(`Edit ${focusedPath}`)).toBe(focusedField);
+      expect(document.activeElement).toBe(focusedField);
+    } finally {
+      _removeEditor(handle);
+      window.ResizeObserver = origRO;
+      window.requestAnimationFrame = origRAF;
+      window.cancelAnimationFrame = origCAF;
+      Object.defineProperty(HTMLElement.prototype, "clientHeight", origClientHeight);
+    }
+  });
+
   it("reaches all 5,000 mixed files with bounded editors and lets the last file be expanded and edited", () => {
     const items = Array.from({ length: 5_000 }, (_, i) =>
       diff(
