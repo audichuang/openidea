@@ -347,6 +347,33 @@ describe("the all-in-one diff with many files", () => {
     expect((openInput.mock.calls[0] as unknown as [{ path: string }])[0].path).toBe(items[40]!.path);
   });
 
+  it("reads no other file's data to expand and collapse a file, however many there are", () => {
+    /** Reads of the files' paths while the first file is expanded and collapsed again, with `n` files. */
+    const readsPerToggle = (n: number) => {
+      let reads = 0;
+      const input = combinedDiffInput({ items: files(n) });
+      const data = input.data as { items: DiffData[] };
+      data.items = data.items.map(({ path, ...rest }) =>
+        Object.defineProperty({ ...rest }, "path", { enumerable: true, get: () => (reads++, path) }),
+      ) as DiffData[];
+      const { unmount } = render(<CombinedDiffTab input={input} />);
+      act(() => {
+        fireEvent.click(screen.getByRole("button", { name: "Collapse All Files" }));
+      });
+      reads = 0;
+      act(() => {
+        fireEvent.click(screen.getAllByRole("button", { name: "Expand File" })[0]!);
+      });
+      act(() => {
+        fireEvent.click(screen.getAllByRole("button", { name: "Collapse File" })[0]!);
+      });
+      expect(screen.getByRole("button", { name: "Expand All Files" })).toBeTruthy();
+      unmount();
+      return reads;
+    };
+    expect(readsPerToggle(4_000)).toBe(readsPerToggle(40));
+  });
+
   it("loads no diff for a collapsed file scrolled into view, and loads it when expanded", () => {
     const items = files(120);
     render(<CombinedDiffTab input={combinedDiffInput({ items })} />);
