@@ -191,6 +191,8 @@ function refreshed(base: readonly Commit[], seed: number): Array<[string, Commit
     ["commits made on top", made],
     ["a commit rewritten deep down", rewritten],
     ["commits dropped deep down", [...base.slice(0, deep), ...base.slice(deep + 3)]],
+    // Fewer commits than were loaded: parents of the last rows are not loaded any more.
+    ["commits dropped at the end", copy().slice(0, deep)],
   ];
 }
 
@@ -295,6 +297,38 @@ describe("paged Git Log graph", () => {
     refreshThrough(history(31, 500, 12), 350, 31);
     refreshThrough(history(34, 400, 12, 0), 250, 34);
     refreshThrough(history(35, 400, 12), 250, 35, { ...DEFAULT_LOG_OPTIONS, longEdges: true });
+  });
+
+  it("draws the down arrow into a parent a Refresh no longer loads", () => {
+    // c1000's second parent is the oldest commit: its lane is laid out while that commit is
+    // loaded, then a Refresh returns the list without it.
+    const count = 1_101;
+    const base = Array.from({ length: count }, (_, i) =>
+      commit(
+        `c${i}`,
+        i + 1 < count ? [`c${i + 1}`, ...(i === 1_000 ? [`c${count - 1}`] : [])] : [],
+        i ? [] : ["HEAD -> main"],
+      ),
+    );
+    for (const refs of [true, false]) {
+      const all = refs ? base : base.map((c) => ({ ...c, refs: [] }));
+      const top = { ...all[0]!, refs: [] };
+      for (const list of [
+        all.slice(0, count - 1).map((c) => ({ ...c })),
+        all.slice(0, count - 101).map((c) => ({ ...c })),
+        // A commit made on top: the same number loaded again, so the oldest falls off the end.
+        [commit("new", ["c0"], all[0]!.refs), top, ...all.slice(1, count - 1)],
+      ]) {
+        const present = createLogGraphPresenter();
+        for (let n = 100; n <= 1_000; n += 100) present(all.slice(0, n), DEFAULT_LOG_OPTIONS, fragments, keep);
+        present(all, DEFAULT_LOG_OPTIONS, fragments, keep);
+        const got = present(list, DEFAULT_LOG_OPTIONS, fragments, keep);
+        expectStrictEqual(
+          got.rows.map((_, i) => got.row(i)),
+          full(list).rows,
+        );
+      }
+    }
   });
 
   it("lays out a Refresh again only from a kept lane state before its first change", () => {
