@@ -85,8 +85,9 @@ const redrawStaleViewport = EditorView.updateListener.of((u) => {
 /** Longer lines are drawn only in part (twice the editor's 10,000-character wrapped-line margin). */
 const LONG_LINE = 20_000;
 const longLineOnScreen = (view: EditorView) => view.viewportLineBlocks.some((b) => b.length > LONG_LINE);
-/** Views that have measured their line metrics (see `show`). */
+/** Views that have measured their line metrics with layout, and text waiting for that (see `show`). */
 const measured = new WeakSet<EditorView>();
+const waiting = new WeakMap<EditorView, () => void>();
 /** Per view: the width and document of the last re-insert, so it happens once per width. */
 const resized = new WeakMap<EditorView, { width: number; doc: Text }>();
 
@@ -97,25 +98,34 @@ const resized = new WeakMap<EditorView, { width: number; doc: Text }>();
  * stale height: too little of it drawn on screen, and parts never drawn. When a
  * long line on screen is far from the height its length gives, put the text in
  * again, through an empty document (a line replaced by one about as long keeps
- * its height), keeping the find marks and the part of the text on screen.
+ * its height), keeping the selection, the find marks and the part of the text
+ * on screen.
  */
 const sizeLongLines = EditorView.updateListener.of((u) => {
   const { view } = u;
-  if (u.transactions.length) return;
-  measured.add(view);
   const width = view.contentDOM.clientWidth;
+  // A measure without layout (a hidden pane) gives no metrics.
+  if (u.transactions.length || !width) return;
+  measured.add(view);
+  const pending = waiting.get(view);
+  if (pending) {
+    waiting.delete(view);
+    queueMicrotask(pending);
+    return;
+  }
   const last = resized.get(view);
   if (last && last.width === width && last.doc === view.state.doc) return;
   const perRow = Math.max(1, Math.floor(width / view.defaultCharacterWidth));
   const stale = view.viewportLineBlocks.some((b) => {
     if (b.length <= LONG_LINE) return false;
     const expected = Math.ceil(b.length / perRow) * view.defaultLineHeight;
-    return b.height < expected / 2 || b.height > expected * 2;
+    return b.height < expected / 1.25 || b.height > expected * 1.25;
   });
   if (!stale) return;
   const doc = view.state.doc;
   queueMicrotask(() => {
     if (view.state.doc !== doc) return;
+    const selection = view.state.selection;
     const kept: MarkRange[] = [];
     view.state.field(marks).between(0, doc.length, (from, to, mark) => {
       kept.push({ from, to, current: mark === currentMark });
@@ -125,7 +135,7 @@ const sizeLongLines = EditorView.updateListener.of((u) => {
     const block = view.lineBlockAtHeight(y);
     const top = block.from + Math.round(Math.min(1, Math.max(0, (y - block.top) / (block.height || 1))) * block.length);
     view.dispatch({ changes: { from: 0, to: doc.length } });
-    view.dispatch({ changes: { from: 0, insert: doc } });
+    view.dispatch({ changes: { from: 0, insert: doc }, selection });
     // Separately: positions in effects are read before the transaction's changes.
     view.dispatch({ effects: [setMarks.of(kept), EditorView.scrollIntoView(top, { y: "start" })] });
     resized.set(view, { width, doc: view.state.doc });
@@ -149,13 +159,13 @@ function extensions(): Extension[] {
 
 /**
  * Puts `text` into the view, from its start: now (true), or after the view's
- * first measure, then calling `later`.
+ * first measure with layout, then calling `later`.
  * It replaces the document of the same state rather than starting a new one: a
  * state created with a long line draws its hidden part unwrapped, so its first
  * measure finds the line short and draws all of it once (over a second of
  * layout for a 16 MB line), and a new state starts with default line metrics.
- * A view that has not measured them yet gets a long line on screen only after
- * its first measure: sized from the default metrics (a 30-character, 14 px row)
+ * A view that has not measured them yet (new, or in a hidden pane) gets a long
+ * line on screen only after that: sized from the default metrics (a 30-character, 14 px row)
  * the line would keep a wrong height (see `sizeLongLines`), and past the
  * editor's scaling limit (~15 M characters) it breaks the measure.
  */
@@ -168,14 +178,10 @@ function show(v: EditorView, text: string, current: () => boolean, later: () => 
   if (measured.has(v) || !longLineOnScreen(v)) return true;
   const doc = v.state.doc;
   v.dispatch({ changes: { from: 0, to: doc.length } });
-  v.requestMeasure({
-    read: () => null,
-    write: () =>
-      queueMicrotask(() => {
-        if (!current() || v.state.doc.length) return;
-        v.dispatch({ changes: { from: 0, insert: doc } });
-        later();
-      }),
+  waiting.set(v, () => {
+    if (!current() || v.state.doc.length) return;
+    v.dispatch({ changes: { from: 0, insert: doc } });
+    later();
   });
   return false;
 }
