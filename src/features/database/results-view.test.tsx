@@ -1105,7 +1105,8 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
           );
         },
       );
-      vi.stubGlobal("__TAURI_INTERNALS__", { invoke });
+      // The fork releases a remote call's channels when the session ends (unregisterCallback).
+      vi.stubGlobal("__TAURI_INTERNALS__", { invoke, unregisterCallback: vi.fn() });
       enableRemote({
         target: { kind: "wsl", distro: "Ubuntu" },
         root: "/remote",
