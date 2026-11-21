@@ -55,6 +55,12 @@ export interface PerfProbe {
    * `latencyMs` (a `git log` call). `0` commits removes it.
    */
   fakeGitLog(commits: number, latencyMs?: number, longBranches?: number): void;
+  /**
+   * Loads `commits` synthetic commits directly into the active Git Log (bypassing
+   * pagination) and routes detail/change commands so multi-selection details can
+   * be measured at large scales. `0` removes the route.
+   */
+  fakeGitLogLoaded(commits: number): Promise<void>;
 }
 
 const KINDS: CompletionKind[] = [
@@ -208,6 +214,57 @@ export function installPerfProbe(): () => void {
             }
           : null,
       );
+    },
+    async fakeGitLogLoaded(count) {
+      if (!count) {
+        setRoute("gitLogMultiSelect", null);
+        return;
+      }
+      const commits = Array.from({ length: count }, (_, i) => {
+        const base = commit(i, count);
+        if (i % 3 !== 0) return base;
+        const summary = `${base.summary} — adjust retry backoff, batching and validation across multiple lines`;
+        return { ...base, summary, message: summary };
+      });
+      const sampleChanges = Array.from({ length: 5 }, (_, i) => ({
+        path: `src/orders/OrderStep${i}.kt`,
+        kind: i === 0 ? "added" : "modified",
+        oldPath: null,
+        before: i === 0 ? null : commits[count - 1]!.id,
+        after: commits[0]!.id,
+      }));
+      setRoute("gitLogMultiSelect", (cmd, args) => {
+        if (cmd === "vcs_commits_changes") return Promise.resolve(sampleChanges);
+        if (cmd === "vcs_commit_files")
+          return Promise.resolve([{ path: "src/orders/OrderService.kt", kind: "modified", oldPath: null }]);
+        if (cmd === "vcs_log_details_batch") {
+          const ids = (args as { commits?: string[] })?.commits ?? [];
+          return Promise.resolve(
+            ids.map((id) => ({
+              message: `Commit ${id}`,
+              containingBranches: ["main"],
+              signature: "N",
+              signer: "",
+              key: "",
+              fingerprint: "",
+            })),
+          );
+        }
+        return null;
+      });
+      const [{ useGitLog }, { commitKey }] = await Promise.all([
+        import("@/features/vcs/logStore"),
+        import("@/features/vcs/multiRoot"),
+      ]);
+      const firstKey = commitKey(commits[0]!);
+      useGitLog.setState({
+        commits,
+        done: true,
+        loading: false,
+        error: null,
+        selected: firstKey,
+        selection: [firstKey],
+      });
     },
     editorText: () => activeEditor()?.view.state.doc.toString() ?? null,
     insertAfter(after, text) {
