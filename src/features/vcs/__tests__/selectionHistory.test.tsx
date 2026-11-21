@@ -152,7 +152,7 @@ describe("History for Selection tab", () => {
     await screen.findByText("Shout three");
     const [request, path, text, lines] = vcsBlockHistoryStreamed.mock.calls[0]!;
     expect([typeof request, path, text, lines]).toEqual(["number", "/p/src/a.txt", "one\nTWO\nTHREE!\nfour\n", [1, 2]]);
-    expect(screen.getByText("a.txt:2-3")).toBeTruthy();
+    expect(screen.getByText("a.txt").parentElement!.textContent).toBe("a.txt:2-3");
     // The unsaved edit comes first, against HEAD's block.
     expect(screen.getByTestId("diff").textContent).toBe("HEAD: TWO\nTHREE\n| Local Changes: TWO\nTHREE!\n");
     fireEvent.click(screen.getByText("Shout two"));
