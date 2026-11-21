@@ -22,6 +22,7 @@ const vcsCommitFiles = vi.fn();
 const graphTree = vi.fn();
 const vcsMergeBase = vi.fn();
 const vcsDiffRevisions = vi.fn();
+const graphRevCounts = vi.fn();
 const graphStashes = vi.fn();
 const graphWorkingState = vi.fn();
 const graphReflog = vi.fn();
@@ -40,6 +41,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       graphTree: (repo: string, rev: string) => graphTree(repo, rev),
       vcsMergeBase: (repo: string, a: string, b: string) => vcsMergeBase(repo, a, b),
       vcsDiffRevisions: (repo: string, from: string, to: string) => vcsDiffRevisions(repo, from, to),
+      graphRevCounts: (repo: string, base: string, head: string) => graphRevCounts(repo, base, head),
       vcsRemotes: () => Promise.resolve({ status: "ok", data: [] }),
       graphStashes: (repo: string) => graphStashes(repo),
       graphWorkingState: (repo: string) => graphWorkingState(repo),
@@ -646,6 +648,13 @@ describe("Git Graph PR view", () => {
       ]),
     );
     vcsMergeBase.mockImplementation(() => ok(MB));
+    graphRevCounts.mockImplementation((_repo: string, base: string, head: string) =>
+      base === "main" && head === "feature"
+        ? ok({ ahead: 2, behind: 1 })
+        : base === "feature" && head === "main"
+          ? ok({ ahead: 1, behind: 2 })
+          : ok({ ahead: 0, behind: 0 }),
+    );
     vcsDiffRevisions.mockImplementation(() =>
       ok([
         { path: "src/app.ts", kind: "modified", oldPath: null },
@@ -831,10 +840,10 @@ describe("Git Graph PR view", () => {
   it("lists the commits and shows one in the graph", async () => {
     await openPr();
     fireEvent.click(screen.getByRole("tab", { name: /Commits/ }));
-    const list = screen.getByRole("list", { name: "Commits" });
+    const list = screen.getByRole("listbox", { name: "Commits" });
     expect(
       within(list)
-        .getAllByRole("button")
+        .getAllByRole("option")
         .map((b) => b.textContent),
     ).toEqual([expect.stringContaining("second change"), expect.stringContaining("first change")]);
     fireEvent.click(within(list).getByText("first change"));

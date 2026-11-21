@@ -2,7 +2,16 @@
  * The PR view: what a pull request from one branch into another would contain, computed locally
  * with the forge's three-dot semantics (merge base ↔ head), whatever the remote is hosted on.
  */
-import { Suspense, useEffect, useMemo, useState } from "react";
+import {
+  memo,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import clsx from "clsx";
 import type { Branch, ChangedFile, Commit } from "@/bindings";
 import { formatDay } from "@/platform/dateFormat";
@@ -24,6 +33,7 @@ import { buildFileTree, dirKeys, type FileTreeNode } from "@/features/vcs/fileTr
 import { baseName, fileCount, KIND_COLOR } from "@/features/vcs/model";
 import { useContributions } from "@/workbench/contributions";
 import { gitGraphBridge } from "@/workbench/gitGraphBridge";
+import { usePaneList } from "./panels";
 import { PickerPopup, type PickerItem } from "./PickerPopup";
 import { prChoice, setPrChoice, useGraphView } from "./viewState";
 import styles from "./GitGraph.module.css";
@@ -68,14 +78,31 @@ export function defaultPrRefs(
   return { base: local ?? remote ?? null, head };
 }
 
+/** Commits fetched per page for the PR Commits list. */
+const PR_COMMIT_PAGE = 300;
+/** Prefetch neighbouring pages when the visible range comes this close to a page boundary. */
+const PR_PREFETCH_MARGIN = 40;
+const EMPTY_PAGES: ReadonlyMap<number, Commit[]> = new Map();
+const EMPTY_PAGE_NUMBERS: readonly number[] = [];
+
 type PrData =
   | { status: "loading" }
   | { status: "same" }
   | { status: "unrelated" }
   | { status: "error"; error: string }
-  | { status: "ready"; mergeBase: string; files: ChangedFile[]; commits: Commit[]; behind: number };
+  | {
+      status: "ready";
+      /** Changes only when a refresh observes a real change, invalidating cached extra pages. */
+      snapshot: number;
+      mergeBase: string;
+      files: ChangedFile[];
+      /** First page of `base..head` (`<= PR_COMMIT_PAGE`); `commits[0]` is also head for ClipCode. */
+      commits: Commit[];
+      ahead: number;
+      behind: number;
+    };
 
-const range = (repo: string, from: string, to: string) =>
+const rangePage = (repo: string, from: string, to: string, skip: number, limit: number) =>
   call(
     commands.vcsLog(repo, {
       branch: null,
@@ -83,39 +110,104 @@ const range = (repo: string, from: string, to: string) =>
       author: null,
       text: null,
       range: `${from}..${to}`,
-      skip: 0,
-      limit: 0,
+      skip,
+      limit,
     }),
   );
 
+function sameFiles(a: readonly ChangedFile[], b: readonly ChangedFile[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]!;
+    const y = b[i]!;
+    if (x.path !== y.path || x.kind !== y.kind || x.oldPath !== y.oldPath || (x.link ?? null) !== (y.link ?? null))
+      return false;
+  }
+  return true;
+}
+
+function sameCommits(a: readonly Commit[], b: readonly Commit[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]!;
+    const y = b[i]!;
+    if (
+      x.id !== y.id ||
+      x.shortId !== y.shortId ||
+      x.summary !== y.summary ||
+      x.author !== y.author ||
+      x.timeMs !== y.timeMs
+    )
+      return false;
+  }
+  return true;
+}
+
+type ReadyPrData = Extract<PrData, { status: "ready" }>;
+
+function sameCommitRange(a: ReadyPrData, b: ReadyPrData): boolean {
+  return a.mergeBase === b.mergeBase && a.ahead === b.ahead && sameCommits(a.commits, b.commits);
+}
+
+function samePrData(a: PrData, b: PrData): boolean {
+  if (a.status !== b.status) return false;
+  if (a.status === "error" && b.status === "error") return a.error === b.error;
+  if (a.status !== "ready" || b.status !== "ready") return true;
+  return a.behind === b.behind && sameCommitRange(a, b) && sameFiles(a.files, b.files);
+}
+
 /**
  * The previous result when a reload computed the same one: every vcs refresh reloads, and new
- * objects would rebuild the embedded diff each time (#362).
+ * objects would rebuild the embedded diff each time (#362). When only `behind` or `files` changed
+ * while `mergeBase`, `ahead` and the first page of commits match, keep the previous `snapshot`
+ * (and unchanged slices) so cached commit pages and selection stay intact.
  */
 function keepIfSame(
   prev: { key: string; data: PrData } | null,
   key: string,
   data: PrData,
 ): { key: string; data: PrData } {
-  return prev?.key === key && JSON.stringify(prev.data) === JSON.stringify(data) ? prev : { key, data };
+  if (prev?.key !== key) return { key, data };
+  if (samePrData(prev.data, data)) return prev;
+  if (prev.data.status === "ready" && data.status === "ready" && sameCommitRange(prev.data, data)) {
+    return {
+      key,
+      data: {
+        ...data,
+        snapshot: prev.data.snapshot,
+        commits: prev.data.commits,
+        files: sameFiles(prev.data.files, data.files) ? prev.data.files : data.files,
+      },
+    };
+  }
+  return { key, data };
 }
 
 /** Files and commits of a pull request from `head` into `base`; the last result stays while a refresh loads. */
 function usePrData(repo: string, base: string | null, head: string, version: number, reload: number): PrData | null {
   const key = `${repo}\0${base ?? ""}\0${head}`;
   const [value, setValue] = useState<{ key: string; data: PrData } | null>(null);
+  const snapshots = useRef(0);
   useEffect(() => {
     if (!base || base === head) return;
     let live = true;
     void (async (): Promise<PrData> => {
       const mergeBase = await call(commands.vcsMergeBase(repo, base, head));
       if (!mergeBase) return { status: "unrelated" };
-      const [files, commits, behind] = await Promise.all([
+      const [files, counts, commits] = await Promise.all([
         call(commands.vcsDiffRevisions(repo, mergeBase, head)),
-        range(repo, base, head),
-        range(repo, head, base),
+        call(commands.graphRevCounts(repo, base, head)),
+        rangePage(repo, base, head, 0, PR_COMMIT_PAGE),
       ]);
-      return { status: "ready", mergeBase, files, commits, behind: behind.length };
+      return {
+        status: "ready",
+        snapshot: ++snapshots.current,
+        mergeBase,
+        files,
+        commits,
+        ahead: commits.length < PR_COMMIT_PAGE ? commits.length : Math.max(counts.ahead, commits.length),
+        behind: counts.behind,
+      };
     })().then(
       (data) => live && setValue((prev) => keepIfSame(prev, key, data)),
       (e: unknown) =>
@@ -255,7 +347,7 @@ function PrBody(p: {
         {data.error}
       </div>
     );
-  const ahead = data.commits.length;
+  const ahead = data.ahead;
   const behind = data.behind;
   return (
     <>
@@ -281,7 +373,15 @@ function PrBody(p: {
         {p.tab === "files" ? (
           <PrFiles repo={repo} base={base} head={head} mergeBase={data.mergeBase} files={data.files} file={p.file} />
         ) : (
-          <PrCommits repo={repo} commits={data.commits} />
+          <PrCommits
+            repo={repo}
+            base={base}
+            head={head}
+            total={ahead}
+            firstPage={data.commits}
+            snapshot={data.snapshot}
+            resetKey={`${repo}\0${base}\0${head}`}
+          />
         )}
       </div>
     </>
@@ -419,25 +519,245 @@ function PrFiles(p: {
   );
 }
 
-function PrCommits({ repo, commits }: { repo: string; commits: Commit[] }) {
-  if (!commits.length) return <EmptyState title="No commits" className={styles.empty} />;
+function PrCommits(p: {
+  repo: string;
+  base: string;
+  head: string;
+  total: number;
+  firstPage: Commit[];
+  snapshot: number;
+  resetKey: string;
+}) {
+  if (!p.total) return <EmptyState title="No commits" className={styles.empty} />;
+  return <PrCommitList {...p} />;
+}
+
+type ActiveCommit = { key: string; id: string } | { key: string; snapshot: number; pendingIndex: number } | null;
+
+function PrCommitList({
+  repo,
+  base,
+  head,
+  total,
+  firstPage,
+  snapshot,
+  resetKey,
+}: {
+  repo: string;
+  base: string;
+  head: string;
+  total: number;
+  firstPage: Commit[];
+  snapshot: number;
+  resetKey: string;
+}) {
+  const [extraPages, setExtraPages] = useState<{
+    key: string;
+    snapshot: number;
+    pages: Map<number, Commit[]>;
+  }>(() => ({ key: resetKey, snapshot, pages: new Map() }));
+  const currentPages = extraPages.key === resetKey && extraPages.snapshot === snapshot ? extraPages.pages : EMPTY_PAGES;
+
+  const commitAt = useCallback(
+    (index: number): Commit | undefined => {
+      if (index < 0 || index >= total) return undefined;
+      if (index < firstPage.length) return firstPage[index];
+      const page = Math.floor(index / PR_COMMIT_PAGE);
+      return currentPages.get(page)?.[index - page * PR_COMMIT_PAGE];
+    },
+    [total, firstPage, currentPages],
+  );
+
+  const idToIndex = useMemo(() => {
+    const map = new Map<string, number>();
+    for (let i = 0; i < firstPage.length; i++) map.set(firstPage[i]!.id, i);
+    for (const [page, list] of currentPages) {
+      const offset = page * PR_COMMIT_PAGE;
+      for (let i = 0; i < list.length; i++) map.set(list[i]!.id, offset + i);
+    }
+    return map;
+  }, [firstPage, currentPages]);
+
+  const [activeRow, setActiveRow] = useState<ActiveCommit>(null);
+  let active = -1;
+  if (activeRow?.key === resetKey) {
+    if ("id" in activeRow) active = idToIndex.get(activeRow.id) ?? -1;
+    else if (activeRow.snapshot === snapshot && activeRow.pendingIndex < total) active = activeRow.pendingIndex;
+  }
+
+  const reveal = useCallback(
+    (id: string) => useGraphView.setState({ mode: "graph", selection: { repo, ids: [id] }, panel: "details" }),
+    [repo],
+  );
+  const { scrollRef, rows, height, listProps, rowProps } = usePaneList({
+    count: total,
+    resetKey,
+    version: resetKey,
+    active,
+    setActive: (index) => {
+      const c = commitAt(index);
+      setActiveRow(c ? { key: resetKey, id: c.id } : { key: resetKey, snapshot, pendingIndex: index });
+    },
+    open: (index) => {
+      const c = commitAt(index);
+      if (c) reveal(c.id);
+    },
+  });
+
+  const firstRow = rows[0]?.index ?? -1;
+  const lastRow = rows[rows.length - 1]?.index ?? -1;
+  const neededPages = useMemo(() => {
+    const loadedPrefix = Math.max(PR_COMMIT_PAGE, firstPage.length);
+    if (total <= loadedPrefix) return EMPTY_PAGE_NUMBERS;
+    const pages = new Set<number>();
+    const needPage = (p: number) => {
+      if (p * PR_COMMIT_PAGE >= firstPage.length && !currentPages.has(p)) pages.add(p);
+    };
+    if (firstRow >= 0 && lastRow >= firstRow) {
+      const from = Math.max(loadedPrefix, firstRow - PR_PREFETCH_MARGIN);
+      const to = Math.min(total - 1, lastRow + PR_PREFETCH_MARGIN);
+      if (from <= to) {
+        const pStart = Math.floor(from / PR_COMMIT_PAGE);
+        const pEnd = Math.floor(to / PR_COMMIT_PAGE);
+        for (let p = pStart; p <= pEnd; p++) needPage(p);
+      }
+    }
+    if (active >= loadedPrefix && active < total) needPage(Math.floor(active / PR_COMMIT_PAGE));
+    return pages.size ? [...pages] : EMPTY_PAGE_NUMBERS;
+  }, [total, firstPage.length, firstRow, lastRow, active, currentPages]);
+
+  const currentToken = useRef({ key: resetKey, snapshot, alive: true });
+  const inFlight = useRef<{ key: string; snapshot: number; pages: Set<number> }>({
+    key: resetKey,
+    snapshot,
+    pages: new Set(),
+  });
+  useEffect(() => {
+    const token = { key: resetKey, snapshot, alive: true };
+    currentToken.current = token;
+    inFlight.current = { key: resetKey, snapshot, pages: new Set() };
+    return () => {
+      token.alive = false;
+    };
+  }, [resetKey, snapshot]);
+
+  useEffect(() => {
+    if (!neededPages.length) return;
+    const token = currentToken.current;
+    if (token.key !== resetKey || token.snapshot !== snapshot) return;
+    const flight = inFlight.current;
+    for (const page of neededPages) {
+      if (flight.pages.has(page)) continue;
+      flight.pages.add(page);
+      void rangePage(repo, base, head, page * PR_COMMIT_PAGE, PR_COMMIT_PAGE).then(
+        (list) => {
+          flight.pages.delete(page);
+          if (!token.alive) return;
+          setExtraPages((prev) => {
+            const basePages =
+              prev.key === resetKey && prev.snapshot === snapshot ? prev.pages : new Map<number, Commit[]>();
+            if (basePages.has(page)) return prev;
+            const next = new Map(basePages);
+            next.set(page, list);
+            return { key: resetKey, snapshot, pages: next };
+          });
+          setActiveRow((cur) => {
+            if (!cur || !("pendingIndex" in cur) || cur.key !== resetKey || cur.snapshot !== snapshot) return cur;
+            const offset = cur.pendingIndex - page * PR_COMMIT_PAGE;
+            const landed = offset >= 0 && offset < list.length ? list[offset] : undefined;
+            return landed ? { key: resetKey, id: landed.id } : cur;
+          });
+        },
+        () => {
+          flight.pages.delete(page);
+        },
+      );
+    }
+  }, [repo, base, head, resetKey, snapshot, neededPages]);
+
+  const title = tx("Show in Graph");
+  // Rows used to be buttons, which Space activates; keep that by routing Space through the Enter path.
+  const onKeyDown = (e: ReactKeyboardEvent) => {
+    if (e.key !== " ") return listProps.onKeyDown(e);
+    e.preventDefault();
+    if (e.repeat) return;
+    listProps.onKeyDown({ ...e, key: "Enter" } as ReactKeyboardEvent);
+  };
   return (
-    <div className={styles.prCommits} role="list" aria-label={tx("Commits")}>
-      {commits.map((c) => (
-        <div key={c.id} role="listitem">
-          <button
-            type="button"
-            className={styles.prCommit}
-            title={tx("Show in Graph")}
-            onClick={() => useGraphView.setState({ mode: "graph", selection: { repo, ids: [c.id] }, panel: "details" })}
-          >
-            <span className={styles.subject}>{c.summary}</span>
-            <span className={styles.prCommitMeta}>{c.author}</span>
-            <span className={styles.prCommitMeta}>{c.timeMs ? formatDay(new Date(c.timeMs)) : ""}</span>
-            <span className={clsx(styles.prCommitMeta, styles.mono)}>{c.shortId}</span>
-          </button>
-        </div>
-      ))}
+    <div ref={scrollRef} className={styles.prCommits} aria-label={tx("Commits")} {...listProps} onKeyDown={onKeyDown}>
+      <div role="presentation" className={styles.virtualRows} style={{ height }}>
+        {rows.map((v) => {
+          const c = commitAt(v.index);
+          const rp = rowProps(v.index);
+          if (!c) {
+            return (
+              <div
+                key={`loading-${v.index}`}
+                id={rp.id}
+                role="option"
+                aria-selected={v.index === active}
+                aria-setsize={rp["aria-setsize"]}
+                aria-posinset={rp["aria-posinset"]}
+                aria-busy="true"
+                className={clsx(styles.prCommit, styles.virtualRow, v.index === active && styles.selected)}
+                style={{ transform: `translateY(${v.start}px)` }}
+              />
+            );
+          }
+          return (
+            <PrCommitRow
+              key={c.id}
+              commit={c}
+              id={rp.id}
+              posInSet={rp["aria-posinset"]}
+              setSize={rp["aria-setsize"]}
+              start={v.start}
+              selected={v.index === active}
+              title={title}
+              onReveal={reveal}
+            />
+          );
+        })}
+      </div>
     </div>
   );
 }
+
+const PrCommitRow = memo(function PrCommitRow({
+  commit: c,
+  id,
+  posInSet,
+  setSize,
+  start,
+  selected,
+  title,
+  onReveal,
+}: {
+  commit: Commit;
+  id: string;
+  posInSet: number;
+  setSize: number;
+  start: number;
+  selected: boolean;
+  title: string;
+  onReveal: (id: string) => void;
+}) {
+  return (
+    <div
+      id={id}
+      role="option"
+      aria-selected={selected}
+      aria-setsize={setSize}
+      aria-posinset={posInSet}
+      className={clsx(styles.prCommit, styles.virtualRow, selected && styles.selected)}
+      style={{ transform: `translateY(${start}px)` }}
+      title={title}
+      onClick={() => onReveal(c.id)}
+    >
+      <span className={styles.subject}>{c.summary}</span>
+      <span className={styles.prCommitMeta}>{c.author}</span>
+      <span className={styles.prCommitMeta}>{c.timeMs ? formatDay(new Date(c.timeMs)) : ""}</span>
+      <span className={clsx(styles.prCommitMeta, styles.mono)}>{c.shortId}</span>
+    </div>
+  );
+});

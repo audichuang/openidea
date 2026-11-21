@@ -127,7 +127,8 @@
 }
 .scroll:focus-within .selected,
 .files:focus-within .selected,
-.table:focus-within .selected {
+.table:focus-within .selected,
+.prCommits:focus-within .selected {
   --graph-row-bg: var(--bg-tree-selected);
 }
 .match {
@@ -615,16 +616,17 @@
   width: 100%;
   height: var(--h-list-row);
   padding: 0 12px;
-  border: none;
-  background: none;
   color: var(--fg);
-  font: inherit;
-  text-align: left;
   white-space: nowrap;
   cursor: pointer;
+  outline: none;
 }
 .prCommit:hover {
   background: var(--bg-tree-hover);
+}
+.prCommit.selected,
+.prCommit.selected:hover {
+  background: var(--graph-row-bg);
 }
 .prCommit .subject {
   flex: 1;

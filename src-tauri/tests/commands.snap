@@ -298,6 +298,7 @@ graph_bisect                                 trusted            project_host bin
 graph_bisect_state                           trusted            project_host bindings async
 graph_ref_op                                 trusted            project_host bindings async
 graph_reflog                                 trusted            project_host bindings async
+graph_rev_counts                             always             project_host bindings async
 graph_stashes                                trusted            project_host bindings async
 graph_tree                                   trusted            project_host bindings async
 graph_working_state                          trusted            project_host bindings async
