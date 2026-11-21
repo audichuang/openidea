@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import type { Commit, GitOperation } from "@/bindings";
 
 const mocks = vi.hoisted(() => ({
+  virtualizerKeys: [] as Array<(index: number) => unknown>,
   history: [] as Commit[],
   operations: [] as Array<{ repo: string | null; op: GitOperation }>,
 }));
@@ -13,6 +14,17 @@ vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
     onmessage: (line: string) => void = () => {};
   },
 }));
+
+vi.mock("@tanstack/react-virtual", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@tanstack/react-virtual")>();
+  return {
+    ...real,
+    useVirtualizer: (options: Parameters<typeof real.useVirtualizer>[0]) => {
+      mocks.virtualizerKeys.push(options.getItemKey as (index: number) => unknown);
+      return real.useVirtualizer(options);
+    },
+  };
+});
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -118,6 +130,7 @@ function scrollToTop(list: HTMLElement) {
 beforeEach(() => {
   mocks.history = [];
   mocks.operations = [];
+  mocks.virtualizerKeys = [];
   useVcs.setState({
     root: "/p",
     roots: ["/p"],
@@ -150,6 +163,23 @@ describe("InteractiveRebaseDialog", () => {
     expect(selectsAt2000).toBeGreaterThan(0);
     expect(selectsAt2000).toBeLessThan(60);
     expect(rowsAt2000).toBeLessThan(60);
+  });
+
+  it("keeps the virtualizer key function stable across edits and replaces it only when rows are reordered", async () => {
+    const { commits, list } = await openRebase(6);
+    const lastKey = () => mocks.virtualizerKeys[mocks.virtualizerKeys.length - 1]!;
+    const initial = lastKey();
+
+    await chooseAction(commits[1]!.id, "Reword");
+    fireEvent.change(screen.getByLabelText(`New message for ${commits[1]!.id.slice(0, 8)}`), {
+      target: { value: "typed" },
+    });
+    expect(lastKey()).toBe(initial);
+
+    fireEvent.click(within(within(list).getAllByRole("listitem")[2]!).getByRole("button", { name: "Move Up" }));
+    expect(lastKey()).not.toBe(initial);
+    expect(lastKey()(1)).toBe(commits[2]!.id);
+    expect(lastKey()(2)).toBe(commits[1]!.id);
   });
 
   it("supports per-row action selection, validation, reordering, and submitting the exact plan", async () => {

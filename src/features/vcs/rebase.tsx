@@ -508,11 +508,23 @@ function InteractiveRebaseDialog({
   const rowCount = rows.length;
   const problem = useMemo(() => planProblem(rows), [rows]);
   const noop = useMemo(() => planIsNoop(rows, range.commits), [rows, range.commits]);
+  // The virtualizer rebuilds its whole measurement cache whenever getItemKey changes identity, so keep both
+  // callbacks stable and replace getItemKey only when rows are reordered (the index -> key mapping changes).
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+  const [order, setOrder] = useState(0);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const getItemKey = useCallback((index: number) => rowsRef.current[index]!.commit.id, [order]);
+  const estimateSize = useCallback(
+    (index: number) => (rowsRef.current[index]?.action === "reword" ? REBASE_REWORD_ROW_HEIGHT : REBASE_ROW_HEIGHT),
+    [],
+  );
+  const getScrollElement = useCallback(() => listRef.current, []);
   const virtualizer = useVirtualizer({
     count: rowCount,
-    getScrollElement: () => listRef.current,
-    getItemKey: (index) => rows[index]!.commit.id,
-    estimateSize: (index) => (rows[index]?.action === "reword" ? REBASE_REWORD_ROW_HEIGHT : REBASE_ROW_HEIGHT),
+    getScrollElement,
+    getItemKey,
+    estimateSize,
     overscan: REBASE_OVERSCAN,
     initialRect: REBASE_INITIAL_RECT,
   });
@@ -527,6 +539,7 @@ function InteractiveRebaseDialog({
       const to = i + delta;
       if (to < 0 || to >= rowCount) return;
       setRows((rs) => moveRow(rs, i, delta));
+      setOrder((n) => n + 1);
       virtualizer.scrollToIndex(to, { align: "auto" });
     },
     [rowCount, virtualizer],
