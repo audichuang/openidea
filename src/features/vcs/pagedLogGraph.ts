@@ -1029,7 +1029,8 @@ function resync(prev: Paged, input: Input, shift: number, tail: number): Paged |
         rows[r] = withTarget(rows[r]!, i, before.targetRow! + shift);
       }
     const arrowRows = rows.flatMap((row, r) => (hasArrow(row) ? [r] : []));
-    rows.push(...prev.rows.slice(c + 2));
+    // Not `push(...rows)`: a long list overflows the call's arguments.
+    for (let r = c + 2; r < prev.rows.length; r++) rows.push(prev.rows[r]!);
     for (const r of prev.arrowRows.slice(below(prev.arrowRows, c + 2))) {
       rows[r + shift] = shifted(prev.rows[r]!, shift);
       arrowRows.push(r + shift);
