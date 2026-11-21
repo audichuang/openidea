@@ -376,4 +376,95 @@ describe("PR Commits selection stability across refreshes", () => {
       panel: "details",
     });
   });
+
+  it("keeps loaded commit pages and off-screen selection across a base-only refresh (behind 0->5)", async () => {
+    const commits = commitsOf(2_000);
+    setupPr(commits, 0);
+
+    const { rerender } = render(<PrView repo={REPO} current="feature" version={0} reload={0} />);
+    await flush();
+    expect(screen.getByRole("status").textContent).toBe("Commits: 2000 ahead, 0 behind main");
+
+    // Select commit 1999 (on page 6).
+    const list = screen.getByRole("listbox", { name: "Commits" });
+    act(() => list.focus());
+    fireEvent.keyDown(list, { key: "End" });
+    await flush();
+    expect(currentRow(list)!.textContent).toContain("commit 1999");
+    expect(currentRow(list)!.getAttribute("aria-posinset")).toBe("2000");
+
+    // Scroll back to the top so commit 1999 is off-screen.
+    list.scrollTop = 0;
+    fireEvent.scroll(list);
+    await flush();
+    expect(list.getAttribute("aria-activedescendant")).toBeNull();
+
+    // Base-only refresh: behind changes 0 -> 5 while mergeBase, ahead, and commits stay the same.
+    vcsLog.mockClear();
+    setupPr(commits, 5);
+    rerender(<PrView repo={REPO} current="feature" version={1} reload={0} />);
+    await flush();
+    expect(screen.getByRole("status").textContent).toBe("Commits: 2000 ahead, 5 behind main");
+
+    // Only page 0 was fetched by the refresh; cached extra pages were not discarded or refetched.
+    expect(vcsLog).toHaveBeenCalledTimes(1);
+    expect(vcsLog.mock.calls[0]![1]).toMatchObject({ range: "main..feature", skip: 0 });
+
+    // First Enter brings commit 1999 back into view immediately (no skeleton, no refetch).
+    vcsLog.mockClear();
+    fireEvent.keyDown(list, { key: "Enter" });
+    await flush();
+    expect(useGraphView.getState().mode).toBe("pr");
+    const revealed = currentRow(list);
+    expect(revealed).not.toBeNull();
+    expect(revealed!.getAttribute("aria-busy")).toBeNull();
+    expect(revealed!.textContent).toContain("commit 1999");
+    expect(revealed!.getAttribute("aria-posinset")).toBe("2000");
+    expect(vcsLog).not.toHaveBeenCalled();
+
+    // Second Enter opens commit 1999 in the graph.
+    fireEvent.keyDown(list, { key: "Enter" });
+    expect(useGraphView.getState()).toMatchObject({
+      mode: "graph",
+      selection: { repo: REPO, ids: [commits[1_999]!.id] },
+      panel: "details",
+    });
+  });
+
+  it("keeps visible later-page rows and selection intact without aria-busy flash on files/behind-only refreshes", async () => {
+    const commits = commitsOf(2_000);
+    setupPr(commits, 0, [{ path: "src/a.ts", kind: "modified", oldPath: null }]);
+
+    const { rerender } = render(<PrView repo={REPO} current="feature" version={0} reload={0} />);
+    await flush();
+
+    const list = screen.getByRole("listbox", { name: "Commits" });
+    act(() => list.focus());
+    fireEvent.keyDown(list, { key: "End" });
+    await flush();
+    expect(currentRow(list)!.textContent).toContain("commit 1999");
+
+    // Refresh updates both behind and files while mergeBase, ahead, and commits match.
+    vcsLog.mockClear();
+    setupPr(commits, 3, [{ path: "src/a.ts", kind: "added", oldPath: null }]);
+    rerender(<PrView repo={REPO} current="feature" version={1} reload={0} />);
+    await flush();
+
+    expect(screen.getByRole("status").textContent).toBe("Commits: 2000 ahead, 3 behind main");
+    expect(
+      within(list)
+        .queryAllByRole("option")
+        .some((r) => r.getAttribute("aria-busy") === "true"),
+    ).toBe(false);
+    expect(currentRow(list)!.textContent).toContain("commit 1999");
+    expect(vcsLog).toHaveBeenCalledTimes(1);
+    expect(vcsLog.mock.calls[0]![1]).toMatchObject({ range: "main..feature", skip: 0 });
+
+    fireEvent.keyDown(list, { key: " ", code: "Space" });
+    expect(useGraphView.getState()).toMatchObject({
+      mode: "graph",
+      selection: { repo: REPO, ids: [commits[1_999]!.id] },
+      panel: "details",
+    });
+  });
 });
