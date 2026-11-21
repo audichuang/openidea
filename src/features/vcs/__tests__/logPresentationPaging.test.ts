@@ -35,6 +35,33 @@ function history(size: number): Commit[] {
   });
 }
 
+/**
+ * A mainline in log order: every tenth commit merges a short side chain (no refs) that forks
+ * from the mainline a few commits down, as date order interleaves them.
+ */
+function mainline(size: number): Commit[] {
+  const commit = (id: string, parents: string[]): Commit => ({
+    ...history(1)[0]!,
+    id,
+    shortId: id,
+    parents,
+    refs: id === "m0" ? ["HEAD -> main"] : [],
+  });
+  const out: Commit[] = [];
+  for (let m = 0; out.length < size; m++) {
+    if (m % 10 !== 5) {
+      out.push(commit(`m${m}`, [`m${m + 1}`]));
+      continue;
+    }
+    const side = Array.from({ length: 1 + (m % 3) }, (_, k) => `s${m}.${k}`);
+    out.push(commit(`m${m}`, [`m${m + 1}`, side[0]!]), commit(`m${m + 1}`, [`m${m + 2}`]));
+    side.forEach((id, k) => out.push(commit(id, [side[k + 1] ?? `m${m + 3}`])));
+    out.push(commit(`m${m + 2}`, [`m${m + 3}`]));
+    m += 2;
+  }
+  return out;
+}
+
 /** Rows `computeGraph` lays out when one page is appended to `loaded` rows, as the Git Log presents it. */
 function rowsLaidOutForPage(all: readonly Commit[], loaded: number) {
   const computeGraph = vi.mocked(graph.computeGraph);
@@ -52,5 +79,16 @@ describe("Git Log deep paging", () => {
     const shallow = rowsLaidOutForPage(all, 600);
     const deep = rowsLaidOutForPage(all, 20_000);
     expect(deep).toBeLessThanOrEqual(shallow);
+  });
+
+  // Characterization: with refs the lane colours come from `graphLayout` over the whole loaded
+  // list, whose owner suffixes count the side chains below each one. A page arriving recolours
+  // merged side-branch lanes up to the top of the log, so rows already shown are not final and a
+  // page cannot be presented from its own rows alone while matching a full recompute.
+  it.fails("leaves rows far above the loaded end unchanged when a page arrives", () => {
+    const all = mainline(1_300);
+    const before = presentLogGraph(all.slice(0, 1_000), DEFAULT_LOG_OPTIONS, fragments, new Set()).rows;
+    const after = presentLogGraph(all, DEFAULT_LOG_OPTIONS, fragments, new Set()).rows;
+    expect(after.slice(0, 900)).toStrictEqual(before.slice(0, 900));
   });
 });
