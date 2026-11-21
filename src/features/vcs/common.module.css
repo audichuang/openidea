@@ -512,12 +512,22 @@
   flex: 1;
   min-height: 0;
   overflow: auto;
+  overflow-anchor: none;
   padding: var(--space-1);
 }
 .rebaseList[data-fixup-messages] {
   --rebase-action-width: 144px;
 }
+.rebaseListInner {
+  position: relative;
+  width: 100%;
+}
 .rebaseRow {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   gap: var(--space-1);
