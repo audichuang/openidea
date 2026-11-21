@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { forkProjectTabs } from "@/workbench/forkProjectTabs";
 
 const projectTrustStatus = vi.fn();
 vi.mock("@/platform/projectTrust", () => ({
@@ -122,7 +123,14 @@ beforeEach(() => {
   workspaceAttach.mockReset();
   workspaceUpdate.mockReset();
   projectCurrent.mockReset();
-  for (const f of [windowOpenProject, windowOpenProjectTab, windowOpenFiles, windowGroupJoin, windowTakeLaunch, wslResolve])
+  for (const f of [
+    windowOpenProject,
+    windowOpenProjectTab,
+    windowOpenFiles,
+    windowGroupJoin,
+    windowTakeLaunch,
+    wslResolve,
+  ])
     f.mockReset();
   windowGroupJoin.mockResolvedValue(ok(null));
   windowTakeLaunch.mockResolvedValue(null);
@@ -842,6 +850,13 @@ describe("Attach", () => {
 });
 
 describe("Project tabs", () => {
+  // Upstream's New Tab (#434 keeps the fork's by default, tested elsewhere in this file).
+  beforeEach(() => {
+    forkProjectTabs.upstream = true;
+  });
+  afterEach(() => {
+    forkProjectTabs.upstream = false;
+  });
   it("opens the project in its own window and joins that window into this window's group", async () => {
     useProject.setState(projectState("/p/a"));
     vi.mocked(ask).mockResolvedValueOnce({ button: "tab", checked: false });
