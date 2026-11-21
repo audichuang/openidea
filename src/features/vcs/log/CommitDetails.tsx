@@ -3,6 +3,7 @@ import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
+import { formatBinding, hasPrimaryModifier, hostBinding } from "@/platform/keymap";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import {
   EmptyState,
@@ -14,14 +15,19 @@ import {
   SplitPanel,
   T,
   Tree,
+  copyText,
   fileIconName,
   lazyComponent,
   showContextMenu,
   type MenuItem,
   type TreeHandle,
 } from "@/ui";
+import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
+import { defaultRangeExtractor, useVirtualizer, type Range as VirtualRange } from "@tanstack/react-virtual";
+import clsx from "clsx";
 import {
+  memo,
   useCallback,
   useContext,
   useEffect,
@@ -29,6 +35,8 @@ import {
   useMemo,
   useRef,
   useState,
+  type ClipboardEvent as ReactClipboardEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { DIFF_KIND, diffInput, vcsDiffInFront } from "../diffInput";
@@ -50,7 +58,7 @@ import { openLogTab, selectedCommits, updateLogOptions, useGitLog } from "../log
 import { KIND_COLOR, dirName, fileCount, renameFrom, type EffectiveKind } from "../model";
 import { commitKey, commitRepo } from "../multiRoot";
 import { currentRepo, repoName } from "../store";
-import { CommitMessage } from "./CommitMessage";
+import { CommitMessage, compactCommitText } from "./CommitMessage";
 import { useDropdownMenu, useReadOnlyLog } from "./logHooks";
 import { toggle } from "./shared";
 
@@ -89,9 +97,12 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
     const ids = new Set(selection);
     return commits.filter((c) => ids.has(commitKey(c)));
   }, [commits, selection]);
-  const commit = selected ? commits.find((c) => commitKey(c) === selected) : undefined;
+  const commit = useMemo(
+    () => (selected ? commits.find((c) => commitKey(c) === selected) : undefined),
+    [commits, selected],
+  );
   const many = chosen.length > 1;
-  const idsKey = chosen.map(commitKey).join(" ");
+  const idsKey = useMemo(() => chosen.map(commitKey).join(" "), [chosen]);
   const commitRoot = commit ? commitRepo(commit) : null;
   const [result, setResult] = useState<{
     key: string;
@@ -110,7 +121,10 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
   const diffLocation = modal && savedLocation === "editor" ? "right" : savedLocation;
   const showLineStats = useLogOptions((s) => s.showLineStats);
   const filters = useGitLog((s) => s.filters);
-  const filesKey = JSON.stringify([idsKey, fromParents, parentIndex, commitRoot, showLineStats]);
+  const filesKey = useMemo(
+    () => `${idsKey}\n${JSON.stringify([fromParents, parentIndex, commitRoot, showLineStats])}`,
+    [idsKey, fromParents, parentIndex, commitRoot, showLineStats],
+  );
   const files = result?.key === filesKey ? result.files : null;
   const error = result?.key === filesKey ? result.error : null;
 
@@ -198,7 +212,11 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
       removed: 0,
     });
   }, [changes, showLineStats]);
-  const multipleRoots = new Set(chosen.map(commitRepo)).size > 1;
+  const multipleRoots = useMemo(() => {
+    const first = chosen[0] ? commitRepo(chosen[0]) : undefined;
+    for (let i = 1; i < chosen.length; i++) if (commitRepo(chosen[i]!) !== first) return true;
+    return false;
+  }, [chosen]);
   const changeTreePath = useCallback(
     (f: LogChange) => `${multipleRoots ? `${repoName(f.repo ?? "")}/` : ""}${f.group ? `${f.group}/` : ""}${f.path}`,
     [multipleRoots],
@@ -413,13 +431,13 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
       </SplitPanel>
       <SplitHandle />
       <SplitPanel id="message" minSize="60px">
-        <div className={styles.messageBox}>
-          {many ? (
-            chosen.map((c) => <CommitMessage key={commitKey(c)} commit={c} compact />)
-          ) : (
+        {many ? (
+          <CommitMessageList commits={chosen} />
+        ) : (
+          <div className={styles.messageBox}>
             <CommitMessage commit={commit} />
-          )}
-        </div>
+          </div>
+        )}
       </SplitPanel>
     </SplitGroup>
   );
@@ -469,6 +487,305 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
     </div>
   );
 }
+
+const CompactCommitMessage = memo(CommitMessage);
+
+function rowElementOfNode(node: Node | null, root: HTMLElement): HTMLElement | null {
+  const el = node instanceof Element ? node : node?.parentElement;
+  const row = el?.closest<HTMLElement>("[data-index]");
+  return row && root.contains(row) ? row : null;
+}
+
+function rowIndexOfNode(node: Node | null, root: HTMLElement): number | null {
+  const row = rowElementOfNode(node, root);
+  if (!row) return null;
+  const index = Number(row.dataset.index);
+  return Number.isInteger(index) ? index : null;
+}
+
+function isAtStartOfRow(container: Node, offset: number, rowEl: HTMLElement): boolean {
+  if (offset !== 0) return false;
+  let cur: Node | null = container;
+  while (cur && cur !== rowEl) {
+    if (cur.previousSibling) return false;
+    cur = cur.parentNode;
+  }
+  return cur === rowEl;
+}
+
+function isAtEndOfRow(container: Node, offset: number, rowEl: HTMLElement): boolean {
+  const max =
+    container.nodeType === Node.TEXT_NODE ? (container.textContent?.length ?? 0) : container.childNodes.length;
+  if (offset !== max) return false;
+  let cur: Node | null = container;
+  while (cur && cur !== rowEl) {
+    if (cur.nextSibling) return false;
+    cur = cur.parentNode;
+  }
+  return cur === rowEl;
+}
+
+function boundaryRowIndex(
+  container: Node,
+  offset: number,
+  scrollEl: HTMLElement,
+  listEl: HTMLElement,
+  count: number,
+  isEnd: boolean,
+): number | null {
+  const direct = rowIndexOfNode(container, scrollEl);
+  if (direct !== null) return direct;
+  if (container === listEl) {
+    const children = listEl.childNodes;
+    if (!children.length) return null;
+    const childIndex = isEnd
+      ? Math.min(children.length - 1, Math.max(0, offset - 1))
+      : Math.min(children.length - 1, offset);
+    return rowIndexOfNode(children[childIndex] ?? null, scrollEl);
+  }
+  if (container === scrollEl) return isEnd ? (offset > 0 ? count - 1 : 0) : offset === 0 ? 0 : count - 1;
+  return null;
+}
+
+function coversContainer(range: globalThis.Range, container: HTMLElement): boolean {
+  return (
+    range.startContainer === container &&
+    range.endContainer === container &&
+    range.startOffset === 0 &&
+    range.endOffset === container.childNodes.length &&
+    container.childNodes.length > 0
+  );
+}
+
+/**
+ * Commit range covered by `selection` when it covers the whole list or spans multiple rows;
+ * null for collapsed, external, or single-row selections (left to native DOM copy).
+ */
+function selectedCommitRange(
+  selection: Selection | null,
+  scrollEl: HTMLElement,
+  listEl: HTMLElement,
+  count: number,
+  allSelectedRange: globalThis.Range | null,
+): { start: number; end: number } | null {
+  if (!count || !selection || !selection.rangeCount || selection.isCollapsed) return null;
+  const range = selection.getRangeAt(0);
+  if (!scrollEl.contains(range.startContainer) || !scrollEl.contains(range.endContainer)) return null;
+  if (
+    (allSelectedRange !== null && range === allSelectedRange) ||
+    coversContainer(range, scrollEl) ||
+    coversContainer(range, listEl)
+  ) {
+    return { start: 0, end: count - 1 };
+  }
+  let start = boundaryRowIndex(range.startContainer, range.startOffset, scrollEl, listEl, count, false);
+  let end = boundaryRowIndex(range.endContainer, range.endOffset, scrollEl, listEl, count, true);
+  if (start === null || end === null) return null;
+  if (start < end) {
+    const startRow = rowElementOfNode(range.startContainer, scrollEl);
+    if (startRow && isAtEndOfRow(range.startContainer, range.startOffset, startRow)) start++;
+    const endRow = rowElementOfNode(range.endContainer, scrollEl);
+    if (endRow && isAtStartOfRow(range.endContainer, range.endOffset, endRow)) end--;
+  }
+  if (start >= end) return null;
+  return { start, end };
+}
+
+function formatCommitMessages(commits: readonly Commit[], start: number, end: number): string {
+  const out: string[] = [];
+  for (let i = start; i <= end; i++) out.push(compactCommitText(commits[i]!));
+  return out.join("\n\n");
+}
+
+function samePinned(a: readonly number[] | null, b: readonly number[] | null): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  return a.every((v, i) => v === b[i]);
+}
+
+/** Virtualized list of compact commit messages for a multi-commit selection. */
+const CommitMessageList = memo(function CommitMessageList({ commits }: { commits: readonly Commit[] }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const allSelectedRangeRef = useRef<globalThis.Range | null>(null);
+  const draggingRef = useRef(false);
+  const dragAnchorRef = useRef<number | null>(null);
+  // Pin at most the 1-2 selection endpoint rows so drag-scrolling never unmounts the selection anchor.
+  const [pinned, setPinned] = useState<readonly number[] | null>(null);
+
+  useEffect(() => {
+    allSelectedRangeRef.current = null;
+    draggingRef.current = false;
+    dragAnchorRef.current = null;
+    setPinned(null);
+  }, [commits]);
+
+  useEffect(() => {
+    const scrollEl = scrollRef.current;
+    if (!scrollEl) return;
+    const syncSelection = () => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || !scrollEl.contains(sel.anchorNode) || !scrollEl.contains(sel.focusNode)) {
+        allSelectedRangeRef.current = null;
+        if (!draggingRef.current) setPinned((prev) => (prev === null ? prev : null));
+        return;
+      }
+      if (allSelectedRangeRef.current && sel.rangeCount > 0 && sel.getRangeAt(0) === allSelectedRangeRef.current) {
+        setPinned((prev) => (prev === null ? prev : null));
+        return;
+      }
+      allSelectedRangeRef.current = null;
+      const anchor = rowIndexOfNode(sel.anchorNode, scrollEl);
+      const focus = rowIndexOfNode(sel.focusNode, scrollEl);
+      let next: readonly number[] | null = null;
+      if (draggingRef.current && dragAnchorRef.current !== null) {
+        const a = anchor ?? dragAnchorRef.current;
+        const f = focus ?? a;
+        next = a === f ? [a] : [Math.min(a, f), Math.max(a, f)];
+      } else if (anchor !== null && focus !== null && anchor !== focus) {
+        next = [Math.min(anchor, focus), Math.max(anchor, focus)];
+      }
+      setPinned((prev) => (samePinned(prev, next) ? prev : next));
+    };
+    const onMouseDown = (event: MouseEvent) => {
+      allSelectedRangeRef.current = null;
+      if (event.button !== 0) return;
+      const index = rowIndexOfNode(event.target as Node, scrollEl);
+      if (index === null) return;
+      draggingRef.current = true;
+      dragAnchorRef.current = index;
+      const next = [index];
+      setPinned((prev) => (samePinned(prev, next) ? prev : next));
+    };
+    const onMouseUp = () => {
+      if (!draggingRef.current) return;
+      draggingRef.current = false;
+      dragAnchorRef.current = null;
+      syncSelection();
+    };
+    scrollEl.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("mouseup", onMouseUp);
+    document.addEventListener("selectionchange", syncSelection);
+    return () => {
+      scrollEl.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("mouseup", onMouseUp);
+      document.removeEventListener("selectionchange", syncSelection);
+    };
+  }, []);
+
+  const rangeExtractor = useCallback(
+    (range: VirtualRange) => {
+      const visible = defaultRangeExtractor(range);
+      if (!pinned || !visible.length) return visible;
+      const extra = pinned.filter((i) => i >= 0 && i < range.count && !visible.includes(i));
+      if (!extra.length) return visible;
+      return [...new Set([...visible, ...extra])].sort((a, b) => a - b);
+    },
+    [pinned],
+  );
+
+  // Stable identity: a new getItemKey makes the virtualizer rebuild every row position on each render.
+  const getItemKey = useCallback((index: number) => commitKey(commits[index]!), [commits]);
+  const virtualizer = useVirtualizer({
+    count: commits.length,
+    getScrollElement: () => scrollRef.current,
+    getItemKey,
+    rangeExtractor,
+    estimateSize: () => 96,
+    overscan: 6,
+  });
+
+  const selectedRangeText = useCallback(
+    (selection: Selection | null = window.getSelection()): string | null => {
+      const scrollEl = scrollRef.current;
+      const listEl = listRef.current;
+      if (!scrollEl || !listEl || !commits.length) return null;
+      const range = selectedCommitRange(selection, scrollEl, listEl, commits.length, allSelectedRangeRef.current);
+      return range ? formatCommitMessages(commits, range.start, range.end) : null;
+    },
+    [commits],
+  );
+
+  const selectAll = useCallback(() => {
+    const scrollEl = scrollRef.current;
+    const selection = window.getSelection();
+    if (!scrollEl || !selection || !commits.length) return;
+    setPinned(null);
+    // Select scrollEl's children (wrapping listRef) so scrolling virtualized rows never collapses the range.
+    selection.selectAllChildren(scrollEl);
+    allSelectedRangeRef.current = selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+  }, [commits.length]);
+
+  const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (e.nativeEvent.isComposing) return;
+    if (hasPrimaryModifier(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "a") {
+      e.preventDefault();
+      e.stopPropagation();
+      selectAll();
+      return;
+    }
+    copySelectionOnKeyDown(e, (selection) => selectedRangeText(selection) ?? selection.toString());
+  };
+
+  const onCopy = (e: ReactClipboardEvent<HTMLDivElement>) => {
+    const text = selectedRangeText();
+    if (text === null || !e.clipboardData) return;
+    e.preventDefault();
+    e.clipboardData.setData("text/plain", text);
+  };
+
+  const onContextMenu = (e: ReactMouseEvent<HTMLDivElement>) => {
+    const scrollEl = scrollRef.current;
+    const listEl = listRef.current;
+    if (!scrollEl || !listEl || !commits.length) return;
+    const range = selectedCommitRange(
+      window.getSelection(),
+      scrollEl,
+      listEl,
+      commits.length,
+      allSelectedRangeRef.current,
+    );
+    if (!range) return;
+    e.preventDefault();
+    showContextMenu(e, [
+      {
+        id: "copy",
+        label: "Copy",
+        icon: "copy",
+        shortcut: formatBinding(hostBinding("Meta+C")),
+        run: () => void copyText(formatCommitMessages(commits, range.start, range.end)),
+      },
+    ]);
+  };
+
+  return (
+    <div
+      ref={scrollRef}
+      tabIndex={0}
+      className={clsx(styles.messageBox, styles.messageBoxVirtual)}
+      onKeyDown={onKeyDown}
+      onCopy={onCopy}
+      onContextMenu={onContextMenu}
+    >
+      <div ref={listRef} className={styles.messageList} style={{ height: virtualizer.getTotalSize() }}>
+        {virtualizer.getVirtualItems().map((item) => {
+          const c = commits[item.index]!;
+          return (
+            <div
+              key={item.key}
+              data-index={item.index}
+              ref={virtualizer.measureElement}
+              className={clsx(styles.messageItem, item.index > 0 && styles.messageItemSeparated)}
+              style={{ transform: `translateY(${item.start}px)` }}
+            >
+              <CompactCommitMessage commit={c} compact />
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+});
 
 /** IDEA's changes browser context menu in the Git Log; `changes` = the files it acts on. */
 export function changesMenu(changes: LogChange[]): MenuItem[] {

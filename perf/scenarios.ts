@@ -829,6 +829,152 @@ const leaks: Scenario = {
   },
 };
 
+/**
+ * Git Log commit details with a large multi-selection: Shift+End selects all
+ * loaded commits, then scrolls through the commit messages and jumps to the
+ * last selected commit. Scale defaults to 10,000 commits and can be overridden
+ * via `OPENIDEA_PERF_MULTISELECT_COUNT`.
+ */
+const gitLogMultiSelect: Scenario = {
+  id: "gitLogMultiSelect",
+  title: "Multi-select commits and scroll commit details",
+  async run(h) {
+    const count = Math.max(2, Number(process.env.OPENIDEA_PERF_MULTISELECT_COUNT) || 10_000);
+    await h.page.evaluate(async (n) => {
+      const probe = (
+        window as never as {
+          __openideaPerf: {
+            fakeGitLog(n: number): void;
+            fakeGitLogLoaded(n: number): Promise<void>;
+            runAction(id: string): Promise<boolean>;
+          };
+        }
+      ).__openideaPerf;
+      probe.fakeGitLog(Math.min(n, 300));
+      await probe.runAction("vcs.showLog");
+    }, count);
+    const list = h.page.getByRole("listbox", { name: "Commits" });
+    await list.getByRole("option").first().waitFor();
+    try {
+      await h.page.evaluate(async (n) => {
+        const probe = (
+          window as never as {
+            __openideaPerf: {
+              fakeGitLogLoaded(n: number): Promise<void>;
+            };
+          }
+        ).__openideaPerf;
+        await probe.fakeGitLogLoaded(n);
+      }, count);
+      // Wait for the loaded commit list and initial single-commit details to settle before measuring.
+      await h.page.locator('button[title="Copy revision number"]').first().waitFor({ timeout: 30_000 });
+      await list.getByRole("option").first().click();
+      await h.page.waitForTimeout(300);
+
+      const refresh = await h.refreshMs();
+      const tSelect = await h.now();
+      const beforeSelect = await h.counters();
+      const selectMs = await h.measure(
+        () => h.page.keyboard.press("Shift+End"),
+        '[role="toolbar"][aria-label="Changed files"]',
+        `in ${count} commits`,
+        60_000,
+      );
+      await h.inPage((p) => p.afterNextPaint());
+      const selectWork = Harness.delta(beforeSelect, await h.counters());
+      const selectLong = await h.longTasksSince(tSelect);
+      const afterSelect = await h.page.evaluate(() => {
+        const btn = document.querySelector<HTMLElement>('button[title="Copy revision number"]');
+        let box: HTMLElement | null = btn?.parentElement ?? null;
+        while (box && getComputedStyle(box).overflowY !== "auto") box = box.parentElement;
+        if (!box) throw new Error("Commit details message box not found");
+        return {
+          mountedMessages: box.querySelectorAll('button[title="Copy revision number"]').length,
+          messageDomNodes: box.querySelectorAll("*").length,
+        };
+      });
+
+      const tScroll = await h.now();
+      const beforeScroll = await h.counters();
+      await h.inPage((p) => p.startFrames());
+      await h.page.evaluate(async () => {
+        const btn = document.querySelector<HTMLElement>('button[title="Copy revision number"]');
+        let box: HTMLElement | null = btn?.parentElement ?? null;
+        while (box && getComputedStyle(box).overflowY !== "auto") box = box.parentElement;
+        if (!box) throw new Error("Commit details message box not found");
+        const max = Math.max(0, box.scrollHeight - box.clientHeight);
+        for (let i = 1; i <= 60; i++) {
+          box.scrollTop = Math.min(max, i * 480);
+          await new Promise(requestAnimationFrame);
+        }
+      });
+      const frames = await h.inPage((p) => p.stopFrames());
+      const scrollWork = Harness.delta(beforeScroll, await h.counters());
+      const scrollLong = await h.longTasksSince(tScroll);
+
+      const lastText = `order flow step ${count - 1}`;
+      const scrollToLastMs = await h.page.evaluate(async (expected) => {
+        const btn = document.querySelector<HTMLElement>('button[title="Copy revision number"]');
+        let box: HTMLElement | null = btn?.parentElement ?? null;
+        while (box && getComputedStyle(box).overflowY !== "auto") box = box.parentElement;
+        if (!box) throw new Error("Commit details message box not found");
+        const started = performance.now();
+        box.scrollTop = box.scrollHeight;
+        for (let i = 0; i < 120; i++) {
+          await new Promise(requestAnimationFrame);
+          if ((box.textContent ?? "").includes(expected)) return performance.now() - started;
+          box.scrollTop = box.scrollHeight;
+        }
+        throw new Error(`last selected commit "${expected}" not reachable by scrolling`);
+      }, lastText);
+
+      const afterScroll = await h.page.evaluate(() => {
+        const btn = document.querySelector<HTMLElement>('button[title="Copy revision number"]');
+        let box: HTMLElement | null = btn?.parentElement ?? null;
+        while (box && getComputedStyle(box).overflowY !== "auto") box = box.parentElement;
+        if (!box) throw new Error("Commit details message box not found");
+        return {
+          mountedMessagesAtEnd: box.querySelectorAll('button[title="Copy revision number"]').length,
+          messageDomNodesAtEnd: box.querySelectorAll("*").length,
+        };
+      });
+
+      const scrollSummary = frameSummary(frames, refresh);
+      return {
+        selectMs,
+        selectMainThreadMs: selectWork.taskMs,
+        selectStyleLayoutMs: selectWork.styleLayoutMs,
+        selectScriptMs: selectWork.scriptMs,
+        selectLongTasks: selectLong.length,
+        selectTbtMs: totalBlockingTime(selectLong),
+        ...afterSelect,
+        scrollFrameP95Ms: scrollSummary.frameP95Ms,
+        scrollFrameMaxMs: scrollSummary.frameMaxMs,
+        scrollDroppedFramesPct: scrollSummary.droppedFramesPct,
+        scrollFramesOver8Ms: frames.filter((f) => f > 8.33).length,
+        scrollMainThreadMsPerFrame: frames.length ? scrollWork.taskMs / frames.length : NaN,
+        scrollLongTasks: scrollLong.length,
+        scrollTbtMs: totalBlockingTime(scrollLong),
+        scrollToLastMs,
+        ...afterScroll,
+      };
+    } finally {
+      await h.page.evaluate(async () => {
+        const probe = (
+          window as never as {
+            __openideaPerf: {
+              fakeGitLog(n: number): void;
+              fakeGitLogLoaded(n: number): Promise<void>;
+            };
+          }
+        ).__openideaPerf;
+        await probe.fakeGitLogLoaded(0);
+        probe.fakeGitLog(0);
+      });
+    }
+  },
+};
+
 export const SCENARIOS: Scenario[] = [
   startup,
   typing,
@@ -840,6 +986,7 @@ export const SCENARIOS: Scenario[] = [
   gitLog,
   gitLogScrollbar,
   gitLogWide,
+  gitLogMultiSelect,
   resizePanels,
   keyRepeat,
   scroll,

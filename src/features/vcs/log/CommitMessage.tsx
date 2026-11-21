@@ -134,6 +134,25 @@ export function CommitMessage({ commit, compact = false }: { commit: Commit; com
   );
 }
 
+/** Plain text of a compact commit entry, matching what `CommitMessage` renders when `compact` is true. */
+export function compactCommitText(commit: Commit): string {
+  const [subject] = commit.message.replace(/\s+$/, "").split("\n");
+  const date = commit.timeMs ? " " + tx`on ${new Date(commit.timeMs).toLocaleString()}` : "";
+  const lines = [subject ?? "", `${commit.shortId} ${commit.author} <${commit.email}>${date}`];
+  if (commit.parents.length > 0) {
+    const label = tx(commit.parents.length > 1 ? "Merge of" : "Parent");
+    lines.push(`${label} ${commit.parents.map((id) => id.slice(0, 8)).join(", ")}`);
+  }
+  if (commit.refs.length > 0) {
+    const refs = refLabels(commit.refs, { compact: false, tagNames: true }, NO_REMOTES)
+      .map((l) => l.text)
+      .filter(Boolean)
+      .join(" ");
+    if (refs) lines.push(refs);
+  }
+  return lines.join("\n");
+}
+
 function signatureLabel(code: string) {
   return tx(
     (
