@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
@@ -72,6 +72,8 @@ describe("repository nodes in the changes tree", () => {
     const data = change("/p/orders/src/tests/orders.json");
     useVcs.setState({ status: [app, order, test, data] });
     render(<ChangesTree mode="commit" />);
+    // The fork opens sibling repositories collapsed, as IDEA does (changesExpansion.ts).
+    fireEvent.click(screen.getByRole("button", { name: "Expand All" }));
 
     expect(row("p").textContent).toBe("p1 file");
     expect(row("orders").textContent).toBe("orders3 files");
