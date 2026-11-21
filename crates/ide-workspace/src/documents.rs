@@ -1322,7 +1322,7 @@ impl Documents {
             let loaded = Self::load_as(&st.path, &st.encoding, st.native_to_ascii)?;
             st.has_bom = loaded.has_bom;
             self.replace_locked(doc, st, &loaded.text)?;
-            st.synced(loaded.mtime_ms);
+            st.synced(loaded.mtime_ms, loaded.content_hash);
             self.set_dirty(doc, st, false);
             Ok(())
         })
