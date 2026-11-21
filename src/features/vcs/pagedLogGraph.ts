@@ -613,12 +613,18 @@ function replay(
   return { ranks, slots: slots.subarray(0, length), identities };
 }
 
-/** `computeGraph`'s last-row arrows: edges into parents that are not loaded continue out of sight. */
+/**
+ * `computeGraph`'s last-row arrows: edges into parents that are not loaded continue out of sight.
+ * Decided by the parent, as {@link resolveRow} decides the kind: a lane carried from a kept lane
+ * state has the kind it got while its parent was still loaded.
+ */
 function withUnloadedArrows(rows: readonly LaidRow[], loaded: (id: string) => boolean): LaidRow[] {
   const last = rows.at(-1);
   if (!last) return rows.slice();
   const down = last.down.map((s) =>
-    s.kind === "unloaded" && !loaded(s.target!) ? { ...s, arrow: "down" as const, targetRow: -1 } : s,
+    s.target !== undefined && s.loadedKind !== "shallow" && !loaded(s.target)
+      ? { ...s, arrow: "down" as const, targetRow: -1 }
+      : s,
   );
   return [...rows.slice(0, -1), { ...last, down }];
 }
