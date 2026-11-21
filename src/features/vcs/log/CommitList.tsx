@@ -22,7 +22,7 @@ import { reachableFrom } from "../graph";
 import { LogIdContext } from "../logContext";
 import { loadLogDetails } from "../logDetails";
 import { useLogOptions } from "../logOptions";
-import { presentLogGraph } from "../logPresentation";
+import { createLogGraphPresenter } from "../logPresentation";
 import { survivingRowShift } from "../logScrollAnchor";
 import { nextSpeedMatch } from "../logSearch";
 import {
@@ -158,13 +158,16 @@ export function CommitList() {
         : null,
     [opts.collapseLinear, fragments.collapsed, headKeys, selection, bookmarks],
   );
+  // Lays out only the rows a page appends; rows are resolved as they are drawn.
+  const [presentGraph] = useState(createLogGraphPresenter);
   const {
     commits,
     rows,
+    row: graphRow,
     linear,
     collapsed,
     graph: displayedGraph,
-  } = useMemo(() => presentLogGraph(all, opts, fragments, keep ?? new Set()), [all, opts, fragments, keep]);
+  } = useMemo(() => presentGraph(all, opts, fragments, keep ?? new Set()), [presentGraph, all, opts, fragments, keep]);
   const { edges: highlighted, nodes: highlightedNodes } = useMemo(() => {
     const empty = { edges: new Set<string>(), nodes: new Set<string>() };
     if (!hoverColor) return empty;
@@ -605,7 +608,7 @@ export function CommitList() {
                 id={`commit-${scope ?? "log"}-${v.index}`}
                 commit={c}
                 fileHistoryTarget={fileHistoryTarget}
-                graph={rows[v.index]}
+                graph={graphRow(v.index)}
                 top={v.start - ROW}
                 selected={selectedSet.has(commitKey(c))}
                 head={headKeys.has(commitKey(c))}
