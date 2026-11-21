@@ -951,6 +951,19 @@ const combinedDiff: Scenario = {
       .locator(`${block} .cm-editor`)
       .last()
       .evaluate((el) => ((el as HTMLElement).dataset.perfMark = "1"));
+    // Blur before scrolling away so the dirty-document guard (not keyboard focus) keeps the block mounted.
+    await h.page.evaluate(() => {
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    });
+    const preScroll = await scroller.evaluate(
+      (el, path) => ({
+        focused: el.contains(document.activeElement),
+        unsaved: (window as never as { __openideaPerf: CombinedProbe }).__openideaPerf.unsaved(path),
+      }),
+      editable,
+    );
+    if (preScroll.focused || !preScroll.unsaved)
+      throw new Error(`expected blurred dirty editor before scrolling away: ${JSON.stringify(preScroll)}`);
     await scroller.evaluate(async (el) => {
       for (let i = 0; i < 300 && el.scrollTop + el.clientHeight < el.scrollHeight - 1; i++) {
         el.scrollTop += Math.max(el.clientHeight, Math.ceil((el.scrollHeight - el.clientHeight) / 300));
