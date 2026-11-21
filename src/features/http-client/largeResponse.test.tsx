@@ -355,6 +355,23 @@ describe("HTTP Client large responses", () => {
     expect(current).toEqual([`${query.slice(0, 20)}\n${query.slice(20)}`]);
   });
 
+  it("widens a Select All of the drawn lines (WebKit's Edit menu) to the whole body", () => {
+    const body = Array.from({ length: 20_000 }, (_, i) => `line ${i}`).join("\n");
+    show(exchangeWith(body, "text/plain"));
+    const view = editorOf(screen.getByLabelText("Response body"));
+    view.focus();
+    expect(view.viewport.to).toBeLessThan(view.state.doc.length);
+    // What WebKit's own Select All does in an editable element: select from the first to the last text drawn.
+    const lines = view.contentDOM.querySelectorAll(".cm-line");
+    const first = lines[0]!.firstChild!;
+    const last = lines[lines.length - 1]!.lastChild!;
+    act(() => {
+      document.getSelection()!.setBaseAndExtent(first, 0, last, last.textContent!.length);
+      (view as unknown as { observer: { flush(): void } }).observer.flush();
+    });
+    expect(view.state.selection.main).toMatchObject({ from: 0, to: body.length });
+  });
+
   it("hands the focus from the pane to the body, so Select All covers all of it", () => {
     show(exchangeWith("alpha\nbeta", "text/plain"));
     const view = editorOf(screen.getByLabelText("Response body"));
