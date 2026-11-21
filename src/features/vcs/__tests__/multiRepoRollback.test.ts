@@ -143,25 +143,29 @@ describe("renaming a common branch", () => {
     ]);
   });
 
-  const recents = () => JSON.parse(localStorage.getItem("openidea.vcs.recentBranches:/p") ?? "[]");
+  // The fork keeps recent branches per repository (#384), so each renamed repository's list changes.
+  const recents = (repo: string) => JSON.parse(localStorage.getItem(`openidea.vcs.recentBranches:${repo}`) ?? "[]");
   const keepRecents = () => {
-    useVcs.setState({ root: "/p" });
-    localStorage.setItem("openidea.vcs.recentBranches:/p", JSON.stringify(["feature", "main"]));
+    for (const repo of ["/a", "/b", "/c"])
+      localStorage.setItem(`openidea.vcs.recentBranches:${repo}`, JSON.stringify(["feature", "main"]));
   };
 
   it("renames the branch in recent branches once it stayed renamed", async () => {
     keepRecents();
     await renameInRepos("feature", ["/a", "/c"], false);
-    expect(recents()).toEqual(["feature2", "main"]);
+    expect(recents("/a")).toEqual(["feature2", "main"]);
+    expect(recents("/c")).toEqual(["feature2", "main"]);
+    expect(recents("/b")).toEqual(["feature", "main"]);
   });
 
   it("leaves recent branches alone when the rename failed or was rolled back", async () => {
     keepRecents();
     await renameInRepos("feature", ["/b"], false);
-    expect(recents()).toEqual(["feature", "main"]);
+    expect(recents("/b")).toEqual(["feature", "main"]);
     mocks.ask.mockResolvedValue({ button: "rollback" });
     await renameInRepos("feature", ["/a", "/b"], false);
-    expect(recents()).toEqual(["feature", "main"]);
+    expect(recents("/a")).toEqual(["feature", "main"]);
+    expect(recents("/b")).toEqual(["feature", "main"]);
   });
 
   it("unsets the upstream only after the branch was renamed in every repository", async () => {
