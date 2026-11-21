@@ -12,6 +12,7 @@ import { Decoration, EditorView, keymap, type Command, type DecorationSet } from
 import { defaultKeymap } from "@codemirror/commands";
 import type { ConsoleMatch } from "@/ui/consoleFind";
 import { displayText, displayed, docPosition, lineAt, setDisplayText, textBetween } from "./displayLines";
+import { fontsLoaded } from "@/platform/fonts";
 import { tx } from "@/platform/i18n";
 import styles from "./HttpClient.module.css";
 
@@ -158,6 +159,8 @@ function show(v: EditorView, text: string) {
   });
 }
 
+const scrollTo = (from: number) => EditorView.scrollIntoView(from, { y: "nearest", x: "nearest" });
+
 /** Marks the find matches, scrolling to the current one. */
 function mark(v: EditorView, matches: readonly ConsoleMatch[], current: number) {
   const d = v.state.field(displayed);
@@ -167,9 +170,7 @@ function mark(v: EditorView, matches: readonly ConsoleMatch[], current: number) 
     current: i === current,
   }));
   const at = ranges[current];
-  v.dispatch({
-    effects: [setMarks.of(ranges), ...(at ? [EditorView.scrollIntoView(at.from, { y: "nearest", x: "nearest" })] : [])],
-  });
+  v.dispatch({ effects: [setMarks.of(ranges), ...(at ? [scrollTo(at.from)] : [])] });
 }
 
 export function ResponseBody({
@@ -188,13 +189,24 @@ export function ResponseBody({
   const view = useRef<EditorView | null>(null);
   /** The text in the document. */
   const shown = useRef(text);
+  /** The matches marked in it. */
+  const marked = useRef({ matches, current });
 
   useEffect(() => {
     const v = new EditorView({ parent: host.current!, state: EditorState.create({ extensions: extensions() }) });
     view.current = v;
     if (viewRef) viewRef.current = v;
     show(v, text);
+    // Laid out in the swap font until the body's web font loads (the bundled JetBrains Mono on first use): long
+    // lines wrap to another height in it, which moves the current match scrolled to out of view. Scroll to it again.
+    let alive = true;
+    const { fontFamily, fontSize } = getComputedStyle(v.scrollDOM);
+    void fontsLoaded(fontFamily, parseFloat(fontSize)).then(() => {
+      const m = marked.current.matches[marked.current.current];
+      if (alive && m) v.dispatch({ effects: scrollTo(docPosition(v.state.field(displayed), m.line, m.start)) });
+    });
     return () => {
+      alive = false;
       v.destroy();
       view.current = null;
       if (viewRef) viewRef.current = null;
@@ -212,6 +224,7 @@ export function ResponseBody({
 
   // After the effects above: the marks are for the text in the document.
   useEffect(() => {
+    marked.current = { matches, current };
     const v = view.current;
     if (v) mark(v, matches, current);
   }, [text, matches, current]);
