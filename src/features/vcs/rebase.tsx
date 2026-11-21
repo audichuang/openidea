@@ -3,7 +3,8 @@ import { commitRepo } from "./multiRoot";
  * Git Log history rewriting: Undo Commit, Edit Commit Message, Drop Commit and
  * Interactively Rebase from Here (IDEA's Git.Log.ContextMenu).
  */
-import { useId, useLayoutEffect, useRef, useState } from "react";
+import { memo, useCallback, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import type { BranchInfo, Commit, RebaseAction, RebaseEntry } from "@/bindings";
 import { fontWeightOf } from "@/platform/editorSettings";
 import { resolveMonoFont } from "@/platform/fonts";
@@ -448,6 +449,64 @@ const ACTIONS: Array<{ value: RebaseAction; label: string }> = [
   { value: "drop", label: "Drop" },
 ];
 
+// Rows show the subject over the short hash; measureElement corrects the estimate after mount.
+const REBASE_ROW_HEIGHT = 44;
+const REBASE_OVERSCAN = 6;
+const REBASE_INITIAL_RECT = { width: 470, height: 420 };
+
+const RebaseRowItem = memo(function RebaseRowItem({
+  row,
+  index,
+  total,
+  start,
+  selected,
+  measureRef,
+  onSelect,
+  onAction,
+}: {
+  row: RebaseRow;
+  index: number;
+  total: number;
+  start: number;
+  selected: boolean;
+  measureRef: (node: HTMLDivElement | null) => void;
+  onSelect: (commitId: string) => void;
+  onAction: (index: number, commitId: string, action: RebaseAction) => void;
+}) {
+  return (
+    <div
+      ref={measureRef}
+      data-index={index}
+      className={styles.rebaseRow}
+      role="listitem"
+      aria-posinset={index + 1}
+      aria-setsize={total}
+      data-selected={selected || undefined}
+      style={{ transform: `translateY(${start}px)` }}
+    >
+      <button
+        type="button"
+        className={styles.rebaseCommit}
+        aria-current={selected || undefined}
+        onClick={() => onSelect(row.commit.id)}
+        title={row.commit.summary}
+      >
+        <span className={styles.rebaseSubject} data-dropped={row.action === "drop" || undefined}>
+          {row.commit.summary}
+        </span>
+        <span className={styles.commitHash}>{row.commit.shortId}</span>
+      </button>
+      <Select<RebaseAction>
+        value={row.action}
+        options={ACTIONS}
+        aria-label={tx`Action for ${short(row.commit.id)}`}
+        className={styles.rebaseAction}
+        onChange={(action) => onAction(index, row.commit.id, action)}
+      />
+    </div>
+  );
+});
+
 function InteractiveRebaseDialog({
   range,
   onClose,
@@ -455,6 +514,7 @@ function InteractiveRebaseDialog({
   range: RebaseRange & { repo: string | null };
   onClose: () => void;
 }) {
+  const listRef = useRef<HTMLDivElement>(null);
   const [rows, setRows] = useState<RebaseRow[]>(() => initialRows(range.commits));
   const [selectedId, setSelectedId] = useState(() => rows[0]?.commit.id);
   const pageRef = useRef<HTMLDivElement>(null);
@@ -470,12 +530,37 @@ function InteractiveRebaseDialog({
     return () => observer.disconnect();
   }, []);
 
+  const rowCount = rows.length;
   const selectedIndex = rows.findIndex((r) => r.commit.id === selectedId);
   const selected = rows[selectedIndex];
-  const problem = planProblem(rows);
-  const noop = planIsNoop(rows, range.commits);
-  const update = (i: number, patch: Partial<RebaseRow>) =>
-    setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  const problem = useMemo(() => planProblem(rows), [rows]);
+  const noop = useMemo(() => planIsNoop(rows, range.commits), [rows, range.commits]);
+  const virtualizer = useVirtualizer({
+    count: rowCount,
+    getScrollElement: () => listRef.current,
+    getItemKey: (index) => rows[index]!.commit.id,
+    estimateSize: () => REBASE_ROW_HEIGHT,
+    overscan: REBASE_OVERSCAN,
+    initialRect: REBASE_INITIAL_RECT,
+  });
+  const update = useCallback(
+    (i: number, patch: Partial<RebaseRow>) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r))),
+    [],
+  );
+  const onSelect = useCallback((id: string) => setSelectedId(id), []);
+  const onAction = useCallback(
+    (i: number, id: string, action: RebaseAction) => {
+      setSelectedId(id);
+      update(i, { action });
+    },
+    [update],
+  );
+  const move = (delta: -1 | 1) => {
+    const to = selectedIndex + delta;
+    if (selectedIndex < 0 || to < 0 || to >= rowCount) return;
+    setRows((rs) => moveRow(rs, selectedIndex, delta));
+    virtualizer.scrollToIndex(to, { align: "auto" });
+  };
   const start = () => {
     if (problem || noop) return;
     onClose();
@@ -505,51 +590,42 @@ function InteractiveRebaseDialog({
                 size="small"
                 title="Move Up"
                 disabled={selectedIndex <= 0}
-                onClick={() => setRows((rs) => moveRow(rs, selectedIndex, -1))}
+                onClick={() => move(-1)}
               />
               <IconButton
                 icon="arrow-down"
                 size="small"
                 title="Move Down"
-                disabled={selectedIndex < 0 || selectedIndex === rows.length - 1}
-                onClick={() => setRows((rs) => moveRow(rs, selectedIndex, 1))}
+                disabled={selectedIndex < 0 || selectedIndex === rowCount - 1}
+                onClick={() => move(1)}
               />
               <span className={styles.hint}>
                 <T>Commits are applied from top to bottom.</T>
               </span>
             </div>
-            <div className={styles.rebaseList} role="list" aria-label={tx("Commits to rebase")}>
-              {rows.map((r, i) => (
-                <div
-                  key={r.commit.id}
-                  className={styles.rebaseRow}
-                  role="listitem"
-                  data-selected={r.commit.id === selectedId || undefined}
-                >
-                  <button
-                    type="button"
-                    className={styles.rebaseCommit}
-                    aria-current={r.commit.id === selectedId || undefined}
-                    onClick={() => setSelectedId(r.commit.id)}
-                    title={r.commit.summary}
-                  >
-                    <span className={styles.rebaseSubject} data-dropped={r.action === "drop" || undefined}>
-                      {r.commit.summary}
-                    </span>
-                    <span className={styles.commitHash}>{r.commit.shortId}</span>
-                  </button>
-                  <Select<RebaseAction>
-                    value={r.action}
-                    options={ACTIONS}
-                    aria-label={tx`Action for ${short(r.commit.id)}`}
-                    className={styles.rebaseAction}
-                    onChange={(action) => {
-                      setSelectedId(r.commit.id);
-                      update(i, { action });
-                    }}
-                  />
-                </div>
-              ))}
+            <div ref={listRef} className={styles.rebaseList} role="list" aria-label={tx("Commits to rebase")}>
+              <div
+                className={styles.rebaseListInner}
+                role="presentation"
+                style={{ height: virtualizer.getTotalSize() }}
+              >
+                {virtualizer.getVirtualItems().map((v) => {
+                  const r = rows[v.index]!;
+                  return (
+                    <RebaseRowItem
+                      key={r.commit.id}
+                      row={r}
+                      index={v.index}
+                      total={rowCount}
+                      start={v.start}
+                      selected={r.commit.id === selectedId}
+                      measureRef={virtualizer.measureElement}
+                      onSelect={onSelect}
+                      onAction={onAction}
+                    />
+                  );
+                })}
+              </div>
             </div>
           </SplitPanel>
           <SplitHandle aria-label={tx("Resize rebase panes")} />
