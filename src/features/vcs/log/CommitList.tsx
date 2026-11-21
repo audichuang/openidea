@@ -38,6 +38,7 @@ import {
   loadNewer,
   selectCommit,
   toggleCommitSelection,
+  toggleLinearFragment,
   useGitLog,
 } from "../logStore";
 import { formatTime } from "../model";
@@ -171,7 +172,7 @@ export function CommitList({ fileHistory = false }: { fileHistory?: boolean }) {
   const ChecksCell = useGitLogChecks((s) => s.cell);
   const bookmarks = useGitLog((s) => s.bookmarks);
   const fragments = useGitLog((s) => s.fragments);
-  const { expanded: expandedFragments, collapsed: collapsedFragments, merges: expandedMerges } = fragments;
+  const { merges: expandedMerges } = fragments;
   const [hoverColor, setHoverColor] = useState<string | null>(null);
   const [boundaryTitles, setBoundaryTitles] = useState<ReadonlyMap<string, string>>(() => new Map());
   const boundaryRequests = useRef(new Set<string>());
@@ -551,23 +552,7 @@ export function CommitList({ fileHistory = false }: { fileHistory?: boolean }) {
       }
       if (!expand || current === target) for (const id of chain) hidden.push(id);
     }
-    if (expand) {
-      useGitLog.setState({
-        fragments: {
-          ...fragments,
-          expanded: new Set([...expandedFragments, ...hidden]),
-          collapsed: new Set([...collapsedFragments].filter((id) => !hidden.includes(id))),
-        },
-      });
-    } else {
-      useGitLog.setState({
-        fragments: {
-          ...fragments,
-          expanded: new Set([...expandedFragments].filter((id) => !hidden.includes(id))),
-          collapsed: new Set([...collapsedFragments, ...hidden]),
-        },
-      });
-    }
+    useGitLog.setState({ fragments: toggleLinearFragment(fragments, hidden, expand) });
   };
 
   rowEvents.current = {
