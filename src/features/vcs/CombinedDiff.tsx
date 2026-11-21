@@ -14,7 +14,7 @@ import { Icon, IconButton, T, fileIconName } from "@/ui";
 import { editorService, maybeEditorService, type EditorInput } from "@/workbench/contributions";
 import { setAllInOneDiff, type CombinedDiffData } from "./allInOneDiff";
 import { DiffEditor } from "./DiffEditor";
-import { diffInput, openDiff, sideFile, withChain, type DiffData } from "./diffInput";
+import { diffInput, diffKey, openDiff, sideFile, withChain, type DiffData } from "./diffInput";
 import { loadDiffOptions, saveDiffOptions } from "./diffOptions";
 import { KIND_COLOR, KIND_LABEL, baseName, fileCount } from "./model";
 import styles from "./CombinedDiff.module.css";
@@ -44,6 +44,7 @@ function hasUnsavedEdits(item: DiffData, dirtyDocs: ReadonlySet<number>): boolea
 
 const Block = memo(function Block({
   item,
+  itemKey,
   index,
   items,
   collapsed,
@@ -52,12 +53,13 @@ const Block = memo(function Block({
   heights,
 }: {
   item: DiffData;
+  itemKey: string;
   index: number;
   items: readonly DiffData[];
   collapsed: boolean;
-  onToggle: (path: string) => void;
+  onToggle: (key: string) => void;
   mode: "split" | "unified";
-  /** Last height of each block's diff, by layout and file, kept while blocks are unmounted. */
+  /** Last height of each block's diff, by layout and diff entry, kept while blocks are unmounted. */
   heights: Map<string, number>;
 }) {
   // A block mounted collapsed loads its diff once expanded.
@@ -72,7 +74,7 @@ const Block = memo(function Block({
   // Back in view, the diff reloads: until it is as tall as before (or for `HOLD_MS`), the block
   // keeps its last height, so the blocks around it don't jump while the view scrolls.
   const bodyRef = useRef<HTMLDivElement>(null);
-  const heightKey = `${mode}:${item.path}`;
+  const heightKey = `${mode}:${itemKey}`;
   const [hold, setHold] = useState(() => heights.get(heightKey) ?? 0);
   useEffect(() => {
     const content = bodyRef.current?.firstElementChild;
@@ -100,7 +102,7 @@ const Block = memo(function Block({
           title={collapsed ? "Expand File" : "Collapse File"}
           size="small"
           aria-expanded={!collapsed}
-          onClick={() => onToggle(item.path)}
+          onClick={() => onToggle(itemKey)}
         />
         <Icon name={fileIconName(name)} size={16} />
         <span className={styles.name} style={{ color: KIND_COLOR[kind] }} title={tx(KIND_LABEL[kind])}>
@@ -192,7 +194,7 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
   const virtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => scrollRef.current,
-    getItemKey: useCallback((i: number) => items[i]!.path, [items]),
+    getItemKey: useCallback((i: number) => diffKey(items[i]!), [items]),
     estimateSize: useCallback(() => ESTIMATE, []),
     overscan: OVERSCAN,
     rangeExtractor,
@@ -202,18 +204,16 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
   /** Index of the block at the top of the view. */
   const current = () =>
     virtualizer.getVirtualItemForOffset((scrollRef.current?.scrollTop ?? 0) + 1)?.index ?? items.length - 1;
-  const scrollTo = (path: string) => {
-    const at = items.findIndex((i) => i.path === path);
-    if (at >= 0) virtualizer.scrollToIndex(at, { align: "start" });
+  const scrollToIndex = (index: number) => {
+    if (index >= 0 && index < items.length) virtualizer.scrollToIndex(index, { align: "start" });
   };
-  const step = (dir: 1 | -1) => {
-    const next = items[current() + dir];
-    if (next) scrollTo(next.path);
-  };
+  const step = (dir: 1 | -1) => scrollToIndex(current() + dir);
 
   // Open at the file the diff was asked for.
   useLayoutEffect(() => {
-    if (data.reveal) scrollTo(data.reveal);
+    const byKey = data.revealKey ? items.findIndex((i) => diffKey(i) === data.revealKey) : -1;
+    const at = byKey >= 0 ? byKey : data.reveal ? items.findIndex((i) => i.path === data.reveal) : -1;
+    if (at >= 0) scrollToIndex(at);
     // Once per tab: later revisits keep their scroll position.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -223,16 +223,19 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
     saveDiffOptions({ ...loadDiffOptions(), mode: next });
   };
   const toggle = useCallback(
-    (path: string) =>
+    (key: string) =>
       setCollapsed((c) => {
         const s = new Set(c);
-        if (s.has(path)) s.delete(path);
-        else s.add(path);
+        if (s.has(key)) s.delete(key);
+        else s.add(key);
         return s;
       }),
     [],
   );
-  const allCollapsed = useMemo(() => items.length > 0 && items.every((i) => collapsed.has(i.path)), [items, collapsed]);
+  const allCollapsed = useMemo(
+    () => items.length > 0 && items.every((i) => collapsed.has(diffKey(i))),
+    [items, collapsed],
+  );
 
   return (
     <div className={styles.root}>
@@ -243,7 +246,7 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
           icon={allCollapsed ? "expand-all" : "collapse-all"}
           title={allCollapsed ? "Expand All Files" : "Collapse All Files"}
           size="small"
-          onClick={() => setCollapsed(allCollapsed ? new Set() : new Set(items.map((i) => i.path)))}
+          onClick={() => setCollapsed(allCollapsed ? new Set() : new Set(items.map(diffKey)))}
         />
         <span className={styles.sep} />
         <IconButton
@@ -279,10 +282,11 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
           <div className={styles.blocks} style={{ height: virtualizer.getTotalSize() }}>
             {virtualizer.getVirtualItems().map((row) => {
               const item = items[row.index]!;
+              const itemKey = diffKey(item);
               return (
                 <div
-                  // Keyed by file alone: switching the layout keeps each block's diff and its documents.
-                  key={item.path}
+                  // Keyed by diff identity (not layout mode): switching the layout keeps each block's diff and its documents.
+                  key={itemKey}
                   ref={virtualizer.measureElement}
                   data-index={row.index}
                   className={styles.slot}
@@ -291,9 +295,10 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
                 >
                   <Block
                     item={item}
+                    itemKey={itemKey}
                     index={row.index}
                     items={items}
-                    collapsed={collapsed.has(item.path)}
+                    collapsed={collapsed.has(itemKey)}
                     onToggle={toggle}
                     mode={mode}
                     heights={heights}
