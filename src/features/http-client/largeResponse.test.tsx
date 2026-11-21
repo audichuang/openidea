@@ -199,6 +199,19 @@ describe("HTTP Client large responses", () => {
     );
   });
 
+  it("gives the focus to the body once a body switched to is formatted", async () => {
+    const body = minifiedJson(20_000);
+    show(exchangeWith(body, "application/json"));
+    fireEvent.click(screen.getByRole("button", { name: "Show Raw" }));
+    await expectBody(body);
+    // WebKit leaves no focus after a click on a button.
+    act(() => (document.activeElement as HTMLElement | null)?.blur());
+    fireEvent.click(screen.getByRole("button", { name: "Show Formatted" }));
+    expect(screen.getByLabelText("Formatting")).toBeTruthy();
+    FakeWorker.all[1]!.answer();
+    expect(document.activeElement).toBe(screen.getByLabelText("Response body"));
+  });
+
   it("stops formatting when the response is closed", () => {
     const { unmount } = show(exchangeWith(minifiedJson(20_000), "application/json"));
     unmount();

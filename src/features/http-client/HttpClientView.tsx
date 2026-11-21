@@ -155,6 +155,10 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
     const focused = document.activeElement;
     if (!focused || focused === document.body) (view.current ?? pane.current)?.focus();
   }, [raw]);
+  // The pane held the focus while the body was being formatted: hand it to the body once shown.
+  useEffect(() => {
+    if (showsEditor && document.activeElement === pane.current) view.current?.focus();
+  }, [showsEditor]);
   const goToMatch = (step: number) => {
     const n = found.matches.length;
     if (n) setActive((activeIndex + step + n) % n);
