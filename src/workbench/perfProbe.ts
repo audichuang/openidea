@@ -11,7 +11,7 @@ import { bindingsFor } from "@/platform/keymap";
 import { activeEditor, editorsFor } from "@/editor/api";
 import { docBackend, type MemoryBackend } from "@/editor/core/backend";
 import type { Commit, CompletionItem, CompletionKind, LogQuery } from "@/bindings";
-import { openProject } from "@/platform/project";
+import { openProject, useProject } from "@/platform/project";
 import { setInvokeRoute } from "@/platform/tauriCore";
 import { editorService } from "./contributions";
 
@@ -269,6 +269,10 @@ export function installPerfProbe(): () => void {
       });
       const backend = docBackend() as Partial<MemoryBackend>;
       if (!backend.files) throw new Error("openCombinedDiff() needs the in-memory backend");
+      // Disable blur-autosave so the scenario exercises the unsaved-edits keep-mounted guard after blurring.
+      useProject.setState((s) => ({
+        settings: { ...(s.settings ?? ({} as never)), files: { ...s.settings?.files, autoSave: false } } as never,
+      }));
       backend.files.set(editable, combinedSource(editAt, lines(editAt), "HEAD"));
       backend.files.set(last, combinedSource(lastAt, lines(lastAt), "HEAD"));
       for (const item of items)
