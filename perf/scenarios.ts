@@ -923,8 +923,11 @@ const combinedDiff: Scenario = {
               for (let j = 0; j < 1200 && still < 10; j++) {
                 const block = el.querySelector(sel);
                 if (!block) break;
-                const atTop = Math.abs(block.getBoundingClientRect().top - el.getBoundingClientRect().top) <= 1;
-                const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+                const blockRect = block.getBoundingClientRect();
+                const elRect = el.getBoundingClientRect();
+                const atTop = Math.abs(blockRect.top - elRect.top) <= 1;
+                const inView = blockRect.top >= elRect.top - 1 && blockRect.bottom <= elRect.bottom + 1;
+                const atBottom = inView && el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
                 if (loaded() && (atTop || atBottom)) still++;
                 else {
                   still = 0;
@@ -1045,8 +1048,8 @@ const combinedDiff: Scenario = {
       return next ? Math.abs(next.getBoundingClientRect().top - el.getBoundingClientRect().top) : NaN;
     }, block);
 
-    // Visit first, intermediate sampled, and last files: verify path order and diff content load.
-    for (const sample of samples) {
+    // Visit sampled files from late back to first (leaving `last` unmounted): verify path order and diff load.
+    for (const sample of samples.filter((p) => p !== last).reverse()) {
       if (!(await reveal(sample))) throw new Error(`sample diff ${sample} never loaded`);
       const sampleOk = await scroller.evaluate(
         (el, { path, expectedIndex }) => {
