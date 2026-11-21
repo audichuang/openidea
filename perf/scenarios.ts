@@ -517,9 +517,20 @@ const gitLogDeep: Scenario = {
     const hover = frameSummary(await h.inPage((p) => p.stopFrames()), refresh);
     const hoverTasks = await h.longTasksSince(hoverStarted);
 
+    // Refresh with no page request in flight: the perf backend has no request cancellation.
+    await list.evaluate(async (el) => {
+      el.scrollTop = 0;
+      for (let i = 0; i < 600 && el.querySelector('[role="status"], [class*="Spinner"]'); i++)
+        await new Promise((r) => setTimeout(r, 50));
+    });
+    await h.page.waitForTimeout(500);
     const refreshStarted = await h.now();
-    await h.page.getByRole("button", { name: "Refresh", exact: true }).first().click();
+    // The log's own Refresh (its filter bar), not the Branches panel's, which reloads branches.
+    const refreshButton = h.page.getByRole("button", { name: "Refresh", exact: true });
+    const logPane = h.page.locator("div").filter({ has: list }).filter({ has: refreshButton }).last();
+    await logPane.getByRole("button", { name: "Refresh", exact: true }).first().click();
     await h.page.waitForTimeout(1500);
+    await h.inPage((p) => p.afterNextPaint().then(() => p.afterNextPaint()));
     const refreshTasks = await h.longTasksSince(refreshStarted);
 
     const longest = (tasks: ReadonlyArray<{ duration: number }>) => Math.max(0, ...tasks.map((t) => t.duration));
