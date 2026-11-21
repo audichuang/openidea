@@ -72,6 +72,17 @@ function rowsPresentedForPage(all: readonly Commit[], loaded: number) {
   return compactLanes.mock.calls.reduce((sum, [rows]) => sum + rows.length, 0);
 }
 
+/** Rows presented again when the loaded history comes back from a Refresh as `refreshed`. */
+function rowsPresentedForRefresh(loaded: readonly Commit[], refreshed: readonly Commit[]) {
+  const compactLanes = vi.mocked(graph.compactLanes);
+  const present = createLogGraphPresenter();
+  present(loaded, DEFAULT_LOG_OPTIONS, fragments, new Set());
+  compactLanes.mockClear();
+  const got = present(refreshed, DEFAULT_LOG_OPTIONS, fragments, new Set());
+  const rows = compactLanes.mock.calls.reduce((sum, [rows]) => sum + rows.length, 0);
+  return { rows, got };
+}
+
 describe("Git Log deep paging", () => {
   // Every page used to lay out and present the whole loaded history again, so a page at row
   // 20,000 cost 30 times a page at row 600.
@@ -80,6 +91,26 @@ describe("Git Log deep paging", () => {
     const shallow = rowsPresentedForPage(all, 600);
     const deep = rowsPresentedForPage(all, 20_000);
     expect(deep).toBeLessThanOrEqual(shallow);
+  });
+
+  // Refresh replaces every commit object; it used to lay out and present the whole history again.
+  it("presents no more rows than a page when a Refresh returns the same history", () => {
+    const loaded = history(20_000);
+    const { rows, got } = rowsPresentedForRefresh(
+      loaded,
+      loaded.map((c) => ({ ...c, refs: [...c.refs] })),
+    );
+    expect(rows).toBeLessThanOrEqual(PAGE + 34);
+    expect(got.rows).toHaveLength(20_000);
+  });
+
+  it("presents only the rows from a change deep in the history on Refresh", () => {
+    const loaded = history(20_000);
+    const refreshed = loaded.map((c, i) => (i === 19_500 ? { ...c, refs: ["renamed"] } : { ...c }));
+    const { rows, got } = rowsPresentedForRefresh(loaded, refreshed);
+    expect(rows).toBeLessThanOrEqual(2_000);
+    const want = presentLogGraph(refreshed, DEFAULT_LOG_OPTIONS, fragments, new Set()).rows;
+    for (const i of [0, 9_999, 18_000, 19_499, 19_500, 19_999]) expect(got.row(i)).toStrictEqual(want[i]);
   });
 
   // With refs the lane colours come from `graphLayout` over the whole loaded list, whose owner
