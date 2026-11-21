@@ -149,9 +149,11 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
   /** Blocks mounted as of the last change of the range. */
   const mountedRef = useRef<readonly number[]>([]);
 
-  // The blocks around the viewport, plus those scrolled away that must stay mounted: one with
-  // unsaved edits (unmounting would release its document, which autosave then saves behind the
-  // user's back, and drop the undo history of its panes) or one holding the keyboard focus.
+  // Only the blocks around the viewport stay mounted. Blocks scrolled away are unmounted except
+  // those with unsaved edits or holding the keyboard focus: unmounting a dirty block would
+  // release its working-tree document (triggering an unexpected autosave or, with autosave off,
+  // detaching the editor and dropping its undo history and unsaved view state), which is why
+  // blocks were previously kept mounted once loaded.
   const rangeExtractor = useCallback(
     (range: Range) => {
       const shown = defaultRangeExtractor(range);
@@ -171,6 +173,22 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
     },
     [items],
   );
+  const scrollToFn = useCallback(
+    (
+      offset: number,
+      options: { adjustments?: number; behavior?: ScrollBehavior },
+      instance: { scrollElement: HTMLDivElement | null },
+    ) => {
+      const el = instance.scrollElement;
+      if (!el) return;
+      // ResizeObserver can run after a scrollTop write (e.g. inside rAF) and before the
+      // browser dispatches its scroll event; `offset` is then stale, so apply size
+      // adjustments relative to the live scrollTop instead of reverting pending movement.
+      const base = options.adjustments ? el.scrollTop : offset;
+      el.scrollTo({ top: base + (options.adjustments ?? 0), behavior: options.behavior });
+    },
+    [],
+  );
   const virtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => scrollRef.current,
@@ -178,6 +196,7 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
     estimateSize: useCallback(() => ESTIMATE, []),
     overscan: OVERSCAN,
     rangeExtractor,
+    scrollToFn,
   });
 
   /** Index of the block at the top of the view. */
