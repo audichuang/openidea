@@ -2,7 +2,15 @@
  * The PR view: what a pull request from one branch into another would contain, computed locally
  * with the forge's three-dot semantics (merge base ↔ head), whatever the remote is hosted on.
  */
-import { memo, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  memo,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import clsx from "clsx";
 import type { Branch, ChangedFile, Commit } from "@/bindings";
 import { formatDay } from "@/platform/dateFormat";
@@ -444,8 +452,14 @@ function PrCommitList({ repo, commits, resetKey }: { repo: string; commits: Comm
     },
   });
   const title = tx("Show in Graph");
+  // Rows used to be buttons, which Space activates; keep that by routing Space through the Enter path.
+  const onKeyDown = (e: ReactKeyboardEvent) => {
+    if (e.key !== " ") return listProps.onKeyDown(e);
+    e.preventDefault();
+    listProps.onKeyDown({ ...e, key: "Enter" } as ReactKeyboardEvent);
+  };
   return (
-    <div ref={scrollRef} className={styles.prCommits} aria-label={tx("Commits")} {...listProps}>
+    <div ref={scrollRef} className={styles.prCommits} aria-label={tx("Commits")} {...listProps} onKeyDown={onKeyDown}>
       <div role="presentation" className={styles.virtualRows} style={{ height }}>
         {rows.map((v) => {
           const c = commits[v.index]!;
