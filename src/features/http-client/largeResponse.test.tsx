@@ -90,6 +90,14 @@ function editorOf(el: Element): EditorView {
   return view;
 }
 
+/**
+ * The body shown. A new view gets a long line on screen after its first
+ * measure (a frame later), so this waits for it.
+ */
+async function expectBody(text: string) {
+  await vi.waitFor(() => expect(editorOf(screen.getByLabelText("Response body")).state.doc.toString()).toBe(text));
+}
+
 describe("HTTP Client large responses", () => {
   beforeEach(() => {
     FakeWorker.all = [];
@@ -131,13 +139,13 @@ describe("HTTP Client large responses", () => {
     );
   });
 
-  it("cancels formatting when switched to Raw, and keeps the result once formatted", () => {
+  it("cancels formatting when switched to Raw, and keeps the result once formatted", async () => {
     const body = minifiedJson(20_000);
     show(exchangeWith(body, "application/json"));
     const first = FakeWorker.all[0]!;
     fireEvent.click(screen.getByRole("button", { name: "Show Raw" }));
     expect(first.terminated).toBe(true);
-    expect(editorOf(screen.getByLabelText("Response body")).state.doc.toString()).toBe(body);
+    await expectBody(body);
     fireEvent.click(screen.getByRole("button", { name: "Show Formatted" }));
     expect(FakeWorker.all).toHaveLength(2);
     FakeWorker.all[1]!.answer();
@@ -156,11 +164,32 @@ describe("HTTP Client large responses", () => {
     expect(FakeWorker.all[0]!.terminated).toBe(true);
   });
 
-  it("shows the body as received when the worker fails", () => {
+  it("shows the body as received when the worker fails", async () => {
     const body = minifiedJson(20_000);
     show(exchangeWith(body, "application/json"));
     FakeWorker.all[0]!.fail();
-    expect(editorOf(screen.getByLabelText("Response body")).state.doc.toString()).toBe(body);
+    await expectBody(body);
+  });
+
+  it("keeps the find marks right when switching between Formatted and Raw", async () => {
+    const body = minifiedJson(50);
+    show(exchangeWith(body, "application/json"));
+    fireEvent.keyDown(screen.getByLabelText("Response body"), { key: "f", metaKey: true, ctrlKey: true });
+    act(() => {
+      fireEvent.change(screen.getByLabelText("Find in response", { selector: "input" }), {
+        target: { value: "last-item" },
+      });
+    });
+    const current = () => screen.getByLabelText("Response body").querySelector("[data-find-current]")?.textContent;
+    expect(current()).toBe("last-item");
+    // Formatted: far down; Raw: one line. The marks follow each text.
+    fireEvent.click(screen.getByRole("button", { name: "Show Raw" }));
+    await expectBody(body);
+    expect(screen.getByText("1/1")).toBeTruthy();
+    expect(current()).toBe("last-item");
+    fireEvent.click(screen.getByRole("button", { name: "Show Formatted" }));
+    await expectBody(format.prettyJson(body));
+    expect(current()).toBe("last-item");
   });
 
   it("finds every match of a large formatted body, the last line included", () => {
