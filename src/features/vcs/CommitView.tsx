@@ -118,6 +118,7 @@ import { fitPathDetail } from "./pathDetail";
 import { existsOnDisk, refreshNow, repoName, selectRepo, useVcs } from "./store";
 import { saveVcsSetting } from "./settingsUi";
 import styles from "./CommitView.module.css";
+import { forkShelveButton } from "./forkShelveButton";
 import { useRowHeight } from "@/ui/density";
 
 /** MIME type of files dragged onto a change list (absolute paths, newline-separated). */
@@ -831,11 +832,15 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
           <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void refreshNow()} />
           {mode === "local" && <IconButton icon="commit" action="vcs.commit" size="small" />}
           <IconButton icon="undo" action="vcs.rollback" size="small" />
-          {/* IDEA's Commit view: Show Diff after Rollback. */}
+          {/* IDEA's Commit view: Show Diff and Shelve after Rollback. */}
           {mode !== "dialog" && <IconButton icon="diff" action="vcs.showDiff" size="small" />}
+          {mode !== "dialog" && !forkShelveButton.upstream && (
+            <IconButton icon="shelve" action="vcs.shelve" size="small" />
+          )}
           {mode === "local" && <IconButton icon="changelist" action="vcs.changelist.new" size="small" />}
-          {/* The fork's Shelve opens the dialog first, as before v0.1.50; Shelve Silently keeps its shortcut and action. */}
-          {mode !== "dialog" && <IconButton icon="shelve" action="vcs.shelve" size="small" />}
+          {mode !== "dialog" && forkShelveButton.upstream && (
+            <IconButton icon="shelve" action="vcs.shelveSilently" size="small" />
+          )}
           {mode !== "dialog" && <IconButton icon="git-pull" action="vcs.update" size="small" />}
           <IconButton
             ref={viewRef}
