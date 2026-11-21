@@ -133,6 +133,17 @@ describe("changed files model", () => {
     expect([renamed!.added, renamed!.removed]).toEqual([1, 2]);
   });
 
+  it("groups the files of a commit touching a hundred thousand paths without going over them once per file", () => {
+    const changed = Array.from({ length: 100_000 }, (_, i) => ({
+      path: `src/${i}.ts`,
+      kind: "modified" as const,
+      oldPath: null,
+    }));
+    const [range, ...rest] = lineStatRanges(toLogChanges([...changed, changed[0]!], commit));
+    expect(rest).toEqual([]);
+    expect(range!.paths).toEqual(changed.map((f) => f.path));
+  });
+
   it("lists files without directories by name, and the files under selected directories", () => {
     const files = ["src/b.ts", "lib/a.ts", "src/x/a.ts"];
     expect(flatFileNodes(files, (f) => f).map((n) => n.key)).toEqual(["f:lib/a.ts", "f:src/x/a.ts", "f:src/b.ts"]);

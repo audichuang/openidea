@@ -109,17 +109,22 @@ export function toLogChanges(
 
 /** Groups files that share a diff, so one numstat covers a commit's additions and edits. */
 export function lineStatRanges(files: readonly LogChange[]): LineStatRange[] {
-  const groups = new Map<string, LineStatRange>();
+  // Each group's paths also as a Set: a commit can touch every file of the repository.
+  const groups = new Map<string, { range: LineStatRange; seen: Set<string> }>();
   for (const f of files) {
     if (!f.statsFrom || !f.statsTo || f.statsFrom === f.statsTo) continue;
     const repo = f.repo ?? null;
     const key = `${repo ?? ""}\0${f.statsFrom}\0${f.statsTo}`;
     let group = groups.get(key);
-    if (!group) groups.set(key, (group = { repo, from: f.statsFrom, to: f.statsTo, paths: [] }));
-    if (!group.paths.includes(f.path)) group.paths.push(f.path);
-    if (f.oldPath && !group.paths.includes(f.oldPath)) group.paths.push(f.oldPath);
+    if (!group)
+      groups.set(key, (group = { range: { repo, from: f.statsFrom, to: f.statsTo, paths: [] }, seen: new Set() }));
+    for (const path of f.oldPath ? [f.path, f.oldPath] : [f.path])
+      if (!group.seen.has(path)) {
+        group.seen.add(path);
+        group.range.paths.push(path);
+      }
   }
-  return [...groups.values()];
+  return [...groups.values()].map((group) => group.range);
 }
 
 /** Writes numstat rows onto the files of the same revision pair, matching a rename by either name. */
