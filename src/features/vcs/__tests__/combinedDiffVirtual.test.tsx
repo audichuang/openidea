@@ -897,8 +897,11 @@ describe("the all-in-one diff while it scrolls fast", () => {
     expect(mountedSince(before).length).toBeGreaterThan(0);
   });
 
-  it("mounts no diff editor while flung up through blocks not measured yet", () => {
-    // Reports each block's size as a browser does once it is laid out.
+  /**
+   * Has the blocks report their size as a browser does once they are laid out: the returned
+   * function lays out the blocks not laid out yet, each `size()` tall.
+   */
+  function layoutBlocks(size: () => number = () => BLOCK) {
     const observed: Array<{ cb: ResizeObserverCallback; targets: Set<Element> }> = [];
     vi.stubGlobal(
       "ResizeObserver",
@@ -919,15 +922,19 @@ describe("the all-in-one diff while it scrolls fast", () => {
       },
     );
     const laidOut = new WeakSet<Element>();
-    const layout = () =>
+    return () =>
       act(() => {
         for (const { cb, targets } of observed)
           for (const el of targets) {
             if (laidOut.has(el) || !el.isConnected) continue;
             laidOut.add(el);
-            cb([{ target: el, borderBoxSize: [{ blockSize: BLOCK, inlineSize: 800 }] } as never], {} as never);
+            cb([{ target: el, borderBoxSize: [{ blockSize: size(), inlineSize: 800 }] } as never], {} as never);
           }
       });
+  }
+
+  it("mounts no diff editor while flung up through blocks not measured yet", () => {
+    const layout = layoutBlocks();
     // A browser sends one scroll event a frame: the view's own moves arrive merged into the
     // next one the fling sends.
     let adjusted = 0;
@@ -950,6 +957,46 @@ describe("the all-in-one diff while it scrolls fast", () => {
     fling(scroller().scrollTop, scroller().scrollTop - 40 * VIEW, layout);
     expect(adjusted).toBeGreaterThan(0);
     expect(mountedSince(before)).toEqual([]);
+  });
+
+  it("mounts no diff editor while flung up from the end through blocks taller than the view can scroll to yet", () => {
+    let size = BLOCK;
+    const layout = layoutBlocks(() => size);
+    // The view is `VIEW` tall and, as in a browser, stops at the end of its content without a scroll
+    // event of its own: a block above growing moves the view less than it asks until the content
+    // has grown too, and the virtualizer then asks again.
+    const clientHeight = Object.getOwnPropertyDescriptor(Element.prototype, "clientHeight")!;
+    Object.defineProperty(Element.prototype, "clientHeight", {
+      configurable: true,
+      get(this: Element) {
+        return this.hasAttribute("data-combined-scroll") ? VIEW : 0;
+      },
+    });
+    const writes: number[] = [];
+    Element.prototype.scrollTo = function (this: Element, opts?: ScrollToOptions | number) {
+      if (typeof opts !== "object" || opts.top == null) return;
+      writes.push(opts.top);
+      (this as HTMLElement).scrollTop = Math.max(0, Math.min(opts.top, this.scrollHeight - VIEW));
+    } as Element["scrollTo"];
+    try {
+      render(<CombinedDiffTab input={combinedDiffInput({ items: files(500) })} />);
+      layout();
+      frame();
+      scroll(scroller(), scroller().scrollHeight - VIEW);
+      layout();
+      for (let i = 0; i < 30; i++) frame();
+      layout();
+      const before = mountedPaths.length;
+      writes.length = 0;
+      // The blocks above were never shown: each comes into view far taller than estimated.
+      size = 3_000;
+      fling(scroller().scrollTop, scroller().scrollTop - 10 * VIEW, layout);
+      // Some move asked of the view was held back by the end of the content and asked again.
+      expect(writes.some((top, i) => writes.indexOf(top) < i)).toBe(true);
+      expect(mountedSince(before)).toEqual([]);
+    } finally {
+      Object.defineProperty(Element.prototype, "clientHeight", clientHeight);
+    }
   });
 
   it("mounts the diffs in view once the scroll settles, one a frame, the top of the view first", () => {

@@ -97,13 +97,13 @@ class MountGate {
     if (!this.stillFrame) this.stillFrame = requestAnimationFrame(this.countStill);
   }
 
-  /** The view moved itself by `by` px to keep its content in place as a block above resized. */
+  /** The view moved itself by `by` px (to keep its content in place as a block above resized, to a file). */
   shifted(by: number) {
     // Not the user's movement: the speed keeps being measured from the same content.
     this.top += by;
   }
 
-  /** The view went to `top` itself, to a file (Next File, reveal). */
+  /** The view is about to go to a file from `top` (Next File, reveal); its writes follow as `shifted`. */
   jumped(top: number) {
     this.seen(top);
     // Going to a file ends a fling: the blocks there mount right away.
@@ -362,8 +362,9 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
       const base = options.adjustments ? el.scrollTop : offset;
       const top = base + (options.adjustments ?? 0);
       // Before the scroll event this write may dispatch, so the event isn't taken for the user's.
-      if (options.adjustments) gate.shifted(options.adjustments);
-      else gate.jumped(top);
+      // A write is never the user's: a size adjustment, its retry once the content has grown
+      // enough to take it, or a move to a file `scrollToIndex` already told the gate about.
+      gate.shifted(top - el.scrollTop);
       el.scrollTo({ top, behavior: options.behavior });
       // The browser clamps at either end: measure from where the view actually is.
       if (options.behavior !== "smooth") gate.shifted(el.scrollTop - top);
@@ -388,7 +389,9 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
   const current = () =>
     virtualizer.getVirtualItemForOffset((scrollRef.current?.scrollTop ?? 0) + 1)?.index ?? items.length - 1;
   const scrollToIndex = (index: number) => {
-    if (index >= 0 && index < items.length) virtualizer.scrollToIndex(index, { align: "start" });
+    if (index < 0 || index >= items.length) return;
+    gate.jumped(scrollRef.current?.scrollTop ?? 0);
+    virtualizer.scrollToIndex(index, { align: "start" });
   };
   const step = (dir: 1 | -1) => scrollToIndex(current() + dir);
 
