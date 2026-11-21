@@ -112,7 +112,8 @@ beforeEach(() => {
   useProject.setState({ project: { name: "r", root: "/r", trusted: true, isGit: true, settings: {} } as never });
   // The view's scroll speed is measured against the clock: held still, each `scroll` below is a
   // jump rather than a fling (the fast-scroll tests move it on themselves).
-  vi.spyOn(performance, "now").mockReturnValue(0);
+  // A plain replacement (a spy would record each of React's many reads of the clock).
+  performance.now = () => 0;
   vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
   Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
     configurable: true,
@@ -138,7 +139,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  vi.restoreAllMocks();
+  // Back to `Performance.prototype.now`.
+  delete (performance as { now?: unknown }).now;
   vi.unstubAllGlobals();
   Object.defineProperty(HTMLElement.prototype, "offsetHeight", offsetHeight);
   Object.defineProperty(Element.prototype, "scrollHeight", scrollHeight);
@@ -682,7 +684,7 @@ describe("the all-in-one diff while it scrolls fast", () => {
   beforeEach(() => {
     clock = 1_000;
     raf.clear();
-    vi.spyOn(performance, "now").mockImplementation(() => clock);
+    performance.now = () => clock;
     window.requestAnimationFrame = ((cb: FrameRequestCallback) => {
       const id = rafId++;
       raf.set(id, cb);
@@ -691,7 +693,6 @@ describe("the all-in-one diff while it scrolls fast", () => {
     window.cancelAnimationFrame = ((id: number) => void raf.delete(id)) as typeof window.cancelAnimationFrame;
   });
   afterEach(() => {
-    vi.restoreAllMocks();
     window.requestAnimationFrame = origRAF;
     window.cancelAnimationFrame = origCAF;
   });
