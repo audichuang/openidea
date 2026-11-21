@@ -4,7 +4,7 @@ import { commitRepo } from "./multiRoot";
  * Interactively Rebase from Here (IDEA's Git.Log.ContextMenu).
  */
 import { memo, useCallback, useMemo, useRef, useState } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
 import type { BranchInfo, Commit, RebaseAction, RebaseEntry } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { Dialog, IconButton, Select, T } from "@/ui";
@@ -424,6 +424,13 @@ const REBASE_REWORD_ROW_HEIGHT = 56;
 const REBASE_OVERSCAN = 6;
 const REBASE_INITIAL_RECT = { width: 692, height: 360 };
 
+function rowIndexIn(list: HTMLDivElement | null, el: Element | null, count: number): number {
+  const row = el && list?.contains(el) ? el.closest<HTMLElement>("[data-index]") : null;
+  if (!row) return -1;
+  const idx = Number(row.dataset.index);
+  return Number.isInteger(idx) && idx >= 0 && idx < count ? idx : -1;
+}
+
 const RebaseRowItem = memo(function RebaseRowItem({
   row,
   index,
@@ -433,6 +440,8 @@ const RebaseRowItem = memo(function RebaseRowItem({
   onAction,
   onMessage,
   onMove,
+  onRowFocus,
+  onRowBlur,
 }: {
   row: RebaseRow;
   index: number;
@@ -442,6 +451,8 @@ const RebaseRowItem = memo(function RebaseRowItem({
   onAction: (index: number, action: RebaseAction) => void;
   onMessage: (index: number, message: string) => void;
   onMove: (index: number, delta: -1 | 1) => void;
+  onRowFocus: (commitId: string) => void;
+  onRowBlur: (commitId: string) => void;
 }) {
   return (
     <div
@@ -452,6 +463,10 @@ const RebaseRowItem = memo(function RebaseRowItem({
       aria-posinset={index + 1}
       aria-setsize={total}
       style={{ transform: `translateY(${start}px)` }}
+      onFocus={() => onRowFocus(row.commit.id)}
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget)) onRowBlur(row.commit.id);
+      }}
     >
       <Select<RebaseAction>
         value={row.action}
@@ -520,11 +535,43 @@ function InteractiveRebaseDialog({
     [],
   );
   const getScrollElement = useCallback(() => listRef.current, []);
+  const [activeCommitId, setActiveCommitId] = useState<string | null>(null);
+  const onRowFocus = useCallback((id: string) => setActiveCommitId(id), []);
+  const onRowBlur = useCallback((id: string) => setActiveCommitId((prev) => (prev === id ? null : prev)), []);
+  const pinnedIndex = useMemo(
+    () => (activeCommitId ? rows.findIndex((r) => r.commit.id === activeCommitId) : -1),
+    [activeCommitId, rows],
+  );
+  // Keep the row holding focus or an open Select popup mounted across scrolls so focus never drops to
+  // document.body (where Enter submits the dialog) and active controls keep DOM/caret/IME state.
+  const rangeExtractor = useCallback(
+    (r: Range) => {
+      const visible = defaultRangeExtractor(r);
+      const start = visible[0];
+      const end = visible[visible.length - 1];
+      const list = listRef.current;
+      const candidates = [
+        pinnedIndex >= 0 && pinnedIndex < r.count ? pinnedIndex : -1,
+        rowIndexIn(list, document.activeElement, r.count),
+        rowIndexIn(list, list?.querySelector('[aria-expanded="true"]') ?? null, r.count),
+      ];
+      let merged: number[] | null = null;
+      for (const idx of candidates) {
+        if (idx < 0) continue;
+        if (start !== undefined && end !== undefined && idx >= start && idx <= end) continue;
+        if (!merged) merged = [...visible];
+        if (!merged.includes(idx)) merged.push(idx);
+      }
+      return merged ? merged.sort((a, b) => a - b) : visible;
+    },
+    [pinnedIndex],
+  );
   const virtualizer = useVirtualizer({
     count: rowCount,
     getScrollElement,
     getItemKey,
     estimateSize,
+    rangeExtractor,
     overscan: REBASE_OVERSCAN,
     initialRect: REBASE_INITIAL_RECT,
   });
@@ -579,6 +626,8 @@ function InteractiveRebaseDialog({
                 onAction={onAction}
                 onMessage={onMessage}
                 onMove={onMove}
+                onRowFocus={onRowFocus}
+                onRowBlur={onRowBlur}
               />
             );
           })}
