@@ -84,6 +84,26 @@ const redrawStaleViewport = EditorView.updateListener.of((u) => {
     view.dispatch({ effects: resync.of(from) });
 });
 
+/**
+ * The browser's Select All (WebKit's Edit menu, `execCommand`) selects only the
+ * lines drawn. CodeMirror takes that for the whole document in Chrome and iOS
+ * only; do the same in every browser: a selection read from the page that
+ * grows to cover the drawn lines exactly selects all.
+ */
+const selectAllDrawn = EditorView.updateListener.of((u) => {
+  if (!u.transactions.some((tr) => tr.isUserEvent("select") && !tr.isUserEvent("select.pointer"))) return;
+  const { view } = u;
+  const { from, to } = view.state.selection.main;
+  const before = u.startState.selection.main;
+  if (from > before.from || to < before.to) return;
+  const { viewport } = view;
+  const length = view.state.doc.length;
+  if (from === to || (viewport.from === 0 && viewport.to === length)) return;
+  const fromTop = from === 0 || viewport.from - from === 0 || viewport.from - from === 1;
+  const toBottom = to === length || viewport.to - to === 0 || viewport.to - to === -1;
+  if (fromTop && toBottom && (from > 0 || to < length)) view.dispatch({ selection: { anchor: 0, head: length } });
+});
+
 function extensions(): Extension[] {
   return [
     EditorState.readOnly.of(true),
@@ -95,6 +115,7 @@ function extensions(): Extension[] {
     marks,
     resyncMark,
     redrawStaleViewport,
+    selectAllDrawn,
     displayed,
     // Copies and drags take the text as received, without the splits of long lines.
     EditorView.clipboardOutputFilter.of((copied, state) => {
