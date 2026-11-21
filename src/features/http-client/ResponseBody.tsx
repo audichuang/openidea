@@ -8,7 +8,7 @@
 import { useEffect, useRef, type MutableRefObject } from "react";
 import clsx from "clsx";
 import { EditorState, StateEffect, StateField, type Extension } from "@codemirror/state";
-import { Decoration, EditorView, keymap, type DecorationSet } from "@codemirror/view";
+import { Decoration, EditorView, keymap, type Command, type DecorationSet } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
 import type { ConsoleMatch } from "@/ui/consoleFind";
 import { displayText, displayed, docPosition, lineAt, setDisplayText, textBetween } from "./displayLines";
@@ -84,21 +84,37 @@ const redrawStaleViewport = EditorView.updateListener.of((u) => {
     view.dispatch({ effects: resync.of(from) });
 });
 
+/** Set while a key binding of the view runs: its selections are the command's own. */
+let keyCommand = false;
+const keyBindings = defaultKeymap.map((b) => {
+  const wrap = (run: Command | undefined): Command | undefined =>
+    run &&
+    ((view) => {
+      keyCommand = true;
+      try {
+        return run(view);
+      } finally {
+        keyCommand = false;
+      }
+    });
+  return { ...b, run: wrap(b.run), shift: wrap(b.shift) };
+});
+
 /**
  * The browser's Select All (WebKit's Edit menu, `execCommand`) selects only the
  * lines drawn. CodeMirror takes that for the whole document in Chrome and iOS
- * only; do the same in every browser: a selection read from the page that
- * grows to cover the drawn lines exactly selects all.
+ * only; do the same in every browser: a selection read from the page (not set
+ * by a key binding) that grows to cover the drawn lines exactly selects all.
  */
 const selectAllDrawn = EditorView.updateListener.of((u) => {
-  if (!u.transactions.some((tr) => tr.isUserEvent("select") && !tr.isUserEvent("select.pointer"))) return;
+  if (keyCommand || !u.transactions.some((tr) => tr.isUserEvent("select") && !tr.isUserEvent("select.pointer"))) return;
   const { view } = u;
   const { from, to } = view.state.selection.main;
   const before = u.startState.selection.main;
-  if (from > before.from || to < before.to) return;
+  if (from === to || from > before.from || to < before.to) return;
   const { viewport } = view;
   const length = view.state.doc.length;
-  if (from === to || (viewport.from === 0 && viewport.to === length)) return;
+  if (viewport.from === 0 && viewport.to === length) return;
   const fromTop = from === 0 || viewport.from - from === 0 || viewport.from - from === 1;
   const toBottom = to === length || viewport.to - to === 0 || viewport.to - to === -1;
   if (fromTop && toBottom && (from > 0 || to < length)) view.dispatch({ selection: { anchor: 0, head: length } });
@@ -110,7 +126,7 @@ function extensions(): Extension[] {
     // Lines as the find bar counts them (`\n` only), and `\r` kept in the text and copies.
     EditorState.lineSeparator.of("\n"),
     EditorView.lineWrapping,
-    keymap.of(defaultKeymap),
+    keymap.of(keyBindings),
     EditorView.contentAttributes.of({ "aria-label": tx("Response body") }),
     marks,
     resyncMark,
