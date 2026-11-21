@@ -119,10 +119,12 @@ function layOut(
   snapAt: number,
 ) {
   const { positions, refAware } = whole;
-  const lanes = [...from.lanes];
+  // `slice` keeps the holes `lanes.length = lane + 1` leaves (preferred lanes run far right):
+  // `forEach` skips them, and `firstFree` passes them by as in `computeGraph`.
+  const lanes = from.lanes.slice();
   let { nextColor, nextIdentity } = from;
   const snapshot = (): Snapshot => ({
-    lanes: [...lanes],
+    lanes: lanes.slice(),
     nextColor,
     nextIdentity,
     ranks: ranks.length,
@@ -131,7 +133,9 @@ function layOut(
   let snap = snapshot();
   const rank = (index: number) => {
     let below = 0;
-    for (let i = 0; i < index && i < lanes.length; i++) if (lanes[i]) below++;
+    lanes.forEach((lane, i) => {
+      if (lane && i < index) below++;
+    });
     ranks.push(below);
   };
   const describe = (s: GraphSegment, lane: Omit<Lane, "identity">): LaidSegment => ({
