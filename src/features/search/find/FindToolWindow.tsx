@@ -75,60 +75,128 @@ type Node =
       starts: Array<{ line: number; col: number }>;
     };
 
+type FileNode = Node & { kind: "file" };
+
+/** Same order as `String.prototype.localeCompare`, without its per-call setup. */
+const collator = new Intl.Collator();
+
+/** A file's node and its sort key, built once per streamed `FileMatches`. */
+interface FileEntry {
+  node: FileNode;
+  rel: string;
+}
+
+const fileEntries = new WeakMap<FileMatches, FileEntry>();
+
+function fileEntry(f: FileMatches): FileEntry {
+  let entry = fileEntries.get(f);
+  if (entry) return entry;
+  const dir = relDir(f.relPath);
+  const children: Node[] = f.matches.map((m) => {
+    const lead = m.text.length - m.text.trimStart().length;
+    const text = m.text.slice(lead).trimEnd();
+    const first = m.ranges[0] ?? [0, 0];
+    return {
+      kind: "match",
+      key: `m:${f.path}:${m.line}`,
+      path: f.path,
+      line: m.line,
+      col: first[0] + m.textOffset,
+      endCol: first[1] + m.textOffset,
+      text,
+      textCol: lead + m.textOffset,
+      ranges: m.ranges
+        .map(([s, e]) => [Math.max(0, s - lead), Math.min(text.length, e - lead)] as [number, number])
+        .filter(([s, e]) => e > s),
+      starts: m.ranges.map(([s]) => ({ line: m.line, col: s + m.textOffset })),
+    };
+  });
+  const name = basename(f.relPath);
+  const node: FileNode = {
+    kind: "file",
+    key: `f:${f.path}`,
+    path: f.path,
+    name,
+    dir,
+    count: countFileMatches(f),
+    children,
+  };
+  entry = { node, rel: dir ? `${dir}/${name}` : name };
+  fileEntries.set(f, entry);
+  return entry;
+}
+
+const byRel = (a: FileEntry, b: FileEntry) => collator.compare(a.rel, b.rel);
+
+/** Stable merge of two sorted lists; on ties `a` (the earlier files) comes first, as a stable sort keeps them. */
+function mergeSorted(a: readonly FileEntry[], b: readonly FileEntry[]): FileEntry[] {
+  const out: FileEntry[] = new Array(a.length + b.length);
+  let i = 0;
+  let j = 0;
+  let k = 0;
+  while (i < a.length && j < b.length) out[k++] = byRel(b[j]!, a[i]!) < 0 ? b[j++]! : a[i++]!;
+  while (i < a.length) out[k++] = a[i++]!;
+  while (j < b.length) out[k++] = b[j++]!;
+  return out;
+}
+
 /**
  * Streamed file matches as file → line nodes, flat and sorted by path (IDEA's
  * default), or under their directory with `groupByDirectory`.
  */
 export function buildFindTree(files: readonly FileMatches[], groupByDirectory = false): Node[] {
+  if (!groupByDirectory)
+    return files
+      .map(fileEntry)
+      .sort(byRel)
+      .map((e) => e.node);
   const dirs = new Map<string, Node & { kind: "dir" }>();
-  const flat: Node[] = [];
   for (const f of files) {
-    const dir = relDir(f.relPath);
-    let d = dirs.get(dir);
-    if (!d && groupByDirectory) {
-      d = { kind: "dir", key: `d:${dir}`, label: dir || "/", count: 0, children: [] };
-      dirs.set(dir, d);
+    const { node } = fileEntry(f);
+    let d = dirs.get(node.dir);
+    if (!d) {
+      d = { kind: "dir", key: `d:${node.dir}`, label: node.dir || "/", count: 0, children: [] };
+      dirs.set(node.dir, d);
     }
-    const children: Node[] = f.matches.map((m) => {
-      const lead = m.text.length - m.text.trimStart().length;
-      const text = m.text.slice(lead).trimEnd();
-      const first = m.ranges[0] ?? [0, 0];
-      return {
-        kind: "match",
-        key: `m:${f.path}:${m.line}`,
-        path: f.path,
-        line: m.line,
-        col: first[0] + m.textOffset,
-        endCol: first[1] + m.textOffset,
-        text,
-        textCol: lead + m.textOffset,
-        ranges: m.ranges
-          .map(([s, e]) => [Math.max(0, s - lead), Math.min(text.length, e - lead)] as [number, number])
-          .filter(([s, e]) => e > s),
-        starts: m.ranges.map(([s]) => ({ line: m.line, col: s + m.textOffset })),
-      };
-    });
-    const count = countFileMatches(f);
-    const file: Node = {
-      kind: "file",
-      key: `f:${f.path}`,
-      path: f.path,
-      name: basename(f.relPath),
-      dir,
-      count,
-      children,
-    };
-    if (d) {
-      d.children.push(file);
-      d.count += count;
-    } else flat.push(file);
+    d.children.push(node);
+    d.count += node.count;
   }
-  if (!groupByDirectory) {
-    const rel = (n: Node) => (n.kind === "file" ? (n.dir ? `${n.dir}/${n.name}` : n.name) : "");
-    return flat.sort((a, b) => rel(a).localeCompare(rel(b)));
-  }
-  return [...dirs.values()].sort((a, b) => a.label.localeCompare(b.label));
+  return [...dirs.values()].sort((a, b) => collator.compare(a.label, b.label));
 }
+
+/**
+ * `buildFindTree` for a result list that grows while a search streams: files
+ * appended since the previous call are sorted and merged in, instead of
+ * rebuilding and re-sorting the whole tree on every update.
+ */
+export function createFindTreeBuilder() {
+  let prev: { files: readonly FileMatches[]; groupByDirectory: boolean; sorted: FileEntry[]; roots: Node[] } | null =
+    null;
+  return (files: readonly FileMatches[], groupByDirectory = false): Node[] => {
+    if (prev && prev.files === files && prev.groupByDirectory === groupByDirectory) return prev.roots;
+    const base = prev;
+    if (!groupByDirectory && base && !base.groupByDirectory && startsWith(files, base.files)) {
+      const added = files.slice(base.files.length).map(fileEntry).sort(byRel);
+      const sorted = mergeSorted(base.sorted, added);
+      prev = { files, groupByDirectory, sorted, roots: sorted.map((e) => e.node) };
+    } else if (!groupByDirectory) {
+      const sorted = files.map(fileEntry).sort(byRel);
+      prev = { files, groupByDirectory, sorted, roots: sorted.map((e) => e.node) };
+    } else prev = { files, groupByDirectory, sorted: [], roots: buildFindTree(files, true) };
+    return prev.roots;
+  };
+}
+
+function startsWith(files: readonly FileMatches[], prefix: readonly FileMatches[]): boolean {
+  if (prefix.length > files.length) return false;
+  for (let i = 0; i < prefix.length; i++) if (files[i] !== prefix[i]) return false;
+  return true;
+}
+
+const nodeKey = (n: Node) => n.key;
+const nodeLabel = (n: Node) => (n.kind === "dir" ? n.label : n.kind === "file" ? n.name : n.text);
+const nodeChildren = (n: Node) => (n.kind === "match" ? undefined : n.children);
+const nodeExpandable = (n: Node) => n.kind !== "match";
 
 /** Preview target of a node: a match, or a file's first match. */
 function previewOf(node: Node | null): { path: string; line: number } | null {
@@ -228,7 +296,11 @@ export function FindToolWindow() {
 function FindTabView({ tab }: { tab: FindTab }) {
   const groupByDirectory = useFindViewOptions((o) => o.groupByDirectory);
   const showPreview = useFindViewOptions((o) => o.preview);
-  const roots = useMemo(() => buildFindTree(tab.state.files, groupByDirectory), [tab.state.files, groupByDirectory]);
+  const [buildTree] = useState(createFindTreeBuilder);
+  const roots = useMemo(
+    () => buildTree(tab.state.files, groupByDirectory),
+    [buildTree, tab.state.files, groupByDirectory],
+  );
   const tree = useRef<TreeHandle>(null);
   const [leadNode, setLeadNode] = useState<Node | null>(null);
   const collapsed = useCollapsed((s) => s.byTab[tab.id]);
@@ -443,10 +515,10 @@ function FindTabView({ tab }: { tab: FindTab }) {
             aria-label="Find results"
             handleRef={tree}
             roots={roots}
-            getKey={(n) => n.key}
-            getLabel={(n) => (n.kind === "dir" ? n.label : n.kind === "file" ? n.name : n.text)}
-            getChildren={(n) => (n.kind === "match" ? undefined : n.children)}
-            isExpandable={(n) => n.kind !== "match"}
+            getKey={nodeKey}
+            getLabel={nodeLabel}
+            getChildren={nodeChildren}
+            isExpandable={nodeExpandable}
             isOccurrence={(n) => n.kind === "match" && groupState(nodeGroups(n)[0]!, marks) !== "excluded"}
             expanded={expanded}
             onExpandedChange={(next) => {
