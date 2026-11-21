@@ -154,6 +154,7 @@ import { StashesPanel } from "./StashesPanel";
 import { saveVcsSetting } from "./settingsUi";
 import { TOGGLE_IGNORED_FILES, useIgnoredFiles } from "./ignoredFiles";
 import styles from "./CommitView.module.css";
+import { forkShelveButton } from "./forkShelveButton";
 
 /** MIME type of files dragged onto a change list (absolute paths, newline-separated). */
 const CHANGES_MIME = "application/x-openidea-changes";
@@ -1048,11 +1049,15 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
             disabled={rollbackPaths?.length === 0}
             size="small"
           />
-          {/* IDEA's Commit view: Show Diff after Rollback. */}
+          {/* IDEA's Commit view: Show Diff and Shelve after Rollback. */}
           {mode !== "dialog" && <IconButton icon="diff" action="vcs.showDiff" size="small" />}
+          {mode !== "dialog" && !forkShelveButton.upstream && (
+            <IconButton icon="shelve" action="vcs.shelve" size="small" />
+          )}
           {mode === "local" && <IconButton icon="changelist" action="vcs.changelist.new" size="small" />}
-          {/* The fork's Shelve opens the dialog first, as before v0.1.50; Shelve Silently keeps its shortcut and action. */}
-          {mode !== "dialog" && <IconButton icon="shelve" action="vcs.shelve" size="small" />}
+          {mode !== "dialog" && forkShelveButton.upstream && (
+            <IconButton icon="shelve" action="vcs.shelveSilently" size="small" />
+          )}
           {mode !== "dialog" && staging && (
             <IconButton
               icon="stash"
