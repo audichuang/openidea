@@ -230,6 +230,8 @@ export function installPerfProbe(): () => void {
       // Dev / perf builds only: the harness needs a Find tab without a Tauri channel.
       const { openInFindWindow } = await import("@/features/search/find/windowStore");
       const filler = "x".repeat(Math.max(0, lineLength - 24));
+      // Synthetic source lines as search reports them (code, not UI text).
+      const lineText = (line: number) => `    val needle${line} = "${filler}"`;
       const file = (i: number): FileMatches => {
         const relPath = `src/module${i % 40}/pkg${i % 7}/Orders${i}.kt`;
         return {
@@ -237,7 +239,7 @@ export function installPerfProbe(): () => void {
           relPath,
           matches: Array.from({ length: hitsPerFile }, (_, line) => ({
             line,
-            text: `    val needle${line} = "${filler}"`,
+            text: lineText(line),
             ranges: [[8, 14]],
             textOffset: 0,
           })),
