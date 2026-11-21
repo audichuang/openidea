@@ -246,6 +246,22 @@ describe("PR Commits virtualization", () => {
     });
   });
 
+  it("ignores auto-repeating Space so holding it cannot scroll back and then reveal", async () => {
+    setupCommits(commitsOf(10_000));
+    render(<PrView repo={REPO} current="feature" version={0} reload={0} />);
+    await flush();
+    const list = screen.getByRole("listbox", { name: "Commits" });
+    act(() => list.focus());
+    list.scrollTop = 5_000 * 24;
+    fireEvent.scroll(list);
+    await flush();
+    fireEvent.keyDown(list, { key: " " });
+    await flush();
+    expect(useGraphView.getState().mode).toBe("pr");
+    fireEvent.keyDown(list, { key: " ", repeat: true });
+    expect(useGraphView.getState().mode).toBe("pr");
+  });
+
   it("shows empty state when there are no commits", async () => {
     setupCommits([]);
     render(<PrView repo={REPO} current="feature" version={0} reload={0} />);
