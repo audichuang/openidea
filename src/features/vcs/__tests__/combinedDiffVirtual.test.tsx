@@ -846,11 +846,30 @@ describe("the all-in-one diff while it scrolls fast", () => {
     render(<CombinedDiffTab input={combinedDiffInput({ items: files(500) })} />);
     frame();
     scroll(scroller(), BLOCK);
-    clock += 300;
+    // Sitting still, the browser goes on drawing frames.
+    for (let i = 0; i < 18; i++) frame();
     const before = mountedPaths.length;
     scroll(scroller(), BLOCK + 900);
     expect(mountedSince(before)).toEqual([]);
   });
+
+  it.each([249, 250, 400])(
+    "mounts the diff a steady scroll brings into view at once, even after a %i ms frame",
+    (ms) => {
+      render(<CombinedDiffTab input={combinedDiffInput({ items: files(500) })} />);
+      frame();
+      scroll(scroller(), 2_860);
+      for (let i = 0; i < 20; i++) frame();
+      // Scrolling at 2.4 px/ms...
+      frame();
+      scroll(scroller(), 2_900);
+      // ...through a frame that blocks the page for `ms` (no frame drawn): the view kept moving at that pace.
+      clock += ms;
+      const before = mountedPaths.length;
+      scroll(scroller(), 2_900 + Math.round(2.4 * ms));
+      expect(mountedSince(before).length).toBeGreaterThan(0);
+    },
+  );
 
   it("mounts the diff a mouse wheel notch brings into view at once", () => {
     render(<CombinedDiffTab input={combinedDiffInput({ items: files(500) })} />);

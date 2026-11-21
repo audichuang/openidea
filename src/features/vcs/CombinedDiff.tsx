@@ -40,12 +40,15 @@ const SETTLE_MS = 100;
 /** Scroll events closer than this to the last one measured count towards the next measurement. */
 const MIN_SAMPLE_MS = 4;
 /**
- * A scroll event this long after the last one comes after the view sat still: the browser reports
- * scrolling once a frame, so its movement (a scrollbar track click, a fling's first frame) took
- * about `IDLE_SAMPLE_MS`, not the whole wait. Shorter gaps are a long frame (a diff mounting) the
- * scrolling went on through, and count in full. One wheel notch (~120 px) stays below `FAST_PX_PER_MS`.
+ * Frames drawn without a scroll event since the last one, from which the view sat still. A page
+ * blocked by a long task draws none, however long it takes, while the scrolling goes on through it.
  */
-const IDLE_MS = 250;
+const IDLE_FRAMES = 2;
+/**
+ * How long the first movement after the view sat still took: the browser reports scrolling once a
+ * frame, so it (a scrollbar track click, a fling's first frame) took about a frame or two, not the
+ * whole wait. One wheel notch (~120 px) stays below `FAST_PX_PER_MS`.
+ */
 const IDLE_SAMPLE_MS = 33;
 
 /**
@@ -58,8 +61,11 @@ class MountGate {
   /** Where the view was at `at`: the next scroll's speed is measured from there. */
   private top = 0;
   private at = 0;
+  /** Frames drawn since the last scroll event, up to `IDLE_FRAMES`. */
+  private stillFrames = IDLE_FRAMES;
   private fastUntil = 0;
   private frame = 0;
+  private stillFrame = 0;
   private readonly waiting = new Set<{ index: number; grant: () => void }>();
 
   /** `inView`: the first and last index of the blocks in view. */
@@ -74,6 +80,7 @@ class MountGate {
   seen(top: number) {
     this.top = top;
     this.at = performance.now();
+    this.stillFrames = IDLE_FRAMES;
   }
 
   /** The user scrolled the view to `top`. */
@@ -81,10 +88,13 @@ class MountGate {
     const now = performance.now();
     const elapsed = now - this.at;
     if (elapsed < MIN_SAMPLE_MS) return;
-    const span = elapsed >= IDLE_MS ? IDLE_SAMPLE_MS : elapsed;
+    // Scrolling on (long frames included), the view moved for the whole time since the last event.
+    const span = this.stillFrames >= IDLE_FRAMES ? Math.min(elapsed, IDLE_SAMPLE_MS) : elapsed;
     if (Math.abs(top - this.top) / span > FAST_PX_PER_MS) this.fastUntil = now + SETTLE_MS;
     this.top = top;
     this.at = now;
+    this.stillFrames = 0;
+    if (!this.stillFrame) this.stillFrame = requestAnimationFrame(this.countStill);
   }
 
   /** The view moved itself by `by` px to keep its content in place as a block above resized. */
@@ -111,8 +121,16 @@ class MountGate {
 
   dispose() {
     cancelAnimationFrame(this.frame);
-    this.frame = 0;
+    cancelAnimationFrame(this.stillFrame);
+    this.frame = this.stillFrame = 0;
   }
+
+  /** Counts the frames drawn since the last scroll event (a frame's scroll events come before its frame callbacks). */
+  private readonly countStill = (frameStart: number) => {
+    this.stillFrame = 0;
+    if (frameStart > this.at) this.stillFrames++;
+    if (this.stillFrames < IDLE_FRAMES) this.stillFrame = requestAnimationFrame(this.countStill);
+  };
 
   private schedule() {
     if (!this.frame && this.waiting.size) this.frame = requestAnimationFrame(this.tick);
