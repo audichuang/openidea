@@ -400,6 +400,97 @@ describe("paged Git Log graph", () => {
     );
   }, 30_000);
 
+  it("colours the rows kept below commits made on top as the full computation does on later Refreshes", () => {
+    // Refresh 1 makes a commit on top; Refresh 2 gives the old head a ref ranked above the new
+    // one's, so the two no longer share a colour; Refresh 3 makes another commit on top.
+    const chain = Array.from({ length: 1_310 }, (_, i) =>
+      commit(`c${i}`, i + 1 < 1_310 ? [`c${i + 1}`] : [], i ? [] : ["HEAD -> main"]),
+    );
+    for (const [base, longEdges] of [
+      [chain, false],
+      [probeLog(1_500, 0), false],
+      [probeLog(1_500, 0), true],
+      [probeLog(1_500, 20), false],
+    ] as const) {
+      const options = { ...DEFAULT_LOG_OPTIONS, longEdges };
+      const head = base[0]!;
+      const refreshes = [
+        [commit("new0", [head.id], head.refs), { ...head, refs: [] }, ...base.slice(1)],
+        [commit("new0", [head.id], ["zz"]), { ...head, refs: ["HEAD"] }, ...base.slice(1)],
+        [
+          commit("new1", ["new0"], ["HEAD -> main"]),
+          commit("new0", [head.id], ["zz"]),
+          { ...head, refs: [] },
+          ...base.slice(1),
+        ],
+      ];
+      const present = createLogGraphPresenter();
+      for (let n = 300; n < 1_300; n += 250) present(base.slice(0, n), options, fragments, keep);
+      present(base.slice(0, 1_300), options, fragments, keep);
+      for (const after of [...refreshes.map((list) => list.slice(0, 1_300)), refreshes[2]!.slice(0, 1_450)]) {
+        const got = present(after, options, fragments, keep);
+        expectStrictEqual(
+          got.rows.map((_, i) => got.row(i)),
+          full(after, options).rows,
+        );
+      }
+    }
+  });
+
+  it("gives the full computation's rows over a series of Refreshes", () => {
+    // Commits made on top (merges too), refs moved near the top, the same commits, fewer
+    // commits, and pages, in a random order, each compared with the full computation.
+    for (const seed of [1, 2, 3, 11]) {
+      const random = rng(seed * 7919);
+      const size = 1_400 + Math.floor(random() * 400);
+      const base =
+        seed % 3 === 0
+          ? history(seed, size, 8 + (seed % 20), 0.5, 0.002)
+          : seed % 3 === 1
+            ? probeLog(size, seed % 40)
+            : Array.from({ length: size }, (_, i) =>
+                commit(`c${i}`, i + 1 < size ? [`c${i + 1}`] : [], i ? [] : ["HEAD -> main"]),
+              );
+      const options = { ...DEFAULT_LOG_OPTIONS, longEdges: random() < 0.3 };
+      const present = createLogGraphPresenter();
+      const loaded = 1_100 + Math.floor(random() * 200);
+      for (let n = 300; n < loaded; n += 300) present(base.slice(0, n), options, fragments, keep);
+      let list = base.slice(0, loaded);
+      present(list, options, fragments, keep);
+      let made = 0;
+      for (let step = 0; step < 6; step++) {
+        const op = Math.floor(random() * 6);
+        const head = list[0]!;
+        let next: Commit[];
+        if (op <= 1) {
+          const tip: Commit[] = [];
+          for (let i = 0, k = 1 + Math.floor(random() * 2); i < k; i++) {
+            const merge = random() < 0.2 ? [list[3 + Math.floor(random() * 5)]!.id] : [];
+            tip.push(commit(`m${made++}`, [i + 1 < k ? `m${made}` : head.id, ...merge], i ? [] : head.refs));
+          }
+          next = [...tip, { ...head, refs: [] }, ...list.slice(1)];
+          if (random() < 0.5) next = next.slice(0, list.length);
+        } else if (op === 2) {
+          const r = Math.floor(random() * 4);
+          const refs = (c: Commit) =>
+            c.refs.length ? (random() < 0.5 ? [] : ["HEAD"]) : [random() < 0.5 ? "zz" : "HEAD"];
+          next = list.map((c, i) => ({ ...c, refs: i === r ? refs(c) : c.refs }));
+        } else if (op === 3) next = list.map((c) => ({ ...c }));
+        else if (op === 4) next = list.slice(0, list.length - 1 - Math.floor(random() * 50)).map((c) => ({ ...c }));
+        else {
+          const ids = new Set(list.map((c) => c.id));
+          next = [...list, ...base.filter((c) => !ids.has(c.id)).slice(0, 150)];
+        }
+        list = next;
+        const got = present(list, options, fragments, keep);
+        const rows = got.rows.map((_, i) => got.row(i));
+        const want = full(list, options).rows;
+        if (!isDeepStrictEqual(rows, want))
+          expect({ seed, step, op, rows }).toStrictEqual({ seed, step, op, rows: want });
+      }
+    }
+  });
+
   it("starts over when the list is not an extension of the last one", () => {
     const present = createLogGraphPresenter();
     const a = history(12, 600, 20);
