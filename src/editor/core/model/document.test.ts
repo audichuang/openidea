@@ -254,7 +254,7 @@ describe("DocumentManager + slots", () => {
         const dirty = state[path]?.dirty;
         if (dirty !== undefined && dirty !== previous[path]?.dirty) transitions.push(dirty);
       });
-      let pending: Promise<void> | undefined;
+      let pending: Promise<unknown> | undefined;
       try {
         slot.dispatchLocal({ changes: { from: 4, insert: " saved" } });
         await model.sync.whenIdle();
@@ -346,7 +346,7 @@ describe("DocumentManager + slots", () => {
       await write.promise;
       await originalSave(doc);
     });
-    let pending: Promise<void> | undefined;
+    let pending: Promise<unknown> | undefined;
     try {
       slot.dispatchLocal({ changes: { from: 4, insert: " first" } });
       await model.sync.whenIdle();

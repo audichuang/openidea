@@ -1404,8 +1404,9 @@ fn document_opened_through_a_symlinked_directory_reloads_on_canonical_events() {
     assert_eq!(f.docs.snapshot(id).unwrap().text, "new\n");
 }
 
+/// Changed-on-disk reports (`DocDiskConflict`, upstream's replacement for the warning balloon).
 fn warnings(events: &[IdeEvent]) -> usize {
-    events.iter().filter(|e| matches!(e, IdeEvent::Notify { level: NotifyLevel::Warning, .. })).count()
+    events.iter().filter(|e| matches!(e, IdeEvent::DocDiskConflict { .. })).count()
 }
 
 /// Undoing typing after the file changed on disk returns the buffer to stale text: the

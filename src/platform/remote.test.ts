@@ -32,7 +32,7 @@ describe("remote invoke", () => {
         expect(command).toBe("remote_invoke");
         expect(call.cmd).toBe("db_execute_stream");
         const { onProgress } = JSON.parse(call.args) as { onProgress: { $channel: number } };
-        call.onChannel.onmessage({ id: onProgress.$channel, data: JSON.stringify(done) });
+        call.onChannel.onmessage({ id: onProgress.$channel, data: JSON.stringify(done), end: false });
         return "null";
       },
     });
