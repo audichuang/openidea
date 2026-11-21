@@ -592,7 +592,14 @@ pub async fn persist(app: &AppHandle) -> IdeResult<()> {
     // A restored member may still be opening its project, or have failed to: saved as launched.
     let current = snapshot(
         &groups,
-        |label| state.saved_project(label, host.project(label).ok().map(|p| p.root.clone())),
+        |label| {
+            // A remote window keeps its remote location; one still connecting, the one it launched with.
+            let connecting = || {
+                let remote = state.pending(label)?.remote?;
+                Some(PathBuf::from(crate::remote_dev::remote_location(&remote.target, &remote.path)))
+            };
+            state.saved_project(label, windows::window_project_path(app, label).or_else(connecting))
+        },
         &fullscreen,
     );
     let restored = state.groups_restore_done.load(Ordering::SeqCst)
@@ -712,7 +719,8 @@ async fn restore_groups(app: &AppHandle, caller: &str, root: Option<&Path>) -> I
     let saved = tauri::async_runtime::spawn_blocking(move || read_saved(&path))
         .await
         .map_err(|e| IdeError::internal(e.to_string()))??;
-    let plan = restore_plan(&saved, root, Path::is_dir);
+    // A remote location reopens as a remote launch; a missing local folder is left out.
+    let plan = restore_plan(&saved, root, |path| windows::saved_project_launch(path).is_some());
     if plan.is_empty() {
         return Ok(Vec::new());
     }
@@ -774,15 +782,13 @@ async fn restore_group(
 ) -> IdeResult<Option<String>> {
     let mut labels = Vec::new();
     for path in &group.projects {
-        let label = if group.main && Some(path.as_path()) == root {
+        let label = if group.main && root.is_some_and(|root| windows::same_saved_project(path, root)) {
             caller.to_owned()
         } else {
-            match windows::find_project_window(app, path) {
-                Some(w) => w,
-                None => windows::create_restored_window(app, path.clone())?,
-            }
-            .label()
-            .to_owned()
+            windows::reopen_saved_window(app, path)?
+                .ok_or_else(|| IdeError::not_found(format!("{} no longer exists", path.display())))?
+                .label()
+                .to_owned()
         };
         labels.push(label);
     }
