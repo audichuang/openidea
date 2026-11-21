@@ -8,6 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const dirtyDocs = new Set<number>();
 const unmountedPaths: string[] = [];
+/** Paths of the diff editors mounted, in mount order. */
+const mountedPaths: string[] = [];
 let nextDocId = 1;
 
 vi.mock("../DiffEditor", () => ({
@@ -16,6 +18,7 @@ vi.mock("../DiffEditor", () => ({
     const [docId] = useState(() => nextDocId++);
     useEffect(() => {
       const handle = { view: {}, ctx: { doc: docId, path } } as unknown as TextEditorHandle;
+      mountedPaths.push(path);
       _addEditor(handle);
       return () => {
         _removeEditor(handle);
@@ -103,9 +106,13 @@ beforeEach(() => {
   localStorage.clear();
   dirtyDocs.clear();
   unmountedPaths.length = 0;
+  mountedPaths.length = 0;
   nextDocId = 1;
   openInput.mockClear();
   useProject.setState({ project: { name: "r", root: "/r", trusted: true, isGit: true, settings: {} } as never });
+  // The view's scroll speed is measured against the clock: held still, each `scroll` below is a
+  // jump rather than a fling (the fast-scroll tests move it on themselves).
+  vi.spyOn(performance, "now").mockReturnValue(0);
   vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
   Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
     configurable: true,
@@ -131,6 +138,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   Object.defineProperty(HTMLElement.prototype, "offsetHeight", offsetHeight);
   Object.defineProperty(Element.prototype, "scrollHeight", scrollHeight);
@@ -661,4 +669,140 @@ describe("the all-in-one diff with many files", () => {
     expect(field.value).toBe("edited 5000th file");
     expect(dirtyDocs.has(lastDocId)).toBe(true);
   }, 30_000);
+});
+
+describe("the all-in-one diff while it scrolls fast", () => {
+  /** What `performance.now()` reports: the tests move it on a frame at a time. */
+  let clock = 0;
+  const raf = new Map<number, FrameRequestCallback>();
+  let rafId = 1;
+  const origRAF = window.requestAnimationFrame;
+  const origCAF = window.cancelAnimationFrame;
+
+  beforeEach(() => {
+    clock = 1_000;
+    raf.clear();
+    vi.spyOn(performance, "now").mockImplementation(() => clock);
+    window.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+      const id = rafId++;
+      raf.set(id, cb);
+      return id;
+    }) as typeof window.requestAnimationFrame;
+    window.cancelAnimationFrame = ((id: number) => void raf.delete(id)) as typeof window.cancelAnimationFrame;
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    window.requestAnimationFrame = origRAF;
+    window.cancelAnimationFrame = origCAF;
+  });
+
+  /** The next animation frame: runs the frame callbacks asked for so far. */
+  function frame() {
+    clock += 16;
+    act(() => {
+      const due = [...raf.values()];
+      raf.clear();
+      due.forEach((cb) => cb(clock));
+    });
+  }
+
+  /** The block at the top of the view. */
+  function atTop() {
+    const top = scroller().scrollTop;
+    const slot = [...document.querySelectorAll<HTMLElement>("[data-index]")].find(
+      (s) => Math.abs(parseFloat(s.style.top) - top) < 1,
+    )!;
+    return slot.querySelector<HTMLElement>("[data-combined-block]")!;
+  }
+
+  /** Scrolls a viewport each frame from `from` to `to`, as a fling or a dragged scrollbar does. */
+  function fling(from: number, to: number, seen: () => void = () => {}) {
+    const dir = to >= from ? 1 : -1;
+    for (let top = from; dir > 0 ? top <= to : top >= to; top += dir * VIEW) {
+      frame();
+      scroll(scroller(), top);
+      seen();
+    }
+  }
+
+  it.each([40, 400, 2_000])("mounts no diff editor while %i files fly by, and shows every header in order", (n) => {
+    const items = files(n);
+    render(<CombinedDiffTab input={combinedDiffInput({ items })} />);
+    const before = mountedPaths.length;
+    expect(before).toBeGreaterThan(0);
+    const seen = new Set<string>();
+    fling(0, n * BLOCK, () => {
+      const shown = headers();
+      const first = items.findIndex((i) => i.path === shown[0]);
+      expect(shown).toEqual(items.slice(first, first + shown.length).map((i) => i.path));
+      shown.forEach((p) => seen.add(p));
+    });
+    expect(seen.size).toBe(n);
+    // Each file flown past costs its header only, however many there are.
+    expect(mountedPaths.slice(before)).toEqual([]);
+  });
+
+  it("mounts the diffs in view once the scroll settles, one a frame, the top of the view first", () => {
+    const items = files(400);
+    render(<CombinedDiffTab input={combinedDiffInput({ items })} />);
+    fling(0, 200 * BLOCK);
+    const top = Number(atTop().parentElement!.dataset.index);
+    const start = mountedPaths.length;
+    let previous = mounted().length;
+    for (let i = 0; i < 60; i++) {
+      frame();
+      expect(mounted().length - previous).toBeLessThanOrEqual(1);
+      previous = mounted().length;
+    }
+    // Every block in range has its diff, the block at the top of the view first.
+    expect([...mounted()].sort()).toEqual([...headers()].sort());
+    expect(mountedPaths.slice(start)[0]).toBe(items[top]!.path);
+    expect(mountedPaths.slice(start)[1]).toBe(items[top + 1]!.path);
+  });
+
+  it("keeps an edited block's diff, the same editor, through a fling far away and back", () => {
+    const items = files(400);
+    const edited = items[2]!.path;
+    render(<CombinedDiffTab input={combinedDiffInput({ items })} />);
+    const field = screen.getByLabelText(`Edit ${edited}`) as HTMLInputElement;
+    act(() => {
+      fireEvent.change(field, { target: { value: "typed during a fling" } });
+    });
+    field.blur();
+    fling(0, 300 * BLOCK);
+    fling(300 * BLOCK, 0);
+    for (let i = 0; i < 30; i++) frame();
+    expect(screen.getByLabelText(`Edit ${edited}`)).toBe(field);
+    expect(field.value).toBe("typed during a fling");
+    expect(mountedPaths.filter((p) => p === edited)).toHaveLength(1);
+    expect(unmountedPaths).not.toContain(edited);
+  });
+
+  it("mounts a diff expanded during a fling at once, and the file Next File moves to within a frame", () => {
+    const items = files(400);
+    render(<CombinedDiffTab input={combinedDiffInput({ items })} />);
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Collapse All Files" }));
+    });
+    fling(0, 100 * BLOCK);
+    const block = atTop();
+    act(() => {
+      fireEvent.click(block.querySelector<HTMLButtonElement>('button[aria-label="Expand File"]')!);
+    });
+    expect(mounted()).toContain(block.dataset.combinedBlock);
+
+    // Back to every file expanded (Collapse All, then Expand All).
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Collapse All Files" }));
+    });
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Expand All Files" }));
+    });
+    fling(100 * BLOCK, 200 * BLOCK);
+    const from = Number(atTop().parentElement!.dataset.index);
+    fireEvent.click(screen.getByRole("button", { name: "Next File" }));
+    frame();
+    expect(atTop().dataset.combinedBlock).toBe(items[from + 1]!.path);
+    expect(mounted()).toContain(items[from + 1]!.path);
+  });
 });

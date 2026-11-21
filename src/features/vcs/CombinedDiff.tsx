@@ -5,7 +5,7 @@
  * a header collapses its block or opens the file's own diff tab.
  */
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
+import { defaultRangeExtractor, useVirtualizer, type Range, type Virtualizer } from "@tanstack/react-virtual";
 import clsx from "clsx";
 import { editorsFor } from "@/editor/api";
 import { tx } from "@/platform/i18n";
@@ -33,6 +33,102 @@ const ESTIMATE = 200;
 const OVERSCAN = 2;
 /** Longest a block coming back into view keeps its last height while its diff reloads. */
 const HOLD_MS = 1000;
+/** Scroll speed (px per ms) from which blocks coming into view wait for the scrolling to settle. */
+const FAST_PX_PER_MS = 4;
+/** How long after the last fast scroll the waiting blocks start mounting their diffs. */
+const SETTLE_MS = 100;
+/** Scroll events closer than this to the last one measured count towards the next measurement. */
+const MIN_SAMPLE_MS = 4;
+
+/**
+ * Paces the mounting of the blocks' diff editors. Building one (a CodeMirror merge view, laid
+ * out at once) takes a good part of a frame, so a block that comes into view while the view
+ * scrolls fast (a fling, a dragged scrollbar) shows its header over a placeholder of its height
+ * and waits; once the scrolling settles, the waiting blocks mount one a frame, those in view first.
+ */
+class MountGate {
+  private top = 0;
+  private at = 0;
+  /** Whether the next scroll event only sets where the speed is measured from. */
+  private rebase = true;
+  private fastUntil = 0;
+  private frame = 0;
+  private readonly waiting = new Set<{ index: number; grant: () => void }>();
+
+  /** `inView`: the first and last index of the blocks in view. */
+  constructor(private readonly inView: () => readonly [number, number]) {}
+
+  /** Whether a block coming into view now waits to mount its diff. */
+  deferring(): boolean {
+    return performance.now() < this.fastUntil;
+  }
+
+  /** The user scrolled the view to `top`. */
+  scrolled(top: number) {
+    const now = performance.now();
+    if (this.rebase) {
+      this.rebase = false;
+    } else {
+      const elapsed = now - this.at;
+      if (elapsed < MIN_SAMPLE_MS) return;
+      if (Math.abs(top - this.top) / elapsed > FAST_PX_PER_MS) this.fastUntil = now + SETTLE_MS;
+    }
+    this.top = top;
+    this.at = now;
+  }
+
+  /** The view scrolled itself: by a block above resizing (`jump` false), or to a file (Next File, reveal). */
+  moved(jump: boolean) {
+    this.rebase = true;
+    if (!jump) return;
+    // Going to a file ends a fling: the blocks there mount right away.
+    this.fastUntil = 0;
+    this.schedule();
+  }
+
+  /** Calls `grant` on a later frame, once the scrolling has settled, unless the returned function cancels it first. */
+  request(index: number, grant: () => void): () => void {
+    const entry = { index, grant };
+    this.waiting.add(entry);
+    this.schedule();
+    return () => this.waiting.delete(entry);
+  }
+
+  dispose() {
+    cancelAnimationFrame(this.frame);
+    this.frame = 0;
+  }
+
+  private schedule() {
+    if (!this.frame && this.waiting.size) this.frame = requestAnimationFrame(this.tick);
+  }
+
+  private readonly tick = () => {
+    this.frame = 0;
+    if (!this.deferring()) {
+      // The blocks in view from the top down, then the others nearest first.
+      const [first, last] = this.inView();
+      let next: { index: number; grant: () => void } | undefined;
+      let best = Infinity;
+      for (const entry of this.waiting) {
+        const { index } = entry;
+        const rank =
+          index >= first && index <= last
+            ? index - first
+            : 1 + last - first + Math.min(Math.abs(index - first), Math.abs(index - last));
+        if (rank < best) {
+          best = rank;
+          next = entry;
+        }
+      }
+      if (next) {
+        this.waiting.delete(next);
+        next.grant();
+      }
+    }
+    this.schedule();
+  };
+}
 
 /** Whether a file of `item` has unsaved changes in a document open in a view (its diff panes, an editor). */
 function hasUnsavedEdits(item: DiffData, dirtyDocs: ReadonlySet<number>): boolean {
@@ -51,6 +147,7 @@ const Block = memo(function Block({
   onToggle,
   mode,
   heights,
+  gate,
 }: {
   item: DiffData;
   itemKey: string;
@@ -61,10 +158,16 @@ const Block = memo(function Block({
   mode: "split" | "unified";
   /** Last height of each block's diff, by layout and diff entry, kept while blocks are unmounted. */
   heights: Map<string, number>;
+  gate: MountGate;
 }) {
   // A block mounted collapsed loads its diff once expanded.
   const [loaded, setLoaded] = useState(!collapsed);
   if (!collapsed && !loaded) setLoaded(true);
+  // Whether its diff editor may mount: a block coming into view during a fast scroll waits for
+  // the gate. Once mounted, the editor stays for as long as the block does.
+  const [live, setLive] = useState(() => !gate.deferring());
+  const waiting = loaded && !collapsed && !live;
+  useEffect(() => (waiting ? gate.request(index, () => setLive(true)) : undefined), [waiting, gate, index]);
   const input: EditorInput = useMemo(() => diffInput({ ...item, mode }), [item, mode]);
   const kind = blockKind(item);
   const name = baseName(item.path);
@@ -92,17 +195,27 @@ const Block = memo(function Block({
       observer.disconnect();
       clearTimeout(timer);
     };
-  }, [loaded, hold, heightKey, heights]);
+  }, [loaded, live, hold, heightKey, heights]);
 
   return (
-    <section className={styles.block} data-combined-block={item.path} aria-label={name}>
+    <section
+      className={styles.block}
+      data-combined-block={item.path}
+      aria-label={name}
+      // Waiting, a block never shown is as tall as the virtualizer estimates it (else its last height, below).
+      style={waiting && !hold ? { minHeight: ESTIMATE } : undefined}
+    >
       <div className={styles.header}>
         <IconButton
           icon={collapsed ? "chevron-right" : "chevron-down"}
           title={collapsed ? "Expand File" : "Collapse File"}
           size="small"
           aria-expanded={!collapsed}
-          onClick={() => onToggle(itemKey)}
+          onClick={() => {
+            // Expanding shows the diff at once, whatever the gate.
+            if (collapsed) setLive(true);
+            onToggle(itemKey);
+          }}
         />
         <Icon name={fileIconName(name)} size={16} />
         <span className={styles.name} style={{ color: KIND_COLOR[kind] }} title={tx(KIND_LABEL[kind])}>
@@ -134,7 +247,7 @@ const Block = memo(function Block({
           working-tree document and, with autosave off, drop its unsaved edits. */}
       {loaded && (
         <div ref={bodyRef} className={styles.body} hidden={collapsed} style={hold ? { minHeight: hold } : undefined}>
-          <DiffEditor input={input} fit />
+          {live && <DiffEditor input={input} fit />}
         </div>
       )}
     </section>
@@ -179,6 +292,28 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
     },
     [pinnedIndexes],
   );
+  const virtualizerRef = useRef<Virtualizer<HTMLDivElement, Element> | null>(null);
+  const [gate] = useState(
+    () =>
+      new MountGate(() => {
+        const v = virtualizerRef.current;
+        const top = v?.scrollOffset ?? 0;
+        const first = v?.getVirtualItemForOffset(top)?.index ?? 0;
+        return [first, v?.getVirtualItemForOffset(top + (v.scrollRect?.height ?? 0))?.index ?? first];
+      }),
+  );
+  // Before the virtualizer's own scroll listener (capture runs first on the target), so the
+  // blocks its re-render brings into view see this scroll's speed.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => gate.scrolled(el.scrollTop);
+    el.addEventListener("scroll", onScroll, { capture: true, passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll, { capture: true });
+      gate.dispose();
+    };
+  }, [gate]);
   const scrollToFn = useCallback(
     (
       offset: number,
@@ -191,9 +326,10 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
       // browser dispatches its scroll event; `offset` is then stale, so apply size
       // adjustments relative to the live scrollTop instead of reverting pending movement.
       const base = options.adjustments ? el.scrollTop : offset;
+      gate.moved(!options.adjustments);
       el.scrollTo({ top: base + (options.adjustments ?? 0), behavior: options.behavior });
     },
-    [],
+    [gate],
   );
   const virtualizer = useVirtualizer({
     count: items.length,
@@ -204,6 +340,7 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
     rangeExtractor,
     scrollToFn,
   });
+  virtualizerRef.current = virtualizer;
 
   /** Index of the block at the top of the view. */
   const current = () =>
@@ -322,6 +459,7 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
                     onToggle={toggle}
                     mode={mode}
                     heights={heights}
+                    gate={gate}
                   />
                 </div>
               );
