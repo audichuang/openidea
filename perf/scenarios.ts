@@ -799,6 +799,152 @@ const projectTree: Scenario = {
   },
 };
 
+interface CombinedProbe {
+  openCombinedDiff(files: number, bigLines: number): Promise<{ big: string; editable: string }>;
+  unsaved(path: string): boolean;
+}
+
+/** Files in the `combinedDiff` scenario (`OPENIDEA_PERF_COMBINED_FILES`, default 500). */
+const COMBINED_FILES = Number(process.env.OPENIDEA_PERF_COMBINED_FILES ?? 500);
+
+/**
+ * An all-in-one diff of many files (`COMBINED_FILES`, mixed binary and large ones, one with
+ * up to 50,000 changed lines) scrolled top → bottom → top, at most 300 steps each way
+ * (a screen, or more to cross a long diff in 300 steps), 60 s at most. `peakEditors` /
+ * `editorsAfter`: CodeMirror editors mounted at most / once back at the top. Then a working
+ * file half-way down is edited, the diff scrolled to the end and back, and the edit must
+ * still be in the same editor, unsaved (the scenario fails otherwise).
+ */
+const combinedDiff: Scenario = {
+  id: "combinedDiff",
+  title: `Scroll an all-in-one diff of ${COMBINED_FILES} files and edit one`,
+  async run(h) {
+    const files = COMBINED_FILES;
+    const bigLines = Math.min(50_000, files * 10);
+    let editable = "";
+    let big = "";
+    const openMs = await h.measure(
+      async () => {
+        ({ editable, big } = await h.page.evaluate(
+          ([f, b]) => (window as never as { __openideaPerf: CombinedProbe }).__openideaPerf.openCombinedDiff(f!, b!),
+          [files, bigLines],
+        ));
+      },
+      "[data-combined-scroll] .cm-content",
+      null,
+      30_000,
+    );
+    const scroller = h.page.locator("[data-combined-scroll]");
+    await h.page.waitForTimeout(500);
+    const refresh = await h.refreshMs();
+    const t0 = await h.now();
+    await h.inPage((p) => p.startFrames());
+    const pass = await scroller.evaluate(async (el) => {
+      const editors = () => el.querySelectorAll(".cm-editor").length;
+      const frame = () => new Promise(requestAnimationFrame);
+      const started = performance.now();
+      const step = () => Math.max(el.clientHeight, Math.ceil((el.scrollHeight - el.clientHeight) / 300));
+      let peak = editors();
+      let steps = 0;
+      let reachedEnd = false;
+      for (let i = 0; i < 300 && performance.now() - started < 30_000; i++, steps++) {
+        if (el.scrollTop + el.clientHeight >= el.scrollHeight - 1) {
+          reachedEnd = true;
+          break;
+        }
+        el.scrollTop += step();
+        await frame();
+        peak = Math.max(peak, editors());
+      }
+      for (let i = 0; i < 300 && el.scrollTop > 0 && performance.now() - started < 60_000; i++, steps++) {
+        el.scrollTop -= step();
+        await frame();
+        peak = Math.max(peak, editors());
+      }
+      return { peak, steps, reachedEnd, backAtTop: el.scrollTop === 0, ms: performance.now() - started };
+    });
+    const frames = await h.inPage((p) => p.stopFrames());
+    const longTasks = await h.longTasksSince(t0);
+    await h.page.waitForTimeout(500);
+    const editorsAfter = await scroller.evaluate((el) => el.querySelectorAll(".cm-editor").length);
+    const domNodes = (await h.counters()).Nodes ?? NaN;
+
+    // The header of a file stays at the top while its diff scrolls by.
+    const sticky = await scroller.evaluate(async (el, path) => {
+      const sel = `[data-combined-block="${path}"]`;
+      el.scrollTop = 0;
+      for (let i = 0; i < 2000 && !el.querySelector(`${sel} .cm-content`); i++) {
+        el.scrollTop += el.clientHeight;
+        await new Promise(requestAnimationFrame);
+      }
+      const block = el.querySelector<HTMLElement>(sel)!;
+      block.scrollIntoView({ block: "start" });
+      await new Promise(requestAnimationFrame);
+      el.scrollTop += Math.min(2000, block.offsetHeight / 2);
+      await new Promise(requestAnimationFrame);
+      const header = block.firstElementChild!.getBoundingClientRect().top;
+      return Math.abs(header - el.getBoundingClientRect().top);
+    }, big);
+    if (sticky > 1) throw new Error(`the file header did not stay at the top (${sticky}px off)`);
+
+    // Edit the working file half-way down, scroll it far away and come back.
+    const block = `[data-combined-block="${editable}"]`;
+    const reveal = () =>
+      scroller.evaluate(async (el, sel) => {
+        el.scrollTop = 0;
+        for (let i = 0; i < 2000 && !el.querySelector(`${sel} .cm-content`); i++) {
+          el.scrollTop += el.clientHeight;
+          await new Promise(requestAnimationFrame);
+        }
+        el.querySelector(sel)?.scrollIntoView({ block: "start" });
+        await new Promise(requestAnimationFrame);
+      }, block);
+    await reveal();
+    const pane = h.page.locator(`${block} .cm-content`).last();
+    await pane.click();
+    await h.page.keyboard.press("End");
+    await h.page.keyboard.type(" // PERF_EDIT");
+    await h.page
+      .locator(`${block} .cm-editor`)
+      .last()
+      .evaluate((el) => ((el as HTMLElement).dataset.perfMark = "1"));
+    await scroller.evaluate(async (el) => {
+      for (let i = 0; i < 300 && el.scrollTop + el.clientHeight < el.scrollHeight - 1; i++) {
+        el.scrollTop += Math.max(el.clientHeight, Math.ceil((el.scrollHeight - el.clientHeight) / 300));
+        await new Promise(requestAnimationFrame);
+      }
+    });
+    await h.page.waitForTimeout(300);
+    await reveal();
+    const kept = await h.page.evaluate(
+      ({ sel, path }) => {
+        const cm = document.querySelector<HTMLElement>(`${sel} .cm-editor[data-perf-mark]`);
+        return {
+          sameEditor: !!cm,
+          text: !!cm?.textContent?.includes("PERF_EDIT"),
+          unsaved: (window as never as { __openideaPerf: CombinedProbe }).__openideaPerf.unsaved(path),
+        };
+      },
+      { sel: block, path: editable },
+    );
+    if (!kept.sameEditor || !kept.text || !kept.unsaved)
+      throw new Error(`the edit did not survive scrolling away: ${JSON.stringify(kept)}`);
+    return {
+      openMs,
+      ...frameSummary(frames, refresh),
+      longTasks: longTasks.length,
+      longTasksOver200: longTasks.filter((t) => t.duration > 200).length,
+      tbtMs: totalBlockingTime(longTasks),
+      peakEditors: pass.peak,
+      editorsAfter,
+      domNodes,
+      scrollSteps: pass.steps,
+      scrollMs: pass.ms,
+      reachedEnd: pass.reachedEnd ? 1 : 0,
+    };
+  },
+};
+
 /** Opening and closing editors repeatedly must not grow the heap or the DOM. */
 const leaks: Scenario = {
   id: "leaks",
@@ -848,5 +994,6 @@ export const SCENARIOS: Scenario[] = [
   popups,
   toolWindows,
   projectTree,
+  combinedDiff,
   leaks,
 ];

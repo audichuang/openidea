@@ -8,7 +8,7 @@ import { syntaxParserRunning } from "@codemirror/language";
 import { forEachDiagnostic } from "@codemirror/lint";
 import { executeAction } from "@/platform/actions";
 import { bindingsFor } from "@/platform/keymap";
-import { activeEditor } from "@/editor/api";
+import { activeEditor, editorsFor } from "@/editor/api";
 import { docBackend, type MemoryBackend } from "@/editor/core/backend";
 import type { Commit, CompletionItem, CompletionKind, LogQuery } from "@/bindings";
 import { openProject } from "@/platform/project";
@@ -55,7 +55,19 @@ export interface PerfProbe {
    * `latencyMs` (a `git log` call). `0` commits removes it.
    */
   fakeGitLog(commits: number, latencyMs?: number, longBranches?: number): void;
+  /**
+   * Opens an all-in-one diff of `files` generated files, answering the Git and file reads its
+   * blocks make: small edits between two revisions, every 25th file binary, every 100th one of
+   * 2,000 lines, one of `bigLines` changed lines, and one working file (editable) half-way down.
+   * Resolves with the paths of the big and the editable file.
+   */
+  openCombinedDiff(files: number, bigLines: number): Promise<{ big: string; editable: string }>;
+  /** Whether a document of `path` shown in a view (an editor, a diff pane) has unsaved changes. */
+  unsaved(path: string): boolean;
 }
+
+/** The sample project the perf build opens (`registerDevSamples`). */
+const PERF_ROOT = "/dev/acme-api";
 
 const KINDS: CompletionKind[] = [
   "method",
@@ -123,6 +135,18 @@ function commit(i: number, count: number): Commit {
     messageTruncated: false,
     refs: i === 0 ? ["HEAD -> main", "origin/main"] : i % 250 === 0 ? [`tag: v1.${count - i}`] : [],
   };
+}
+
+/** `lines` lines of a generated source file; `rev` changes every 7th line (all of them with `all`). */
+function combinedSource(n: number, lines: number, rev: string, all = false): string {
+  const out: string[] = [];
+  for (let i = 0; i < lines; i++)
+    out.push(
+      all || i % 7 === 3
+        ? `export const value${n}_${i} = compute("${rev}", ${i}); // ${rev}`
+        : `export const value${n}_${i} = compute("base", ${i});`,
+    );
+  return out.join("\n");
 }
 
 type Route = (cmd: string, args: unknown) => Promise<unknown> | null;
@@ -208,6 +232,60 @@ export function installPerfProbe(): () => void {
             }
           : null,
       );
+    },
+    async openCombinedDiff(files, bigLines) {
+      const dir = (i: number) => `${PERF_ROOT}/src/gen/pkg${Math.floor(i / 50)}`;
+      const bigAt = Math.floor(files / 3);
+      const editAt = Math.floor(files / 2);
+      const path = (i: number) =>
+        i === bigAt
+          ? `${dir(i)}/Generated${i}.ts`
+          : i % 25 === 24
+            ? `${dir(i)}/image${i}.png`
+            : `${dir(i)}/File${i}.ts`;
+      const big = path(bigAt);
+      const editable = path(editAt);
+      const lines = (i: number) => (i === bigAt ? bigLines : i % 100 === 50 ? 2_000 : 40);
+      const index = new Map(Array.from({ length: files }, (_, i) => [path(i), i]));
+      const items = Array.from({ length: files }, (_, i) => {
+        const p = path(i);
+        const worktree = i === editAt || p.endsWith(".png");
+        return {
+          path: p,
+          left: { type: "rev", rev: "HEAD~1" },
+          right: worktree ? { type: "worktree" } : { type: "rev", rev: "HEAD" },
+        };
+      });
+      const backend = docBackend() as Partial<MemoryBackend>;
+      if (!backend.files) throw new Error("openCombinedDiff() needs the in-memory backend");
+      backend.files.set(editable, combinedSource(editAt, lines(editAt), "HEAD"));
+      for (const item of items)
+        if (item.path.endsWith(".png")) backend.files.set(item.path, "\u0089PNG\r\n\u001a\n\u0000");
+      setRoute("combinedDiff", (cmd, args) => {
+        const { path: p, rev } = (args ?? {}) as { path?: string; rev?: string | null };
+        const i = p == null ? undefined : index.get(p);
+        if (i === undefined) return null;
+        if (cmd === "vcs_file_mode") return Promise.resolve("100644");
+        if (cmd === "fs_probe") return Promise.resolve({ size: 1024, binary: p!.endsWith(".png"), tooLarge: false });
+        if (cmd === "vcs_file_at")
+          return Promise.resolve(
+            p!.endsWith(".png")
+              ? "\u0089PNG\r\n\u001a\n\u0000"
+              : combinedSource(i, lines(i), rev === "HEAD" ? "HEAD" : "base", i === bigAt && rev === "HEAD"),
+          );
+        return null;
+      });
+      await editorService().openInput({
+        kind: "combined-diff",
+        key: `combined-diff:perf:${files}`,
+        path: items[0]?.path ?? "",
+        data: { items, title: "Combined Changes Diff" },
+      });
+      return { big, editable };
+    },
+    unsaved(path) {
+      const dirty = new Set(editorService().dirtyDocumentIds?.() ?? []);
+      return editorsFor(path).some((e) => dirty.has(e.ctx.doc));
     },
     editorText: () => activeEditor()?.view.state.doc.toString() ?? null,
     insertAfter(after, text) {
