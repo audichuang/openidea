@@ -8,6 +8,7 @@ const vcsTags = vi.fn();
 const vcsMergeBase = vi.fn();
 const vcsDiffRevisions = vi.fn();
 const vcsLog = vi.fn();
+const graphRevCounts = vi.fn();
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
   return {
@@ -19,6 +20,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       vcsMergeBase: (repo: string, a: string, b: string) => vcsMergeBase(repo, a, b),
       vcsDiffRevisions: (repo: string, from: string, to: string) => vcsDiffRevisions(repo, from, to),
       vcsLog: (repo: string, q: unknown) => vcsLog(repo, q),
+      graphRevCounts: (repo: string, base: string, head: string) => graphRevCounts(repo, base, head),
     },
   };
 });
@@ -102,8 +104,9 @@ const flush = async () => {
 };
 
 const setupCommits = (commits: Commit[]) => {
-  vcsLog.mockImplementation((_repo: string, q: { range?: string | null }) =>
-    q.range === "main..feature" ? ok(commits) : ok([]),
+  graphRevCounts.mockImplementation(() => ok({ ahead: commits.length, behind: 0 }));
+  vcsLog.mockImplementation((_repo: string, q: { range?: string | null; skip: number; limit: number }) =>
+    q.range === "main..feature" ? ok(commits.slice(q.skip, q.limit > 0 ? q.skip + q.limit : undefined)) : ok([]),
   );
 };
 
@@ -301,8 +304,17 @@ describe("PR Commits virtualization", () => {
   it("preserves commit metadata and resets scroll and selection when refs change", async () => {
     const initial = commitsOf(200);
     const swapped = commitsOf(3);
-    vcsLog.mockImplementation((_repo: string, q: { range?: string | null }) =>
-      q.range === "main..feature" ? ok(initial) : q.range === "feature..main" ? ok(swapped) : ok([]),
+    graphRevCounts.mockImplementation((_repo: string, base: string, head: string) =>
+      base === "main" && head === "feature"
+        ? ok({ ahead: initial.length, behind: swapped.length })
+        : ok({ ahead: swapped.length, behind: initial.length }),
+    );
+    vcsLog.mockImplementation((_repo: string, q: { range?: string | null; skip: number; limit: number }) =>
+      q.range === "main..feature"
+        ? ok(initial.slice(q.skip, q.limit > 0 ? q.skip + q.limit : undefined))
+        : q.range === "feature..main"
+          ? ok(swapped.slice(q.skip, q.limit > 0 ? q.skip + q.limit : undefined))
+          : ok([]),
     );
     render(<PrView repo={REPO} current="feature" version={0} reload={0} />);
     await flush();
