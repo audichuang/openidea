@@ -132,10 +132,16 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
     if (!searchable) return;
     return registerKeyClaim((e) => !!(e.target as Element | null)?.closest?.("[data-console-find]"));
   }, [searchable]);
+  // Focus the bar (and select the query) when it is shown: opened, or the body it searches is ready again.
+  useEffect(() => {
+    if (!searchable) return;
+    findInput.current?.focus();
+    findInput.current?.select();
+  }, [searchable]);
   const openFind = () => {
     setFindOpen(true);
-    // The bar mounts with this render; focus it (and select the query) once it has.
-    requestAnimationFrame(() => findInput.current?.select());
+    findInput.current?.focus();
+    findInput.current?.select();
   };
   const closeFind = () => {
     setFindOpen(false);
@@ -147,14 +153,7 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
   };
   // ⌘F in the response, as in IDEA's response viewer: the find bar of the Run console.
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (
-      tab === "body" &&
-      r?.body != null &&
-      e.key.toLowerCase() === "f" &&
-      hasPrimaryModifier(e) &&
-      !e.altKey &&
-      !e.shiftKey
-    ) {
+    if (showsEditor && e.key.toLowerCase() === "f" && hasPrimaryModifier(e) && !e.altKey && !e.shiftKey) {
       e.preventDefault();
       e.stopPropagation();
       openFind();
@@ -198,6 +197,8 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
                 title="Find…"
                 shortcut={formatBinding(hostBinding("Meta+F"))}
                 pressed={findOpen}
+                // Nothing to search while the body is being formatted.
+                disabled={!showsEditor}
                 onClick={() => (findOpen ? closeFind() : openFind())}
               />
               {kind !== "text" && (

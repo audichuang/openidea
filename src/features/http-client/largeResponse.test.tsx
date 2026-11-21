@@ -158,6 +158,34 @@ describe("HTTP Client large responses", () => {
     expect(editorOf(screen.getByLabelText("Response body")).state.doc.toString()).toBe(pretty);
   });
 
+  it("offers Find only once a body being formatted is shown", () => {
+    show(exchangeWith(minifiedJson(20_000), "application/json"));
+    const find = screen.getByRole("button", { name: /^Find/ });
+    expect(find).toHaveProperty("disabled", true);
+    fireEvent.click(find);
+    const pane = screen.getByLabelText("Formatting").closest<HTMLElement>("[data-selection-scope]")!;
+    fireEvent.keyDown(pane, { key: "f", metaKey: true, ctrlKey: true });
+    expect(find.getAttribute("aria-pressed")).not.toBe("true");
+    FakeWorker.all[0]!.answer();
+    expect(find).toHaveProperty("disabled", false);
+  });
+
+  it("brings the open find bar back focused once the body switched to is formatted", async () => {
+    const body = minifiedJson(20_000);
+    show(exchangeWith(body, "application/json"));
+    fireEvent.click(screen.getByRole("button", { name: "Show Raw" }));
+    await expectBody(body);
+    fireEvent.keyDown(screen.getByLabelText("Response body"), { key: "f", metaKey: true, ctrlKey: true });
+    expect(screen.getByLabelText("Find in response", { selector: "input" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Show Formatted" }));
+    expect(screen.getByLabelText("Formatting")).toBeTruthy();
+    expect(screen.queryByLabelText("Find in response", { selector: "input" })).toBeNull();
+    FakeWorker.all[1]!.answer();
+    await vi.waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByLabelText("Find in response", { selector: "input" })),
+    );
+  });
+
   it("stops formatting when the response is closed", () => {
     const { unmount } = show(exchangeWith(minifiedJson(20_000), "application/json"));
     unmount();
