@@ -20,10 +20,11 @@ import {
   useSelectionBoundary,
 } from "@/ui";
 import { ConsoleFindBar } from "@/ui/ConsoleFindBar";
-import { DEFAULT_FIND_OPTIONS, findInLines, type FindOptions } from "@/ui/consoleFind";
+import { DEFAULT_FIND_OPTIONS, type FindOptions } from "@/ui/consoleFind";
 import { formatBinding, hasPrimaryModifier, hostBinding, registerKeyClaim } from "@/platform/keymap";
 import { bodyKind, formatMs, formatSize, prettyBody, PRETTY_INLINE_LIMIT, type BodyKind } from "./format";
 import { ResponseBody } from "./ResponseBody";
+import { findInBody, lineStarts } from "./bodyFind";
 import { cancelRunning, clearHistory, refreshHistory, selectEntry, useHttpClient } from "./store";
 import styles from "./HttpClient.module.css";
 import { tx } from "@/platform/i18n";
@@ -108,13 +109,18 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
   const findInput = useRef<HTMLInputElement>(null);
   const showsEditor = tab === "body" && body != null;
   const searchable = findOpen && showsEditor;
-  const lines = useMemo(
-    () => (searchable ? (body ?? "").split("\n").map((text, id) => ({ id, text })) : []),
-    [searchable, body],
-  );
+  const starts = useMemo(() => (searchable ? lineStarts(body ?? "") : []), [searchable, body]);
+  // Split into lines only for a regular expression, and once per body.
+  const lines = useMemo(() => {
+    let split: { id: number; text: string }[] | null = null;
+    return () => (split ??= (body ?? "").split("\n").map((text, id) => ({ id, text })));
+  }, [searchable, body]);
   const found = useMemo(
-    () => (searchable ? findInLines(lines, query, findOptions) : { matches: [], overflow: false, invalid: false }),
-    [searchable, lines, query, findOptions],
+    () =>
+      searchable
+        ? findInBody(body ?? "", starts, lines, query, findOptions)
+        : { matches: [], overflow: false, invalid: false },
+    [searchable, body, starts, lines, query, findOptions],
   );
   const activeIndex = found.matches.length ? Math.min(active, found.matches.length - 1) : -1;
   // The bar owns Escape / Enter / F3 / ⌘G while it is focused; keep the IDE keymap out.

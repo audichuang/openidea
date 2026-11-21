@@ -194,6 +194,28 @@ describe("HTTP Client large responses", () => {
     expect(screen.getByText(`1/${many.matches.length}+`)).toBeTruthy();
   });
 
+  it("searches a plain query in one pass over the body, not line by line", () => {
+    const body = Array.from({ length: 20_000 }, (_, i) => `${i} INFO processed order item-${i}`).join("\n");
+    show(exchangeWith(`${body}\nlast-item`, "text/plain"));
+    fireEvent.keyDown(screen.getByLabelText("Response body"), { key: "f", metaKey: true, ctrlKey: true });
+    const input = screen.getByLabelText("Find in response", { selector: "input" });
+    const exec = vi.spyOn(RegExp.prototype, "exec");
+    try {
+      act(() => {
+        fireEvent.change(input, { target: { value: "last-item" } });
+      });
+      expect(screen.getByText("1/1")).toBeTruthy();
+      // One search of 20,001 lines: not one run of the query per line.
+      const runs = exec.mock.contexts.filter((re) => (re as RegExp).source === "last-item").length;
+      expect(runs).toBeGreaterThan(0);
+      expect(runs).toBeLessThan(10);
+    } finally {
+      exec.mockRestore();
+    }
+    const mark = screen.getByLabelText("Response body").querySelector("[data-find-current]");
+    expect(mark?.textContent).toBe("last-item");
+  });
+
   it("keeps carriage returns and line numbers of a CRLF body", () => {
     const body = "alpha\r\nbeta\r\ngamma beta";
     show(exchangeWith(body, "text/plain"));
