@@ -84,3 +84,9 @@ it("keeps the fork's prompt by default: New Tab after New Window (#434)", async 
   const prompt = vi.mocked(ask).mock.calls[0]![0];
   expect(prompt.buttons.map((b) => b.id)).toEqual(["cancel", "attach", "new", "tab", "same"]);
 });
+it("offers attach for this open without remembering it, by default too", async () => {
+  vi.mocked(ask).mockResolvedValue({ button: "attach", checked: true });
+  expect(await chooseProjectWindow("B")).toBe("attach");
+  expect(commands.settingsSet).not.toHaveBeenCalled();
+  expect(openPolicy()).toBe("ask");
+});
