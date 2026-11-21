@@ -143,4 +143,66 @@ describe("ConsoleView long lines and no-newline output", () => {
       spy.mockRestore();
     }
   });
+
+  it("decorates links and find marks visible at 0.60em horizontal scroll offsets", () => {
+    const model = new ConsoleModel();
+    // Place link at col 2,600: at 13px * 0.60em (7.8px/ch), scrollLeft 20,280 shows cols 2,600..2,703.
+    const linkText = "src/col2600.ts:12:3";
+    model.append({ kind: "stdout", text: `${"a".repeat(2_599)} ${linkText} ${"b".repeat(2_000)}\n` });
+
+    const view = render(
+      <ConsoleView model={model} version={1} softWrap={false} follow={false} onFollowChange={() => {}} cwd="/p" />,
+    );
+    const log = screen.getByRole("log");
+    Object.defineProperty(log, "clientWidth", { configurable: true, value: 800 });
+    Object.defineProperty(log, "scrollLeft", { configurable: true, writable: true, value: 20_280 });
+    fireEvent.scroll(log);
+
+    const link = screen.getByRole("link", { name: linkText });
+    fireEvent.click(link);
+    expect(nav.openTarget).toHaveBeenCalledWith(
+      expect.objectContaining({ path: "src/col2600.ts", line: 12, col: 3 }),
+      "/p",
+    );
+
+    fireEvent.keyDown(log, { key: "f", code: "KeyF", metaKey: true });
+    fireEvent.change(screen.getByRole("textbox", { name: "Find in console" }), { target: { value: "col2600" } });
+    expect(view.container.querySelectorAll("[data-find-match]")).toHaveLength(1);
+  });
+
+  it("measures real 1ch width via probe so horizontal window stays tight at 0.60em", () => {
+    const rectSpy = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      // 100-char probe at 13px * 0.60em = 780px.
+      const width = this.textContent === "0".repeat(100) ? 780 : 0;
+      return { width, height: 0, top: 0, left: 0, bottom: 0, right: width, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+    });
+    try {
+      const model = new ConsoleModel();
+      const nearLink = "src/near.ts:1:1";
+      const visibleLink = "src/visible.ts:2:2";
+      const farLink = "src/far.ts:3:3";
+      // Col 2,100 (outside tight window), col 2,600 (visible at scrollLeft 20,280), col 3,100 (outside tight window).
+      const text =
+        `${"a".repeat(2_099)} ${nearLink} ` +
+        `${"b".repeat(498 - nearLink.length)} ${visibleLink} ` +
+        `${"c".repeat(498 - visibleLink.length)} ${farLink}\n`;
+      model.append({ kind: "stdout", text });
+
+      render(
+        <ConsoleView model={model} version={1} softWrap={false} follow={false} onFollowChange={() => {}} cwd="/p" />,
+      );
+      const log = screen.getByRole("log");
+      Object.defineProperty(log, "clientWidth", { configurable: true, value: 800 });
+      Object.defineProperty(log, "scrollLeft", { configurable: true, writable: true, value: 20_280 });
+      fireEvent.scroll(log);
+
+      expect(screen.getByRole("link", { name: visibleLink })).toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: nearLink })).not.toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: farLink })).not.toBeInTheDocument();
+    } finally {
+      rectSpy.mockRestore();
+    }
+  });
 });
