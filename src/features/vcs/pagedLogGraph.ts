@@ -553,10 +553,20 @@ function replay(
   const used = new Counts(size);
   const free = new Counts(size);
   let length = from.lanes.length;
-  const identities: number[] = [];
-  const lanesOf = new Map<number, number[]>();
+  const identities = new Int32Array(size);
+  // The slots of lanes leading to each parent, as lists through `nextSlot` (slot + 1, 0 ends);
+  // parents not loaded come after the rows.
+  const rows = index.links.length;
+  const firstSlot = new Int32Array(rows + index.unloaded.size);
+  const nextSlot = new Int32Array(size);
+  const target = (id: number) => (id >= 0 ? id : rows - 1 - id);
   const ranks: number[] = [];
   let nextIdentity = from.nextIdentity;
+  const lead = (i: number, id: number) => {
+    const t = target(id);
+    nextSlot[i] = firstSlot[t]!;
+    firstSlot[t] = i + 1;
+  };
   for (const [slot, lane] of from.lanes.slots) {
     if (!lane) {
       slots[slot] = FREE;
@@ -566,10 +576,7 @@ function replay(
     slots[slot] = USED;
     used.add(slot, 1);
     identities[slot] = lane.identity;
-    const id = whole.positions.get(lane.id) ?? index.unloaded.get(lane.id)!;
-    const list = lanesOf.get(id);
-    if (list) list.push(slot);
-    else lanesOf.set(id, [slot]);
+    lead(slot, whole.positions.get(lane.id) ?? index.unloaded.get(lane.id)!);
   }
   const put = (i: number, id: number) => {
     if (slots[i] !== USED) {
@@ -579,9 +586,7 @@ function replay(
     }
     if (i >= length) length = i + 1;
     identities[i] = nextIdentity++;
-    const list = lanesOf.get(id);
-    if (list) list.push(i);
-    else lanesOf.set(id, [i]);
+    lead(i, id);
   };
   const release = (i: number) => {
     used.add(i, -1);
@@ -592,19 +597,19 @@ function replay(
     const i = free.first();
     return i < 0 ? length : i;
   };
-  let kept: { slots: Uint8Array; identities: number[] } | null = null;
+  let kept: { slots: Uint8Array; identities: Int32Array } | null = null;
   for (let row = from.row; row < upTo; row++) {
     if (row === keepAt) kept = { slots: slots.slice(0, length), identities: identities.slice() };
     const links = index.links[row]!;
     // The commit's lane goes on to its first parent: it stays in use (no counts to update).
     const continues = links.length > 0 && links[0] !== SHALLOW;
-    const matching = lanesOf.get(row);
+    const matching = firstSlot[row]!;
     let lane: number;
     if (matching) {
-      lanesOf.delete(row);
-      lane = matching[0]!;
-      for (const m of matching) if (m < lane) lane = m;
-      for (const m of matching) if (m !== lane || !continues) release(m);
+      firstSlot[row] = 0;
+      lane = matching - 1;
+      for (let m = matching; m; m = nextSlot[m - 1]!) if (m - 1 < lane) lane = m - 1;
+      for (let m = matching; m; m = nextSlot[m - 1]!) if (m - 1 !== lane || !continues) release(m - 1);
     } else {
       const preferred = whole.refAware ? preferredLane(whole.layout, row) : firstFree();
       lane = slots[preferred] !== USED ? preferred : firstFree();
@@ -619,7 +624,7 @@ function replay(
       const p = links[k]!;
       if (p === SHALLOW) continue;
       if (k === 0) put(lane, p);
-      else if (!lanesOf.has(p)) {
+      else if (!firstSlot[target(p)]) {
         const slot = firstFree();
         ranks.push(used.below(slot));
         put(slot, p);
@@ -858,7 +863,11 @@ function lanesAt(
   // Without refs no lane depends on the layout. The last checkpoint is numbered for the last one.
   if (!whole.refAware || !index) return cp.lanes;
   const moved = (row: number) => preferredLane(prev.layout, row) !== preferredLane(whole.layout, row);
-  if (latest && !prev.tips.slice(0, cp.tips).some(moved)) return cp.lanes;
+  if (latest) {
+    let i = 0;
+    while (i < cp.tips && !moved(prev.tips[i]!)) i++;
+    if (i === cp.tips) return cp.lanes;
+  }
   const { ranks, slots, identities } = replay(index, cp.row, whole);
   const differs = ranks.findIndex((r, i) => r !== prev.ranks[i]);
   if (differs >= 0) return { changed: prev.rankRows[differs]! };
@@ -867,7 +876,7 @@ function lanesAt(
 }
 
 /** `lanes` in the slots {@link replay} gives them (by creation number), or null if they differ. */
-function renumbered(lanes: LaneSnapshot, slots: Uint8Array, identities: readonly number[]): LaneSnapshot | null {
+function renumbered(lanes: LaneSnapshot, slots: Uint8Array, identities: ArrayLike<number>): LaneSnapshot | null {
   const byIdentity = new Map<number, Lane>();
   for (const [, lane] of lanes.slots) if (lane) byIdentity.set(lane.identity, lane);
   const out: Array<[number, Lane | null]> = [];
@@ -959,7 +968,8 @@ function resume(prev: Paged, index: number, input: Input, numbered?: LaneSnapsho
   // compactLanes row r reads rows r ± 1, straightenLaneChanges as well: drop one context row each.
   const skip = c > 0 ? 1 : 0;
   const presented = straightenLaneChanges(compactLanes(hidden.rows).slice(skip)).slice(skip) as LaidRow[];
-  const rows = out.concat(presented);
+  const rows = out;
+  for (const row of presented) rows.push(row);
   const arrowRows = prev.arrowRows.slice(0, below(prev.arrowRows, outFrom));
   for (let r = outFrom; r < n; r++) if (hasArrow(rows[r]!)) arrowRows.push(r);
 
