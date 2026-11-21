@@ -262,4 +262,129 @@ describe("the all-in-one diff with many files", () => {
     });
     expect(mounted()).toContain(shown[0]);
   });
+
+  it("does not revert pending scroll movement when an above-fold block resizes before its scroll event", () => {
+    const observers: Array<{ cb: ResizeObserverCallback; targets: Set<Element> }> = [];
+    const origRO = window.ResizeObserver;
+    class ControlledResizeObserver {
+      private readonly targets = new Set<Element>();
+      constructor(cb: ResizeObserverCallback) {
+        observers.push({ cb, targets: this.targets });
+      }
+      observe(el: Element) {
+        this.targets.add(el);
+      }
+      unobserve(el: Element) {
+        this.targets.delete(el);
+      }
+      disconnect() {
+        this.targets.clear();
+      }
+    }
+    vi.stubGlobal("ResizeObserver", ControlledResizeObserver);
+    window.ResizeObserver = ControlledResizeObserver as unknown as typeof ResizeObserver;
+    try {
+      const items = files(500);
+      render(<CombinedDiffTab input={combinedDiffInput({ items })} />);
+      // Scroll into the middle so overscan blocks sit above scrollTop.
+      scroll(scroller(), 20 * BLOCK);
+      const before = scroller().scrollTop;
+      const aboveSlot = [...document.querySelectorAll<HTMLElement>("[data-index]")].find(
+        (s) => parseFloat(s.style.top) < before,
+      )!;
+      expect(aboveSlot).toBeTruthy();
+      const ro = observers.find((o) => o.targets.has(aboveSlot));
+      expect(ro).toBeTruthy();
+
+      // Simulate a scrollTop advance (e.g. inside rAF) whose scroll event has not fired yet,
+      // followed in the same frame by ResizeObserver firing for an above-fold block whose
+      // initial loading height (60px) is smaller than the 200px estimate (delta = -140px).
+      const step = 3_000;
+      const loadingHeight = 60;
+      const delta = loadingHeight - 200;
+      scroller().scrollTop = before + step;
+      act(() => {
+        ro!.cb(
+          [{ target: aboveSlot, borderBoxSize: [{ blockSize: loadingHeight, inlineSize: 800 }] } as never],
+          {} as never,
+        );
+      });
+      // The adjustment applies to the live scrollTop rather than reverting to `before + delta`.
+      expect(scroller().scrollTop).toBe(before + step + delta);
+    } finally {
+      window.ResizeObserver = origRO;
+    }
+  });
+
+  it("reaches all 5,000 mixed files with bounded editors and lets the last file be expanded and edited", () => {
+    const items = Array.from({ length: 5_000 }, (_, i) =>
+      diff(
+        i % 25 === 24 && i !== 4_999
+          ? `/r/src/img${String(i).padStart(5, "0")}.png`
+          : `/r/src/f${String(i).padStart(5, "0")}.ts`,
+      ),
+    );
+    const last = items[4_999]!.path;
+    const handle = { view: {}, ctx: { doc: 99, path: last } } as unknown as TextEditorHandle;
+    _addEditor(handle);
+    try {
+      render(<CombinedDiffTab input={combinedDiffInput({ items })} />);
+      expect(screen.getByText("5000 files")).toBeTruthy();
+      const initialCount = mounted().length;
+      let most = initialCount;
+      const end = scroller().scrollHeight;
+      // Sweep from top to bottom and back across all 5,000 files in 100-file bands:
+      // every band renders in order without gaps, the 5,000th file is reached, and the
+      // mounted editor count stays bounded with no leak back at the top.
+      const visitedBands = new Set<number>();
+      for (let top = 0; top <= end; top += Math.ceil(end / 50)) {
+        scroll(scroller(), top);
+        most = Math.max(most, mounted().length);
+        const shown = headers();
+        expect(shown.length).toBeGreaterThan(0);
+        const first = Number(/(\d+)\.\w+$/.exec(shown[0]!)![1]);
+        expect(shown).toEqual(items.slice(first, first + shown.length).map((i) => i.path));
+        visitedBands.add(Math.floor(first / 100));
+      }
+      scroll(scroller(), end);
+      expect(headers()).toContain(last);
+      most = Math.max(most, mounted().length);
+      expect(visitedBands.size).toBeGreaterThanOrEqual(45);
+      for (let top = end; top >= 0; top -= Math.ceil(end / 25)) {
+        scroll(scroller(), top);
+        most = Math.max(most, mounted().length);
+      }
+      scroll(scroller(), 0);
+      expect(most).toBeLessThanOrEqual(12);
+      // Returning to the top leaves no leaked editors.
+      expect(mounted().length).toBe(initialCount);
+
+      // Collapse all, jump to the 5,000th file, expand it, edit it, scroll back to top and return.
+      act(() => {
+        fireEvent.click(screen.getByRole("button", { name: "Collapse All Files" }));
+      });
+      scroll(scroller(), end);
+      expect(headers()).toContain(last);
+      expect(mounted()).toEqual([]);
+      const lastBlock = document.querySelector<HTMLElement>(`[data-combined-block="${last}"]`)!;
+      act(() => {
+        fireEvent.click(lastBlock.querySelector<HTMLButtonElement>('button[aria-label="Expand File"]')!);
+      });
+      expect(mounted()).toContain(last);
+      const field = screen.getByLabelText(`Edit ${last}`) as HTMLInputElement;
+      act(() => {
+        fireEvent.change(field, { target: { value: "edited 5000th file" } });
+      });
+      dirtyDocs = [99];
+      scroll(scroller(), 0);
+      // Still mounted with unsaved edit while scrolled 5,000 files away, and total editors stay bounded.
+      expect(mounted()).toContain(last);
+      expect(mounted().length).toBeLessThanOrEqual(initialCount + 1);
+      scroll(scroller(), end);
+      expect(screen.getByLabelText(`Edit ${last}`)).toBe(field);
+      expect(field.value).toBe("edited 5000th file");
+    } finally {
+      _removeEditor(handle);
+    }
+  });
 });
