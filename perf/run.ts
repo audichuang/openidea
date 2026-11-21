@@ -179,7 +179,8 @@ async function main() {
     baseline = existsSync(baselineFile) ? (JSON.parse(readFileSync(baselineFile, "utf8")) as ScenarioResult[]) : null;
     if (!args["no-build"]) await build();
     if (!existsSync(join(DIST, "index.html"))) throw new Error(`no build in ${DIST}; run without --no-build`);
-    if (!args.unminified && !args["skip-bundle"]) results.push({ id: "bundle", title: "Initial bundle (gzip)", metrics: bundleMetrics() });
+    if (!args.unminified && !args["skip-bundle"])
+      results.push({ id: "bundle", title: "Initial bundle (gzip)", metrics: bundleMetrics() });
     const serving = await serveBundle(DIST);
     server = serving.server;
     runtime = await launchBrowser({

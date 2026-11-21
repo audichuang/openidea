@@ -1077,6 +1077,7 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
               args.onChannel.onmessage({
                 id: onProgress!.$channel,
                 data: JSON.stringify({ type: "started", index: 0 }),
+                end: false,
               });
             if (stopped) await new Promise<void>((resolve) => (failStream = resolve));
             throw { kind: "protocol", message: "command db_execute_stream is not available remotely", data: null };

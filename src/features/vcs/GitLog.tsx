@@ -246,7 +246,7 @@ export function LogView() {
             <>
               <SplitHandle aria-label={tx("Details")} />
               <SplitPanel id="details" defaultSize="30%" minSize="20%">
-                <CommitDetails key={selection.join(" ") || "none"} commits={commits} fileHistory />
+                <LogCommitDetails fileHistory />
               </SplitPanel>
             </>
           )}
@@ -289,10 +289,10 @@ export function LogView() {
   );
 }
 
-function LogCommitDetails() {
+function LogCommitDetails({ fileHistory = false }: { fileHistory?: boolean }) {
   const commits = useGitLog((s) => s.commits);
   const selection = useGitLog((s) => s.selection);
-  return <CommitDetails key={selection.join(" ") || "none"} commits={commits} />;
+  return <CommitDetails key={selection.join(" ") || "none"} commits={commits} fileHistory={fileHistory} />;
 }
 
 // ---------------------------------------------------------------------------

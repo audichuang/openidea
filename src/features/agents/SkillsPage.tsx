@@ -7,6 +7,7 @@
 import clsx from "clsx";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AgentSkillMode, AgentSkillState, McpScope } from "@/bindings";
+import { writeClipboardText } from "@/platform/clipboard";
 import { revealInFileManager, revealInFileManagerLabel } from "@/platform/fileManager";
 import { formatMessage, useTx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
@@ -410,7 +411,7 @@ function SkillCard({
               size="small"
               title={tx("Copy path")}
               aria-label={formatMessage(tx("Copy the path of {name}"), { name: skill.name })}
-              onClick={() => void navigator.clipboard.writeText(skill.path)}
+              onClick={() => void writeClipboardText(skill.path)}
             />
           </div>
         </div>
