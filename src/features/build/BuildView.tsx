@@ -49,6 +49,7 @@ import {
 import {
   findOutputLinks,
   horizontalColumnWindow,
+  measureMonoCharWidth,
   sliceRangesInWindow,
   visibleCharWindow,
   type OutputLink,
@@ -58,7 +59,7 @@ import { openTarget, openUrl } from "@/features/run/navigate";
 import { navigateToMessage, rerunBuild, selectBuildNode, useBuildRun } from "./store";
 import styles from "./Build.module.css";
 import { WidestColumns } from "@/platform/consoleColumns";
-import { useConsoleFont } from "@/platform/consoleFont";
+import { useConsoleFont, type ConsoleFont } from "@/platform/consoleFont";
 import { tx } from "@/platform/i18n";
 
 const SEVERITY_ICON: Record<Severity, string> = { error: "error", warning: "warning", info: "info", hint: "info" };
@@ -221,7 +222,8 @@ function BuildTree() {
   );
 }
 
-const BUILD_FONT_PX = 12;
+/** Matches `.line { padding: 0 12px }` in `Build.module.css`. */
+const BUILD_PADDING_LEFT_PX = 12;
 
 /**
  * One console line: file locations and URLs (compiler diagnostics, stack
@@ -277,24 +279,50 @@ const ConsoleLineText = memo(function ConsoleLineText({
   return <>{out}</>;
 });
 
-function BuildConsole({ rowHeight }: { rowHeight: number }) {
+function BuildConsole({ font }: { font: ConsoleFont }) {
+  const { rowHeight } = font;
   const root = useProject((s) => s.project?.root ?? "/");
   const lines = useBuildRun((s) => s.lines);
   const ref = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  const charWidthRef = useRef<number | null | undefined>(undefined);
   const [colWindow, setColWindow] = useState<TextWindow | null>(null);
   const syncHorizontalWindow = (el: HTMLDivElement | null) => {
-    const next = el ? horizontalColumnWindow(el.scrollLeft, el.clientWidth, BUILD_FONT_PX) : null;
+    if (!el) {
+      setColWindow(null);
+      return;
+    }
+    if (charWidthRef.current === undefined && el.clientWidth > 0) {
+      charWidthRef.current = measureMonoCharWidth(el);
+    }
+    const next = horizontalColumnWindow(el.scrollLeft, el.clientWidth, font.size, {
+      charWidthPx: charWidthRef.current,
+      paddingLeftPx: BUILD_PADDING_LEFT_PX,
+    });
     setColWindow((prev) => (prev?.start === next?.start && prev?.end === next?.end ? prev : next));
   };
   useLayoutEffect(() => {
     const el = ref.current;
+    if (!el) return;
+    let active = true;
+    charWidthRef.current = el.clientWidth > 0 ? measureMonoCharWidth(el) : undefined;
     syncHorizontalWindow(el);
-    if (!el || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(() => syncHorizontalWindow(el));
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
+    const fonts = el.ownerDocument?.fonts;
+    if (fonts?.ready) {
+      void fonts.ready.then(() => {
+        if (!active) return;
+        charWidthRef.current = el.clientWidth > 0 ? measureMonoCharWidth(el) : undefined;
+        syncHorizontalWindow(el);
+      });
+    }
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => syncHorizontalWindow(el)) : null;
+    ro?.observe(el);
+    return () => {
+      active = false;
+      ro?.disconnect();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the console font's metrics govern the window width
+  }, [font.family, font.size, font.weight]);
   const [widest] = useState(() => new WidestColumns());
   const columns = useMemo(() => widest.measure(lines), [widest, lines]);
   const virtualizer = useVirtualizer({
@@ -371,11 +399,11 @@ function MessageDetail({ message }: { message: BuildMessage }) {
   );
 }
 
-function BuildOutput({ rowHeight }: { rowHeight: number }) {
+function BuildOutput({ font }: { font: ConsoleFont }) {
   const selected = useBuildRun((s) => s.selected);
   const messages = useBuildRun((s) => s.messages);
   const node = useMemo(() => (selected ? findNode(messages, selected) : undefined), [selected, messages]);
-  return node?.kind === "message" ? <MessageDetail message={node.message} /> : <BuildConsole rowHeight={rowHeight} />;
+  return node?.kind === "message" ? <MessageDetail message={node.message} /> : <BuildConsole font={font} />;
 }
 
 export function BuildView() {
@@ -413,7 +441,7 @@ export function BuildView() {
             lineHeight: `${font.rowHeight}px`,
           }}
         >
-          <BuildOutput rowHeight={font.rowHeight} />
+          <BuildOutput font={font} />
         </SplitPanel>
       </SplitGroup>
     </div>

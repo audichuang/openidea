@@ -345,23 +345,66 @@ export function findOutputLinks(text: string): OutputLink[] {
   return cacheLinks(text, scanOutputLinks(text));
 }
 
-/** Approximate monospace column width for converting horizontal scroll offsets to columns. */
+/** Monospace column quantization and overscan for horizontal windowing. */
 const HORIZONTAL_BUCKET_COLS = 64;
 const HORIZONTAL_OVERSCAN_COLS = 64;
+/** Fallback 1ch bounds (in em) when layout width cannot be measured (e.g. jsdom). */
+const MIN_MONO_CHAR_EM = 0.5;
+const MAX_MONO_CHAR_EM = 0.65;
+const PROBE_CHARS = 100;
+
+export interface HorizontalWindowOptions {
+  /** Measured `1ch` advance width in CSS px; falls back to conservative bounds around `fontSizePx`. */
+  charWidthPx?: number | null;
+  /** Horizontal padding (in CSS px) before column 0 of the line text. */
+  paddingLeftPx?: number;
+}
+
+/**
+ * Measures the rendered `1ch` advance width of `el`'s font with a temporary zero-footprint
+ * probe (no `scrollWidth` impact). Returns `null` when layout geometry is unavailable.
+ */
+export function measureMonoCharWidth(el: HTMLElement): number | null {
+  const doc = el.ownerDocument;
+  if (!doc) return null;
+  const host = doc.createElement("span");
+  host.setAttribute("aria-hidden", "true");
+  host.style.cssText =
+    "position:absolute;top:0;left:0;width:0;height:0;overflow:hidden;visibility:hidden;pointer-events:none;";
+  const probe = doc.createElement("span");
+  probe.style.cssText = "display:inline-block;white-space:pre;";
+  probe.textContent = "0".repeat(PROBE_CHARS);
+  host.appendChild(probe);
+  el.appendChild(host);
+  const width = probe.getBoundingClientRect().width;
+  host.remove();
+  return Number.isFinite(width) && width > 0 ? width / PROBE_CHARS : null;
+}
 
 /**
  * Quantized visible column range `[start, end)` for a non-wrapped console viewport,
  * or `null` when the viewport has not been measured yet. Quantization avoids re-rendering
  * rows on small horizontal scrolls while keeping inline decorations bounded on wide lines.
  */
-export function horizontalColumnWindow(scrollLeft: number, clientWidth: number, fontSizePx: number): TextWindow | null {
+export function horizontalColumnWindow(
+  scrollLeft: number,
+  clientWidth: number,
+  fontSizePx: number,
+  options?: HorizontalWindowOptions,
+): TextWindow | null {
   if (clientWidth <= 0) return null;
-  const charWidth = Math.max(1, fontSizePx * 0.55);
-  const firstCol = Math.floor(Math.max(0, scrollLeft) / charWidth / HORIZONTAL_BUCKET_COLS) * HORIZONTAL_BUCKET_COLS;
-  const visibleCols = Math.ceil(clientWidth / charWidth);
+  const measured = options?.charWidthPx;
+  const hasMeasured = typeof measured === "number" && Number.isFinite(measured) && measured > 0;
+  const minCharWidth = hasMeasured ? measured : Math.max(1, fontSizePx * MIN_MONO_CHAR_EM);
+  const maxCharWidth = hasMeasured ? measured : Math.max(1, fontSizePx * MAX_MONO_CHAR_EM);
+  const padLeft = Math.max(0, options?.paddingLeftPx ?? 0);
+  const leftPx = Math.max(0, scrollLeft - padLeft);
+  const rightPx = Math.max(leftPx, scrollLeft + clientWidth - padLeft);
+  const firstCol = Math.floor(leftPx / maxCharWidth / HORIZONTAL_BUCKET_COLS) * HORIZONTAL_BUCKET_COLS;
+  const lastCol = Math.ceil(rightPx / minCharWidth / HORIZONTAL_BUCKET_COLS) * HORIZONTAL_BUCKET_COLS;
   return {
     start: Math.max(0, firstCol - HORIZONTAL_OVERSCAN_COLS),
-    end: firstCol + visibleCols + HORIZONTAL_BUCKET_COLS + HORIZONTAL_OVERSCAN_COLS,
+    end: lastCol + HORIZONTAL_OVERSCAN_COLS,
   };
 }
 
