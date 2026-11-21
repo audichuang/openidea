@@ -335,6 +335,11 @@ const consoleLongLines: Scenario = {
  * Run console with 10 KiB long lines and high-rate output without newlines
  * (with Find open while streaming). `OPENIDEA_PERF_SCALE` scales counts across
  * 1× / 10× / 100× (default 10×).
+ *
+ * Why `consoleOutput` above missed the stall: its `SAMPLE_LINES`
+ * (`src/features/run/store.ts`) are short (~70–150 char), newline-terminated
+ * lines with Find closed, so it never reaches long-line regex scanning on
+ * multi-KiB lines or dense inline link / find-mark DOM on 8,000-char rows.
  */
 const consoleLongLines: Scenario = {
   id: "consoleLongLines",
@@ -346,30 +351,45 @@ const consoleLongLines: Scenario = {
     const noLfCount = Math.round(1_000 * scale);
     const noLfPerFrame = Math.max(20, Math.ceil(noLfCount / 60));
 
+    type ConsolePerfWindow = {
+      __openideaPerf: {
+        openConsoleSession(mode: "long" | "no-lf"): Promise<string>;
+        streamConsoleOutput(o: {
+          mode: "long" | "no-lf";
+          count: number;
+          perFrame: number;
+          sessionId?: string;
+        }): Promise<{
+          lines: number;
+          dropped: number;
+        }>;
+      };
+    };
+
     await h.openFile(SAMPLE);
     const refresh = await h.refreshMs();
 
-    // Phase 1: 10 KiB long lines streaming (each splits at 8,000 + 2,239 chars in ConsoleModel).
+    // Phase 1: 10 KiB unique long lines streaming (each splits at 8,000 + 2,239 chars in ConsoleModel).
+    const longSessionId = await h.page.evaluate(() =>
+      (window as never as ConsolePerfWindow).__openideaPerf.openConsoleSession("long"),
+    );
+    const longLog = h.page.locator('section[aria-label="Run"] [role="log"][aria-label="Sample long output"]').first();
+    await longLog.waitFor({ timeout: 10_000 });
     const tLong = await h.now();
     await h.inPage((p) => p.startFrames());
     const longStream = h.page.evaluate(
-      async ({ count, perFrame }) => {
-        const w = window as never as {
-          __openideaPerf: {
-            streamConsoleOutput(o: { mode: "long" | "no-lf"; count: number; perFrame: number }): Promise<{
-              lines: number;
-              dropped: number;
-            }>;
-          };
-        };
+      async ({ sessionId, count, perFrame }) => {
         const started = performance.now();
-        await w.__openideaPerf.streamConsoleOutput({ mode: "long", count, perFrame });
+        await (window as never as ConsolePerfWindow).__openideaPerf.streamConsoleOutput({
+          mode: "long",
+          sessionId,
+          count,
+          perFrame,
+        });
         return performance.now() - started;
       },
-      { count: longCount, perFrame: longPerFrame },
+      { sessionId: longSessionId, count: longCount, perFrame: longPerFrame },
     );
-    const longLog = h.page.locator('section[aria-label="Run"] [role="log"]').first();
-    await longLog.waitFor({ timeout: 10_000 });
     const longBox = await longLog.boundingBox();
     if (longBox) {
       await h.page.mouse.move(longBox.x + longBox.width / 2, longBox.y + longBox.height / 2);
@@ -384,23 +404,13 @@ const consoleLongLines: Scenario = {
     const longTbtMs = totalBlockingTime(await h.longTasksSince(tLong));
     const longDomNodes = await h.page.evaluate(() => document.querySelectorAll("*").length);
 
-    // Phase 2: high-rate output without newlines + Find ("t") open while streaming.
-    const noLfStream = h.page.evaluate(
-      async ({ count, perFrame }) => {
-        const w = window as never as {
-          __openideaPerf: {
-            streamConsoleOutput(o: { mode: "long" | "no-lf"; count: number; perFrame: number }): Promise<{
-              lines: number;
-              dropped: number;
-            }>;
-          };
-        };
-        const started = performance.now();
-        await w.__openideaPerf.streamConsoleOutput({ mode: "no-lf", count, perFrame });
-        return performance.now() - started;
-      },
-      { count: noLfCount, perFrame: noLfPerFrame },
+    // Phase 2: mount the no-newline session and open Find ("t") before measurement or streaming starts,
+    // so the entire stream is measured, then scroll horizontally across the 8,000-char rows.
+    const noLfSessionId = await h.page.evaluate(() =>
+      (window as never as ConsolePerfWindow).__openideaPerf.openConsoleSession("no-lf"),
     );
+    const noLfLog = h.page.locator('section[aria-label="Run"] [role="log"][aria-label="Sample no-lf output"]').first();
+    await noLfLog.waitFor({ timeout: 10_000 });
     const findBtn = h.page.locator('section[aria-label="Run"] button[aria-label="Find…"]').first();
     await findBtn.waitFor({ timeout: 10_000 });
     await findBtn.click();
@@ -410,7 +420,30 @@ const consoleLongLines: Scenario = {
 
     const tNoLf = await h.now();
     await h.inPage((p) => p.startFrames());
-    const noLfStreamMs = await noLfStream;
+    const noLfStreamMs = await h.page.evaluate(
+      async ({ sessionId, count, perFrame }) => {
+        const started = performance.now();
+        await (window as never as ConsolePerfWindow).__openideaPerf.streamConsoleOutput({
+          mode: "no-lf",
+          sessionId,
+          count,
+          perFrame,
+        });
+        return performance.now() - started;
+      },
+      { sessionId: noLfSessionId, count: noLfCount, perFrame: noLfPerFrame },
+    );
+    // Sweep scrollLeft across the wide 8,000-char rows with Find open to exercise horizontal windowing.
+    await noLfLog.evaluate(async (el) => {
+      const maxLeft = Math.max(0, el.scrollWidth - el.clientWidth);
+      const steps = 12;
+      for (let i = 1; i <= steps; i++) {
+        el.scrollLeft = Math.round((maxLeft * i) / steps);
+        await new Promise(requestAnimationFrame);
+      }
+      el.scrollLeft = 0;
+      await new Promise(requestAnimationFrame);
+    });
     const noLfFrames = await h.inPage((p) => p.stopFrames());
     const noLfSummary = frameSummary(noLfFrames, refresh);
     const noLfTbtMs = totalBlockingTime(await h.longTasksSince(tNoLf));

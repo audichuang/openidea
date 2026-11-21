@@ -164,12 +164,15 @@ export interface PerfProbe {
   fakeInteractiveRebase(commits: number): Commit | null;
   /** Makes `commits` new commits on top of the fake Git Log's newest one, which hands them its refs. */
   fakeGitLogCommit(commits: number): void;
+  /** Opens an empty Run console session before streaming starts so UI (e.g. Find) can mount first. */
+  openConsoleSession(mode: "long" | "no-lf"): Promise<string>;
   /** Streams long-line or no-newline output into a Run console session. */
   streamConsoleOutput(options: {
     mode: "long" | "no-lf";
     count: number;
     perFrame: number;
     lineLength?: number;
+    sessionId?: string;
   }): Promise<{ lines: number; dropped: number }>;
 }
 
@@ -661,6 +664,10 @@ export function installPerfProbe(): () => void {
       });
       fakeLog[0] = { ...top, refs: [] };
       fakeLog.unshift(...added);
+    },
+    async openConsoleSession(mode) {
+      const { openSampleConsoleSession } = await import("@/features/run/store");
+      return openSampleConsoleSession(mode);
     },
     async streamConsoleOutput(options) {
       const { startSampleConsoleOutput } = await import("@/features/run/store");
