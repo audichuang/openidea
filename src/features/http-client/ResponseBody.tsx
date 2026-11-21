@@ -43,6 +43,43 @@ const marks = StateField.define<DecorationSet>({
   provide: (f) => EditorView.decorations.from(f),
 });
 
+const resync = StateEffect.define<number>();
+let resyncs = 0;
+
+/** A one-character mark whose only purpose is to make the editor redraw its lines. */
+const resyncMark = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(value, tr) {
+    for (const e of tr.effects)
+      if (e.is(resync) && e.value < tr.state.doc.length)
+        value = Decoration.set(
+          Decoration.mark({ attributes: { "data-resync": String(++resyncs) } }).range(e.value, e.value + 1),
+        );
+    return value;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
+
+/**
+ * A body taller than the editor's DOM height limit is drawn scaled. A jump far
+ * into it (the scrollbar dragged to the end) can end the measure loop with
+ * "Viewport failed to stabilize": the new viewport is recorded but its lines
+ * are never drawn, leaving a blank gap until the next scroll. When the drawn
+ * lines lie outside the viewport (and the selection's lines), redraw.
+ */
+const redrawStaleViewport = EditorView.updateListener.of((u) => {
+  if (u.transactions.length || !u.viewportChanged) return;
+  const { view } = u;
+  const { from, to } = view.viewport;
+  const { anchor, head } = view.state.selection.main;
+  const drawn = (pos: number) =>
+    (pos >= from && pos <= to) || [anchor, head].some((p) => view.state.doc.lineAt(p).from === pos);
+  const lines = view.contentDOM.querySelectorAll(".cm-line");
+  const ends = [lines[0], lines[lines.length - 1]].filter((l) => l != null);
+  if (ends.some((l) => !drawn(view.state.doc.lineAt(view.posAtDOM(l)).from)))
+    view.dispatch({ effects: resync.of(from) });
+});
+
 function extensions(): Extension[] {
   return [
     EditorState.readOnly.of(true),
@@ -52,6 +89,8 @@ function extensions(): Extension[] {
     keymap.of(defaultKeymap),
     EditorView.contentAttributes.of({ "aria-label": tx("Response body") }),
     marks,
+    resyncMark,
+    redrawStaleViewport,
   ];
 }
 
