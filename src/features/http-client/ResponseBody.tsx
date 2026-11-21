@@ -11,7 +11,7 @@ import { EditorState, StateEffect, StateField, type Extension } from "@codemirro
 import { Decoration, EditorView, keymap, type DecorationSet } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
 import type { ConsoleMatch } from "@/ui/consoleFind";
-import { displayText, displayed, docPosition, setDisplayText, textBetween } from "./displayLines";
+import { displayText, displayed, docPosition, lineAt, setDisplayText, textBetween } from "./displayLines";
 import { tx } from "@/platform/i18n";
 import styles from "./HttpClient.module.css";
 
@@ -117,10 +117,13 @@ function extensions(): Extension[] {
     redrawStaleViewport,
     selectAllDrawn,
     displayed,
-    // Copies and drags take the text as received, without the splits of long lines.
+    // Copies and drags take the text as received, without the splits of long lines; with nothing
+    // selected, whole lines as received, like the editor's line-wise copy.
     EditorView.clipboardOutputFilter.of((copied, state) => {
       const ranges = state.selection.ranges.filter((r) => !r.empty);
-      return ranges.length ? ranges.map((r) => textBetween(state, r.from, r.to)).join(state.lineBreak) : copied;
+      if (ranges.length) return ranges.map((r) => textBetween(state, r.from, r.to)).join(state.lineBreak);
+      const lines = new Map(state.selection.ranges.map((r) => lineAt(state, r.head)).map((l) => [l.from, l.text]));
+      return [...lines.values()].join(state.lineBreak);
     }),
   ];
 }
