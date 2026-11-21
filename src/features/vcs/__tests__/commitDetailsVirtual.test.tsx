@@ -1,5 +1,6 @@
 import type { Commit } from "@/bindings";
-import { copyMenuFor } from "@/ui";
+import { usePlatform } from "@/platform/platformInfo";
+import { copyMenuFor, useContextMenuStore } from "@/ui";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -122,12 +123,15 @@ beforeEach(() => {
     filters: emptyFilters(),
   });
   useLogOptions.setState({ ...DEFAULT_LOG_OPTIONS });
+  usePlatform.setState({ os: "macos" });
 });
 
 afterEach(() => {
   window.getSelection()?.removeAllRanges();
+  useContextMenuStore.setState({ menu: null });
   useGitLog.setState({ commits: [], selection: [], selected: null, filters: emptyFilters() });
   useLogOptions.setState({ ...DEFAULT_LOG_OPTIONS });
+  usePlatform.setState({ os: "macos" });
 });
 
 describe("CommitDetails multi-selection virtualization", () => {
@@ -324,5 +328,227 @@ describe("CommitDetails multi-selection virtualization", () => {
     });
     expect(await screen.findByText("Body paragraph loaded on demand")).toBeInTheDocument();
     expect(mountedMessageButtons(container)).toHaveLength(1);
+  });
+
+  it("selects the whole list on Cmd+A and copies all 2,000 commit messages in order", () => {
+    const commits = makeCommits(2_000);
+    const keys = commits.map(commitKey);
+    useGitLog.setState({ commits, selected: keys[0]!, selection: keys });
+    const outside = document.createElement("p");
+    outside.textContent = "outside workbench chrome";
+    document.body.append(outside);
+
+    try {
+      const { container } = render(<CommitDetails commits={commits} />);
+      const box = messageBoxOf(container);
+      box.focus();
+
+      const selectAll = new KeyboardEvent("keydown", {
+        key: "a",
+        code: "KeyA",
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      box.dispatchEvent(selectAll);
+      expect(selectAll.defaultPrevented).toBe(true);
+      const sel = window.getSelection()!;
+      expect(sel.isCollapsed).toBe(false);
+      expect(box.contains(sel.anchorNode) && box.contains(sel.focusNode)).toBe(true);
+      expect(sel.toString()).not.toContain("outside workbench chrome");
+
+      const copied = new Map<string, string>();
+      const copyEvent = new Event("copy", { bubbles: true, cancelable: true });
+      Object.defineProperty(copyEvent, "clipboardData", {
+        value: { setData: (type: string, data: string) => copied.set(type, data) },
+      });
+      box.dispatchEvent(copyEvent);
+
+      expect(copyEvent.defaultPrevented).toBe(true);
+      const text = copied.get("text/plain") ?? "";
+      expect(text).toContain(commits[0]!.summary);
+      expect(text).toContain(commits[1_000]!.summary);
+      expect(text).toContain(commits[1_999]!.summary);
+      expect(text).toContain(commits[0]!.shortId);
+      expect(text).toContain(commits[1_999]!.shortId);
+      expect(text).toContain("HEAD -> main");
+      expect(text).toContain("v0.50");
+      expect(text).not.toContain("Detailed body for commit");
+
+      // Every commit summary appears in order (newest first).
+      let cursor = -1;
+      for (const c of commits) {
+        const pos = text.indexOf(c.summary, cursor + 1);
+        expect(pos).toBeGreaterThan(cursor);
+        cursor = pos;
+      }
+
+      // Keyboard Cmd+C also copies all 2,000 commits.
+      fireEvent.keyDown(box, { key: "c", code: "KeyC", metaKey: true });
+      expect(api.writeClipboardText).toHaveBeenCalledWith(text);
+
+      // Right-click Copy menu also copies all 2,000 commits.
+      fireEvent.contextMenu(box);
+      const menu = useContextMenuStore.getState().menu;
+      const copyItem = menu?.items.find((item) => "id" in item && item.id === "copy");
+      expect(copyItem).toBeDefined();
+      if (copyItem && "run" in copyItem && copyItem.run) copyItem.run();
+      expect(api.writeClipboardText).toHaveBeenLastCalledWith(text);
+
+      // Scrolling after Select All still copies all 2,000 commits.
+      act(() => {
+        box.scrollTop = 50_000;
+        fireEvent.scroll(box);
+      });
+      copied.clear();
+      const copyAfterScroll = new Event("copy", { bubbles: true, cancelable: true });
+      Object.defineProperty(copyAfterScroll, "clipboardData", {
+        value: { setData: (type: string, data: string) => copied.set(type, data) },
+      });
+      box.dispatchEvent(copyAfterScroll);
+      expect(copyAfterScroll.defaultPrevented).toBe(true);
+      expect(copied.get("text/plain")).toBe(text);
+    } finally {
+      outside.remove();
+    }
+  });
+
+  it("selects all on Ctrl+A and copies all 2,000 commits on Windows/Linux", () => {
+    usePlatform.setState({ os: "windows" });
+    const commits = makeCommits(2_000);
+    const keys = commits.map(commitKey);
+    useGitLog.setState({ commits, selected: keys[0]!, selection: keys });
+    const { container } = render(<CommitDetails commits={commits} />);
+    const box = messageBoxOf(container);
+    box.focus();
+
+    const selectAll = new KeyboardEvent("keydown", {
+      key: "a",
+      code: "KeyA",
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    box.dispatchEvent(selectAll);
+    expect(selectAll.defaultPrevented).toBe(true);
+
+    fireEvent.keyDown(box, { key: "c", code: "KeyC", ctrlKey: true });
+    expect(api.writeClipboardText).toHaveBeenCalledTimes(1);
+    const text = api.writeClipboardText.mock.calls[0]![0] as string;
+    expect(text).toContain(commits[0]!.summary);
+    expect(text).toContain(commits[1_999]!.summary);
+    expect(text.split("\n\n")).toHaveLength(2_000);
+  });
+
+  it("copies all 2,000 commits when selectAllChildren is applied to the message pane", () => {
+    const commits = makeCommits(2_000);
+    const keys = commits.map(commitKey);
+    useGitLog.setState({ commits, selected: keys[0]!, selection: keys });
+    const { container } = render(<CommitDetails commits={commits} />);
+    const box = messageBoxOf(container);
+
+    window.getSelection()!.selectAllChildren(box);
+    const copied = new Map<string, string>();
+    const copyEvent = new Event("copy", { bubbles: true, cancelable: true });
+    Object.defineProperty(copyEvent, "clipboardData", {
+      value: { setData: (type: string, data: string) => copied.set(type, data) },
+    });
+    box.dispatchEvent(copyEvent);
+
+    expect(copyEvent.defaultPrevented).toBe(true);
+    const text = copied.get("text/plain") ?? "";
+    expect(text).toContain(commits[0]!.summary);
+    expect(text).toContain(commits[1_999]!.summary);
+    expect(text.split("\n\n")).toHaveLength(2_000);
+  });
+
+  it("copies every commit between the first and last selected rows during a scrolled drag-selection", () => {
+    const commits = makeCommits(2_000);
+    const keys = commits.map(commitKey);
+    useGitLog.setState({ commits, selected: keys[0]!, selection: keys });
+    const { container } = render(<CommitDetails commits={commits} />);
+    const box = messageBoxOf(container);
+
+    // Start dragging on row 2, then scroll far down so intermediate rows unmount.
+    const row2 = box.querySelector<HTMLElement>('[data-index="2"]')!;
+    expect(row2).not.toBeNull();
+    fireEvent.mouseDown(row2, { button: 0 });
+
+    act(() => {
+      box.scrollTop = 50_000;
+      fireEvent.scroll(box);
+    });
+
+    // Anchor row stays mounted for the active drag while total mounted rows remain bounded.
+    const pinnedRow2 = box.querySelector<HTMLElement>('[data-index="2"]');
+    const mountedRows = [...box.querySelectorAll<HTMLElement>("[data-index]")];
+    const endRow = mountedRows[mountedRows.length - 1]!;
+    const endIndex = Number(endRow.dataset.index);
+    expect(pinnedRow2).not.toBeNull();
+    expect(endIndex).toBeGreaterThan(400);
+    expect(mountedMessageButtons(container).length).toBeLessThan(40);
+
+    const range = document.createRange();
+    range.setStart(pinnedRow2!.querySelector('[class*="subjectLine"]')!.firstChild!, 0);
+    range.setEnd(endRow.querySelector('[class*="subjectLine"]')!.firstChild!, 5);
+    const sel = window.getSelection()!;
+    sel.removeAllRanges();
+    sel.addRange(range);
+    fireEvent.mouseUp(document);
+
+    const copied = new Map<string, string>();
+    const copyEvent = new Event("copy", { bubbles: true, cancelable: true });
+    Object.defineProperty(copyEvent, "clipboardData", {
+      value: { setData: (type: string, data: string) => copied.set(type, data) },
+    });
+    box.dispatchEvent(copyEvent);
+
+    expect(copyEvent.defaultPrevented).toBe(true);
+    const text = copied.get("text/plain") ?? "";
+    const midIndex = Math.floor((2 + endIndex) / 2);
+    // Summaries are prefixes of each other ("commit 1" / "commit 10"), so check the start and the count.
+    expect(text.startsWith(commits[2]!.summary + "\n")).toBe(true);
+    expect(text).toContain(commits[midIndex]!.summary);
+    expect(text).toContain(commits[endIndex]!.summary);
+    expect(text.split("\n\n")).toHaveLength(endIndex - 2 + 1);
+  });
+
+  it("leaves single-row partial selections and triple-click boundaries to normal text copy", () => {
+    const commits = makeCommits(200);
+    const keys = commits.map(commitKey);
+    useGitLog.setState({ commits, selected: keys[0]!, selection: keys });
+    const { container } = render(<CommitDetails commits={commits} />);
+    const box = messageBoxOf(container);
+
+    const row0Subject = box.querySelector<HTMLElement>('[data-index="0"] [class*="subjectLine"]')!;
+    const range = document.createRange();
+    range.setStart(row0Subject.firstChild!, 0);
+    range.setEnd(row0Subject.firstChild!, 9);
+    const sel = window.getSelection()!;
+    sel.removeAllRanges();
+    sel.addRange(range);
+
+    const setData = vi.fn();
+    const copyEvent = new Event("copy", { bubbles: true, cancelable: true });
+    Object.defineProperty(copyEvent, "clipboardData", { value: { setData } });
+    box.dispatchEvent(copyEvent);
+    expect(copyEvent.defaultPrevented).toBe(false);
+    expect(setData).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(box, { key: "c", code: "KeyC", metaKey: true });
+    expect(api.writeClipboardText).toHaveBeenCalledWith(commits[0]!.summary.slice(0, 9));
+
+    // A triple-click ending at offset 0 of the next row selects only row 0, not row 1.
+    const row1Subject = box.querySelector<HTMLElement>('[data-index="1"] [class*="subjectLine"]')!;
+    const triple = document.createRange();
+    triple.setStart(row0Subject.firstChild!, 0);
+    triple.setEnd(row1Subject.firstChild!, 0);
+    sel.removeAllRanges();
+    sel.addRange(triple);
+    const tripleCopy = new Event("copy", { bubbles: true, cancelable: true });
+    Object.defineProperty(tripleCopy, "clipboardData", { value: { setData } });
+    box.dispatchEvent(tripleCopy);
+    expect(tripleCopy.defaultPrevented).toBe(false);
+    expect(setData).not.toHaveBeenCalled();
   });
 });
