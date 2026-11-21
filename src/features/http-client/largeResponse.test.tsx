@@ -388,6 +388,21 @@ describe("HTTP Client large responses", () => {
     expect(view.state.selection.main).toMatchObject({ from: 0, to: body.length });
   });
 
+  it("leaves keyboard selections that end at the drawn lines as they are", () => {
+    const body = "x".repeat(2 * DISPLAY_LINE + 5);
+    show(exchangeWith(body, "text/plain"));
+    const view = editorOf(screen.getByLabelText("Response body"));
+    view.focus();
+    const end = view.state.doc.line(1).to;
+    expect(view.viewport.to).toBe(end);
+    view.dispatch({ selection: { anchor: 0, head: end - 1 } });
+    fireEvent.keyDown(view.contentDOM, { key: "ArrowRight", shiftKey: true });
+    expect(view.state.selection.main).toMatchObject({ anchor: 0, head: end });
+    view.dispatch({ selection: { anchor: 5 } });
+    fireEvent.keyDown(view.contentDOM, { key: "l", altKey: true });
+    expect(view.state.selection.main).toMatchObject({ from: 0, to: end + 1 });
+  });
+
   it("hands the focus from the pane to the body, so Select All covers all of it", () => {
     show(exchangeWith("alpha\nbeta", "text/plain"));
     const view = editorOf(screen.getByLabelText("Response body"));
