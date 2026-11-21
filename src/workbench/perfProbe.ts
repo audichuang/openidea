@@ -10,10 +10,11 @@ import { executeAction } from "@/platform/actions";
 import { bindingsFor } from "@/platform/keymap";
 import { activeEditor } from "@/editor/api";
 import { docBackend, type MemoryBackend } from "@/editor/core/backend";
-import type { Commit, CompletionItem, CompletionKind, LogQuery } from "@/bindings";
+import type { Branch, Commit, CompletionItem, CompletionKind, LogQuery } from "@/bindings";
 import { openProject } from "@/platform/project";
 import { setInvokeRoute } from "@/platform/tauriCore";
 import { editorService } from "./contributions";
+import { gitGraphBridge, provideGitGraphBridge, type GitGraphBridge } from "./gitGraphBridge";
 
 export interface PerfProbe {
   /** Seeds file contents for the in-memory document backend (plain-browser mode). */
@@ -55,6 +56,11 @@ export interface PerfProbe {
    * `latencyMs` (a `git log` call). `0` commits removes it.
    */
   fakeGitLog(commits: number, latencyMs?: number, longBranches?: number): void;
+  /**
+   * Answers the Git Graph PR view with `commits` generated commits between `main`
+   * and `feature`. `0` commits removes it and restores the real bridge.
+   */
+  fakePrCommits(commits: number): void;
 }
 
 const KINDS: CompletionKind[] = [
@@ -152,6 +158,7 @@ function requireView() {
 }
 
 export function installPerfProbe(): () => void {
+  let restorePrBridge: (() => void) | null = null;
   const probe: PerfProbe = {
     seed(path, text) {
       const backend = docBackend() as Partial<MemoryBackend>;
@@ -209,6 +216,76 @@ export function installPerfProbe(): () => void {
           : null,
       );
     },
+    fakePrCommits(count) {
+      restorePrBridge?.();
+      restorePrBridge = null;
+      if (!count) {
+        setRoute("prCommits", null);
+        return;
+      }
+      const commits = Array.from({ length: count }, (_, i) => commit(i, count));
+      const mergeBase = (count + 1).toString(16).padStart(40, "0");
+      const repo = "/dev/acme-api";
+      const branches: Branch[] = [
+        {
+          name: "feature",
+          remote: false,
+          current: true,
+          upstream: null,
+          ahead: count,
+          behind: 0,
+          lastCommitMs: commits[0]?.timeMs ?? null,
+        },
+        {
+          name: "main",
+          remote: false,
+          current: false,
+          upstream: null,
+          ahead: 0,
+          behind: 0,
+          lastCommitMs: commits[count - 1]?.timeMs ?? null,
+        },
+      ];
+      const realBridge = gitGraphBridge();
+      if (realBridge) {
+        const fakeState = {
+          roots: [repo],
+          repo,
+          heads: { [repo]: { head: "feature", headCommit: commits[0]?.id ?? null } },
+          operations: {},
+          version: 1,
+        };
+        const wrapped: GitGraphBridge = {
+          ...realBridge,
+          state: () => fakeState,
+          subscribe: () => () => {},
+        };
+        const withdraw = provideGitGraphBridge(wrapped);
+        restorePrBridge = () => {
+          withdraw();
+          provideGitGraphBridge(realBridge);
+        };
+      }
+      setRoute("prCommits", (cmd, args) => {
+        if (cmd === "vcs_branches") return Promise.resolve(branches);
+        if (cmd === "vcs_tags") return Promise.resolve([]);
+        if (cmd === "vcs_merge_base") return Promise.resolve(mergeBase);
+        if (cmd === "vcs_diff_revisions") return Promise.resolve([]);
+        if (cmd === "vcs_remotes") return Promise.resolve([]);
+        if (cmd === "graph_stashes") return Promise.resolve([]);
+        if (cmd === "graph_working_state")
+          return Promise.resolve({ staged: 0, unstaged: 0, untracked: 0, conflicted: 0 });
+        if (cmd === "graph_bisect_state")
+          return Promise.resolve({ active: false, current: null, culprit: null, output: "" });
+        if (cmd === "vcs_log") {
+          const { skip, limit, range } = (args as { query: LogQuery }).query;
+          if (range === "main..feature") return Promise.resolve(commits);
+          if (range === "feature..main") return Promise.resolve([]);
+          return Promise.resolve(commits.slice(skip, limit ? skip + limit : undefined));
+        }
+        return null;
+      });
+    },
     editorText: () => activeEditor()?.view.state.doc.toString() ?? null,
     insertAfter(after, text) {
       const view = requireView();
@@ -257,5 +334,9 @@ export function installPerfProbe(): () => void {
   };
   const w = window as unknown as { __openideaPerf?: PerfProbe };
   w.__openideaPerf = probe;
-  return () => void delete w.__openideaPerf;
+  return () => {
+    restorePrBridge?.();
+    restorePrBridge = null;
+    delete w.__openideaPerf;
+  };
 }
