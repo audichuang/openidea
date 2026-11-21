@@ -109,18 +109,22 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
   const findInput = useRef<HTMLInputElement>(null);
   const showsEditor = tab === "body" && body != null;
   const searchable = findOpen && showsEditor;
-  const starts = useMemo(() => (searchable ? lineStarts(body ?? "") : []), [searchable, body]);
-  // Split into lines only for a regular expression, and once per body.
-  const lines = useMemo(() => {
-    let split: { id: number; text: string }[] | null = null;
-    return () => (split ??= (body ?? "").split("\n").map((text, id) => ({ id, text })));
+  // While the bar is open: where the body's lines start, and its lines (split once, for a regular expression).
+  const searched = useMemo(() => {
+    if (!searchable || body == null) return null;
+    let lines: { id: number; text: string }[] | null = null;
+    return {
+      text: body,
+      starts: lineStarts(body),
+      lines: () => (lines ??= body.split("\n").map((text, id) => ({ id, text }))),
+    };
   }, [searchable, body]);
   const found = useMemo(
     () =>
-      searchable
-        ? findInBody(body ?? "", starts, lines, query, findOptions)
+      searched
+        ? findInBody(searched.text, searched.starts, searched.lines, query, findOptions)
         : { matches: [], overflow: false, invalid: false },
-    [searchable, body, starts, lines, query, findOptions],
+    [searched, query, findOptions],
   );
   const activeIndex = found.matches.length ? Math.min(active, found.matches.length - 1) : -1;
   // The bar owns Escape / Enter / F3 / ⌘G while it is focused; keep the IDE keymap out.
