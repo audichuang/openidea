@@ -5,8 +5,8 @@ use crate::Host;
 use ide_command::command;
 use ide_core::IdeResult;
 use ide_vcs::fork_graph::{
-    GraphAuthorStat, GraphBisectOp, GraphBisectState, GraphRefOp, GraphReflogEntry, GraphStash, GraphTreeEntry,
-    GraphWorkingState,
+    GraphAuthorStat, GraphBisectOp, GraphBisectState, GraphRefOp, GraphReflogEntry, GraphRevCounts, GraphStash,
+    GraphTreeEntry, GraphWorkingState,
 };
 use std::path::PathBuf;
 
@@ -24,6 +24,19 @@ pub async fn graph_stashes(host: &Host, window: &str, repo: Option<PathBuf>) -> 
 pub async fn graph_working_state(host: &Host, window: &str, repo: Option<PathBuf>) -> IdeResult<GraphWorkingState> {
     let project = host.project(window)?;
     blocking(move || project.with_repo_at(repo.as_deref(), |r| r.graph_working_state())).await
+}
+
+/// Ahead and behind commit counts of `head` relative to `base`.
+#[command(trust = trusted)]
+pub async fn graph_rev_counts(
+    host: &Host,
+    window: &str,
+    repo: Option<PathBuf>,
+    base: String,
+    head: String,
+) -> IdeResult<GraphRevCounts> {
+    let project = host.project(window)?;
+    blocking(move || project.with_repo_at(repo.as_deref(), |r| r.graph_rev_counts(&base, &head))).await
 }
 
 #[command(trust = trusted)]
@@ -89,6 +102,7 @@ ide_command::domain!(
     graph_bisect_state,
     graph_ref_op,
     graph_reflog,
+    graph_rev_counts,
     graph_stashes,
     graph_tree,
     graph_working_state,

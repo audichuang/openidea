@@ -721,6 +721,8 @@ export const commands = {
 	/**  Tag deletion and push, and a branch's upstream. */
 	graphRefOp: (repo: string | null, op: GraphRefOp) => typedError<null, IdeError>(__TAURI_INVOKE("graph_ref_op", { repo, op })),
 	graphReflog: (repo: string | null, reference: string, limit: number) => typedError<GraphReflogEntry[], IdeError>(__TAURI_INVOKE("graph_reflog", { repo, reference, limit })),
+	/**  Ahead and behind commit counts of `head` relative to `base`. */
+	graphRevCounts: (repo: string | null, base: string, head: string) => typedError<GraphRevCounts, IdeError>(__TAURI_INVOKE("graph_rev_counts", { repo, base, head })),
 	/**  Stash entries with the commit each records and the commit it was made on. */
 	graphStashes: (repo: string | null) => typedError<GraphStash[], IdeError>(__TAURI_INVOKE("graph_stashes", { repo })),
 	/**  Every file of `rev` (`git ls-tree -r`). */
@@ -6993,6 +6995,12 @@ export type GraphReflogEntry = {
 	/**  `commit: message`, `checkout: moving from a to b`… */
 	action: string,
 	timeMs: number | null,
+};
+
+/**  Ahead and behind commit counts of a head revision relative to a base revision. */
+export type GraphRevCounts = {
+	ahead: number,
+	behind: number,
 };
 
 /**  A stash entry with the commit it records and the commit it was made on. */

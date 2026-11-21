@@ -189,3 +189,23 @@ fn ref_ops_delete_and_push_tags_and_set_upstream() {
 
     assert!(repo.graph_ref_op(&GraphRefOp::DeleteTag { name: "--all".into() }).is_err());
 }
+
+#[test]
+fn rev_counts_report_ahead_and_behind() {
+    let (tmp, repo) = repo();
+    let dir = tmp.path();
+    commit(dir, "a.txt", "base");
+    git(dir, &["checkout", "-q", "-b", "feature"]);
+    commit(dir, "f1.txt", "feat 1");
+    commit(dir, "f2.txt", "feat 2");
+    git(dir, &["checkout", "-q", "main"]);
+    commit(dir, "m1.txt", "main 1");
+    commit(dir, "m2.txt", "main 2");
+    commit(dir, "m3.txt", "main 3");
+
+    assert_eq!(repo.graph_rev_counts("main", "feature").unwrap(), GraphRevCounts { ahead: 2, behind: 3 });
+    assert_eq!(repo.graph_rev_counts("feature", "main").unwrap(), GraphRevCounts { ahead: 3, behind: 2 });
+    assert_eq!(repo.graph_rev_counts("main", "main").unwrap(), GraphRevCounts { ahead: 0, behind: 0 });
+    assert!(repo.graph_rev_counts("--all", "feature").is_err());
+    assert!(repo.graph_rev_counts("main..feature", "feature").is_err());
+}
