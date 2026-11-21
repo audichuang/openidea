@@ -1,0 +1,41 @@
+# Git Graph (fork editor tab)
+
+## Sub-features
+
+- Commit graph of every branch (`src/features/git-graph/`), lanes from upstream's `computeGraph` through the bridge (`src/workbench/gitGraphBridge.ts` ← `src/features/vcs/gitGraphBridge.ts`).
+- Branch filter (all / chosen branches, remote branches on or off), repository switcher with several roots, find with match stepping.
+- Details pane: message, hash, parents (click jumps), author, dates, changed files; a file click opens the diff in the preview tab, double-click opens it.
+- Menus reused from the vcs feature: commit rows (Git Log commit menu), reference pills (Branches popup branch/tag menu), files (Git Log changes menu).
+- Hover on a row dims every other branch line (one generated CSS rule, no per-row state).
+- Long edges are drawn as in the Git Log: the middle of a straight run of 30+ rows is hidden and its stubs end in arrows; lanes are packed. Clicking an arrow whose other end is loaded selects that commit and scrolls to it (hit path `svg path[role=button]`, out of the Tab order). Pages of 300 commits are laid out incrementally (`src/features/vcs/gitGraphPresent.ts`).
+- A vcs refresh reloads the graph only when branch tips or tags moved.
+- Uncommitted-changes row above HEAD and stash rows above their base (dashed, hollow nodes); fork backend `graph_working_state` / `graph_stashes` (`crates/ide-vcs/src/fork_graph.rs`).
+- Bottom pane tabs: Details, File Tree (`graph_tree`, double-click compares the revision with the working file), Reflog (`graph_reflog`), Statistics (`graph_author_stats`, branches/tags/remotes only).
+- Tag pills: push to / delete from each remote, delete locally; local branch pills: Set / Unset Upstream (`graph_ref_op`).
+- Bisect: select two commits → "Bisect: Bad …, Good …"; banner with Good / Bad / Skip / End Bisect (`graph_bisect`).
+- Drag and drop (real pointer only): a branch pill onto the current branch's commit → merge / rebase; the current branch elsewhere → rebase / reset; a commit row onto HEAD → cherry-pick.
+- Main toolbar button (title item `gitGraph.open`).
+- Several repositories: the toolbar's Fetch, Pull…, Push…, the operation bar (Continue / Abort / Resolve), Stash / Rollback on the uncommitted row and Show Git Log act on the graph's repository, not the VCS-selected one; Show Git Log opens a `Log: <repo>` tab and leaves the main Log's filters alone. The branch filter, File Tree revision and PR view choices are kept per repository (`viewState.ts`).
+- PR view (`PrView.tsx`, toolbar `Graph | PR` switch): a local "New pull request" preview between any two refs (base / head pickers with HEAD, Local, Remote, Tags; swap). Three-dot: `vcs_merge_base`, then `vcs_diff_revisions(mergeBase, head)`; "N commits ahead, M behind base" from `vcs_log` ranges. Files tab is a directory tree (`buildFileTree`, rows as in the GitHub pull request Changes tree: file-type icon, name in its change colour, folders with a file count; all expanded) beside the embedded read-only diff viewer; F7 / Shift+F7 past the last / first difference hints, then moves the tree selection to the next / previous file; double-click or the open button opens a diff tab; Commits tab lists `base..head`, a click selects the commit in the graph. The copy button is ClipCode Copy Changed Files from the merge base (`range` source). Base/head are remembered per repository; default head is the current branch, base the first of main/master/develop (local, else `origin/`). Branch pills: "Compare in PR View".
+
+## How to get to it (user POV)
+
+Find Action → "Git Graph" (action `gitGraph.open`, when `vcsAvailable`).
+
+## Driving it
+
+1. Fixture: a repo with two feature branches, a `--no-ff` merge, tags, and one branch with a `/` in its name and no remote (that case once showed as a remote branch).
+2. Open it: `import("/src/platform/actions.ts").then(m => m.executeAction("gitGraph.open"))` (same path as Find Action).
+3. Rows: `[aria-label="Commits"] [role=row]`; selection is `aria-selected`; commit files `[role=listbox][aria-label="Changed Files"] [role=option]` and the File Tree tab's `[aria-label="Files at Revision"] [role=option]` (virtualised: only the rows near the viewport are in the DOM; the total is each row's `aria-setsize`; the list holds focus and its `aria-activedescendant` names the current row, which has `aria-selected=true`); the PR view's files are `[role=tree][aria-label="Changed Files"] [role=treeitem]` (a tree row selects on `mousedown`, not `click`).
+4. Click a reference pill (`button[title="<branch>"]`) for its menu; run "Merge … into …" or a commit menu's "New Tag…", then check `git log` / `git tag` in the fixture and that the graph reloaded on its own.
+5. Drag needs real input: `cliclick dd:… dm:… du:…` from a pill's rect to the HEAD row's; assert the `[role=menu]` items, then click one with `cliclick c:` and check `git log`.
+6. Bisect: two `click` events (second with `metaKey`) on rows, `contextmenu`, click the Bisect item; the banner is the `[role=status]` inside the Git Graph tab that contains "End Bisect" (the toolbar hides its operation status during a bisect, and the status bar has its own `role=status`): select it by that text, not by position. Check `git bisect log`.
+7. PR view: click `[role=tab]` "PR" in the Git Graph toolbar; pick refs with `button[aria-label="Base Branch"]` / `"Head Branch"` (type in "Search branches and tags", Enter); check the `[role=status]` summary containing "commits ahead" against `git rev-list --count base..head` / `head..base`, and the files under `[aria-label="Changed Files"]` against `git diff --name-status base...head`. Click the copy button ("ClipCode: Copy Changed Files") and compare the clipboard (`pbpaste`) with IntelliJ ClipCode's copy of the same range.
+8. Several repositories (FORK.md, repository picker decision): fixture a repository with an independent repository nested inside it, each cloned from its own bare remote that is one commit ahead. Pick the nested one in Git Graph, then before each toolbar button select the other repository in the VCS branch popup (the bridge's `focusRepo` moves the VCS selection), press the button and assert on the repository that changed (`git rev-parse origin/main` in both, the dialog's Repository field, the `Log: <repo>` tab's rows), not on the click. A single-repository fixture cannot show this class of bug.
+9. Hover needs real input: `cliclick m:X,Y` (window origin + row rect); assert the count of `svg path, circle` with opacity < 0.5 and look at a `screencapture` crop.
+10. Performance on a merge-heavy history: build one with a short `git fast-import` script (20k commits, 150 branches, merges between any two branches, back-merges of main, octopus merges; `git log --all --graph` about 750 columns wide). Keep the window visible and unminimised (a hidden webview pauses `requestAnimationFrame`, which looks like a multi-second stall), scroll `scrollTop += 120` per frame and record rAF gaps; count frames over 17 ms and 50 ms, and the gap at each page append. A `MessageChannel` ping-pong busy probe disagreed with rAF gaps between runs (2026-11-20, unresolved): report rAF gaps, and say that a 60 Hz display cannot show work under 16 ms that a 120 Hz one would drop.
+
+## Gotchas
+
+- A Tauri MCP `strategy=text` click on a subject can miss the row; click row coordinates from `getBoundingClientRect` instead.
+- Commit and branch menus come from upstream; `src/features/vcs/__tests__/gitGraphBridge.test.ts` pins what the graph relies on. After a rebase, a failure there means upstream changed a reused piece: fix the bridge, not the graph.

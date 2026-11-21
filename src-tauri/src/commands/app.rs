@@ -30,10 +30,11 @@ pub use ide_host::ops::project::ProjectInfo;
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn app_info(state: State<'_, AppState>) -> AppInfo {
+pub fn app_info(app: tauri::AppHandle, state: State<'_, AppState>) -> AppInfo {
     state.note_ipc();
     AppInfo {
-        version: env!("CARGO_PKG_VERSION").into(),
+        // The bundle's version: a fork release overrides it, the crate version stays upstream's.
+        version: app.package_info().version.to_string(),
         platform: std::env::consts::OS.into(),
         windows_build_number: ide_core::platform::windows_build_number(),
         config_dir: state.config_dir.clone().into(),
@@ -121,7 +122,7 @@ pub(crate) async fn open_project(window: Window, path: PathBuf) -> IdeResult<Pro
 pub async fn light_edit_open(window: Window, path: PathBuf) -> IdeResult<Settings> {
     let app = window.app_handle().clone();
     let label = window.label().to_owned();
-    if app.state::<AppState>().project(&label).is_ok_and(|p| !p.light) {
+    if app.state::<AppState>().opened_project(&label).is_some() {
         crate::windows::close_auxiliary_windows(&app, &label);
         crate::window_groups::detach(&app, &label)?;
         crate::window_groups::persist(&app).await?;
@@ -192,6 +193,7 @@ pub(crate) fn close_project(window: Window) {
     let state = window.state::<AppState>();
     crate::windows::close_auxiliary_windows(window.app_handle(), window.label());
     let _ = crate::window_groups::detach(window.app_handle(), window.label());
+    window.state::<crate::windows::WindowsState>().forget_launch(window.label());
     state.close_project(window.label());
     let app = window.app_handle().clone();
     tauri::async_runtime::spawn(async move {
@@ -341,7 +343,7 @@ pub async fn settings_list_jetbrains_ides() -> IdeResult<Vec<ide_host::plugins::
 
 pub(crate) fn project_current(window: Window) -> Option<ProjectInfo> {
     let state = window.state::<AppState>();
-    state.project(window.label()).ok().filter(|p| !p.light).map(|p| project_info(&p))
+    state.opened_project(window.label()).map(|p| project_info(&p))
 }
 
 #[derive(Serialize, Deserialize, Type)]

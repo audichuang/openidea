@@ -112,7 +112,7 @@ impl Watcher {
             // Rather than failing to open the project, keep it in sync a little later.
             Err(e) => {
                 tracing::warn!("{e}; polling {} for changes instead", root.display());
-                (Self::start_polling(&root, filter, emit, mode)?, Some(e.message))
+                (Self::start_polling(&root, filter, emit, mode, POLL_INTERVAL)?, Some(e.message))
             }
         };
         Ok(Self { inner, excludes: shared, rules, polling })
@@ -154,8 +154,14 @@ impl Watcher {
 
     /// Polls per directory unless flat: a recursive poll would rescan
     /// `node_modules` and `target` every round.
-    fn start_polling(root: &Path, filter: EventFilter, emit: Emit, mode: WatchMode) -> IdeResult<Inner> {
-        let config = notify::Config::default().with_poll_interval(POLL_INTERVAL);
+    fn start_polling(
+        root: &Path,
+        filter: EventFilter,
+        emit: Emit,
+        mode: WatchMode,
+        interval: Duration,
+    ) -> IdeResult<Inner> {
+        let config = notify::Config::default().with_poll_interval(interval);
         let mode = if mode == WatchMode::Flat { mode } else { WatchMode::PerDirectory };
         Self::start_queued::<PollWatcher>(root, filter, emit, mode, config)
     }
@@ -1000,6 +1006,7 @@ impl EventFilter {
         }
         batch.excluded_dirs = excluded_dirs.into_iter().collect();
         batch.ignore_rules = rule_dirs.into_iter().collect();
+        batch.rescan = events.clone().any(Event::need_rescan);
         let rule_dirs = batch.ignore_rules.clone();
         (batch, rule_dirs)
     }
@@ -1231,6 +1238,19 @@ mod tests {
     }
 
     const TRANSIENT_PATHS: &[&str] = &["fresh.txt", "src/fresh.rs", "src/tasks/fresh.py"];
+
+    #[test]
+    fn dropped_events_still_reach_the_consumer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let filter = EventFilter::new(root.clone(), &[]);
+        // How FSEvents reports events it dropped ("rescan: user dropped").
+        let dropped = Event::new(EventKind::Other).add_path(root.clone()).set_flag(notify::event::Flag::Rescan);
+        let batch = filter.batch(&[dropped]);
+        assert!(!batch.is_empty(), "nothing would re-read the files whose events were dropped");
+        assert!(batch.rescan);
+        assert!(!filter.batch(&[ev(EventKind::Other, vec![root])]).rescan);
+    }
 
     /// Delivers a whole debounce window without depending on OS scheduling.
     struct TransientWatcher(Box<dyn notify::EventHandler>);
@@ -2157,7 +2177,8 @@ mod tests {
         let filter = EventFilter::new(root.to_path_buf(), &excludes);
         let (excludes, rules) = (filter.excludes.clone(), filter.gitignore.clone());
         let emit: Emit = Arc::new(move |b: &FsBatch| batches.lock().push(b.clone()));
-        let inner = Watcher::start_polling(root, filter, emit, WatchMode::default()).unwrap();
+        let inner =
+            Watcher::start_polling(root, filter, emit, WatchMode::default(), Duration::from_millis(50)).unwrap();
         Watcher { inner, excludes, rules, polling: Some("cannot start file watcher".into()) }
     }
 

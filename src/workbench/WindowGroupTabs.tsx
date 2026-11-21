@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
+import { usePlatform } from "@/platform/platformInfo";
 import { reorderedTabs, useWindowGroup } from "@/platform/windowGroups";
 import { IconButton, showContextMenu } from "@/ui";
 import { notifications } from "./contributions";
@@ -18,9 +19,20 @@ function run(work: Promise<unknown>) {
   );
 }
 
-export function WindowGroupTabs() {
+/**
+ * The window group's project tabs, below the toolbar. On macOS the group is an AppKit tab group
+ * whose own tab bar is hidden (`hide_system_tab_bars`), so the tabs stay below the toolbar in
+ * fullscreen too, as in IntelliJ. `hidePageTabs` (Distraction Free) hides them.
+ */
+export function WindowGroupTabs({ hidePageTabs = false }: { hidePageTabs?: boolean }) {
+  return hidePageTabs ? null : <PageTabs />;
+}
+
+function PageTabs() {
   const tabs = useWindowGroup((state) => state.tabs);
   useSyncExternalStore(subscribeTabColors, tabColorsVersion);
+  // macOS: IntelliJ's look there, equal tabs with the title centred and close on hover.
+  const mac = usePlatform((s) => s.os === "macos");
   const drag = useRef<{ label: string; x: number; moved: boolean } | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
   const tx = useTx();
@@ -56,7 +68,7 @@ export function WindowGroupTabs() {
   }, [grouped]);
   if (tabs.length < 2) return null;
   return (
-    <div ref={bar} className={styles.bar} data-window-group>
+    <div ref={bar} className={`${styles.bar} ${mac ? styles.mac : ""}`} data-window-group>
       <div className={styles.tabs} role="tablist" aria-label={tx("Project windows")}>
         {tabs.map((tab) => (
           <div
@@ -107,6 +119,8 @@ export function WindowGroupTabs() {
               showContextMenu(e, [
                 {
                   label: "Move Tab to New Window",
+                  // macOS (AppKit tab group): only the shown tab moves out, as before upstream's per-tab arrows.
+                  disabled: mac && !tab.current ? true : undefined,
                   run: () => executeAction("window.detachTab", tab.label),
                 },
                 {
@@ -164,13 +178,15 @@ export function WindowGroupTabs() {
               title={tx`Close ${tab.name}`}
               onClick={() => run(executeAction("window.closeTab", tab.label))}
             />
-            <IconButton
-              icon="external-link"
-              size="small"
-              className={styles.detach}
-              title={tx`Move ${tab.name} to New Window`}
-              onClick={() => run(executeAction("window.detachTab", tab.label))}
-            />
+            {!mac && (
+              <IconButton
+                icon="external-link"
+                size="small"
+                className={styles.detach}
+                title={tx`Move ${tab.name} to New Window`}
+                onClick={() => run(executeAction("window.detachTab", tab.label))}
+              />
+            )}
           </div>
         ))}
       </div>

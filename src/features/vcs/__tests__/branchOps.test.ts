@@ -28,7 +28,10 @@ vi.mock("@/platform/actions", async (original) => ({
   ...(await original<typeof import("@/platform/actions")>()),
   executeAction: mocks.executeAction,
 }));
-vi.mock("@/workbench/contributions", () => ({ notifications: () => ({ notify: mocks.notify, expire: vi.fn() }) }));
+vi.mock("@/workbench/contributions", () => ({
+  notifications: () => ({ notify: mocks.notify, expire: vi.fn() }),
+  OWNS_FILE_DROP: {},
+}));
 vi.mock("@/platform/ipc", async (original) => {
   const real = await original<typeof import("@/platform/ipc")>();
   return {
@@ -46,7 +49,15 @@ vi.mock("@/platform/ipc", async (original) => {
     },
   };
 });
-import { checkoutBranch, deleteBranch, deleteBranches, newBranch, newBranchInRepos, renameBranch } from "../branchOps";
+import {
+  checkoutBranch,
+  deleteBranch,
+  deleteBranches,
+  newBranch,
+  newBranchInRepos,
+  recentBranches,
+  renameBranch,
+} from "../branchOps";
 import { useVcs } from "../store";
 import { useProject } from "@/platform/project";
 import { useRemote } from "@/platform/remote";
@@ -101,6 +112,16 @@ it("prefills nothing when HEAD is detached", async () => {
 it("still suggests a remote branch's name without the prefix", async () => {
   await newBranch("origin/main");
   expect(mocks.prompt.mock.calls[0]?.[0].initial).toBe("main");
+});
+
+it("remembers a checkout among the recent branches of its own repository only", async () => {
+  localStorage.clear();
+  mocks.checkout.mockResolvedValue(ok({ kind: "done" }));
+  useVcs.setState({ roots: ["/p/front", "/p/back"] });
+  await checkoutBranch("main");
+  expect(recentBranches("/p/front")).toEqual(["feature/ui"]);
+  expect(recentBranches()).toEqual(["feature/ui"]);
+  expect(recentBranches("/p/back")).toEqual([]);
 });
 
 it("prefills the current branch in the multi-repository dialog too", async () => {

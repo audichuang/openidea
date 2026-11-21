@@ -1,5 +1,6 @@
 //! Commit history (topological walk) and per-commit changed files via gitoxide.
 
+use crate::log_index::LogIndex;
 use crate::repo::{gx, link_target, resolve, to_string};
 use crate::{ChangeKind, ChangedFile, Commit, LogOrder, LogQuery, Repo, RevisionChange};
 use gix::ObjectId;
@@ -56,10 +57,18 @@ impl TextFilter {
         Ok(match self {
             Self::Regex(re) => re.is_match(&index.message(repo, id)?),
             Self::Folded(needle) => index.message(repo, id)?.to_lowercase().contains(needle.as_str()),
-            Self::Selected { ids, hash } => {
-                ids.contains(&id) || hash.as_ref().is_some_and(|h| id.to_string().starts_with(h.as_str()))
-            }
+            Self::Selected { .. } => self.git_match(id).unwrap_or_default(),
         })
+    }
+
+    /// An exact decision from Git's message filter, available without opening a commit object.
+    fn git_match(&self, id: ObjectId) -> Option<bool> {
+        match self {
+            Self::Selected { ids, hash } => {
+                Some(ids.contains(&id) || hash.as_ref().is_some_and(|h| id.to_string().starts_with(h.as_str())))
+            }
+            _ => None,
+        }
     }
 }
 
@@ -128,6 +137,12 @@ fn revision_args(
     stdin
 }
 
+/// The log index, locked only around reads and writes: Git runs without it, so commit
+/// details and one-commit queries need not wait for a long history walk.
+fn lock(index: &std::sync::Mutex<LogIndex>) -> std::sync::MutexGuard<'_, LogIndex> {
+    index.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 fn run_log(
     r: &Repo,
     args: Vec<String>,
@@ -146,15 +161,18 @@ fn run_log(
 /// rename from any parent continues the history under the old path from that parent.
 /// Unlike `--follow`, this sees renames done in merges and history merged in from other
 /// branches.
-fn file_history(
+pub(crate) fn file_history(
     r: &Repo,
     scopes: &[String],
     rel: &str,
     first_parent: bool,
     cancel: &CancellationToken,
+    index: &std::sync::Mutex<LogIndex>,
 ) -> IdeResult<(HashSet<ObjectId>, HashMap<ObjectId, String>)> {
     let mut ids = HashSet::new();
     let mut paths = HashMap::new();
+    let repo = rename_precheck_repo(r);
+    let context = repo.as_ref().and_then(|repo| file_history_context(r, repo, index, cancel));
     let mut starts: std::collections::VecDeque<(Vec<String>, String)> =
         scopes.iter().map(|s| (s.split_whitespace().map(str::to_string).collect(), rel.to_string())).collect();
     let mut started = HashSet::new();
@@ -170,9 +188,23 @@ fn file_history(
             opts.push("--first-parent".into());
         }
         let run = |excluded: &[String]| -> IdeResult<Vec<(ObjectId, Option<char>)>> {
+            let key = context
+                .as_ref()
+                .filter(|_| revs.iter().all(|rev| ObjectId::from_hex(rev.as_bytes()).is_ok()))
+                .map(|context| history_cache_key("walk", &(context, &revs, &path, first_parent, excluded)));
+            if let Some(text) = key.as_deref().and_then(|key| lock(index).cached_file_history::<String>(key)) {
+                return Ok(parse_name_status_log(&text));
+            }
             let mut args = opts.clone();
             let stdin = revision_args(&mut args, &revs, excluded, Some(std::slice::from_ref(&path)));
-            Ok(parse_name_status_log(&run_log(r, args, stdin.as_deref(), cancel)?.stdout_str()))
+            let output = run_log(r, args, stdin.as_deref(), cancel)?;
+            let text = output.stdout_str();
+            // A path may have been a directory. In that case Git can use attributes
+            // to classify renames between its children, even with --no-follow.
+            if let Some(key) = key.filter(|_| output.stderr.is_empty() && only_literal_file(&text, &path)) {
+                lock(index).cache_file_history(&key, &text);
+            }
+            Ok(parse_name_status_log(&text))
         };
         let records = run(&[])?;
         // Where the file appears its history ends: what is behind that is another file of
@@ -180,7 +212,22 @@ fn file_history(
         // are those not behind a creation; the statuses come from the full listing (with
         // its parents excluded a merge shows no changes).
         let created: Vec<ObjectId> = records.iter().filter(|(_, s)| *s == Some('A')).map(|(id, _)| *id).collect();
-        let kept: Option<HashSet<ObjectId>> = if created.is_empty() {
+        let needed = !created.is_empty()
+            && match repo.as_ref() {
+                Some(repo) if !first_parent => {
+                    let listed: Vec<ObjectId> = records.iter().map(|(id, _)| *id).collect();
+                    crate::fork_file_history::exclusion_walk_needed(
+                        repo,
+                        &mut lock(index),
+                        &revs,
+                        &listed,
+                        &created,
+                        cancel,
+                    )?
+                }
+                _ => true,
+            };
+        let kept: Option<HashSet<ObjectId>> = if !needed {
             None
         } else {
             let excluded: Vec<String> = created.iter().map(|id| format!("^{id}^@")).collect();
@@ -196,20 +243,10 @@ fn file_history(
                 created.push(id);
             }
         }
-        for commit in created {
-            let line = crate::cli::run_cancellable(
-                r.root(),
-                &["rev-list", "--parents", "-n", "1", "--end-of-options", &commit.to_string()],
-                cancel,
-            )?
-            .stdout_str();
-            let parents: Vec<&str> =
-                line.split_whitespace().skip(1).take(if first_parent { 1 } else { usize::MAX }).collect();
-            for parent in parents {
-                if let Some(old) = renamed_from(r, parent, &commit.to_string(), &path, cancel)? {
-                    starts.push_back((vec![parent.to_string()], old));
-                }
-            }
+        for (parent, old) in
+            rename_sources(r, repo.as_ref(), &created, &path, first_parent, cancel, index, context.as_deref())?
+        {
+            starts.push_back((vec![parent], old));
         }
     }
     Ok((ids, paths))
@@ -241,6 +278,115 @@ fn parse_name_status_log(text: &str) -> Vec<(ObjectId, Option<char>)> {
     out
 }
 
+// The cache contains observations of a path walk, not a final graph projection.
+fn history_cache_key<T: serde::Serialize>(kind: &str, input: &T) -> String {
+    let mut hash = blake3::Hasher::new();
+    hash.update(kind.as_bytes());
+    hash.update(&serde_json::to_vec(input).expect("file history keys serialize strings and flags"));
+    hash.finalize().to_hex().to_string()
+}
+
+fn file_history_context(
+    r: &Repo,
+    repo: &gix::Repository,
+    index: &std::sync::Mutex<LogIndex>,
+    cancel: &CancellationToken,
+) -> Option<String> {
+    lock(index).db()?;
+    if [
+        "GIT_SHALLOW_FILE",
+        "GIT_LITERAL_PATHSPECS",
+        "GIT_GLOB_PATHSPECS",
+        "GIT_NOGLOB_PATHSPECS",
+        "GIT_ICASE_PATHSPECS",
+    ]
+    .iter()
+    .any(|name| std::env::var_os(name).is_some())
+        || grafts_in_effect(repo)
+    {
+        return None;
+    }
+    let shallow = repo.shallow_commits().ok()?.map(|ids| ids.iter().map(ToString::to_string).collect::<Vec<_>>());
+    let command = crate::cli::command(r.root()).ok()?;
+    let binary = command.get_program();
+    let metadata = std::fs::metadata(binary).ok()?;
+    let modified = metadata.modified().ok()?;
+    // Use the CLI's effective settings, including includes and environment overrides.
+    // Only the digest of the settings is persisted.
+    let config = crate::cli::run_cancellable(r.root(), &["config", "--null", "--list"], cancel).ok()?;
+    let config = blake3::hash(&config.stdout).to_hex().to_string();
+    Some(history_cache_key("context", &(binary.to_string_lossy(), modified, metadata.len(), config, shallow)))
+}
+
+/// Git walks grafted parents; gitoxide and the commit index see the recorded ones.
+pub(crate) fn grafts_in_effect(repo: &gix::Repository) -> bool {
+    std::env::var_os("GIT_GRAFT_FILE").is_some()
+        || !matches!(std::fs::metadata(repo.common_dir().join("info/grafts")), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+}
+
+fn only_literal_file(text: &str, path: &str) -> bool {
+    let mut tokens = text.split_terminator('\0');
+    while let Some(token) = tokens.next() {
+        let token = token.trim_start_matches('\n');
+        if token.is_empty() || ObjectId::from_hex(token.as_bytes()).is_ok() {
+            continue;
+        }
+        if !matches!(token, "A" | "M" | "D" | "T") || tokens.next() != Some(path) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Use the tree-only precheck only when Git and gitoxide see the same objects.
+fn rename_precheck_repo(r: &Repo) -> Option<gix::Repository> {
+    if [
+        "GIT_REPLACE_REF_BASE",
+        "GIT_NAMESPACE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_COMMON_DIR",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    ]
+    .iter()
+    .any(|key| std::env::var_os(key).is_some())
+    {
+        return None;
+    }
+    let repo = r.gix().ok()?;
+    {
+        // Inspect the refs themselves: the gitoxide object handle can have a
+        // different replacement policy, or predate a new loose replace ref.
+        let refs = repo.references().ok()?;
+        if refs.all().ok()?.any(|r| r.map_or(true, |r| r.name().as_bstr().starts_with(b"refs/replace/")))
+            || repo.objects.store_ref().replacements().next().is_some()
+        {
+            return None;
+        }
+    }
+    Some(repo)
+}
+
+/// Git rename detection needs a removal. If a tree is unavailable (e.g. in a
+/// partial clone), let the existing Git comparison decide instead.
+fn may_have_rename_source(repo: &gix::Repository, parent: &str, commit: &str) -> Option<bool> {
+    use gix::object::tree::diff::ChangeDetached;
+
+    let tree = |hex: &str| repo.find_commit(ObjectId::from_hex(hex.as_bytes()).ok()?).ok()?.tree().ok();
+    let before = tree(parent)?;
+    let after = tree(commit)?;
+    let mut opts = gix::diff::Options::default();
+    opts.no_locations().track_rewrites(None);
+    let changes = repo.diff_tree_to_tree(&before, &after, Some(opts)).ok()?;
+    Some(changes.into_iter().any(|change| match change {
+        ChangeDetached::Deletion { entry_mode, .. } => !entry_mode.is_tree(),
+        ChangeDetached::Modification { previous_entry_mode, entry_mode, .. } => {
+            // The same path changing type may be split into a deletion and an addition.
+            previous_entry_mode.kind() != entry_mode.kind()
+        }
+        _ => false,
+    }))
+}
+
 /// The path `path` had in `parent` when `commit` renamed it.
 fn renamed_from(
     r: &Repo,
@@ -248,9 +394,10 @@ fn renamed_from(
     commit: &str,
     path: &str,
     cancel: &CancellationToken,
-) -> IdeResult<Option<String>> {
+) -> IdeResult<Option<(String, bool)>> {
     let args = ["diff", "-M", "--name-status", "-z", "--diff-filter=R", "--no-ext-diff", parent, commit, "--"];
-    let text = crate::cli::run_cancellable(r.root(), &args, cancel)?.stdout_str();
+    let output = crate::cli::run_cancellable(r.root(), &args, cancel)?;
+    let text = output.stdout_str();
     let mut tokens = text.split('\0');
     while let Some(status) = tokens.next() {
         if !status.starts_with('R') {
@@ -258,17 +405,100 @@ fn renamed_from(
         }
         let (Some(old), Some(new)) = (tokens.next(), tokens.next()) else { break };
         if new == path {
-            return Ok(Some(old.to_string()));
+            return Ok(Some((old.to_string(), status == "R100" && output.stderr.is_empty())));
         }
     }
     Ok(None)
+}
+
+/// A reported R100 can also be a similarity score. Only identical tree entries
+/// prove that Git matched the objects in the exact-rename phase.
+fn exact_rename(repo: &gix::Repository, parent: &str, commit: &str, old: &str, new: &str) -> Option<bool> {
+    let entry = |hex: &str, path: &str| {
+        let id = ObjectId::from_hex(hex.as_bytes()).ok()?;
+        let tree = repo.find_commit(id).ok()?.tree().ok()?;
+        let entry = tree.lookup_entry_by_path(path).ok()??;
+        entry.mode().is_blob_or_symlink().then(|| entry.oid().to_owned())
+    };
+    Some(entry(parent, old)? == entry(commit, new)?)
+}
+
+/// Read parents in one walk, then ask Git about pairs that can have a rename source.
+#[allow(clippy::too_many_arguments)]
+fn rename_sources(
+    r: &Repo,
+    repo: Option<&gix::Repository>,
+    created: &[ObjectId],
+    path: &str,
+    first_parent: bool,
+    cancel: &CancellationToken,
+    index: &std::sync::Mutex<LogIndex>,
+    context: Option<&str>,
+) -> IdeResult<Vec<(String, String)>> {
+    if created.is_empty() {
+        return Ok(Vec::new());
+    }
+    let stdin: String = created.iter().map(|id| format!("{id}\n")).collect();
+    let key = context.map(|context| history_cache_key("creation-parents", &(context, &stdin)));
+    let parents = if let Some(parents) = key.as_deref().and_then(|key| lock(index).cached_file_history::<String>(key)) {
+        parents
+    } else {
+        let output = crate::cli::run_cancellable_stdin(
+            r.root(),
+            &["rev-list", "--parents", "--no-walk=unsorted", "--stdin"],
+            stdin.as_bytes(),
+            cancel,
+        )?;
+        let parents = output.stdout_str();
+        if let Some(key) = key.filter(|_| output.stderr.is_empty()) {
+            lock(index).cache_file_history(&key, &parents);
+        }
+        parents
+    };
+    let mut sources = Vec::new();
+    for line in parents.lines() {
+        let mut ids = line.split_whitespace();
+        let Some(commit) = ids.next() else { continue };
+        for parent in ids.take(if first_parent { 1 } else { usize::MAX }) {
+            if cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
+            }
+            let exact_key = context.map(|context| history_cache_key("exact-rename", &(context, parent, commit, path)));
+            if let Some(old) = exact_key.as_deref().and_then(|key| lock(index).cached_file_history::<String>(key)) {
+                sources.push((parent.to_owned(), old));
+                continue;
+            }
+            // A no-removal result depends only on the two trees, not on rename
+            // thresholds, attributes, or what branch currently reaches the commits.
+            let key = context.map(|_| history_cache_key("no-rename-source", &(parent, commit)));
+            if key.as_deref().and_then(|key| lock(index).cached_file_history::<bool>(key)) == Some(true) {
+                continue;
+            }
+            if repo.and_then(|repo| may_have_rename_source(repo, parent, commit)) == Some(false) {
+                if let Some(key) = key {
+                    lock(index).cache_file_history(&key, &true);
+                }
+                continue;
+            }
+            // Use git diff's configured semantics for candidates, including gitlinks
+            // hidden by diff.ignoreSubmodules (git diff-tree treats them differently).
+            if let Some((old, exact_score)) = renamed_from(r, parent, commit, path, cancel)? {
+                if let Some(key) = exact_key.filter(|_| {
+                    exact_score && repo.and_then(|repo| exact_rename(repo, parent, commit, &old, path)) == Some(true)
+                }) {
+                    lock(index).cache_file_history(&key, &old);
+                }
+                sources.push((parent.to_owned(), old));
+            }
+        }
+    }
+    Ok(sources)
 }
 
 pub(crate) fn log(r: &Repo, q: &LogQuery, cancel: &CancellationToken) -> IdeResult<Vec<Commit>> {
     if cancel.is_cancelled() {
         return Err(IdeError::cancelled());
     }
-    let mut index = r.log_index.lock().unwrap_or_else(|p| p.into_inner());
     let result = if q.summary_only {
         let mut all = q.clone();
         all.skip = 0;
@@ -284,14 +514,22 @@ pub(crate) fn log(r: &Repo, q: &LogQuery, cancel: &CancellationToken) -> IdeResu
         let shallow: HashSet<ObjectId> = shallow_vec.iter().copied().collect();
         let refs = r.log_refs()?;
         let key = format!("{}:{refs:?}:{shallow_vec:?}", serde_json::to_string(&all).map_err(gx)?);
-        let cached = index.views.get(&key).cloned();
+        let cached = lock(&r.log_index).views.get(&key).cloned();
         let view = if let Some(cached) = cached {
             cached
         } else {
             // Immutable metadata is reused across roots, filters, merges and ref changes.
             all.request = q.request;
-            let rows =
-                std::sync::Arc::new(crate::log_index::IndexedView::new(log_indexed_rows(r, &all, cancel, &mut index)?));
+            // Marks for the HEAD in the key, not the one checked out when the walk ends.
+            let head = refs.get("HEAD").and_then(|id| ObjectId::from_hex(id.as_bytes()).ok());
+            let rows = std::sync::Arc::new(crate::log_index::IndexedView::new(log_indexed_rows(
+                r,
+                &all,
+                head,
+                cancel,
+                &r.log_index,
+            )?));
+            let mut index = lock(&r.log_index);
             if index.views.len() >= 4 {
                 index.views.clear();
             }
@@ -313,6 +551,7 @@ pub(crate) fn log(r: &Repo, q: &LogQuery, cancel: &CancellationToken) -> IdeResu
         let retain = q.retain_until.as_ref().and_then(|id| find_pos(id)).map(|i| i + 1).unwrap_or(0);
         let limit = if q.limit == 0 { usize::MAX } else { (q.limit as usize).max(retain.saturating_sub(start)) };
         let total = view.rows.len() as u32;
+        let mut index = lock(&r.log_index);
         let db = index.db().cloned();
         let txn = db.as_ref().and_then(|db| db.begin_read().ok());
         let table = txn.as_ref().and_then(|t| t.open_table(crate::log_index::COMMITS).ok());
@@ -339,9 +578,9 @@ pub(crate) fn log(r: &Repo, q: &LogQuery, cancel: &CancellationToken) -> IdeResu
         }
         Ok(result)
     } else {
-        log_indexed(r, q, cancel, &mut index)
+        log_indexed(r, q, cancel, &r.log_index)
     };
-    index.flush();
+    lock(&r.log_index).flush();
     result
 }
 
@@ -382,12 +621,13 @@ fn materialize_row(
     Ok(commit)
 }
 
+/// Points the shared current-branch set at `head`, the HEAD the caller's rows are for.
 fn update_head_reachable(
     repo: &gix::Repository,
     index: &mut crate::log_index::LogIndex,
+    head: Option<ObjectId>,
     cancel: &CancellationToken,
 ) -> IdeResult<()> {
-    let head = repo.head_id().ok().map(|id| id.detach());
     let shallow_stamp =
         repo.shallow_file().ok().and_then(|path| std::fs::metadata(path).ok()).and_then(|m| m.modified().ok());
     let stamp = head.map(|id| (id, shallow_stamp));
@@ -441,7 +681,7 @@ fn log_indexed(
     r: &Repo,
     q: &LogQuery,
     cancel: &CancellationToken,
-    index: &mut crate::log_index::LogIndex,
+    shared: &std::sync::Mutex<LogIndex>,
 ) -> IdeResult<Vec<Commit>> {
     let repo = r.gix()?;
     let shallow: HashSet<ObjectId> =
@@ -477,7 +717,9 @@ fn log_indexed(
         && q.since_ms.is_none()
         && q.until_ms.is_none()
     {
-        update_head_reachable(&repo, index, cancel)?;
+        let mut guard = lock(shared);
+        let index = &mut *guard;
+        update_head_reachable(&repo, index, repo.head_id().ok().map(|id| id.detach()), cancel)?;
         let id = tips[0];
         let record = index.get(&repo, id)?;
         let mut commit = (*record).clone();
@@ -507,7 +749,9 @@ fn log_indexed(
         commit.message_truncated = false;
         return Ok(vec![commit]);
     }
-    let rows = log_indexed_rows(r, q, cancel, index)?;
+    let rows = log_indexed_rows(r, q, repo.head_id().ok().map(|id| id.detach()), cancel, shared)?;
+    let mut guard = lock(shared);
+    let index = &mut *guard;
     let db = index.db().cloned();
     let txn = db.as_ref().and_then(|db| db.begin_read().ok());
     let table = txn.as_ref().and_then(|t| t.open_table(crate::log_index::COMMITS).ok());
@@ -524,8 +768,9 @@ fn log_indexed(
 fn log_indexed_rows(
     r: &Repo,
     q: &LogQuery,
+    head: Option<ObjectId>,
     cancel: &CancellationToken,
-    index: &mut crate::log_index::LogIndex,
+    shared: &std::sync::Mutex<LogIndex>,
 ) -> IdeResult<Vec<crate::log_index::IndexedRow>> {
     if cancel.is_cancelled() {
         return Err(IdeError::cancelled());
@@ -576,7 +821,7 @@ fn log_indexed_rows(
                 }
             }
         }
-        Some(sort_subset(&repo, ids, q.order, q.first_parent, &shallow, cancel, &index.nodes)?)
+        Some(sort_subset(&repo, ids, q.order, q.first_parent, &shallow, cancel, &lock(shared).nodes)?)
     } else {
         None
     };
@@ -595,7 +840,7 @@ fn log_indexed_rows(
     } else if q.follow && paths.len() == 1 && !r.root().join(&paths[0]).is_dir() {
         // Following renames is for a file: a directory gains files all the time, and each
         // creation would cut its history short.
-        let (ids, at) = file_history(r, &scopes, &paths[0], q.first_parent, cancel)?;
+        let (ids, at) = file_history(r, &scopes, &paths[0], q.first_parent, cancel, shared)?;
         history_paths = at;
         Some(ids)
     } else {
@@ -603,14 +848,17 @@ fn log_indexed_rows(
     };
     let authors: Vec<_> =
         q.author.iter().chain(&q.authors).map(|a| a.trim().to_lowercase()).filter(|a| !a.is_empty()).collect();
-    update_head_reachable(&repo, index, cancel)?;
     let mut range_ids_set = range_ids.as_ref().map(|ids| ids.iter().copied().collect::<HashSet<_>>());
     type Walk<'a> = Box<dyn Iterator<Item = IdeResult<ObjectId>> + 'a>;
     let walk: Walk<'_> = if let Some(ids) = range_ids {
         Box::new(ids.into_iter().map(Ok))
     } else if q.summary_only {
-        let ids = index.graph(&repo, &tips, &shallow, q.first_parent, cancel)?;
-        Box::new(sort_subset(&repo, ids, q.order, q.first_parent, &shallow, cancel, &index.nodes)?.into_iter().map(Ok))
+        let ids = lock(shared).graph(&repo, &tips, &shallow, q.first_parent, cancel)?;
+        Box::new(
+            sort_subset(&repo, ids, q.order, q.first_parent, &shallow, cancel, &lock(shared).nodes)?
+                .into_iter()
+                .map(Ok),
+        )
     } else if repo.is_shallow().unwrap_or(false) || q.request.is_some() {
         // The process can be interrupted even during indegree preparation. Git also
         // respects shallow boundaries while retaining a topological order.
@@ -677,11 +925,20 @@ fn log_indexed_rows(
     };
     let walk: Walk<'_> = if q.order == LogOrder::Standard {
         let ids = walk.collect::<IdeResult<Vec<_>>>()?;
-        Box::new(sort_subset(&repo, ids, q.order, q.first_parent, &shallow, cancel, &index.nodes)?.into_iter().map(Ok))
+        Box::new(
+            sort_subset(&repo, ids, q.order, q.first_parent, &shallow, cancel, &lock(shared).nodes)?
+                .into_iter()
+                .map(Ok),
+        )
     } else {
         walk
     };
     let text = q.text.as_deref().map(|t| TextFilter::new(r, &scopes, q, t, cancel)).transpose()?.flatten();
+    let mut guard = lock(shared);
+    let index = &mut *guard;
+    // Under the guard that builds the rows: a query run meanwhile (after a branch switch)
+    // may have moved the shared set to another HEAD.
+    update_head_reachable(&repo, index, head, cancel)?;
     let db = index.db().cloned();
     let txn = db.as_ref().and_then(|db| db.begin_read().ok());
     let table = txn.as_ref().and_then(|t| t.open_table(crate::log_index::COMMITS).ok());
@@ -970,20 +1227,30 @@ impl Visibility<'_> {
         if let Some(shown) = self.matches.get(&id) {
             return Ok(*shown);
         }
+        let text = self.text.as_ref();
+        let git_match = text.and_then(|text| text.git_match(id));
         let shown = if (!self.index.has_cached(&id) && !repo.has_object(id))
             || self.path_ids.as_ref().is_some_and(|ids| !ids.contains(&id))
             || self.range_ids.as_ref().is_some_and(|ids| !ids.contains(&id))
+            || git_match == Some(false)
         {
             false
-        } else if self.authors.is_empty()
-            && self.query.speed_search.is_none()
-            && self.text.is_none()
+        } else if self.query.speed_search.is_none()
+            // The shallow boundary has no graph parents, but an existing text
+            // filter uses the actual parents to decide whether it was a merge.
+            && ((text.is_none() && self.authors.is_empty()) || !self.query.no_merges || !self.shallow.contains(&id))
             && let Some((parents, time_s)) = self.index.nodes.get(&id)
         {
             let time = (*time_s as f64) * 1000.0;
             !(self.query.no_merges && parents.len() > 1)
                 && self.query.since_ms.is_none_or(|s| time >= s)
                 && self.query.until_ms.is_none_or(|u| time < u)
+                && (self.authors.is_empty()
+                    || self.index.author_matches(repo, id, |name, email| self.author_matches(name, email))?)
+                && match text {
+                    Some(text) if git_match.is_none() => text.matches(repo, self.index, id)?,
+                    _ => true,
+                }
         } else {
             let commit = self.index.get_with_table(repo, id, self.table)?;
             let time = commit.commit_time_ms;
@@ -1011,24 +1278,26 @@ impl Visibility<'_> {
                         })
                     })
                 })
-                && (self.authors.is_empty() || {
-                    let name = commit.author.to_lowercase();
-                    let email = commit.email.to_lowercase();
-                    self.authors.iter().any(|a| {
-                        if self.query.authors_exact {
-                            crate::log_index::matches_user(a, &name, &email)
-                        } else {
-                            name.contains(a.as_str()) || email.contains(a.as_str())
-                        }
-                    })
-                })
-                && match &self.text {
-                    Some(text) => text.matches(repo, self.index, id)?,
-                    None => true,
+                && (self.authors.is_empty() || self.author_matches(&commit.author, &commit.email))
+                && match text {
+                    Some(text) if git_match.is_none() => text.matches(repo, self.index, id)?,
+                    _ => true,
                 }
         };
         self.matches.insert(id, shown);
         Ok(shown)
+    }
+
+    fn author_matches(&self, name: &str, email: &str) -> bool {
+        let name = name.to_lowercase();
+        let email = email.to_lowercase();
+        self.authors.iter().any(|a| {
+            if self.query.authors_exact {
+                crate::log_index::matches_user(a, &name, &email)
+            } else {
+                name.contains(a.as_str()) || email.contains(a.as_str())
+            }
+        })
     }
 
     fn parents(&mut self, repo: &gix::Repository, parents: &[ObjectId]) -> IdeResult<Vec<ObjectId>> {

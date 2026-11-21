@@ -4,7 +4,7 @@
  * workbench events it subscribed to (`events.subscribe`), reported in
  * batches.
  */
-import { readClipboardPlainText, readClipboardPng, writeClipboardText } from "@/platform/clipboard";
+import { readClipboardPlainText, readClipboardPng, readClipboardText, writeClipboardText } from "@/platform/clipboard";
 import { providePluginTestParser, providePluginTestSelector } from "@/workbench/contributions";
 import {
   contentTabData,
@@ -41,7 +41,7 @@ import { isTauri, onIdeEvent } from "@/platform/ipc";
 import { onLocalDiagnostics } from "@/platform/localDiagnostics";
 import { isOpenable, openExternalUrl } from "@/platform/openUrl";
 import { tx, VerbatimTextContext } from "@/platform/i18n";
-import { useProject } from "@/platform/project";
+import { basename, useProject } from "@/platform/project";
 import { isRemoteWindow } from "@/platform/remote";
 import { ipcPath } from "@/platform/paths";
 import { shortcutLabel } from "@/platform/keymap";
@@ -525,6 +525,16 @@ async function answerCommit(requestId: string, request: CommitRequest) {
  * window's plugin runs on its server, so the user confirms first. A read that fails is reported, not
  * sent as an empty clipboard.
  */
+/**
+ * The clipboard's text for a plugin. The app's native read reports copied files as no text (its paste
+ * callers read the file list then); the system's text for files is their names, so give those.
+ */
+async function pluginClipboardText(): Promise<string> {
+  const text = await readClipboardPlainText();
+  if (text || !isTauri()) return text;
+  return readClipboardText(undefined, (paths) => paths.map(basename).join("\n"));
+}
+
 async function answerClipboard(requestId: string, pluginId: string) {
   const controller = new AbortController();
   openPrompts.set(requestId, controller);
@@ -533,7 +543,7 @@ async function answerClipboard(requestId: string, pluginId: string) {
     if (isRemoteWindow() && !(await confirmRemoteClipboardRead(pluginId, controller.signal))) {
       answer = { kind: "refused" };
     } else {
-      const [text, png] = await Promise.allSettled([readClipboardPlainText(), readClipboardPng()]);
+      const [text, png] = await Promise.allSettled([pluginClipboardText(), readClipboardPng()]);
       const plain = (text.status === "fulfilled" && text.value) || null;
       const image = png.status === "fulfilled" ? png.value : null;
       // Either kind read is an answer; nothing read and a failure is not an empty clipboard.

@@ -171,12 +171,76 @@ struct DocState {
     /// Disk state we last loaded or wrote; changes matching it are our own.
     disk_mtime: f64,
     disk_len: u64,
-    /// The file changed on disk while this buffer had unsaved changes; autosave leaves it
-    /// alone until the user saves explicitly or the buffer is reloaded.
-    disk_conflict: bool,
+    /// Hash of the bytes the file held then; `None` when it could not be read.
+    disk_hash: Option<blake3::Hash>,
+    /// Text as of that disk state: an edit that returns to it (undo) leaves the
+    /// document clean. `None` once a pending encoding / line-ending / BOM change
+    /// makes the buffer differ from the file whatever the text, and for large files.
+    clean_text: Option<Document>,
+    /// External disk state already reported as conflicting with unsaved changes.
+    conflict: Option<DiskStamp>,
     closed: bool,
     /// URI of a virtual document (no file behind it).
     uri: Option<String>,
+}
+
+/// A file's state on disk: modification time, length and a hash of its bytes
+/// (`None`: missing or unreadable).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DiskStamp {
+    mtime: f64,
+    len: u64,
+    hash: Option<blake3::Hash>,
+}
+
+impl DiskStamp {
+    fn read(path: &Path) -> Self {
+        match std::fs::metadata(path) {
+            Ok(meta) => Self { mtime: ide_vfs::mtime_ms(&meta), len: meta.len(), hash: file_hash(path) },
+            Err(_) => Self { mtime: 0.0, len: 0, hash: None },
+        }
+    }
+}
+
+/// What [`Documents::reload_locked`] did.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Reload {
+    /// The buffer holds the file's text and matches the disk.
+    Reloaded,
+    /// The file is no longer text (binary): the buffer and its baseline were left as they were.
+    Unloadable,
+}
+
+fn file_hash(path: &Path) -> Option<blake3::Hash> {
+    std::fs::read(path).ok().map(|bytes| blake3::hash(&bytes))
+}
+
+impl DocState {
+    /// The buffer matches the file on disk again, read or written at `mtime`. `hash` is of
+    /// the bytes that were decoded or written, never of a second read, which could see an
+    /// external write the buffer does not hold.
+    fn synced(&mut self, mtime: f64, hash: Option<blake3::Hash>) {
+        self.disk_mtime = mtime;
+        self.disk_len = disk_len(&self.path);
+        self.disk_hash = hash;
+        self.conflict = None;
+        self.clean_text = (!self.large).then(|| self.doc.clone());
+    }
+
+    /// Disk state of a file whose bytes changed since we last read or wrote it. The
+    /// bytes decide, not the stamp: a same-length write can restore the mtime, and a
+    /// touch or stash pop rewrites identical bytes. A missing or unreadable file
+    /// counts as changed. Identical bytes adopt the new stamp.
+    fn changed_on_disk(&mut self) -> Option<DiskStamp> {
+        let current = DiskStamp::read(&self.path);
+        if current.hash.is_none() || current.hash != self.disk_hash {
+            return Some(current);
+        }
+        self.disk_mtime = current.mtime;
+        self.disk_len = current.len;
+        self.conflict = None;
+        None
+    }
 }
 
 fn keys_for(path: &Path) -> Vec<PathBuf> {
@@ -264,9 +328,7 @@ impl Documents {
                 let loaded = Self::load_as(&st.path, &st.encoding, enabled)?;
                 self.replace_locked(id, st, &loaded.text)?;
                 st.native_to_ascii = enabled;
-                st.disk_mtime = loaded.mtime_ms;
-                st.disk_len = disk_len(&st.path);
-                st.disk_conflict = false;
+                st.synced(loaded.mtime_ms, loaded.content_hash);
                 Ok(())
             });
             if let Err(e) = result {
@@ -460,10 +522,14 @@ impl Documents {
             encoding_chosen: false,
             disk_mtime: loaded.mtime_ms,
             disk_len: disk_len(path),
-            disk_conflict: false,
+            disk_hash: loaded.content_hash,
+            clean_text: None,
+            conflict: None,
             closed: false,
             uri: None,
         };
+        let mut state = state;
+        state.clean_text = (!state.large).then(|| state.doc.clone());
         let slot: Slot = Arc::new(Mutex::new(state));
         let st = slot.lock();
         let id = {
@@ -533,7 +599,9 @@ impl Documents {
             encoding_chosen: false,
             disk_mtime: 0.0,
             disk_len: 0,
-            disk_conflict: false,
+            disk_hash: None,
+            clean_text: None,
+            conflict: None,
             closed: false,
             uri: Some(uri.to_owned()),
         };
@@ -592,9 +660,11 @@ impl Documents {
             encoding_chosen: false,
             disk_mtime: 0.0,
             disk_len: 0,
-            disk_conflict: false,
             closed: false,
             uri: Some(key.to_string_lossy().into_owned()),
+            disk_hash: None,
+            clean_text: None,
+            conflict: None,
         };
         let slot: Slot = Arc::new(Mutex::new(state));
         let st = slot.lock();
@@ -699,9 +769,22 @@ impl Documents {
                     tracing::warn!("edit of {} rejected: {e}", st.path.display());
                 }
             })?;
-            self.set_dirty(doc, st, true);
+            let clean = st.clean_text.as_ref().is_some_and(|clean| clean.same_text(&st.doc));
+            // Back to the text of a file that changed on disk meanwhile (its watcher event was
+            // spent warning about the unsaved changes): show what the file holds now.
+            let reload = clean && st.uri.is_none() && st.changed_on_disk().is_some();
+            self.set_dirty(doc, st, !clean || reload);
             self.notify_changed(doc, st, &applied, &edits);
-            Ok(st.doc.version())
+            let version = st.doc.version();
+            if reload {
+                // A file that cannot be loaded (now binary) keeps the buffer dirty on its old baseline.
+                match self.reload_locked(doc, st, false) {
+                    Ok(Reload::Reloaded) => self.set_dirty(doc, st, false),
+                    Ok(Reload::Unloadable) => tracing::warn!("reload {}: not a text file now", st.path.display()),
+                    Err(e) => tracing::warn!("reload {}: {e}", st.path.display()),
+                }
+            }
+            Ok(version)
         })
     }
 
@@ -818,34 +901,18 @@ impl Documents {
     /// Writes the document with its original encoding, BOM and line ending.
     /// A clean document is not rewritten.
     pub fn save(&self, doc: DocId) -> IdeResult<()> {
-        self.with_doc(doc, |st| self.write(doc, st))
-    }
-
-    /// An automatic save (switching tabs, the window losing focus): `false` when the file changed
-    /// on disk after this buffer was edited, which only an explicit save may overwrite.
-    pub fn autosave(&self, doc: DocId) -> IdeResult<bool> {
         self.with_doc(doc, |st| {
-            if st.dirty && st.disk_conflict {
-                return Ok(false);
-            }
-            self.write(doc, st).map(|()| true)
-        })
-    }
-
-    fn write(&self, doc: DocId, st: &mut DocState) -> IdeResult<()> {
-        {
             if !st.dirty || st.uri.is_some() {
                 return Ok(());
             }
             let text = st.doc.text_for_save();
-            let mtime = if st.native_to_ascii {
+            let (mtime, hash) = if st.native_to_ascii {
                 ide_vfs::save_properties_text(&st.path, &text)?
             } else {
-                ide_vfs::save_text(&st.path, &text, &st.encoding, st.has_bom)?
+                let bytes = ide_vfs::encode(&text, &st.encoding, st.has_bom)?;
+                (ide_vfs::write_atomic(&st.path, &bytes)?, blake3::hash(&bytes))
             };
-            st.disk_mtime = mtime;
-            st.disk_len = disk_len(&st.path);
-            st.disk_conflict = false;
+            st.synced(mtime, Some(hash));
             self.set_dirty(doc, st, false);
             if st.observed {
                 let text = st.doc.text();
@@ -854,7 +921,7 @@ impl Documents {
                 }
             }
             Ok(())
-        }
+        })
     }
 
     /// Save As for an untitled buffer: writes it to `target` (creating missing
@@ -886,10 +953,11 @@ impl Documents {
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            let mtime = if st.native_to_ascii {
+            let (mtime, hash) = if st.native_to_ascii {
                 ide_vfs::save_properties_text(&target, &text)?
             } else {
-                ide_vfs::save_text(&target, &text, &st.encoding, st.has_bom)?
+                let bytes = ide_vfs::encode(&text, &st.encoding, st.has_bom)?;
+                (ide_vfs::write_atomic(&target, &bytes)?, blake3::hash(&bytes))
             };
             // Re-key the registry before anyone opens the new path in parallel.
             let keys = keys_for(&target);
@@ -923,8 +991,7 @@ impl Documents {
             st.ui_mode = ui_mode;
             st.editorconfig = if defaults.editorconfig { self.editorconfig.resolve(&st.path) } else { None };
             st.native_to_ascii = defaults.native_to_ascii_for(&st.path);
-            st.disk_mtime = mtime;
-            st.disk_len = disk_len(&st.path);
+            st.synced(mtime, Some(hash));
             self.set_dirty(doc, st, false);
             let info = Self::info(doc, st);
             if st.observed {
@@ -939,6 +1006,34 @@ impl Documents {
             }
             Ok(info)
         })
+    }
+
+    /// [`save`](Self::save) for an implicit save (focus loss, tab switch): refuses
+    /// to overwrite a file that changed on disk since the buffer last matched it,
+    /// even when no watcher event reported the change, and warns once per disk
+    /// state instead. `Ok(false)`: not saved; the document stays dirty until an
+    /// explicit save overwrites the file or Reload from Disk discards the buffer.
+    pub fn autosave(&self, doc: DocId) -> IdeResult<bool> {
+        let refused = self.with_doc(doc, |st| {
+            if !st.dirty || st.uri.is_some() {
+                return Ok(false);
+            }
+            let Some(stamp) = st.changed_on_disk() else { return Ok(false) };
+            if st.conflict != Some(stamp) {
+                st.conflict = Some(stamp);
+                self.warn_changed_on_disk(doc, st);
+            }
+            Ok(true)
+        })?;
+        if refused {
+            return Ok(false);
+        }
+        self.save(doc).map(|()| true)
+    }
+
+    /// Reported once per disk state; the editor offers to load the file or keep the buffer.
+    fn warn_changed_on_disk(&self, doc: DocId, st: &DocState) {
+        self.sink.emit(IdeEvent::DocDiskConflict { doc, path: st.path.to_string_lossy().into_owned() });
     }
 
     /// Saves every dirty document; reports the first failure after trying all.
@@ -1085,6 +1180,7 @@ impl Documents {
                 return Err(read_only_error(&st.path));
             }
             st.doc.set_line_ending(le);
+            st.clean_text = None;
             self.set_dirty(doc, st, true);
             Ok(())
         })
@@ -1112,10 +1208,8 @@ impl Documents {
                 st.encoding = loaded.encoding.clone();
                 st.encoding_chosen = true;
                 st.has_bom = loaded.has_bom;
-                st.disk_mtime = loaded.mtime_ms;
-                st.disk_len = disk_len(&st.path);
-                st.disk_conflict = false;
                 self.replace_locked(doc, st, &loaded.text)?;
+                st.synced(loaded.mtime_ms, loaded.content_hash);
                 // Reloading is not an edit: the buffer matches the file again.
                 self.set_dirty(doc, st, false);
                 return Ok(DocumentEncoding { encoding: st.encoding.clone(), has_bom: st.has_bom });
@@ -1132,6 +1226,7 @@ impl Documents {
             st.encoding = encoding.to_owned();
             st.encoding_chosen = true;
             st.has_bom = has_bom;
+            st.clean_text = None;
             self.set_dirty(doc, st, true);
             Ok(DocumentEncoding { encoding: st.encoding.clone(), has_bom: st.has_bom })
         })
@@ -1146,10 +1241,8 @@ impl Documents {
             }
             let loaded = Self::load_as(&st.path, &st.encoding, st.native_to_ascii)?;
             st.has_bom = loaded.has_bom;
-            st.disk_mtime = loaded.mtime_ms;
-            st.disk_len = disk_len(&st.path);
-            st.disk_conflict = false;
             self.replace_locked(doc, st, &loaded.text)?;
+            st.synced(loaded.mtime_ms, loaded.content_hash);
             self.set_dirty(doc, st, false);
             Ok(())
         })
@@ -1234,6 +1327,7 @@ impl Documents {
             }
             if st.has_bom != has_bom {
                 st.has_bom = has_bom;
+                st.clean_text = None;
                 self.set_dirty(doc, st, true);
             }
             Ok(DocumentEncoding { encoding: st.encoding.clone(), has_bom: st.has_bom })
@@ -1263,18 +1357,79 @@ impl Documents {
                     .then(|| st.path.clone())
             })
             .collect();
-        self.reload_from_disk(&paths, force_clean, true);
+        self.refresh_from_disk(&paths, force_clean, true);
+    }
+
+    /// Re-reads the document from disk and replaces its text (minimal diff).
+    /// `keep_codec` re-reads with the document's selected encoding instead of
+    /// re-detecting it.
+    fn reload_locked(&self, id: DocId, st: &mut DocState, keep_codec: bool) -> IdeResult<Reload> {
+        let loaded = if keep_codec {
+            Self::load_as(&st.path, &st.encoding, st.native_to_ascii)?
+        } else {
+            let defaults = self.file_defaults();
+            let native_to_ascii = defaults.native_to_ascii_for(&st.path);
+            let loaded = if st.encoding_chosen {
+                Self::load_as(&st.path, &st.encoding, native_to_ascii)?
+            } else {
+                Self::load_with_defaults(&st.path, &defaults)?
+            };
+            st.native_to_ascii = native_to_ascii;
+            loaded
+        };
+        if st.binary {
+            // A binary placeholder holds no text: only its disk state follows the file.
+            st.disk_mtime = loaded.mtime_ms;
+            st.disk_len = disk_len(&st.path);
+            st.disk_hash = loaded.content_hash;
+            return Ok(Reload::Reloaded);
+        }
+        if loaded.binary {
+            // The text buffer cannot show this file: keep it, its baseline and its conflict, so
+            // nothing treats the buffer as matching the disk and autosave writes over it.
+            return Ok(Reload::Unloadable);
+        }
+        st.encoding = loaded.encoding;
+        st.has_bom = loaded.has_bom;
+        st.large = loaded.large;
+        let ec_eol = st.editorconfig.as_ref().and_then(|ec| ec.end_of_line);
+        st.doc.set_line_ending(ec_eol.unwrap_or_else(|| LineEnding::detect(&loaded.text)));
+        self.replace_locked(id, st, &loaded.text)?;
+        st.synced(loaded.mtime_ms, loaded.content_hash);
+        Ok(Reload::Reloaded)
+    }
+
+    /// Reloads the open documents among `paths` from disk, discarding unsaved
+    /// changes. For files the user explicitly had overwritten (e.g. Paste and
+    /// Restore), where the editor must end up showing exactly the disk content.
+    pub fn reload_from_disk(&self, paths: &[PathBuf]) {
+        for path in paths {
+            let Some(id) = self.by_path(path) else { continue };
+            let result = self.with_doc(id, |st| {
+                if st.uri.is_some() || st.binary || ide_vfs::is_archive_path(&st.path) {
+                    return Ok(());
+                }
+                match self.reload_locked(id, st, false)? {
+                    Reload::Reloaded => self.set_dirty(id, st, false),
+                    Reload::Unloadable => tracing::warn!("reload {}: not a text file now", st.path.display()),
+                }
+                Ok(())
+            });
+            if let Err(e) = result {
+                tracing::warn!("reload {}: {e}", path.display());
+            }
+        }
     }
 
     /// Re-reads from disk after an external change. Clean documents reload
     /// silently; dirty ones are left alone and reported via `IdeEvent::DocDiskConflict`.
     /// Changes matching our own last save are ignored.
     pub fn on_disk_changed(&self, paths: &[PathBuf]) {
-        self.reload_from_disk(paths, false, false);
+        self.refresh_from_disk(paths, false, false);
     }
 
     /// `dedup`: blind scans skip files whose `(mtime, length)` stamp still matches.
-    fn reload_from_disk(&self, paths: &[PathBuf], force_clean: bool, dedup: bool) {
+    fn refresh_from_disk(&self, paths: &[PathBuf], force_clean: bool, dedup: bool) {
         for path in paths {
             let Some(id) = self.by_path(path) else { continue };
             let result = self.with_doc(id, |st| {
@@ -1288,13 +1443,12 @@ impl Documents {
                 // echo our own saves: a clean document whose stamp matches is re-checked by
                 // bytes — an external write that preserved both length and mtime differs
                 // from what saving this buffer would write, our own save's echo does not.
-                // Native-to-ascii properties documents and dirty documents keep the stamp
-                // dedup: the former's disk bytes legitimately differ from the buffer text,
-                // the latter warn once per disk state.
+                // Native-to-ascii properties documents keep the stamp dedup: their disk bytes
+                // legitimately differ from the buffer text. Dirty documents compare the file's
+                // bytes with the ones they are based on, and warn once per disk state.
                 if unchanged
                     && (!force_clean || st.dirty)
                     && (dedup
-                        || st.dirty
                         || st.native_to_ascii
                         || ide_vfs::encode(&st.doc.text_for_save(), &st.encoding, st.has_bom)
                             .map(|bytes| bytes == std::fs::read(&st.path).unwrap_or_default())
@@ -1303,38 +1457,16 @@ impl Documents {
                     return Ok(());
                 }
                 if st.dirty {
-                    st.disk_mtime = mtime;
-                    st.disk_len = meta.len();
-                    st.disk_conflict = true;
-                    self.sink.emit(IdeEvent::DocDiskConflict { doc: id, path: st.path.to_string_lossy().into_owned() });
+                    // The disk state the buffer is based on stays: autosave must not overwrite this.
+                    if let Some(stamp) = st.changed_on_disk()
+                        && st.conflict != Some(stamp)
+                    {
+                        st.conflict = Some(stamp);
+                        self.warn_changed_on_disk(id, st);
+                    }
                     return Ok(());
                 }
-                let loaded = if force_clean {
-                    Self::load_as(&st.path, &st.encoding, st.native_to_ascii)?
-                } else {
-                    let defaults = self.file_defaults();
-                    let native_to_ascii = defaults.native_to_ascii_for(&st.path);
-                    let loaded = if st.encoding_chosen {
-                        Self::load_as(&st.path, &st.encoding, native_to_ascii)?
-                    } else {
-                        Self::load_with_defaults(&st.path, &defaults)?
-                    };
-                    st.native_to_ascii = native_to_ascii;
-                    loaded
-                };
-                st.disk_mtime = loaded.mtime_ms;
-                st.disk_len = disk_len(&st.path);
-                st.disk_conflict = false;
-                if loaded.binary || st.binary {
-                    return Ok(());
-                }
-                st.encoding = loaded.encoding;
-                st.has_bom = loaded.has_bom;
-                st.large = loaded.large;
-                let ec_eol = st.editorconfig.as_ref().and_then(|ec| ec.end_of_line);
-                st.doc.set_line_ending(ec_eol.unwrap_or_else(|| LineEnding::detect(&loaded.text)));
-                self.replace_locked(id, st, &loaded.text)?;
-                Ok(())
+                self.reload_locked(id, st, force_clean).map(drop)
             });
             if let Err(e) = result {
                 tracing::warn!("reload {}: {e}", path.display());
@@ -1349,4 +1481,23 @@ fn first_line_on_disk(path: &Path) -> Option<String> {
     let mut line = String::new();
     std::io::BufReader::new(std::fs::File::open(path).ok()?.take(1024)).read_line(&mut line).ok()?;
     Some(line)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    /// The baseline is the hash of the bytes the buffer was decoded from, not of a second
+    /// read: this kernel file holds different bytes on every read.
+    #[test]
+    fn open_hashes_the_bytes_it_decoded() {
+        let docs = Documents::new(Arc::new(|_| {}), Box::new(|_, _| LanguageId::plain_text()));
+        let path = Path::new("/proc/sys/kernel/random/uuid");
+        let id = docs.open(path).unwrap().id;
+        docs.with_doc(id, |st| {
+            assert_eq!(st.disk_hash, Some(blake3::hash(st.doc.text().as_bytes())));
+            Ok(())
+        })
+        .unwrap();
+    }
 }

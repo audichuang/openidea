@@ -279,6 +279,7 @@ export function DiffEditor({
   onJumpToSource,
   onClose,
   fit = false,
+  allowSourceNavigation = true,
 }: {
   input: EditorInput;
   toolbarActions?: ReactNode;
@@ -297,6 +298,7 @@ export function DiffEditor({
    * toolbar, side-by-side panes always aligned, and not taking the editor tab's focus.
    */
   fit?: boolean;
+  allowSourceNavigation?: boolean;
 }) {
   const input_ = input.data as DiffData;
   // Read by the panes' listeners, which outlive a render.
@@ -344,6 +346,7 @@ export function DiffEditor({
   const leftKey = sideKey(left);
   const rightKey = sideKey(right);
   const contextKey = JSON.stringify(data.context ?? null);
+  const annotationsKey = useMemo(() => JSON.stringify(data.annotations ?? null), [data.annotations]);
   const dataRef = useRef(data);
   dataRef.current = data;
   /** Diff viewer providers' contributions for this diff (`registerDiffViewerProvider`). */
@@ -457,17 +460,14 @@ export function DiffEditor({
   }, []);
 
   // A HEAD ↔ working file diff of a tracked change: blocks can be left out of the commit.
+  const trackedChange = useVcs((s) => {
+    const fs = s.status.find((f) => stripSlash(f.path) === path);
+    return !!fs && groupOf(fs) === "changes" && effectiveKind(fs) === "modified";
+  });
   const includable =
-    useVcs((s) => {
-      const fs = s.status.find((f) => stripSlash(f.path) === path);
-      return !!fs && groupOf(fs) === "changes" && effectiveKind(fs) === "modified";
-    }) &&
-    left.type === "rev" &&
-    left.rev === "HEAD" &&
-    !left.path &&
-    isWorktree(right);
-  const editableA = !binary && (attached?.a ? !attached.a.readOnly : isEditableText(left));
-  const editableB = !binary && (attached?.b ? !attached.b.readOnly : isEditableText(right));
+    !data.readOnly && trackedChange && left.type === "rev" && left.rev === "HEAD" && !left.path && isWorktree(right);
+  const editableA = !data.readOnly && !binary && (attached?.a ? !attached.a.readOnly : isEditableText(left));
+  const editableB = !data.readOnly && !binary && (attached?.b ? !attached.b.readOnly : isEditableText(right));
   const ready = !!attached && !!statics && lang !== null && binary !== null;
 
   // Soft wraps follow the editor's (Settings › Editor › General) unless toggled in the viewer settings.
@@ -733,6 +733,9 @@ export function DiffEditor({
     setViewer(built);
     setViewsGen((g) => g + 1);
     requestAnimationFrame(() => updateChunkInfo());
+    // The sides and annotations by content: a host passing a rebuilt but equal request (each vcs
+    // refresh, each of its own renders) keeps the views, with their caret, selection and find state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     contribs,
     attached,
@@ -749,11 +752,11 @@ export function DiffEditor({
     editableA,
     editableB,
     updateChunkInfo,
-    data.annotations,
+    annotationsKey,
     includable,
     path,
-    left,
-    right,
+    leftKey,
+    rightKey,
     swapped,
   ]);
 
@@ -971,6 +974,7 @@ export function DiffEditor({
   const source = fileSource ?? worktreeSource;
 
   const jumpToSource = useCallback(() => {
+    if (!allowSourceNavigation) return;
     const views = viewsRef.current;
     const fileA = sideFile(left, path);
     const fileB = sideFile(right, path);
@@ -996,7 +1000,7 @@ export function DiffEditor({
       const line = mapLine(Chunk.build(from, to), at.number - 1, from, to);
       open(line, to.line(line + 1).text === at.text ? head - at.from : 0);
     });
-  }, [left, right, path, worktreeSource, onJumpToSource]);
+  }, [allowSourceNavigation, left, right, path, worktreeSource, onJumpToSource]);
 
   const currentChunk = (): { chunk: Chunk; index: number } | undefined => {
     const v = viewsRef.current?.b;
@@ -1367,7 +1371,7 @@ export function DiffEditor({
       : null;
   // Staging applies to local changes against HEAD / the index only.
   const canStage = editableB && isWorktree(right) && left.type === "rev" && !!useVcs.getState().root;
-  const hasSource = !!source;
+  const hasSource = allowSourceNavigation && !!source;
 
   const paneTitle = (s: DiffSide): { label: string; detail?: string } => {
     if (s.type === "worktree" || s.type === "text") return { label: sideLabel(s), detail: s.labelDetail };

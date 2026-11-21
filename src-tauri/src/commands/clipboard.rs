@@ -1,9 +1,7 @@
 //! The OS clipboard's file list, so the project view and Explorer exchange files.
 
 use ide_command::desktop_command;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-use ide_core::IdeError;
-use ide_core::IdeResult;
+use ide_core::{IdeError, IdeResult};
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 use ide_host::ops::doc::blocking;
 use std::path::{Path, PathBuf};
@@ -26,8 +24,10 @@ pub async fn clipboard_write_text(app: AppHandle, window: WebviewWindow, text: S
 
 /// The clipboard's plain text, read natively as [`clipboard_write_text`] writes it: a Paste
 /// from a menu has no paste event, and WebKitGTK gives `navigator.clipboard.readText()` no
-/// text there (#3041). None on Windows, where the WebView's clipboard is used.
-#[desktop_command(trust = trusted)]
+/// text there (#3041), and WebKit on macOS asks the user to confirm a paste the app started
+/// itself (menu, command, shortcut) with a "Paste" callout. Windows reads `CF_UNICODETEXT`
+/// too; None there when the clipboard stays busy, and the WebView reads it.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn clipboard_text(app: AppHandle) -> IdeResult<Option<String>> {
@@ -45,11 +45,11 @@ pub async fn clipboard_text(app: AppHandle) -> IdeResult<Option<String>> {
         .map_err(|error| IdeError::internal(format!("Cannot dispatch clipboard access to the main thread: {error}")))?;
         Ok(rx.await.ok().flatten())
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         with_clipboard(app, || Ok(ide_clipboard::text())).await
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         let _ = app;
         Ok(None)
@@ -62,6 +62,36 @@ pub async fn clipboard_text(app: AppHandle) -> IdeResult<Option<String>> {
 #[specta::specta]
 pub async fn clipboard_file_list(app: AppHandle) -> IdeResult<Vec<String>> {
     with_clipboard(app, || Ok(ide_clipboard::files()?.iter().map(|p| slash(p)).collect())).await
+}
+
+/// An image read from the clipboard, encoded as `mime`.
+#[derive(serde::Serialize, specta::Type)]
+pub struct ClipboardImage {
+    pub mime: String,
+    pub data: Vec<u8>,
+}
+
+/// The paste limit for terminal and Markdown images, checked before the bytes
+/// cross the IPC boundary as a JSON array.
+const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+
+/// The clipboard's image, read natively so WebKit does not ask the user to
+/// confirm a paste the app started from a menu; `None` when it holds none.
+/// `unavailable` where the webview should read it (`ide_clipboard::image`).
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub async fn clipboard_image(app: AppHandle) -> IdeResult<Option<ClipboardImage>> {
+    let image = with_clipboard(app, || Ok(ide_clipboard::image())).await?;
+    let Some(image) = image else {
+        return Err(IdeError::unavailable("The clipboard image cannot be read natively here"));
+    };
+    match image {
+        Some(image) if image.data.len() > MAX_IMAGE_BYTES => {
+            Err(IdeError::invalid("Clipboard image is too large to paste (limit 20 MB)"))
+        }
+        image => Ok(image.map(|image| ClipboardImage { mime: image.mime.to_owned(), data: image.data })),
+    }
 }
 
 /// Whether the clipboard holds files: cheap, for the Paste item's enabled state.
@@ -98,7 +128,7 @@ pub fn clipboard_has_image() -> bool {
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub async fn clipboard_image(app: AppHandle) -> IdeResult<Option<String>> {
+pub async fn clipboard_image_data_url(app: AppHandle) -> IdeResult<Option<String>> {
     use base64::Engine;
     let data_url =
         |bytes: Vec<u8>| format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes));
@@ -157,6 +187,7 @@ ide_command::desktop_domain!(
     clipboard_has_files,
     clipboard_has_image,
     clipboard_image,
+    clipboard_image_data_url,
     clipboard_set_file_list,
     clipboard_text,
     clipboard_write_text,

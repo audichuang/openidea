@@ -26,6 +26,7 @@ import { choosePath } from "@/platform/choosePath";
 import { Row, SearchLabel, SettingSelect } from "../components/Form";
 import { useSetting } from "../components/context";
 import type { AgentModelCatalog, AgentProvider } from "@/bindings";
+import { CLIPCODE_PAGE } from "./clipcode";
 import type { PageSpec } from "./spec";
 import { BoundToggle, Grid, Indented, TableEditor, ToggleNumber } from "./workflowControls";
 import styles from "./Workflow.module.css";
@@ -1075,4 +1076,5 @@ export const VCS_PAGES: PageSpec[] = [
       },
     ],
   },
+  CLIPCODE_PAGE,
 ];

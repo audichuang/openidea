@@ -52,11 +52,14 @@ async function reportReady(parent: string, result: Omit<EditorReadyResult, "labe
  * window keeps its processes and any copy of the same file it still has open.
  */
 async function settleUnsaved(models: DocModel[], project: string | null): Promise<boolean> {
-  const dirty = models.filter((model) => model.getMeta().dirty);
+  let dirty = models.filter((model) => model.getMeta().dirty);
   if (dirty.length === 0) return true;
   if (useProject.getState().settings?.files?.autoSave !== false) {
-    await Promise.all(dirty.map((model) => model.save("auto")));
-    return true;
+    // A failed write leaves its model dirty like a refused one; both are asked about below.
+    await Promise.allSettled(dirty.map((model) => model.save("auto")));
+    // A file changed on disk keeps the external change (#291): ask about the edits left unsaved.
+    dirty = dirty.filter((model) => model.getMeta().dirty);
+    if (dirty.length === 0) return true;
   }
   const answer = await ask({
     title: t("app.unsaved.title"),
@@ -67,8 +70,29 @@ async function settleUnsaved(models: DocModel[], project: string | null): Promis
     ],
     icon: "warning",
   });
-  if (answer.button === "save") await Promise.all(dirty.map((model) => model.save("explicit")));
-  return answer.button === "save" || answer.button === "discard";
+  if (answer.button === "save") {
+    const results = await Promise.allSettled(dirty.map((model) => model.save("explicit")));
+    if (!dirty.some((model) => model.getMeta().dirty)) return true;
+    // This window shows no notifications: say why it stays open, and still offer to discard.
+    const failed = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+    const kept = await ask({
+      title: t("app.unsaved.title"),
+      body: failed
+        ? failed.reason instanceof Error
+          ? failed.reason.message
+          : String(failed.reason)
+        : tx(
+            "Some files changed on disk and were not saved. Save them from their editors or reload them, then close again.",
+          ),
+      buttons: [
+        { id: "discard", label: t("app.unsaved.discard") },
+        { id: "cancel", label: t("common.cancel"), primary: true },
+      ],
+      icon: "warning",
+    });
+    return kept.button === "discard";
+  }
+  return answer.button === "discard";
 }
 
 /** Loads the launch's file or tab into this window's editor. */

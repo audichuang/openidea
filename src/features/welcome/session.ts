@@ -6,7 +6,14 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { create } from "zustand";
 import { commands, isCancelled, isTauri, type Settings } from "@/platform/ipc";
-import { closeProject, openProject, startupLaunchHandled, useProject } from "@/platform/project";
+import {
+  closeProject,
+  openProject,
+  startupLaunchHandled,
+  startupProjectDecided,
+  startupProjectKnown,
+  useProject,
+} from "@/platform/project";
 import { connectRemote, projectLocation, resolveRemoteLocation, useRemoteProgress } from "@/platform/remote";
 import { notifications } from "@/workbench/contributions";
 
@@ -24,6 +31,56 @@ function windowProject(value?: string | null): string | null {
     /* storage unavailable */
   }
   return null;
+}
+
+/** Tells a window it now records the remembered project (src-tauri/src/windows.rs). */
+const SESSION_OWNER_EVENT = "openidea://session-owner";
+
+function isMainWindow(): boolean {
+  return !isTauri() || getCurrentWindow().label === "main";
+}
+
+/** This window took the remembered project over from `main`, which closed. */
+let ownsSession = false;
+
+/**
+ * Only `main` keeps the remembered project while it is open: restored window-group members open
+ * theirs after `main`, and would otherwise make `main` reopen a group member instead of its own
+ * project. Once `main` closes, a window left takes over.
+ */
+function rememberSession(value: string | null) {
+  if (isMainWindow() || ownsSession) write(SESSION_KEY, value);
+}
+
+/** Follows the backend's hand-over of the remembered project to this (non-`main`) window. */
+function followSessionOwner(): () => void {
+  if (isMainWindow()) return () => {};
+  let disposed = false;
+  let unlisten: (() => void) | undefined;
+  // What this window shows now is what the next launch reopens.
+  const syncCurrent = () => write(SESSION_KEY, projectLocation(useProject.getState().project?.root));
+  void (async () => {
+    const off = await getCurrentWindow().listen(SESSION_OWNER_EVENT, () => {
+      ownsSession = true;
+      syncCurrent();
+    });
+    if (disposed) {
+      off();
+      return;
+    }
+    unlisten = off;
+    // Asked only once the listener is in place: a hand-over before it is seen here instead.
+    // Opened after every window closed, reloaded after taking over, or main closed meanwhile.
+    if (!(await commands.windowOwnsSession()) || disposed) return;
+    ownsSession = true;
+    // A window still reopening its project records it once that is decided (welcome: none).
+    await startupProjectKnown();
+    if (!disposed) syncCurrent();
+  })().catch(() => {});
+  return () => {
+    disposed = true;
+    unlisten?.();
+  };
 }
 
 function read(key: string): string | null {
@@ -59,22 +116,31 @@ export function reopenEnabled(settings: Settings | null | undefined, pref: boole
   return typeof general?.reopenLastProject === "boolean" ? general.reopenLastProject : pref;
 }
 
-/** Keeps the remembered project in sync: set while a project is open, cleared on explicit close. */
+/**
+ * Keeps the remembered project in sync with `main` (or the window that took over once it
+ * closed): set while a project is open, cleared on explicit close. Every window remembers its
+ * own project for a webview reload.
+ */
 export function trackSession(): () => void {
   const root = projectLocation(useProject.getState().project?.root);
   if (root) {
-    write(SESSION_KEY, root);
+    rememberSession(root);
     windowProject(root);
   }
-  return useProject.subscribe((s, prev) => {
+  const stopFollowing = isTauri() ? followSessionOwner() : () => {};
+  const stopTracking = useProject.subscribe((s, prev) => {
     // A remote project is remembered by its location (`ssh://…`), reopened over SSH.
     const now = projectLocation(s.project?.root);
     const before = projectLocation(prev.project?.root);
     if (now === before) return;
-    if (now) write(SESSION_KEY, now);
-    else if (before && !useSession.getState().reopening) write(SESSION_KEY, null);
+    if (now) rememberSession(now);
+    else if (before && !useSession.getState().reopening) rememberSession(null);
     if (now || !useSession.getState().reopening) windowProject(now);
   });
+  return () => {
+    stopFollowing();
+    stopTracking();
+  };
 }
 
 export function lastSessionProject(): string | null {
@@ -87,7 +153,7 @@ let reopenEpoch = 0;
 /** Cancels an in-flight startup project reopen or remote connection and returns to the Welcome screen. */
 export function cancelReopen() {
   reopenEpoch++;
-  write(SESSION_KEY, null);
+  rememberSession(null);
   windowProject(null);
   useSession.setState({ reopening: null });
   // A local open can't be interrupted; `reopen` closes it again once it finishes.
@@ -102,6 +168,15 @@ export function cancelReopen() {
 export async function reopenLastProject(): Promise<void> {
   if (attempted || !isTauri()) return;
   attempted = true;
+  try {
+    await reopenStartupProject();
+  } finally {
+    // Reopened or not, this window's startup project is known (window groups wait for it).
+    startupProjectDecided();
+  }
+}
+
+async function reopenStartupProject(): Promise<void> {
   // An explicit launch wins over both this window's and the last session's project.
   await startupLaunchHandled();
   const startup = useProject.getState();
@@ -113,7 +188,7 @@ export async function reopenLastProject(): Promise<void> {
     return;
   }
   // Secondary windows open the project they were created for (features/app/windows.ts).
-  if (getCurrentWindow().label !== "main") return;
+  if (!isMainWindow()) return;
   const path = lastSessionProject();
   if (!path) return;
   let settings: Settings | null = null;
@@ -132,7 +207,7 @@ async function reopen(path: string) {
   const epoch = ++reopenEpoch;
   const name = path.slice(path.lastIndexOf("/") + 1) || path;
   // Clear before connecting so force-quitting a hung reopen does not loop on the next launch.
-  write(SESSION_KEY, null);
+  rememberSession(null);
   windowProject(null);
   useSession.setState({ reopening: path });
   try {
@@ -147,10 +222,10 @@ async function reopen(path: string) {
       }
     }
     const opened = projectLocation(useProject.getState().project?.root) ?? path;
-    write(SESSION_KEY, opened);
+    rememberSession(opened);
     windowProject(opened);
   } catch (e) {
-    write(SESSION_KEY, null);
+    rememberSession(null);
     windowProject(null);
     if (reopenEpoch !== epoch || isCancelled(e)) return;
     notifications().notify({
@@ -168,5 +243,6 @@ async function reopen(path: string) {
 export function _resetSessionForTests() {
   attempted = false;
   reopenEpoch = 0;
+  ownsSession = false;
   useSession.setState({ reopening: null, reopenPref: read(PREF_KEY) !== "false" });
 }

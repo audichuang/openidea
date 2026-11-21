@@ -124,10 +124,35 @@ describe("decideClose", () => {
     expect(asked).toHaveLength(0);
   });
 
+  it("shows the window before asking, and only when it asks", async () => {
+    const order: string[] = [];
+    const { d } = deps([{ button: "save", checked: false }]);
+    const ask = d.ask;
+    d.ask = vi.fn(async (r: PromptRequest) => {
+      order.push("ask");
+      return ask(r);
+    });
+    d.reveal = vi.fn(async () => {
+      order.push("reveal");
+    });
+    await decideClose({ ...base, windows: 2 }, d);
+    expect(d.reveal).not.toHaveBeenCalled();
+    await decideClose({ ...base, windows: 2, dirty: 1 }, d);
+    expect(order).toEqual(["reveal", "ask"]);
+  });
+
   it("saves all on Save", async () => {
     const { d } = deps([{ button: "save", checked: false }]);
     await expect(decideClose({ ...base, dirty: 2 }, d)).resolves.toBe(true);
     expect(d.saveAll).toHaveBeenCalled();
+  });
+
+  it("keeps the window when Save leaves documents whose files changed on disk unsaved", async () => {
+    const { d } = deps([{ button: "save", checked: false }]);
+    d.unsavedAfterSave = vi.fn(() => 1);
+    await expect(decideClose({ ...base, dirty: 2 }, d)).resolves.toBe(false);
+    expect(d.saveAll).toHaveBeenCalled();
+    expect(d.onSaveFailed).toHaveBeenCalled();
   });
 
   it("discards without saving", async () => {

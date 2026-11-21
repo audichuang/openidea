@@ -95,6 +95,8 @@ export interface TreeProps<T> {
   getDetail?: (node: T) => ReactNode;
   /** Label colour, e.g. VCS status. */
   getColor?: (node: T) => string | undefined;
+  /** Colour square between the icon and the label, e.g. a repository's colour. */
+  getSwatch?: (node: T) => string | null | undefined;
   /** Filesystem directory for actions on the focused selection; groups return null. */
   getDirectory?: (node: T) => string | null | undefined;
 
@@ -270,6 +272,7 @@ export function Tree<T>(props: TreeProps<T>) {
     getIcon,
     getDetail,
     getColor,
+    getSwatch,
     multiSelect = true,
     onActivate,
     onJumpToSource,
@@ -789,6 +792,7 @@ export function Tree<T>(props: TreeProps<T>) {
             const detail = getDetail?.(row.node);
             const color = getColor?.(row.node);
             const tint = rowTint?.(row.node);
+            const swatch = getSwatch?.(row.node);
             return (
               <div
                 key={v.key}
@@ -849,6 +853,7 @@ export function Tree<T>(props: TreeProps<T>) {
                 ) : (
                   <>
                     {icon && <Icon name={icon} size={16} className={styles.icon} />}
+                    {swatch && <span className={styles.swatch} style={{ background: swatch }} aria-hidden="true" />}
                     <HighlightedText
                       className={styles.label}
                       style={color ? { color } : undefined}

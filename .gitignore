@@ -41,6 +41,12 @@ CLAUDE.local.md
 !.claude/skills/verify
 !.claude/skills/issue-fix
 !.claude/skills/eval
+# Fork-only skills (see FORK.md).
+!.claude/skills/fork-verify
+!.claude/skills/openidea-fork-auto-rebase
+# Fork-only hook guarding merges during an auto-rebase lock (see FORK.md).
+!.claude/settings.json
+!.claude/hooks/
 
 # Local reference screenshots
 pycharm-screenshots/

@@ -46,6 +46,8 @@ export function commitMenu(c: Commit, selection: Commit[] = [c], fileHistoryTarg
       : selection;
     return [
       { kind: "action", action: "vcs.log.copyRevision", arg: selection, label: "Copy Revision Numbers" },
+      { kind: "action", action: "clip.copyCommitFiles", arg: selection },
+      { kind: "action", action: "clip.copyCommits", arg: selection },
       { kind: "action", action: "vcs.log.createPatch", arg: selection },
       { kind: "action", action: "vcs.log.cherryPick", arg: selection },
       ...(selection.length === 2
@@ -66,7 +68,7 @@ export function commitMenu(c: Commit, selection: Commit[] = [c], fileHistoryTarg
       : true);
   const branches = ((c as RepoCommit).refBranches ?? []).filter((branch) => !branch.current);
   const branchActions: MenuItem[] = branches.map((branch) => {
-    const menu = branchMenu(branch, head);
+    const menu = branchMenu(branch, head, undefined, undefined, repo ?? undefined);
     return {
       label: tx`Branch '${branch.name}'`,
       submenu: repo ? inRepo(repo, menu) : menu,
@@ -87,6 +89,8 @@ export function commitMenu(c: Commit, selection: Commit[] = [c], fileHistoryTarg
       run: () => toggleCommitBookmark(c),
     },
     { label: "Copy Commit Message", run: () => copyCommitMessage(c) },
+    { kind: "action", action: "clip.copyCommitFiles", arg: c },
+    { kind: "action", action: "clip.copyCommits", arg: c },
     { kind: "action", action: "vcs.log.createPatch", arg: c },
     { kind: "action", action: "vcs.log.cherryPick", arg: c },
     { kind: "separator" },

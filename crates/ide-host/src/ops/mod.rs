@@ -7,6 +7,7 @@ pub mod analysis;
 pub mod bdd;
 pub mod build;
 pub mod bytes;
+pub mod clip;
 pub mod coverage;
 pub mod db;
 pub mod debug;
@@ -16,6 +17,7 @@ pub mod doc;
 pub mod docker;
 pub mod env;
 pub mod flutter;
+pub mod fork_graph;
 pub mod fs;
 pub mod heap;
 pub mod history;
@@ -77,6 +79,7 @@ ide_command::domains!(
     analysis: crate::ops::analysis,
     build: crate::ops::build,
     bytes: crate::ops::bytes,
+    clip: crate::ops::clip,
     coverage: crate::ops::coverage,
     db: crate::ops::db,
     debug: crate::ops::debug,
@@ -87,6 +90,7 @@ ide_command::domains!(
     docker: crate::ops::docker,
     env: crate::ops::env,
     flutter: crate::ops::flutter,
+    fork_graph: crate::ops::fork_graph,
     fs: crate::ops::fs,
     heap: crate::ops::heap,
     history: crate::ops::history,

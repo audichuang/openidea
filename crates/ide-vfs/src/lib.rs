@@ -203,6 +203,10 @@ pub struct LoadedText {
     /// File exceeds [`READ_ONLY_THRESHOLD`]: opened read-only.
     pub too_large: bool,
     pub mtime_ms: f64,
+    /// Hash of the bytes `text` was decoded from (not sent over IPC). A document's disk
+    /// baseline comes from here: a second read could see a later external write.
+    #[serde(skip)]
+    pub content_hash: Option<blake3::Hash>,
 }
 
 /// Loads a text file, detecting BOM / encoding (chardetng) and binary content.
@@ -222,18 +226,7 @@ pub fn load_text_bounded(path: &Path, fallback: Option<&str>, max_bytes: usize) 
 /// Like [`load_text`], but text that is neither valid UTF-8 nor marked by a BOM
 /// is decoded as `fallback` (the configured project encoding) instead of guessed.
 pub fn load_text_with_fallback(path: &Path, fallback: Option<&str>) -> IdeResult<LoadedText> {
-    let loaded = encoding::load_text(path)?;
-    match fallback {
-        Some(enc)
-            if !loaded.binary
-                && !loaded.has_bom
-                && loaded.encoding != "utf-8"
-                && !loaded.encoding.starts_with("utf-16") =>
-        {
-            encoding::load_text_as(path, enc).or(Ok(loaded))
-        }
-        _ => Ok(loaded),
-    }
+    encoding::load_text_with_fallback(path, fallback)
 }
 
 /// Like [`load_text`] but decodes with the given encoding instead of detecting it.
@@ -353,6 +346,9 @@ pub struct FsBatch {
     pub ignored: Vec<PathBuf>,
     /// Subtrees whose ignore rules changed (including repository-level rules).
     pub ignore_rules: Vec<PathBuf>,
+    /// The OS dropped events (FSEvents "must scan subdirs", e.g. during a large
+    /// checkout): files may have changed without being listed above.
+    pub rescan: bool,
 }
 
 impl FsBatch {
@@ -364,6 +360,7 @@ impl FsBatch {
             && self.excluded_dirs.is_empty()
             && self.ignored.is_empty()
             && self.ignore_rules.is_empty()
+            && !self.rescan
     }
 }
 

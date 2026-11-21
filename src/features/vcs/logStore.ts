@@ -1216,10 +1216,13 @@ export function displayedLogGraph() {
 
 export async function goToParent(c: Commit) {
   const generation = useGitLog.getState().generation;
+  // One layout per look: the visible parents change as pages load (collapsed runs fold away).
   const find = () => {
     const { graph, commits } = displayedLogGraph();
-    const parents = graph.find((x) => x.id === commitKey(c))?.parents ?? [];
-    return { parents, candidates: commits.filter((x) => parents.includes(commitKey(x))) };
+    const key = commitKey(c);
+    const parents = graph.find((x) => x.id === key)?.parents ?? [];
+    const wanted = new Set(parents);
+    return { parents, candidates: commits.filter((x) => wanted.has(commitKey(x))) };
   };
   if (!find().parents.length) return;
   await pageUntil(() => {
@@ -1260,7 +1263,10 @@ export function updateLogOptions(patch: Partial<LogOptions>) {
       },
     });
   else if ("linearizeMerges" in patch) useGitLog.setState({ fragments: emptyFragments() });
-  if (setLogOptions(patch)) void reloadLog();
+  if (!setLogOptions(patch)) return;
+  // Parked tabs hold commits fetched under the old options (e.g. rewritten parents): reload them on return.
+  for (const [id, view] of parked) parked.set(id, freshView(view.filters));
+  void reloadLog();
 }
 
 /** Highlight › My Commits: authored by the current user. */

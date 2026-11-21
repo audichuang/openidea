@@ -245,7 +245,8 @@ pub fn restrict(cmd: &mut Command) {
         setting.push(no_program());
         cmd.arg("-c").arg(setting);
     }
-    cmd.env_remove("GIT_EXTERNAL_DIFF").env("GIT_NO_LAZY_FETCH", "1");
+    // Older Git ignores GIT_NO_LAZY_FETCH; exclude standard transports as well.
+    cmd.env_remove("GIT_EXTERNAL_DIFF").env("GIT_NO_LAZY_FETCH", "1").env("GIT_ALLOW_PROTOCOL", "none");
 }
 
 /// Builds a `git` command with the environment every invocation needs.
@@ -551,13 +552,16 @@ fn run_capture(
         }
         _ => None,
     };
+    let (wake, events) = mpsc::channel();
     let capture = |mut pipe: Box<dyn Read + Send>| {
         let overflow = overflow.clone();
+        let wake = wake.clone();
         std::thread::spawn(move || {
             let mut bytes = Vec::new();
             (&mut pipe).take(max.saturating_add(1) as u64).read_to_end(&mut bytes)?;
             if bytes.len() > max {
                 overflow.store(true, std::sync::atomic::Ordering::Release);
+                let _ = wake.send(());
                 std::io::copy(&mut pipe, &mut std::io::sink())?;
             }
             Ok(bytes)
@@ -565,6 +569,7 @@ fn run_capture(
     };
     let stdout = capture(Box::new(child.stdout.take().expect("piped stdout")));
     let stderr = capture(Box::new(child.stderr.take().expect("piped stderr")));
+    drop(wake);
     let status = loop {
         if cancel.is_cancelled() || overflow.load(std::sync::atomic::Ordering::Acquire) {
             terminate_tree(&mut child, KILL_GRACE);
@@ -582,7 +587,12 @@ fn run_capture(
         if let Some(status) = child.try_wait()? {
             break status;
         }
-        std::thread::sleep(Duration::from_millis(20));
+        // The readers wake this loop when both pipes close or a capture
+        // exceeds its limit. Keep checking cancellation while they are open.
+        // EOF can precede process exit, so poll briefly in that final gap.
+        if events.recv_timeout(Duration::from_millis(20)) == Err(mpsc::RecvTimeoutError::Disconnected) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
     };
     if let Some(w) = writer {
         let _ = w.join();
@@ -597,6 +607,71 @@ fn run_capture(
         return Err(IdeError::invalid(format!("git output exceeds {max} bytes")));
     }
     Ok(out)
+}
+
+/// Hands git's stdout to `on_line` one line at a time (each with its `\n`, if any) instead
+/// of holding it, for output too large to keep; cancellation kills git. Fails like
+/// [`run_cancellable`] on a non-zero exit status.
+pub(crate) fn run_cancellable_lines(
+    root: &Path,
+    args: &[&str],
+    cancel: &CancellationToken,
+    on_line: &mut (dyn FnMut(&[u8]) + Send),
+) -> IdeResult<()> {
+    use std::io::BufRead;
+    const STDERR_MAX: u64 = 1 << 20;
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
+    let mut cmd = command(root)?;
+    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    own_group(&mut cmd);
+    let mut session = CommandSession::start(&mut cmd);
+    let mut child = cmd.spawn().map_err(spawn_error)?;
+    let stdout = child.stdout.take().expect("piped stdout");
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    std::thread::scope(|scope| {
+        let (wake, events) = mpsc::channel::<()>();
+        let out_wake = wake.clone();
+        let reader = scope.spawn(move || {
+            let _wake = out_wake;
+            let mut reader = std::io::BufReader::with_capacity(1 << 16, stdout);
+            let mut line = Vec::new();
+            loop {
+                line.clear();
+                if reader.read_until(b'\n', &mut line)? == 0 {
+                    return Ok::<_, std::io::Error>(());
+                }
+                on_line(&line);
+            }
+        });
+        let errors = scope.spawn(move || {
+            let _wake = wake;
+            let mut bytes = Vec::new();
+            (&mut stderr).take(STDERR_MAX).read_to_end(&mut bytes)?;
+            std::io::copy(&mut stderr, &mut std::io::sink())?;
+            Ok::<_, std::io::Error>(bytes)
+        });
+        let status = loop {
+            if cancel.is_cancelled() {
+                terminate_tree(&mut child, KILL_GRACE);
+                let _ = reader.join();
+                let _ = errors.join();
+                return Err(IdeError::cancelled());
+            }
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            // As in `run_capture`: the readers wake this loop when both pipes close.
+            if events.recv_timeout(Duration::from_millis(20)) == Err(mpsc::RecvTimeoutError::Disconnected) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
+        reader.join().map_err(|_| IdeError::internal("git output reader panicked"))??;
+        let stderr = errors.join().map_err(|_| IdeError::internal("git output reader panicked"))??;
+        session.finish(status.success(), &String::from_utf8_lossy(&stderr));
+        if status.success() { Ok(()) } else { Err(failure(args, &stderr, b"", status.code())) }
+    })
 }
 
 /// Runs git and maps a non-zero exit status to an error carrying git's message.
@@ -841,6 +916,25 @@ fn spawn_reader(
 }
 
 #[cfg(test)]
+mod capture_tests {
+    use super::*;
+    use ide_core::error::ErrorKind;
+
+    #[test]
+    fn bounded_capture_rejects_overflow_and_retains_complete_output_at_limit() {
+        let root = tempfile::tempdir().unwrap();
+        let cancel = CancellationToken::new();
+        let args = ["--version"];
+        let complete = run_cancellable(root.path(), &args, &cancel).unwrap();
+        let size = complete.stdout.len();
+        let exact = run_bounded(root.path(), &args, &cancel, size).unwrap();
+        assert_eq!(exact.stdout, complete.stdout);
+        let error = run_bounded(root.path(), &args, &cancel, size - 1).err().unwrap();
+        assert_eq!(error.kind, ErrorKind::InvalidInput);
+    }
+}
+
+#[cfg(test)]
 mod command_session_tests {
     use super::*;
 
@@ -889,6 +983,35 @@ mod restrict_tests {
             assert!(program.is_absolute(), "{key}.program is {program:?}: git would look that name up on PATH");
             assert!(!program.exists(), "{key}.program is {program:?}, which exists");
         }
+    }
+}
+
+#[cfg(test)]
+mod filter_override_tests {
+    use super::filter_overrides_from;
+
+    #[test]
+    fn every_filter_driver_is_switched_off() {
+        let config = "core.bare\nfalse\0filter.lfs.clean\ngit-lfs clean\0filter.Odd Name.process\nx\0\
+                      filter.lfs.required\ntrue\0filter.lfs.smudge\ny\0diff.lfs.textconv\nz\0";
+        assert_eq!(
+            filter_overrides_from(config.as_bytes()).unwrap(),
+            ["-c", "filter.lfs.clean=", "-c", "filter.Odd Name.process=", "-c", "filter.lfs.required=false"]
+        );
+    }
+
+    #[test]
+    fn a_driver_name_with_an_equals_sign_is_refused() {
+        // `-c filter.a=b.clean=` would set `filter.a` and leave driver `a=b` active.
+        assert!(filter_overrides_from(b"filter.a=b.clean\nevil\0").is_err());
+    }
+
+    #[test]
+    fn a_non_utf8_driver_name_is_refused() {
+        // A lossy decode would override `filter.\u{fffd}.clean` and leave driver `\xff` active.
+        assert!(filter_overrides_from(b"filter.\xff.clean\nevil\0").is_err());
+        assert!(filter_overrides_from(b"filter.\xff.process\nevil\0").is_err());
+        assert!(filter_overrides_from(b"filter.\xff.smudge\nevil\0").unwrap().is_empty());
     }
 }
 

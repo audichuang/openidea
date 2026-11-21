@@ -106,6 +106,19 @@ interface ImageOptions {
   pattern: string;
 }
 
+const imageInserters = new WeakMap<EditorView, (image: Blob) => void>();
+
+/**
+ * Saves a clipboard image the backend read and links it at the selection, as pasting it into
+ * `view` would. False when `view` does not take images (not Markdown, read-only).
+ */
+export function pasteMarkdownImage(view: EditorView, image: Blob): boolean {
+  const insert = imageInserters.get(view);
+  if (!insert || view.state.readOnly) return false;
+  insert(image);
+  return true;
+}
+
 export function markdownImages(options: ImageOptions): Extension {
   if (!isMarkdown(options.path)) return [];
   return ViewPlugin.fromClass(
@@ -113,7 +126,9 @@ export function markdownImages(options: ImageOptions): Extension {
       alive = true;
       pending = new Set<{ from: number; to: number }>();
       unregister: () => void;
+      readonly insertImage = (blob: Blob) => this.insert([async () => ({ blob, name: "" })]);
       constructor(readonly view: EditorView) {
+        imageInserters.set(view, this.insertImage);
         this.unregister = registerFileDropHandler((paths, x, y) => {
           const rect = view.dom.getBoundingClientRect();
           if (
@@ -145,6 +160,7 @@ export function markdownImages(options: ImageOptions): Extension {
       destroy() {
         this.alive = false;
         this.unregister();
+        if (imageInserters.get(this.view) === this.insertImage) imageInserters.delete(this.view);
       }
       insert(sources: Array<() => Promise<{ blob: Blob | string; name: string }>>, position?: number) {
         const selection = this.view.state.selection.main;

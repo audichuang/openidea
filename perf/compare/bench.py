@@ -2,8 +2,10 @@
 """Black-box IDE comparison: startup, readiness, memory, idle CPU, disk.
 
 Launches each app from apps.toml on the same project, measures it from the
-outside (process tree, window list, log lines), closes it, and repeats with
-the apps interleaved. Runs on Windows, macOS and Linux; see README.md.
+outside (process tree, window list, log lines), optionally opens a file so the
+language servers start, closes it, and repeats with the apps interleaved.
+Runs on Windows, macOS and Linux; see README.md. `--self-test` checks the
+pure helpers without launching anything.
 """
 
 from __future__ import annotations
@@ -14,7 +16,6 @@ import ctypes
 import datetime as dt
 import glob
 import json
-import math
 import os
 import platform
 import re
@@ -25,7 +26,6 @@ import subprocess
 import sys
 import time
 import tomllib
-import tempfile
 from pathlib import Path
 
 try:
@@ -35,8 +35,9 @@ except ImportError:
 
 OS = {"Windows": "windows", "Darwin": "macos", "Linux": "linux"}[platform.system()]
 HERE = Path(__file__).resolve().parent
+LANGUAGES_DIR = HERE.parent.parent / "languages"
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
-GONE = (psutil.NoSuchProcess, psutil.ZombieProcess)
+GONE = (psutil.NoSuchProcess, psutil.ZombieProcess, psutil.AccessDenied)
 MB = 1024 * 1024
 POLL_S = 0.2
 
@@ -55,8 +56,10 @@ def as_list(value) -> list:
     return [] if value is None else [value] if isinstance(value, str) else list(value)
 
 
-def expand(s: str, project: Path) -> str:
+def expand(s: str, project: Path, file: str | None = None) -> str:
     s = s.replace("{project}", str(project)).replace("{project_name}", project.name)
+    if file is not None:
+        s = s.replace("{file}", file)
     return os.path.expandvars(os.path.expanduser(s))
 
 
@@ -64,8 +67,19 @@ def pattern(s: str, project: Path) -> re.Pattern:
     return re.compile(s.replace("{project_name}", re.escape(project.name)))
 
 
+def default_open_command(exe: str, file: str, os_name: str = OS) -> list[str]:
+    """How to hand a file to the running app: through LaunchServices for a macOS
+    bundle, otherwise by launching the executable again (single-instance apps
+    forward the path to the running instance)."""
+    if os_name == "macos":
+        i = exe.find(".app/Contents/MacOS/")
+        if i != -1:
+            return ["open", "-a", exe[: i + len(".app")], file]
+    return [exe, file]
+
+
 class App:
-    def __init__(self, key: str, raw: dict, project: Path):
+    def __init__(self, key: str, raw: dict, project: Path, open_file: Path | None = None):
         self.key = key
         self.name = raw.get("name", key)
         command = per_os(raw.get("command"))
@@ -83,6 +97,16 @@ class App:
         self.quit_command = as_list(per_os(raw.get("quit_command")))
         self.single_instance = raw.get("single_instance", True)
         self.daemons = {n.lower() for n in as_list(raw.get("daemons"))}
+        self.open_file = open_file
+        self.open_command: list[str] = []
+        if open_file is not None:
+            template = as_list(per_os(raw.get("open_command")))
+            file = str(open_file)
+            self.open_command = (
+                [expand(a, project, file) for a in template] if template else default_open_command(self.command[0], file)
+            )
+        lsp = raw.get("language_server_process")
+        self.language_server_process = re.compile(lsp) if lsp else None
         unknown = set(self.ready_after) - self.markers.keys()
         if unknown:
             raise SystemExit(f"apps.{key}.ready_after names unknown markers: {sorted(unknown)}")
@@ -142,7 +166,10 @@ def _mac_windows(pids: set[int]) -> list[tuple[object, str]] | None:
 def _x11_windows(pids: set[int]) -> list[tuple[object, str]] | None:
     if not shutil.which("wmctrl"):
         return None
-    out = subprocess.run(["wmctrl", "-lp"], capture_output=True, text=True, timeout=2, check=True).stdout
+    try:
+        out = subprocess.run(["wmctrl", "-lp"], capture_output=True, text=True, timeout=2).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
     found = []
     for line in out.splitlines():
         parts = line.split(None, 4)
@@ -160,6 +187,181 @@ def visible_windows(pids: set[int]) -> list[tuple[object, str]] | None:
     return _x11_windows(pids)
 
 
+# ── process categories ──────────────────────────────────────────────────────
+
+# Runtimes that run a language server script; the server is named by the script.
+INTERPRETERS = {"node", "bun", "deno", "python", "python3", "pythonw", "ruby", "perl", "dotnet", "sh", "bash", "cmd"}
+JAVA = {"java", "javaw"}
+_STRIP_EXT = (".exe", ".cmd", ".bat", ".js", ".cjs", ".mjs", ".py", ".jar")
+_JAVA_VALUE_OPTS = {
+    "-cp", "-classpath", "--class-path", "-p", "--module-path", "--add-modules", "--add-opens", "--add-exports",
+    "--add-reads", "--patch-module", "--upgrade-module-path", "--limit-modules",
+}  # fmt: skip
+
+
+def stem(path: str) -> str:
+    """Lower-case file name without directories or a script/executable extension."""
+    name = re.split(r"[\\/]", path)[-1].lower()
+    for ext in _STRIP_EXT:
+        if name.endswith(ext):
+            return name[: -len(ext)]
+    return name
+
+
+def language_server_names(languages_dir: Path = LANGUAGES_DIR) -> frozenset[str]:
+    """Executable names of the language servers OpenIDEA's languages/*.toml can start."""
+    names = set()
+    for f in sorted(languages_dir.glob("*.toml")):
+        try:
+            servers = tomllib.loads(f.read_text(encoding="utf-8")).get("language-servers", [])
+        except (OSError, tomllib.TOMLDecodeError):
+            continue
+        for server in servers if isinstance(servers, list) else []:
+            command = server.get("command") if isinstance(server, dict) else None
+            if isinstance(command, str) and command and stem(command) not in INTERPRETERS | JAVA:
+                names.add(stem(command))
+    return frozenset(names)
+
+
+_known_lsp: frozenset[str] | None = None
+
+
+def known_language_servers() -> frozenset[str]:
+    global _known_lsp
+    if _known_lsp is None:
+        _known_lsp = language_server_names()
+    return _known_lsp
+
+
+def _is_language_server(name: str, known: frozenset[str]) -> bool:
+    return name in known or name == "jdtls" or name.endswith(("-language-server", "-langserver", "-lsp"))
+
+
+def java_main(cmdline: list[str]) -> str:
+    """The jar or main class a `java` command line runs, shortened."""
+    args = iter(cmdline[1:])
+    for a in args:
+        if a == "-jar":
+            return stem(next(args, "?"))
+        if a in ("-m", "--module"):
+            return next(args, "?").rsplit("/", 1)[-1].rsplit(".", 1)[-1]
+        if a in _JAVA_VALUE_OPTS:
+            next(args, None)
+            continue
+        if not a.startswith("-"):
+            return a.rsplit(".", 1)[-1]
+    return "?"
+
+
+def categorize(name: str, cmdline: list[str], is_root: bool, known: frozenset[str] = frozenset()) -> str:
+    """What a process in an app's tree is: main, webview:*, lsp:*, jvm:*, or its own name."""
+    if is_root:
+        return "main"
+    if name.startswith("com.apple.WebKit."):  # macOS WKWebView helpers
+        return "webview:" + name[len("com.apple.WebKit.") :]
+    base = stem(name)
+    if base == "msedgewebview2":  # Windows WebView2
+        kind = next((a.split("=", 1)[1] for a in cmdline if a.startswith("--type=")), "browser")
+        return "webview:" + kind
+    if base.startswith("webkit"):  # Linux webkit2gtk: WebKitWebProcess, WebKitNetworkProcess
+        return "webview:" + (stem(cmdline[0]) if cmdline else base)
+    if base in JAVA:
+        joined = " ".join(cmdline)
+        if "org.eclipse.jdt.ls" in joined or "equinox.launcher" in joined or "jdtls" in joined:
+            return "lsp:jdtls"
+        return "jvm:" + java_main(cmdline)
+    if _is_language_server(base, known):
+        return "lsp:" + base
+    if base in INTERPRETERS or base.rstrip("0123456789.") in INTERPRETERS:  # python3.12, node22
+        for a in cmdline[1:]:
+            s = stem(a)
+            if _is_language_server(s, known):
+                return "lsp:" + s
+            if "langserver" in s or "language-server" in s:
+                # e.g. node …/node_modules/pyright/langserver.index.js: the package names it.
+                parts = re.split(r"[\\/]", a)
+                return "lsp:" + (parts[-2].lower() if len(parts) > 1 else s)
+    return base
+
+
+_rusage = None
+if OS == "macos":
+    try:
+        _rusage = ctypes.CDLL("/usr/lib/libproc.dylib").proc_pid_rusage
+        _rusage.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_uint64)]
+        _rusage.restype = ctypes.c_int
+    except (OSError, AttributeError):
+        _rusage = None
+
+RUSAGE_INFO_V2 = 2
+# rusage_info_v2: a 16-byte uuid (2 slots), then user, system, pkg_idle_wkups,
+# interrupt_wkups, pageins, wired_size, resident_size, phys_footprint.
+FOOTPRINT_SLOT = 9
+
+
+def footprint(pid: int) -> int | None:
+    """macOS phys_footprint, the Memory column of Activity Monitor. Unlike USS it
+    needs no task port, so it works on hardened-runtime apps without root."""
+    if _rusage is None:
+        return None
+    buf = (ctypes.c_uint64 * 32)()
+    if _rusage(pid, RUSAGE_INFO_V2, buf) != 0:
+        return None
+    return buf[FOOTPRINT_SLOT]
+
+
+# Per-process fields, in bytes; which ones exist depends on the platform.
+MEMORY_FIELDS = ("rss", "uss", "pss", "private", "footprint")
+# The headline number per platform: what the OS's own task manager shows, or
+# the fairest figure available without root.
+PRIMARY = {"macos": "footprint_mb", "linux": "pss_mb", "windows": "uss_mb"}[OS]
+
+
+def _sum_field(rows: list[dict], field: str) -> tuple[float | None, int]:
+    """(sum in MB, or None when a process lacks the value; how many lack it)."""
+    missing = sum(1 for r in rows if r.get(field) is None)
+    if missing:
+        return None, missing
+    return sum(r[field] for r in rows) / MB, 0
+
+
+def summarize_memory(rows: list[dict]) -> dict:
+    """Totals and per-category sums of per-process memory rows.
+
+    A row is {"pid", "name", "cat", <field>: bytes or None, ...} for the fields this
+    platform measures. A total is None rather than an undercount when any process
+    lacked the value (macOS denies USS for hardened apps); `<field>_missing` says how many.
+    """
+    fields = [f for f in MEMORY_FIELDS if any(f in r for r in rows)]
+    out: dict = {"procs": len(rows)}
+    for f in fields:
+        total, missing = _sum_field(rows, f)
+        out[f"{f}_mb"] = total
+        if missing:
+            out[f"{f}_missing"] = missing
+    cats: dict[str, list[dict]] = collections.defaultdict(list)
+    for r in rows:
+        cats[r["cat"]].append(r)
+    by_cat = {}
+    for cat, members in cats.items():
+        entry: dict = {"n": len(members)}
+        for f in fields:
+            total, _ = _sum_field(members, f)
+            entry[f"{f}_mb"] = None if total is None else round(total, 1)
+        by_cat[cat] = entry
+    key = PRIMARY if PRIMARY in [f"{f}_mb" for f in fields] else "rss_mb"
+    out["by_category"] = dict(sorted(by_cat.items(), key=lambda kv: -(kv[1].get(key) or 0)))
+    out["processes"] = sorted(
+        (
+            {"pid": r["pid"], "name": r["name"], "cat": r["cat"]}
+            | {f"{f}_mb": None if r.get(f) is None else round(r[f] / MB, 1) for f in fields}
+            for r in rows
+        ),
+        key=lambda r: -(r.get(key) or 0),
+    )
+    return out
+
+
 # ── process tree ────────────────────────────────────────────────────────────
 
 _responsible = None
@@ -173,11 +375,11 @@ if OS == "macos":
 
 
 class Tree:
-    """Processes owned by this launch, identified by process identity and ancestry.
+    """Every process the app started, including ones whose parent already exited.
 
-    POSIX launches have a private process group, retaining orphaned children.
-    macOS launchd-owned WebKit helpers require responsible-pid attribution:
-    name/start-time guesses cannot safely authorize terminating a process.
+    On macOS, WKWebView's helper processes are children of launchd, so they are
+    attributed through the responsible-pid API (or, failing that, by name and
+    start time).
     """
 
     def __init__(self, root: psutil.Process, started: float):
@@ -186,22 +388,16 @@ class Tree:
         self.procs: dict[tuple[int, float], psutil.Process] = {}
         self.cpu: dict[tuple[int, float], float] = {}
         self.cpu_exited = 0.0
-        self.group = root.pid if os.name == "posix" else None
+        self.cats: dict[tuple[int, float], str] = {}
+        self.peak_rss = 0
 
     def _discover(self):
         found = [self.root]
-        for p in [self.root, *self.procs.values()]:
+        for p in list(self.procs.values()):
             try:
                 found += p.children(recursive=True)
             except GONE:
                 pass
-        if self.group is not None:
-            for p in psutil.process_iter():
-                try:
-                    if os.getpgid(p.pid) == self.group:
-                        found.append(p)
-                except (ProcessLookupError, PermissionError):
-                    continue
         if OS == "macos":
             found += self._webkit()
         for p in found:
@@ -218,7 +414,8 @@ class Tree:
             if _responsible:
                 if _responsible(p.pid) == self.root.pid:
                     out.append(p)
-            # Without attribution, leave unrelated WebKit processes untouched.
+            elif (p.info["create_time"] or 0) >= self.started - 1:
+                out.append(p)
         return out
 
     def sample(self) -> tuple[float, int]:
@@ -234,41 +431,69 @@ class Tree:
             except GONE:
                 self.cpu_exited += self.cpu.pop(key, 0.0)
                 del self.procs[key]
+                self.cats.pop(key, None)
+        self.peak_rss = max(self.peak_rss, rss)
         return self.cpu_exited + sum(self.cpu.values()), rss
 
     def pids(self) -> set[int]:
         return {pid for pid, _ in self.procs}
 
     def alive(self) -> list[psutil.Process]:
-        out = []
-        for p in self.procs.values():
+        return [p for p in self.procs.values() if p.is_running()]
+
+    def category(self, key: tuple[int, float], p: psutil.Process) -> str:
+        if key not in self.cats:
             try:
-                if p.is_running() and p.status() != psutil.STATUS_ZOMBIE:
-                    out.append(p)
+                cmdline = p.cmdline()
+            except GONE:
+                cmdline = []
+            self.cats[key] = categorize(p.name(), cmdline, p.pid == self.root.pid, known_language_servers())
+        return self.cats[key]
+
+    def categories(self) -> set[str]:
+        """Categories of the processes alive now."""
+        out = set()
+        for key, p in list(self.procs.items()):
+            try:
+                if p.is_running():
+                    out.add(self.category(key, p))
             except GONE:
                 pass
         return out
 
     def memory(self) -> dict:
-        """Summed memory of the live tree. RSS double-counts shared pages, USS leaves them out."""
-        rss = uss = pss = 0
-        by_name: dict[str, int] = collections.Counter()
-        count = 0
-        for p in self.alive():
+        """Memory of the live tree, in total and per category (see summarize_memory).
+
+        RSS double-counts shared pages; USS leaves them out; PSS (Linux) splits them.
+        """
+        rows = []
+        for key, p in list(self.procs.items()):
             try:
-                full = p.memory_full_info()
-            except GONE:
+                if not p.is_running():
+                    continue
+                with p.oneshot():
+                    info = p.memory_info()
+                    row = {"pid": p.pid, "name": p.name(), "cat": self.category(key, p), "rss": info.rss}
+                if OS == "windows":
+                    row["private"] = getattr(info, "private", None)
+                if OS == "macos":
+                    row["footprint"] = footprint(p.pid)
+                try:
+                    full = p.memory_full_info()
+                    row["uss"] = full.uss
+                    if OS == "linux":
+                        row["pss"] = full.pss
+                except psutil.AccessDenied:
+                    # Hardened-runtime apps on macOS: no task port without root.
+                    row["uss"] = None
+                    if OS == "linux":
+                        row["pss"] = None
+            except (psutil.NoSuchProcess, psutil.ZombieProcess):
                 continue
-            count += 1
-            rss += full.rss
-            uss += full.uss
-            pss += getattr(full, "pss", 0)
-            by_name[p.name()] += full.uss
-        out = {"rss_mb": rss / MB, "uss_mb": uss / MB, "procs": count}
-        if OS == "linux":
-            out["pss_mb"] = pss / MB
-        out["uss_by_process_mb"] = {k: round(v / MB, 1) for k, v in by_name.most_common()}
-        return out
+            except psutil.AccessDenied:
+                continue  # not even RSS: not a process this user can measure
+            rows.append(row)
+        return summarize_memory(rows)
 
 
 # ── logs ────────────────────────────────────────────────────────────────────
@@ -297,7 +522,7 @@ class LogTail:
                     f.seek(self.offsets.get(path, 0))
                     chunk = f.read()
                     self.offsets[path] = f.tell()
-            except FileNotFoundError:
+            except OSError:
                 continue
             if not chunk:
                 continue
@@ -323,258 +548,273 @@ def dir_size(path: Path) -> int:
     if path.is_file():
         return path.stat().st_size
     total = 0
-    def walk_error(error):
-        raise error
-
-    for root, _, files in os.walk(path, onerror=walk_error):
+    for root, _, files in os.walk(path):
         for f in files:
             try:
                 total += os.lstat(os.path.join(root, f)).st_size
-            except FileNotFoundError:
+            except OSError:
                 pass
     return total
 
 
-def failure(result: dict, reason: str):
-    result["reasons"].append(reason)
-    if result["status"] != "interrupted":
-        result["status"] = "failed"
+def close(app: App, tree: Tree, proc: subprocess.Popen, timeout: float) -> tuple[float | None, list[str]]:
+    """Asks the app to quit, waits for the whole tree, kills what's left.
 
+    Returns (seconds until every process exited, or None if it had to kill; names of killed leftovers).
+    """
+    t0 = time.perf_counter()
+    if app.quit_command:
+        subprocess.run(app.quit_command, check=False)
+    elif OS == "windows":
+        # Only the project windows: closing a framework's hidden message windows
+        # (Tauri's single-instance and event-target ones) stalls the real shutdown.
+        for hwnd, title in _win_windows(tree.pids()):
+            if app.window_title.search(title):
+                _user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE
+    else:
+        proc.send_signal(signal.SIGTERM)
 
-def force_cleanup(tree: Tree | None, proc: subprocess.Popen, daemons: set[str], result: dict) -> list[str]:
-    """Kill only launch-owned identities; allow at most two seconds to reap."""
+    def remaining() -> list[psutil.Process]:
+        out = []
+        for p in tree.alive():
+            try:
+                if p.name().lower() not in app.daemons:
+                    out.append(p)
+            except GONE:
+                pass
+        return out
+
+    while time.perf_counter() - t0 < timeout:
+        tree.sample()
+        if not remaining():
+            return time.perf_counter() - t0, []
+        time.sleep(POLL_S)
+    leftovers = remaining()
     names = []
-    targets = []
-    if tree is not None:
+    for p in leftovers:
         try:
-            tree._discover()
-        except Exception as exc:
-            failure(result, f"cleanup discovery: {type(exc).__name__}: {exc}")
-        targets = list(tree.procs.values())
-    try:
-        # A reaped PID may already belong to somebody else.
-        if proc.poll() is None:
-            root = psutil.Process(proc.pid)
-            if all(p.pid != root.pid for p in targets):
-                targets.append(root)
-    except GONE:
-        pass
-    killed = []
-    for p in targets:
-        try:
-            if not p.is_running() or p.status() == psutil.STATUS_ZOMBIE:
-                continue
-            name = p.name()
-            if name.lower() in daemons:
-                result.setdefault("excluded_daemons", []).append({"pid": p.pid, "name": name})
-                continue
+            names.append(p.name())
             p.kill()
-            names.append(name)
-            killed.append(p)
         except GONE:
             pass
-        except Exception as exc:
-            failure(result, f"cleanup pid {p.pid}: {type(exc).__name__}: {exc}")
-    deadline = time.perf_counter() + 2
-    if killed:
-        _, alive = psutil.wait_procs(killed, timeout=max(0, deadline - time.perf_counter()))
-        if alive:
-            failure(result, f"cleanup survivors: {[p.pid for p in alive]}")
+    psutil.wait_procs(leftovers, timeout=10)
+    return None, names
+
+
+class Quiet:
+    """Tracks whether a tree's CPU stayed under `cores` busy for the last `secs`."""
+
+    def __init__(self, secs: float, cores: float):
+        self.secs = secs
+        self.cores = cores
+        self.history: collections.deque[tuple[float, float]] = collections.deque()
+
+    def add(self, now: float, cpu: float) -> float | None:
+        """Records total CPU seconds at `now`; returns when the quiet span began, or None if not quiet."""
+        self.history.append((now, cpu))
+        while self.history and now - self.history[0][0] > self.secs:
+            self.history.popleft()
+        span = now - self.history[0][0]
+        if span > 0 and span >= self.secs * 0.95 and (cpu - self.history[0][1]) / span < self.cores:
+            return now - span
+        return None
+
+
+class OpenGate:
+    """Decides when an opened file has settled.
+
+    With a language server to wait for, the CPU must stay quiet for a whole
+    window that begins after the server first appeared, and the server must be
+    running at that tick. A server that disappears is forgotten until it returns.
+    """
+
+    def __init__(self, wants_lsp: bool):
+        self.wants_lsp = wants_lsp
+        self.lsp_s: float | None = None
+
+    def update(self, now: float, quiet_from: float | None, lsp_present: bool) -> float | None:
+        """Returns the ready time (seconds from the open), or None while still waiting."""
+        if self.wants_lsp:
+            if not lsp_present:
+                self.lsp_s = None
+                return None
+            if self.lsp_s is None:
+                self.lsp_s = now
+            if quiet_from is None or quiet_from < self.lsp_s:
+                return None
+            return quiet_from
+        return quiet_from
+
+
+def scan_markers(tail: LogTail, app: App, result: dict, now: float):
+    for line in tail.lines():
+        for name, rx in app.markers.items():
+            if rx.search(line):
+                result["markers_first_s"].setdefault(name, now)
+                result["markers_last_s"][name] = now
+
+
+def open_and_settle(app: App, tree: Tree, args, on_tick) -> dict:
+    """Opens `app.open_file` in the running app, waits for the language server
+    process (when the app names one) and for the CPU to settle again.
+
+    Times are seconds from the open. A timeout is recorded, not fatal, so the
+    idle sample still runs.
+    """
+    out: dict = {}
+    cpu0, _ = tree.sample()
+    o0 = time.perf_counter()
+    opener = subprocess.Popen(
+        app.open_command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    quiet = Quiet(args.quiet_secs, args.quiet_cores)
+    want = app.language_server_process
+    gate = OpenGate(want is not None)
+    while True:
+        now = time.perf_counter() - o0
+        cpu, _ = tree.sample()
+        quiet_from = quiet.add(now, cpu)
+        on_tick()
+        present = bool(want) and any(want.search(c) for c in tree.categories())
+        ready = gate.update(now, quiet_from, present)
+        if ready is not None:
+            out["open_ready_s"] = ready
+            break
+        if not tree.alive():
+            raise SystemExit(f"{app.name} exited after opening {app.open_file}")
+        if now > args.open_timeout:
+            out["open_timed_out"] = True
+            break
+        time.sleep(POLL_S)
+    out["lsp_s"] = gate.lsp_s
+    out["open_cpu_s"] = cpu - cpu0
+    # The opener only forwards the file (LaunchServices, or a second instance that
+    # hands over and exits); one still running is a second app, not part of the tree.
     try:
-        proc.wait(timeout=max(0, deadline - time.perf_counter()))
+        out["opener_exit_code"] = opener.wait(timeout=5)
     except subprocess.TimeoutExpired:
-        # The root can itself be an explicitly excluded daemon.
-        if not any(p["pid"] == proc.pid for p in result.get("excluded_daemons", [])):
-            failure(result, f"cleanup root {proc.pid} did not exit")
-    return names
+        opener.kill()
+        opener.wait()
+        out["opener_killed"] = True
+    return out
 
 
-def bounded_command(command, timeout: float, *, shell=False):
-    """External cache/quit commands have their own launch-owned cleanup."""
-    proc = subprocess.Popen(command, shell=shell, stdin=subprocess.DEVNULL,
-        start_new_session=os.name == "posix")
-    tree = None
-    evidence = {"status": "valid", "reasons": []}
-    try:
-        tree = Tree(psutil.Process(proc.pid), time.time())
-        deadline = time.perf_counter() + timeout
-        while proc.poll() is None:
-            tree._discover()
-            remaining = deadline - time.perf_counter()
-            if remaining <= 0:
-                raise subprocess.TimeoutExpired(command, timeout)
-            time.sleep(min(POLL_S, remaining))
-        if proc.returncode:
-            raise subprocess.CalledProcessError(proc.returncode, command)
-    finally:
-        force_cleanup(tree, proc, set(), evidence)
-        if evidence["reasons"]:
-            raise RuntimeError("; ".join(evidence["reasons"]))
+def run_once(app: App, args, out_dir: Path, label: str) -> dict:
+    running = running_instances(app) if app.single_instance else []
+    if running:
+        pids = ", ".join(str(p.pid) for p in running)
+        raise SystemExit(f"{app.name} is already running (pid {pids}); close it first, it would take over the launch.")
+    if args.wipe_caches:
+        for path in app.cache_paths():
+            shutil.rmtree(path, ignore_errors=True) if path.is_dir() else path.unlink(missing_ok=True)
+    if args.drop_os_cache:
+        subprocess.run(args.drop_os_cache, shell=True, check=True)
+    if args.cooldown:
+        time.sleep(args.cooldown)
 
+    stdout_path = out_dir / f"{label}.stdout.log"
+    tail = LogTail(app.logs, [stdout_path])
+    started_wall = time.time()
+    with open(stdout_path, "wb") as stdout:
+        t0 = time.perf_counter()
+        proc = subprocess.Popen(app.command, stdout=stdout, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+    tree = Tree(psutil.Process(proc.pid), started_wall)
 
-def close(app: App, tree: Tree, proc: subprocess.Popen, timeout: float, result: dict) -> tuple[float | None, list[str]]:
-    """The quit command and graceful wait share one budget; forced reap is bounded."""
-    t0 = time.perf_counter()
-    deadline = t0 + timeout
-    exit_s = None
-    killed = []
-    try:
-        tree._discover()
-        if app.quit_command:
-            try:
-                bounded_command(app.quit_command, max(0.001, deadline - time.perf_counter()))
-            except Exception as exc:
-                failure(result, f"quit command: {type(exc).__name__}: {exc}")
-        elif OS == "windows":
-            for hwnd, title in _win_windows(tree.pids()):
-                if app.window_title.search(title):
-                    _user32.PostMessageW(hwnd, 0x0010, 0, 0)
-        elif proc.poll() is None:
-            proc.send_signal(signal.SIGTERM)
+    result: dict = {"app": app.key, "label": label, "markers_first_s": {}, "markers_last_s": {}}
+    window_supported = True
+    window_s = None
+    quiet = Quiet(args.quiet_secs, args.quiet_cores)
+    ready_s = None
 
-        while time.perf_counter() < deadline:
-            tree._discover()
-            remaining = [p for p in tree.alive() if p.name().lower() not in app.daemons]
-            if not remaining:
-                exit_s = time.perf_counter() - t0
-                break
-            time.sleep(min(POLL_S, max(0, deadline - time.perf_counter())))
-        if exit_s is None:
-            failure(result, "graceful-close timeout")
-    except KeyboardInterrupt:
-        result["status"] = "interrupted"
-        failure(result, "interrupted during shutdown")
-    except Exception as exc:
-        failure(result, f"shutdown observation: {type(exc).__name__}: {exc}")
-    finally:
-        killed = force_cleanup(tree, proc, app.daemons, result)
-        if killed:
-            failure(result, "forced cleanup: " + ", ".join(killed))
-            exit_s = None
-    return exit_s, killed
+    while True:
+        now = time.perf_counter() - t0
+        cpu, _ = tree.sample()
+        quiet_from = quiet.add(now, cpu)
+        scan_markers(tail, app, result, now)
 
+        if window_s is None and window_supported:
+            windows = visible_windows(tree.pids())
+            if windows is None:
+                window_supported = False
+            elif any(app.window_title.search(title) for _, title in windows):
+                window_s = now
 
-def new_trial(app: App, label: str, warmup=False) -> dict:
-    return {"app": app.key, "label": label, "warmup": warmup, "status": "running", "reasons": [],
-        "markers_first_s": {}, "markers_last_s": {}, "metric_status": {},
-        **{key: None for key, _ in METRICS}}
+        if not tree.alive():
+            raise SystemExit(
+                f"{app.name} exited during startup (code {proc.poll()}); an instance started elsewhere may have "
+                f"taken the launch. Output: {stdout_path}"
+            )
 
+        waited = (window_s is not None or not window_supported) and all(
+            m in result["markers_first_s"] for m in app.ready_after
+        )
+        if waited and quiet_from is not None:
+            # Never before what it waited for (the quiet span can start earlier).
+            ready_s = max(quiet_from, window_s or 0, *(result["markers_first_s"][m] for m in app.ready_after))
+            break
+        if now > args.timeout:
+            result["timed_out"] = True
+            break
+        time.sleep(POLL_S)
 
-def run_once(app: App, args, out_dir: Path, label: str, result: dict | None = None) -> dict:
-    result = new_trial(app, label) if result is None else result
-    proc = tree = None
-    try:
-        running = running_instances(app) if app.single_instance else []
-        if running:
-            raise RuntimeError(f"{app.name} already running (pid {', '.join(str(p.pid) for p in running)}); close it first")
-        if args.wipe_caches:
-            for path in app.cache_paths():
-                shutil.rmtree(path) if path.is_dir() else path.unlink(missing_ok=True)
-        if args.drop_os_cache:
-            bounded_command(args.drop_os_cache, args.command_timeout, shell=True)
-        if args.cooldown:
-            time.sleep(args.cooldown)
+    result["window_s"] = window_s
+    result["ready_s"] = ready_s
+    result["total_cpu_s"] = cpu
 
-        stdout_path = out_dir / f"{label}.stdout.log"
-        result["stdout"] = str(stdout_path)
-        tail = LogTail(app.logs, [stdout_path])
-        started_wall = time.time()
-        with open(stdout_path, "wb") as stdout:
-            t0 = time.perf_counter()
-            proc = subprocess.Popen(app.command, stdout=stdout, stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL, start_new_session=os.name == "posix")
-        result["pid"] = proc.pid
-        tree = Tree(psutil.Process(proc.pid), started_wall)
-        window_supported = True
-        history: collections.deque[tuple[float, float]] = collections.deque()
-        peak_rss = 0
+    if app.open_file is not None and ready_s is not None:
+        # Language servers start on the first opened file, so without this step
+        # the samples below would leave them out.
+        at_ready = tree.memory()
+        result["at_ready_mb"] = at_ready.get(PRIMARY)
+        result["at_ready_by_category"] = at_ready["by_category"]
+        # Markers keep counting from launch, e.g. OpenIDEA's lsp_initialized.
+        def tick():
+            scan_markers(tail, app, result, time.perf_counter() - t0)
 
-        while True:
-            now = time.perf_counter() - t0
-            cpu, rss = tree.sample()
-            peak_rss = max(peak_rss, rss)
-            result["peak_rss_mb"] = peak_rss / MB
-            history.append((now, cpu))
-            while history and now - history[0][0] > args.quiet_secs:
-                history.popleft()
+        result.update(open_and_settle(app, tree, args, tick))
 
-            for line in tail.lines():
-                for name, rx in app.markers.items():
-                    if rx.search(line):
-                        result["markers_first_s"].setdefault(name, now)
-                        result["markers_last_s"][name] = now
-            if result["window_s"] is None and window_supported:
-                windows = visible_windows(tree.pids())
-                if windows is None:
-                    window_supported = False
-                    result["metric_status"]["window_s"] = "unsupported"
-                elif any(app.window_title.search(title) for _, title in windows):
-                    result["window_s"] = now
-            if proc.poll() is not None or not tree.alive():
-                raise RuntimeError(f"{app.name} exited during startup (code {proc.poll()})")
+    # Idle: what it costs to just sit there with the project (and file) open.
+    idle_cpu0, _ = tree.sample()
+    i0 = time.perf_counter()
+    while time.perf_counter() - i0 < args.idle_secs:
+        time.sleep(POLL_S * 5)
+        tree.sample()
+    idle_cpu1, _ = tree.sample()
+    result["idle_cpu_pct"] = 100 * (idle_cpu1 - idle_cpu0) / (time.perf_counter() - i0)
+    result["peak_rss_mb"] = tree.peak_rss / MB
+    result.update(tree.memory())
 
-            waited = (result["window_s"] is not None or not window_supported) and all(
-                m in result["markers_first_s"] for m in app.ready_after)
-            span = now - history[0][0]
-            if waited and span >= args.quiet_secs * 0.95:
-                busy = (cpu - history[0][1]) / span
-                if busy < args.quiet_cores:
-                    result["ready_s"] = max(now - span, result["window_s"] or 0,
-                        *(result["markers_first_s"][m] for m in app.ready_after))
-                    break
-            if now > args.timeout:
-                result["timed_out"] = True
-                raise TimeoutError("startup timeout: CPU/window/required markers never became ready")
-            time.sleep(POLL_S)
-
-        idle_cpu0, _ = tree.sample()
-        result["total_cpu_s"] = idle_cpu0
-        i0 = time.perf_counter()
-        while time.perf_counter() - i0 < args.idle_secs:
-            time.sleep(min(POLL_S * 5, max(0, args.idle_secs - (time.perf_counter() - i0))))
-            _, rss = tree.sample()
-            peak_rss = max(peak_rss, rss)
-            result["peak_rss_mb"] = peak_rss / MB
-            if proc.poll() is not None or not tree.alive():
-                raise RuntimeError(f"{app.name} exited during idle (code {proc.poll()})")
-        idle_cpu1, _ = tree.sample()
-        result["idle_cpu_pct"] = 100 * (idle_cpu1 - idle_cpu0) / (time.perf_counter() - i0)
-        result.update(tree.memory())
-        result["cache_mb"] = sum(dir_size(p) for p in app.cache_paths()) / MB
-        result["status"] = "valid"
-    except KeyboardInterrupt:
-        result["status"] = "interrupted"
-        failure(result, "interrupted")
-    except Exception as exc:
-        failure(result, f"{type(exc).__name__}: {exc}")
-    finally:
-        if proc is not None:
-            try:
-                if tree is not None:
-                    result["exit_s"], result["killed_on_exit"] = close(app, tree, proc, args.close_timeout, result)
-                else:
-                    result["killed_on_exit"] = force_cleanup(tree, proc, app.daemons, result)
-            except KeyboardInterrupt:
-                result["status"] = "interrupted"
-                failure(result, "interrupted during cleanup")
-                result["killed_on_exit"] = force_cleanup(tree, proc, app.daemons, result)
-            except Exception as exc:
-                failure(result, f"cleanup: {type(exc).__name__}: {exc}")
-                result["killed_on_exit"] = force_cleanup(tree, proc, app.daemons, result)
-            result["exit_code"] = proc.poll()
-        validate_metrics(app, result)
+    exit_s, killed = close(app, tree, proc, args.close_timeout)
+    result["exit_s"] = exit_s
+    if killed:
+        result["killed_on_exit"] = killed
+    result["cache_mb"] = sum(dir_size(p) for p in app.cache_paths()) / MB
     return result
 
 
 # ── report ──────────────────────────────────────────────────────────────────
 
+MEMORY_TITLES = {
+    "footprint_mb": "Footprint",
+    "uss_mb": "USS",
+    "pss_mb": "PSS",
+    "rss_mb": "RSS",
+    "private_mb": "Private bytes",
+}
+
 METRICS = [
     ("window_s", "Window with project title (s)"),
     ("ready_s", "Ready: CPU settled (s)"),
-    ("peak_rss_mb", "Peak RSS, startup + idle (MB)"),
+    ("at_ready_mb", f"{MEMORY_TITLES[PRIMARY]} at ready, before open_file (MB)"),
+    ("lsp_s", "open_file → language server process (s)"),
+    ("open_ready_s", "open_file → CPU settled (s)"),
+    ("open_cpu_s", "CPU used by open_file (s)"),
+    ("peak_rss_mb", "Peak RSS, whole run (MB)"),
+    ("footprint_mb", "Footprint after idle (MB, Activity Monitor)"),
     ("rss_mb", "RSS after idle (MB)"),
     ("uss_mb", "USS after idle (MB)"),
     ("pss_mb", "PSS after idle (MB)"),
+    ("private_mb", "Private bytes after idle (MB)"),
     ("procs", "Processes"),
     ("total_cpu_s", "CPU used until ready (s)"),
     ("idle_cpu_pct", "Idle CPU (% of a core)"),
@@ -583,67 +823,8 @@ METRICS = [
 ]
 
 
-def valid_number(value) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
-
-
-def validate_metrics(app: App, result: dict):
-    states = result["metric_status"]
-    for key, _ in METRICS:
-        if (key == "pss_mb" and OS != "linux") or (key == "cache_mb" and not app.cache_dirs):
-            states[key] = "unsupported"
-            continue
-        if key == "window_s" and states.get(key) == "unsupported":
-            continue
-        value = result.get(key)
-        good = valid_number(value) and (key != "procs" or (value > 0 and value == int(value)))
-        states[key] = "valid" if good else "missing" if value is None else "invalid"
-        if not good:
-            reason = f"required metric {key}: {states[key]}"
-            if reason not in result["reasons"]:
-                failure(result, reason)
-    for marker in app.ready_after:
-        if not valid_number(result["markers_first_s"].get(marker)):
-            reason = f"required marker {marker}: missing or invalid"
-            if reason not in result["reasons"]:
-                failure(result, reason)
-
-
-def json_safe(value):
-    """Strict JSON retains invalid numeric evidence without emitting NaN/Infinity."""
-    if isinstance(value, float) and not math.isfinite(value):
-        return {"invalid_number": str(value)}
-    if isinstance(value, dict):
-        return {key: json_safe(v) for key, v in value.items()}
-    if isinstance(value, list):
-        return [json_safe(v) for v in value]
-    return value
-
-
-def suite_status(apps: list[App], runs: list[dict], meta: dict) -> str:
-    if meta.get("suite_errors") or not runs or any(r["status"] != "valid" for r in runs):
-        return "failed"
-    for app in apps:
-        measured = [r for r in runs if r["app"] == app.key and not r["warmup"]]
-        if len(measured) != meta["runs"]:
-            return "failed"
-    return "valid"
-
-
-def persist(apps: list[App], runs: list[dict], meta: dict, out_dir: Path):
-    meta["status"] = suite_status(apps, runs, meta)
-    # JSON first: report rendering must never discard the raw failure evidence.
-    def replace(name, text):
-        temporary = out_dir / (name + ".tmp")
-        temporary.write_text(text, encoding="utf-8")
-        temporary.replace(out_dir / name)
-
-    replace("results.json", json.dumps(json_safe({"meta": meta, "runs": runs}), indent=2, allow_nan=False))
-    replace("report.md", report(apps, runs, meta))
-
-
 def fmt(value: float | None) -> str:
-    return "–" if not valid_number(value) else f"{value:.2f}"
+    return "–" if value is None else f"{value:.2f}"
 
 
 def summarize(values: list[float]) -> str:
@@ -656,25 +837,24 @@ def summarize(values: list[float]) -> str:
 
 
 def report(apps: list[App], runs: list[dict], meta: dict) -> str:
-    measured = [r for r in runs if not r.get("warmup", False)]
+    def column(app: App, getter) -> str:
+        vals = [v for r in runs if r["app"] == app.key and (v := getter(r)) is not None]
+        return summarize(vals)
 
-    def column(app: App, key, getter, owner=None) -> str:
-        attempts = [r for r in measured if r["app"] == app.key]
-        vals = [v for r in attempts if r["status"] == "valid"
-            and (owner is None or owner == app.key)
-            and r.get("metric_status", {}).get(key) != "unsupported"
-            and valid_number(v := getter(r))]
-        unsupported = sum(r.get("metric_status", {}).get(key) == "unsupported" for r in attempts)
-        suffix = " unsupported" if unsupported or (owner is not None and owner != app.key) else ""
-        return f"{summarize(vals)} [{len(vals)}/{len(attempts)}]{suffix}"
-
-    rows = [(key, title, lambda r, k=key: r.get(k), None) for key, title in METRICS]
+    rows = [(title, lambda r, k=key: r.get(k)) for key, title in METRICS]
+    # Per-category memory after idle, in the order categories first appear.
+    cats = list(dict.fromkeys(c for r in runs for c in r.get("by_category", {})))
+    for cat in cats:
+        rows.append(
+            (
+                f"{MEMORY_TITLES[PRIMARY]} after idle · {cat} (MB)",
+                lambda r, c=cat: r.get("by_category", {}).get(c, {}).get(PRIMARY),
+            )
+        )
     for app in apps:
         for m in app.markers:
-            rows.append((None, f"{app.name}: log `{m}` first (s)",
-                lambda r, m=m: r["markers_first_s"].get(m), app.key))
-            rows.append((None, f"{app.name}: log `{m}` last (s)",
-                lambda r, m=m: r["markers_last_s"].get(m), app.key))
+            rows.append((f"{app.name}: log `{m}` first (s)", lambda r, m=m: r["markers_first_s"].get(m)))
+            rows.append((f"{app.name}: log `{m}` last (s)", lambda r, m=m: r["markers_last_s"].get(m)))
 
     lines = [
         f"# IDE benchmark: {meta['project']}",
@@ -682,67 +862,164 @@ def report(apps: list[App], runs: list[dict], meta: dict) -> str:
         f"{meta['os']} · {meta['cpu']} · {meta['cores']} cores · {meta['ram_gb']:.0f} GB RAM · "
         f"mode **{meta['mode']}** · {meta['runs']} runs · {meta['date']}",
         "",
-        f"Status: **{meta.get('status', 'failed')}**. Median (min–max), [valid/attempted] measured trials.",
-        "Only valid trials enter aggregates; warmups and partial evidence remain below and in JSON.",
-        "Times are seconds from launch. Unsupported metrics are not required; missing required metrics fail a trial.",
+        "Median (min–max). Times are seconds from launch. "
+        + (
+            f"After ready, `{meta['open_file']}` was opened and memory sampled once it settled."
+            if meta.get("open_file")
+            else "No file was opened, so language servers that start on the first open file are not included."
+        ),
         "",
         "| Metric | " + " | ".join(a.name for a in apps) + " |",
         "|---|" + "---|" * len(apps),
     ]
-    for key, title, getter, owner in rows:
-        cells = [column(a, key, getter, owner) for a in apps]
-        lines.append(f"| {title} | " + " | ".join(cells) + " |")
-    lines += ["", "## Attempts (including warmups)", "", "| Trial | Status | Reasons |",
-        "|---|---|---|"]
-    for r in runs:
-        label = r["label"] + (" (warmup)" if r.get("warmup") else "")
-        reasons = "; ".join(r["reasons"]).replace("|", "\\|").replace("\n", " ")
-        lines.append(f"| {label} | {r['status']} | {reasons or '–'} |")
-    for error in meta.get("suite_errors", []):
-        lines.append(f"\nSuite error: {error}")
-    if not runs:
-        lines.append("\nNo trials completed: suite is not successful.")
+    for title, getter in rows:
+        cells = [column(a, getter) for a in apps]
+        if any(c != "–" for c in cells):
+            lines.append(f"| {title} | " + " | ".join(cells) + " |")
     for app in apps:
-        if app.install_dir:
-            try:
-                path = Path(app.install_dir)
-                if path.exists():
-                    lines.append(f"\n{app.name} install size: {dir_size(path) / MB:.0f} MB")
-            except OSError as exc:
-                lines.append(f"\n{app.name} install size unavailable: {exc}")
+        if app.install_dir and Path(app.install_dir).exists():
+            lines.append(f"\n{app.name} install size: {dir_size(Path(app.install_dir)) / MB:.0f} MB")
+    timeouts = [r["label"] for r in runs if r.get("timed_out")]
+    if timeouts:
+        lines.append(f"\n⚠ CPU never settled within the timeout: {', '.join(timeouts)}")
+    open_timeouts = [r["label"] for r in runs if r.get("open_timed_out")]
+    if open_timeouts:
+        lines.append(
+            f"\n⚠ After open_file, no language server or no settled CPU within --open-timeout: {', '.join(open_timeouts)}"
+        )
+    opener_failed = [
+        r["label"] for r in runs if r.get("opener_killed") or r.get("opener_exit_code") not in (None, 0)
+    ]
+    if opener_failed:
+        lines.append(f"\n⚠ The open_file command failed or hung, so the file may never have opened: {', '.join(opener_failed)}")
+    missing = [r["label"] for r in runs if r.get(PRIMARY) is None]
+    if missing:
+        lines.append(f"\n⚠ {MEMORY_TITLES[PRIMARY]} unavailable for some processes (no total): {', '.join(missing)}")
+    killed = [f"{r['label']}: {', '.join(r['killed_on_exit'])}" for r in runs if r.get("killed_on_exit")]
+    if killed:
+        lines.append("\n⚠ Killed after the exit timeout: " + "; ".join(killed))
     return "\n".join(lines) + "\n"
 
 
 # ── main ────────────────────────────────────────────────────────────────────
 
 
+def self_test():
+    """Checks the pure helpers; runs without launching any app."""
+    assert per_os({"windows": 1, "macos": 2, "linux": 3}) == {"windows": 1, "macos": 2, "linux": 3}[OS]
+    assert per_os({"name": "x"}) == {"name": "x"}
+
+    assert default_open_command("/Applications/OpenIDEA Fork.app/Contents/MacOS/openidea", "/p/A.java", "macos") == [
+        "open", "-a", "/Applications/OpenIDEA Fork.app", "/p/A.java",
+    ]  # fmt: skip
+    assert default_open_command("/usr/bin/openidea", "/p/A.java", "macos") == ["/usr/bin/openidea", "/p/A.java"]
+    assert default_open_command("C:/x/openidea.exe", "C:/p/A.java", "windows") == ["C:/x/openidea.exe", "C:/p/A.java"]
+
+    known = language_server_names()
+    if LANGUAGES_DIR.is_dir():
+        assert {"basedpyright-langserver", "gopls", "rust-analyzer"} <= known, sorted(known)
+        assert not known & (INTERPRETERS | JAVA), known & (INTERPRETERS | JAVA)
+
+    assert stem("C:\\tools\\gopls.exe") == "gopls"
+    assert java_main(["java", "-Xmx1g", "-cp", "a.jar:b.jar", "org.example.Main", "arg"]) == "Main"
+    assert java_main(["java", "-jar", "/x/kotlin-lsp.jar"]) == "kotlin-lsp"
+    jdtls = ["/jdk/bin/java", "-Declipse.application=org.eclipse.jdt.ls.core.id1", "-jar",
+             "/opt/jdtls/plugins/org.eclipse.equinox.launcher_1.8.0.jar", "-data", "/ws"]  # fmt: skip
+    cases = [
+        (("openidea", [], True), "main"),
+        (("com.apple.WebKit.WebContent", [], False), "webview:WebContent"),
+        (("msedgewebview2.exe", ["msedgewebview2.exe", "--type=renderer"], False), "webview:renderer"),
+        (("msedgewebview2.exe", ["msedgewebview2.exe"], False), "webview:browser"),
+        (("WebKitWebProcess", ["/usr/lib/webkit2gtk-4.1/WebKitWebProcess", "7"], False), "webview:webkitwebprocess"),
+        (("java", jdtls, False), "lsp:jdtls"),
+        (("java", ["java", "-cp", "x", "org.jetbrains.maven.RemoteMavenServer"], False), "jvm:RemoteMavenServer"),
+        (("gopls", ["gopls"], False), "lsp:gopls"),
+        (("rust-analyzer.exe", ["rust-analyzer.exe"], False), "lsp:rust-analyzer"),
+        (("node", ["node", "/u/.bin/pyright-langserver", "--stdio"], False), "lsp:pyright-langserver"),
+        (("node", ["node", "/u/node_modules/basedpyright/langserver.index.js", "--stdio"], False), "lsp:basedpyright"),
+        (("python3.12", ["python3.12", "/u/lib/fake-language-server.py"], False), "lsp:fake-language-server"),
+        (("node", ["node", "vite.js"], False), "node"),
+        (("fsnotifier", [], False), "fsnotifier"),
+    ]
+    for (name, cmdline, root), want in cases:
+        got = categorize(name, cmdline, root, known)
+        assert got == want, (name, cmdline, got, want)
+
+    # One core busy until t=4, then idle: the first 5 s span under 0.1 cores is 4..9.
+    q = Quiet(secs=5, cores=0.1)
+    first = next((t, f) for t in (i * 0.5 for i in range(40)) if (f := q.add(t, min(t, 4.0))) is not None)
+    assert first == (9.0, 4.0), first
+    assert q.add(9.0, 6.0) is None  # busy again
+
+    # LSP first seen at 3 after a quiet 0..3: that early quiet must not count.
+    g = OpenGate(True)
+    assert g.update(3.0, 0.0, True) is None
+    assert g.update(8.0, 3.0, True) == 3.0  # quiet window began at the LSP's appearance
+    g = OpenGate(True)
+    assert g.update(1.0, None, False) is None
+    assert g.update(6.0, 1.0, False) is None  # quiet but no LSP
+    assert g.update(7.0, 2.0, True) is None  # first seen at 7, quiet began earlier
+    assert g.update(12.0, 7.0, True) == 7.0
+    g = OpenGate(True)
+    assert g.update(1.0, None, True) is None
+    assert g.update(2.0, 0.0, False) is None and g.lsp_s is None  # exited: forgotten
+    assert OpenGate(False).update(5.0, 0.0, False) == 0.0
+
+    base = {"label": "a", "app": "x", PRIMARY: 1, "markers_first_s": {}, "markers_last_s": {}}
+    fake = App.__new__(App)
+    fake.name, fake.key, fake.markers, fake.install_dir = "X", "x", {}, None
+    meta = {"project": "p", "os": "o", "cpu": "c", "cores": 1, "ram_gb": 1, "mode": "m", "runs": 1, "date": "d"}
+    for bad in ({"opener_exit_code": 1}, {"opener_killed": True}):
+        assert "open_file command failed" in report([fake], [{**base, **bad}], meta)
+    assert "open_file command failed" not in report([fake], [{**base, "opener_exit_code": 0}], meta)
+
+    rows = [
+        {"pid": 1, "name": "openidea", "cat": "main", "rss": 100 * MB, "uss": 80 * MB},
+        {"pid": 2, "name": "java", "cat": "lsp:jdtls", "rss": 600 * MB, "uss": None},
+        {"pid": 3, "name": "java", "cat": "lsp:jdtls", "rss": 50 * MB, "uss": 40 * MB},
+    ]
+    m = summarize_memory(rows)
+    assert m["procs"] == 3 and m["rss_mb"] == 750 and m["uss_mb"] is None and m["uss_missing"] == 1, m
+    assert m["by_category"]["main"] == {"n": 1, "rss_mb": 100.0, "uss_mb": 80.0}, m
+    assert m["by_category"]["lsp:jdtls"] == {"n": 2, "rss_mb": 650.0, "uss_mb": None}, m
+    assert "footprint_mb" not in m
+
+    if OS == "macos":
+        fp = footprint(os.getpid())
+        assert fp and 1 * MB < fp < 64 * 1024 * MB, fp
+    print("self-test ok")
+
+
 def main():
+    if "--self-test" in sys.argv[1:]:
+        self_test()
+        return
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("project", type=Path, help="project directory every app opens")
+    ap.add_argument("--self-test", action="store_true", help="check the pure helpers and exit (no project needed)")
     ap.add_argument("--config", type=Path, default=HERE / "apps.toml")
     ap.add_argument("--apps", help="comma-separated keys from the config (default: all)")
     ap.add_argument("--runs", type=int, default=5, help="measured runs per app (default 5)")
-    ap.add_argument("--warmup", type=int, default=1, help="unaggregated warmup runs per app first (default 1)")
+    ap.add_argument("--warmup", type=int, default=1, help="discarded runs per app first (default 1)")
     ap.add_argument("--wipe-caches", action="store_true", help="delete each app's cache_dirs before every run (cold index)")
     ap.add_argument("--drop-os-cache", metavar="CMD", help="shell command run before every run to drop the OS file cache")
     ap.add_argument("--quiet-secs", type=float, default=5, help="CPU must stay low this long to count as ready")
     ap.add_argument("--quiet-cores", type=float, default=0.1, help="'low' = below this many cores busy (default 0.1)")
     ap.add_argument("--idle-secs", type=float, default=30, help="idle period measured after ready")
     ap.add_argument("--timeout", type=float, default=900, help="give up waiting for ready after this many seconds")
+    ap.add_argument(
+        "--open-file",
+        help="file (relative to the project) to open after ready; default: the project's open_file in the config",
+    )
+    ap.add_argument("--no-open-file", action="store_true", help="skip the open_file step (samples exclude language servers)")
+    ap.add_argument(
+        "--open-timeout", type=float, default=600, help="give up waiting after open_file after this many seconds"
+    )
     ap.add_argument("--close-timeout", type=float, default=60)
-    ap.add_argument("--command-timeout", type=float, default=60, help="OS cache command deadline in seconds")
     ap.add_argument("--cooldown", type=float, default=5, help="pause before each launch")
     ap.add_argument("--out", type=Path, default=HERE / "results")
     ap.add_argument("--yes", action="store_true", help="don't ask before wiping caches")
     args = ap.parse_args()
-    if args.runs <= 0 or args.warmup < 0:
-        ap.error("--runs must be positive and --warmup must be nonnegative")
-    for name in ("quiet_secs", "quiet_cores", "idle_secs", "timeout", "close_timeout", "command_timeout", "cooldown"):
-        value = getattr(args, name)
-        if not math.isfinite(value) or value < 0 or (name != "cooldown" and value == 0):
-            ap.error(f"--{name.replace('_', '-')} must be finite and {'nonnegative' if name == 'cooldown' else 'positive'}")
-    if args.quiet_secs > args.timeout:
-        ap.error("--quiet-secs must not exceed --timeout")
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
 
@@ -750,10 +1027,23 @@ def main():
     if not project.is_dir():
         raise SystemExit(f"not a directory: {project}")
     config = tomllib.loads(args.config.read_text(encoding="utf-8"))
-    keys = args.apps.split(",") if args.apps else list(config["apps"])
-    if not keys or any(not key or key not in config["apps"] for key in keys) or len(set(keys)) != len(keys):
-        ap.error("--apps must select at least one known app without duplicates")
-    apps = [App(k, config["apps"][k], project) for k in keys]
+    open_rel = None
+    if not args.no_open_file:
+        open_rel = args.open_file or config.get("projects", {}).get(project.name, {}).get("open_file")
+    open_path = None
+    if open_rel:
+        open_path = (project / open_rel).resolve()
+        if not open_path.is_file():
+            raise SystemExit(f"open_file is not a file: {open_path}")
+    if args.apps:
+        keys = args.apps.split(",")
+    else:
+        # Entries without a command for this platform (e.g. the macOS-only fork app) are skipped.
+        keys = [k for k, raw in config["apps"].items() if per_os(raw.get("command"))]
+        skipped = [k for k in config["apps"] if k not in keys]
+        if skipped:
+            print(f"Skipping apps with no command for {OS}: {', '.join(skipped)}")
+    apps = [App(k, config["apps"][k], project, open_path) for k in keys]
 
     if args.wipe_caches:
         targets = [p for a in apps for p in a.cache_paths()]
@@ -765,8 +1055,8 @@ def main():
             return
 
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    args.out.mkdir(parents=True, exist_ok=True)
-    out_dir = Path(tempfile.mkdtemp(prefix=f"{stamp}-{project.name}-", dir=args.out))
+    out_dir = args.out / f"{stamp}-{project.name}"
+    out_dir.mkdir(parents=True)
     mode = "cold index" if args.wipe_caches else "warm"
     if args.drop_os_cache:
         mode += " + cold OS cache"
@@ -777,49 +1067,40 @@ def main():
         "cores": psutil.cpu_count(logical=True),
         "ram_gb": psutil.virtual_memory().total / 1024**3,
         "mode": mode,
+        "open_file": open_rel,
+        "memory_metric": PRIMARY,
         "runs": args.runs,
         "date": stamp,
         "commands": {a.key: a.command for a in apps},
+        "open_commands": {a.key: a.open_command for a in apps if a.open_command},
         "args": {k: str(v) for k, v in vars(args).items()},
     }
 
     runs: list[dict] = []
-    previous_term = signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
-    try:
-        persist(apps, runs, meta, out_dir)
-        total = args.warmup + args.runs
-        for i in range(total):
-            # Rotate the order so neither app always runs right after the other.
-            order = apps[i % len(apps) :] + apps[: i % len(apps)]
-            for app in order:
-                warm = i < args.warmup
-                label = f"{app.key}-{'warmup' if warm else 'run'}{i + 1 if warm else i - args.warmup + 1}"
-                r = new_trial(app, label, warm)
+    total = args.warmup + args.runs
+    for i in range(total):
+        # Rotate the order so neither app always runs right after the other.
+        order = apps[i % len(apps) :] + apps[: i % len(apps)]
+        for app in order:
+            warm = i < args.warmup
+            label = f"{app.key}-{'warmup' if warm else 'run'}{i + 1 if warm else i - args.warmup + 1}"
+            print(f"[{label}] launching…", flush=True)
+            r = run_once(app, args, out_dir, label)
+            opened = f"language server {fmt(r.get('lsp_s'))} s after open · " if app.open_file else ""
+            print(
+                f"[{label}] window {fmt(r['window_s'])} s · ready {fmt(r['ready_s'])} s · {opened}"
+                f"{MEMORY_TITLES[PRIMARY]} {fmt(r.get(PRIMARY))} MB · idle CPU {r['idle_cpu_pct']:.1f}%",
+                flush=True,
+            )
+            if not warm:
                 runs.append(r)
-                persist(apps, runs, meta, out_dir)
-                print(f"[{label}] launching…", flush=True)
-                run_once(app, args, out_dir, label, r)
-                persist(apps, runs, meta, out_dir)
-                print(f"[{label}] {r['status']} · window {fmt(r['window_s'])} s · ready {fmt(r['ready_s'])} s", flush=True)
-                if r["status"] == "interrupted":
-                    raise KeyboardInterrupt
-    except KeyboardInterrupt:
-        meta.setdefault("suite_errors", []).append("interrupted")
-        for r in runs:
-            if r["status"] == "running":
-                r["status"] = "interrupted"
-                failure(r, "interrupted before launch completed")
-    except Exception as exc:
-        meta.setdefault("suite_errors", []).append(f"{type(exc).__name__}: {exc}")
-        for r in runs:
-            if r["status"] == "running":
-                failure(r, "suite aborted before launch completed")
-    finally:
-        signal.signal(signal.SIGTERM, previous_term)
-        persist(apps, runs, meta, out_dir)
+            (out_dir / "results.json").write_text(json.dumps({"meta": meta, "runs": runs}, indent=2), encoding="utf-8")
+
+    text = report(apps, runs, meta)
+    (out_dir / "report.md").write_text(text, encoding="utf-8")
+    print("\n" + text)
     print(f"Raw results: {out_dir / 'results.json'}")
-    return 0 if meta["status"] == "valid" else 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

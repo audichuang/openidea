@@ -31,7 +31,7 @@ fn cache_files(git_dir: &Path, common_dir: &Path) -> [PathBuf; 4] {
     ]
 }
 
-fn stamp(files: &[PathBuf]) -> Vec<Option<(SystemTime, u64)>> {
+pub(crate) fn stamp(files: &[PathBuf]) -> Vec<Option<(SystemTime, u64)>> {
     files
         .iter()
         .map(|f| {
@@ -79,6 +79,7 @@ pub(crate) fn discover(path: &Path) -> IdeResult<Option<Repo>> {
         cli_status: Default::default(),
         log_index: Default::default(),
         log_signatures: Default::default(),
+        blame_cache: Default::default(),
     }))
 }
 

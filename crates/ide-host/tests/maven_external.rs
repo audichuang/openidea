@@ -2,6 +2,16 @@ use ide_core::NullSink;
 use ide_host::{Host, HostConfig, ops};
 use ide_workspace::settings::SettingsScope;
 use std::sync::Arc;
+use std::time::Duration;
+
+/// `set_settings` refreshes the jdtls import roots on a blocking task it does not wait for.
+async fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while !done() {
+        assert!(tokio::time::Instant::now() < deadline, "timed out waiting for {what}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_maven_link_persists_reloads_and_unlink_keeps_files() {
@@ -49,7 +59,10 @@ async fn external_maven_link_persists_reloads_and_unlink_keeps_files() {
     assert_eq!(b.pom, canonical);
     assert_eq!(dunce::canonicalize(root.join(&b.dir)).unwrap(), sibling);
     assert_eq!(host.project("main").unwrap().content_roots(), vec![sibling.clone()]);
-    assert_eq!(host.project("main").unwrap().lsp.jdtls_import_roots(), vec![sibling.clone()]);
+    wait_until("the linked project to reach jdtls", || {
+        host.project("main").unwrap().lsp.jdtls_import_roots() == vec![sibling.clone()]
+    })
+    .await;
 
     let reloaded = ops::build::build_model(&host, "main").await.unwrap();
     assert_eq!(
@@ -63,7 +76,10 @@ async fn external_maven_link_persists_reloads_and_unlink_keeps_files() {
     let gone = ops::build::build_model(&host, "main").await.unwrap();
     assert!(gone.maven.unwrap().projects.iter().all(|p| p.artifact_id != "b"));
     assert!(host.project("main").unwrap().content_roots().is_empty());
-    assert!(host.project("main").unwrap().lsp.jdtls_import_roots().is_empty());
+    wait_until("the unlinked project to leave jdtls", || {
+        host.project("main").unwrap().lsp.jdtls_import_roots().is_empty()
+    })
+    .await;
     assert_eq!(saved(), Vec::<String>::new());
     assert_eq!(std::fs::read_to_string(root.join("pom.xml")).unwrap(), a_pom);
     assert_eq!(std::fs::read_to_string(sibling.join("pom.xml")).unwrap(), b_pom);

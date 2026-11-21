@@ -9,6 +9,7 @@ import { ask } from "@/workbench/messages";
 import type * as Messages from "@/workbench/messages";
 import { registerEditorKind, type EditorDocumentLifecycle } from "@/workbench/contributions";
 import * as light from "./openLightweightEditor";
+import { forkDetach } from "./forkDetach";
 
 vi.mock("@/workbench/messages", async (original) => ({
   ...(await original<typeof Messages>()),
@@ -40,8 +41,10 @@ beforeEach(() => {
     data: { kind: "opened", label: "second" },
   });
   vi.spyOn(light, "openLightweightEditor").mockResolvedValue("editor-main-1");
+  forkDetach.lightweight = true;
 });
 afterEach(() => {
+  forkDetach.lightweight = false;
   ctrl?.stop();
   unregister?.();
   unregister = undefined;
@@ -154,6 +157,21 @@ describe("detachTab", () => {
     expect(hasTab(id)).toBe(true);
     expect(commands.windowOpenFileInNewWindow).not.toHaveBeenCalled();
     expect(notify).toHaveBeenCalledWith(expect.objectContaining({ level: "error", body: "save failed" }));
+  });
+
+  it("keeps the tab and opens no window when the file changed on disk", async () => {
+    const backend = createMemoryBackend({ [path]: "original\n" });
+    ctrl = new EditorController(backend);
+    ctrl.start();
+    await ctrl.openFile(path, { focus: false });
+    const [pane, id] = current();
+    ctrl.slotFor(id)!.dispatchLocal({ changes: { from: 0, to: 8, insert: "edited" } });
+    backend.autosave = vi.fn(async () => false);
+    const save = vi.spyOn(backend, "save");
+    expect(await ctrl.detachTab(pane, id)).toBe(false);
+    expect(save).not.toHaveBeenCalled();
+    expect(hasTab(id)).toBe(true);
+    expect(commands.windowOpenFileInNewWindow).not.toHaveBeenCalled();
   });
 
   it("keeps a pinned text tab if window creation fails", async () => {

@@ -1,6 +1,6 @@
 import { branchesByRepo } from "./multiRoot";
 /** Title bar branch widget (branch name + incoming / outgoing markers) + Branches popup. */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
 import type { Branch, BranchInfo } from "@/bindings";
@@ -36,7 +36,13 @@ import {
 } from "./branches";
 import { branchPresentation, extensionPopupActions, useBranchWidgetExtensions } from "./branchWidgetExtensions";
 import { branchMenu, commonBranchMenu, inRepo, tagMenu } from "./branchMenu";
-import { loadFavoriteBranches, recentBranches, toggleFavoriteBranch, useFavoriteBranches } from "./branchOps";
+import {
+  favoriteBranches,
+  recentBranches,
+  toggleFavoriteBranch,
+  useFavoriteBranches,
+  useFavoriteBranchNames,
+} from "./branchOps";
 import { inProgress, operationTitle, type InProgress } from "./operations";
 import {
   buildMultiRepoRows,
@@ -54,6 +60,7 @@ import type { SyncDirection } from "./syncCommits";
 import styles from "./BranchWidget.module.css";
 import { tx } from "@/platform/i18n";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
+import { isImeKey } from "@/platform/ime";
 
 /** `active` until the user moves: a new filter selects the row IDEA prefers for it. */
 const PREFERRED = -1;
@@ -178,8 +185,13 @@ const POPUP_ACTIONS: PopupAction[] = [
   { id: "vcs.checkoutRevision", label: "Checkout Tag or Revision…", icon: "branch", group: "branch" },
 ];
 
-/** A single repository's own entries (its submenu in the popup with several repositories). */
-const REPO_ACTIONS: PopupAction[] = [
+/**
+ * A single repository's own entries (its submenu in the popup with several repositories).
+ * Update and Push… act on that repository alone, as they do in its current branch's menu.
+ */
+const repoActions = (root: string): PopupAction[] => [
+  { id: "vcs.update", label: "Update", icon: "git-pull", group: "sync", arg: { repo: root }, hideShortcut: true },
+  { id: "vcs.push", label: "Push…", icon: "git-push", group: "sync", arg: { repo: root }, hideShortcut: true },
   { id: "vcs.newBranch", label: "New Branch…", icon: "plus", group: "branch" },
   { id: "vcs.checkoutRevision", label: "Checkout Tag or Revision…", icon: "branch", group: "branch" },
 ];
@@ -449,15 +461,14 @@ function BranchesPanel({ onClose, actions: baseActions, root, fallback, onBack }
     live ? (s.branch?.head ?? null) : root ? (s.heads[root]?.head ?? null) : (s.branch?.head ?? null),
   );
   const [query, setQuery] = useState("");
-  const [recent] = useState(recentBranches);
+  const [recent] = useState(() => recentBranches(root));
   const [active, setActive] = useState(0);
   const [menuFor, setMenuFor] = useState<{ items: MenuItem[]; label: string; el: HTMLElement } | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  const favorites = useFavoriteBranches((s) => s.names);
+  const favorites = useFavoriteBranchNames(root);
   const [tags, setTags] = useState<string[]>([]);
   useEffect(() => {
     if (root === undefined) void loadBranches().catch(() => undefined);
-    loadFavoriteBranches();
   }, [root]);
   useEffect(() => {
     let live = true;
@@ -494,7 +505,11 @@ function BranchesPanel({ onClose, actions: baseActions, root, fallback, onBack }
     if (!el) return;
     setMenuFor(
       row.type === "branch"
-        ? { items: scoped(branchMenu(row.branch, current, closeAll)), label: tx`Branch ${row.branch.name}`, el }
+        ? {
+            items: scoped(branchMenu(row.branch, current, closeAll, undefined, root)),
+            label: tx`Branch ${row.branch.name}`,
+            el,
+          }
         : { items: scoped(tagMenu(row.tag, closeAll)), label: tx`Tag ${row.tag}`, el },
     );
   };
@@ -516,6 +531,8 @@ function BranchesPanel({ onClose, actions: baseActions, root, fallback, onBack }
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
+    // Keys that drive an IME candidate window (including the Enter that confirms one) are not list commands.
+    if (isImeKey(e.nativeEvent)) return;
     if (isNewBranchStroke(strokeOf(e))) {
       e.preventDefault();
       run("vcs.newBranch");
@@ -594,7 +611,9 @@ function BranchesPanel({ onClose, actions: baseActions, root, fallback, onBack }
           aria-label="Branches"
           className={styles.list}
           empty={<span className={styles.empty}>{loaded ? tx("No matching branches") : tx("Loading…")}</span>}
-          renderItem={(r) => (r.type === "group" ? <GroupRowView row={r} /> : <BranchRowView row={r} />)}
+          renderItem={(r) =>
+            r.type === "group" ? <GroupRowView row={r} /> : <BranchRowView row={r} repo={root} branches={branches} />
+          }
         />
       </div>
       {menuFor && <SubMenu {...menuFor} onClose={() => setMenuFor(null)} />}
@@ -640,9 +659,16 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
   const heads = useVcs((s) => s.heads);
   const operations = useVcs((s) => s.operations);
   const version = useVcs((s) => s.version);
-  const favorites = useFavoriteBranches((s) => s.names);
   const current = useCurrentRepo();
-  const [recent] = useState(recentBranches);
+  // The branches listed below are the current repository's: so are their recents and favorites.
+  const favorites = useFavoriteBranchNames(current);
+  const editedFavorites = useFavoriteBranches((s) => s.byRepo);
+  // A search also lists the other repositories' branches: each row carries its own repository's favorites.
+  const favoritesOf = useCallback(
+    (repo: string) => (editedFavorites[repo] !== undefined ? editedFavorites[repo] : favoriteBranches(repo)),
+    [editedFavorites],
+  );
+  const recent = useMemo(() => recentBranches(current), [current]);
   const [tags, setTags] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
@@ -659,8 +685,9 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
     setRepoMenu(null);
     searchRef.current?.focus();
   };
+  const repoMenuRoot = repoMenu?.root;
+  const repoMenuActions = useMemo(() => (repoMenuRoot ? repoActions(repoMenuRoot) : []), [repoMenuRoot]);
 
-  useEffect(() => loadFavoriteBranches(), []);
   // Every repository's branches (common ones, submenus, search); refreshed after operations.
   useEffect(() => {
     let live = true;
@@ -712,12 +739,13 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
         actions,
         expanded,
         favorites,
+        favoritesOf,
         current,
         recent,
         tags,
         sync,
       }),
-    [repos, all, query, actions, expanded, favorites, current, recent, tags, options, sync],
+    [repos, all, query, actions, expanded, favorites, favoritesOf, current, recent, tags, options, sync],
   );
   const isSection = (r: RepoRow) => r.type === "section" || r.type === "notice";
   const activeIndex = pickActive(rows, active, isSection, () => preferredRepoRow(rows, query));
@@ -751,7 +779,7 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
         el,
       });
     } else if (row.type === "branch") {
-      const items = inRepo(row.repo.root, branchMenu(row.branch, row.repo.head, closeAll));
+      const items = inRepo(row.repo.root, branchMenu(row.branch, row.repo.head, closeAll, undefined, row.repo.root));
       setMenuFor({ items, label: tx`Branch ${row.branch.name} of ${row.repo.name}`, el });
     } else if (row.type === "tag") {
       setMenuFor({ items: inRepo(row.repo.root, tagMenu(row.tag, closeAll)), label: tx`Tag ${row.tag}`, el });
@@ -777,6 +805,8 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
+    // Keys that drive an IME candidate window (including the Enter that confirms one) are not list commands.
+    if (isImeKey(e.nativeEvent)) return;
     if (isNewBranchStroke(strokeOf(e))) {
       e.preventDefault();
       onClose();
@@ -863,7 +893,7 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
             </span>
           }
           renderItem={(r) => (
-            <RepoRowView row={r} operation={r.type === "repo" ? operations[r.repo.root] : undefined} />
+            <RepoRowView row={r} branches={all} operation={r.type === "repo" ? operations[r.repo.root] : undefined} />
           )}
         />
       </div>
@@ -883,7 +913,7 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
             key={repoMenu.root}
             root={repoMenu.root}
             fallback={all[repoMenu.root]}
-            actions={REPO_ACTIONS}
+            actions={repoMenuActions}
             onClose={closeAll}
             onBack={closeRepoMenu}
           />
@@ -898,10 +928,19 @@ function branchIndent(depth: number) {
   return depth ? { paddingInlineStart: `min(${depth * INDENT}px, ${(30 * depth) / (depth + 3)}%)` } : undefined;
 }
 
-function RepoRowView({ row, operation }: { row: RepoRow; operation?: string }) {
+function RepoRowView({
+  row,
+  branches,
+  operation,
+}: {
+  row: RepoRow;
+  branches: Record<string, Branch[]>;
+  operation?: string;
+}) {
   switch (row.type) {
-    case "action":
     case "branch":
+      return <BranchRowView row={row} repo={row.repo.root} branches={branches[row.repo.root]} />;
+    case "action":
     case "tag":
       return <BranchRowView row={row} />;
     case "repo":
@@ -963,10 +1002,19 @@ function GroupRowView({ row }: { row: { key: string; label: string; expanded: bo
   );
 }
 
-function BranchRowView({ row }: { row: BranchRow | Extract<RepoRow, { type: "action" | "branch" | "tag" }> }) {
+function BranchRowView({
+  row,
+  repo,
+  branches,
+}: {
+  row: BranchRow | Extract<RepoRow, { type: "action" | "branch" | "tag" }>;
+  /** The repository of a branch row (unset: the selected one) and its branches, for the favorite star. */
+  repo?: string;
+  branches?: readonly Branch[];
+}) {
   const indent = "depth" in row ? branchIndent(row.depth) : undefined;
   if (row.type === "action") {
-    const keys = shortcutLabel(row.action.id);
+    const keys = row.action.hideShortcut ? undefined : shortcutLabel(row.action.id);
     return (
       <span className={styles.row} data-row-key={row.key}>
         {row.action.checked === false ? (
@@ -1014,7 +1062,7 @@ function BranchRowView({ row }: { row: BranchRow | Extract<RepoRow, { type: "act
           onMouseDown={(e) => e.preventDefault()}
           onClick={(e) => {
             e.stopPropagation();
-            toggleFavoriteBranch(b);
+            toggleFavoriteBranch(b, repo, branches);
           }}
         >
           <Icon name={row.favorite ? "star" : "star-outline"} size={14} className={styles.starIcon} />

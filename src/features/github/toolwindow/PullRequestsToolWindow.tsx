@@ -113,9 +113,14 @@ function RepositorySelector() {
       <div className={styles.selectorRow}>
         <Select
           value={value}
-          options={remotes.map((r) => ({ value: nameWithOwner(r), label: repositoryDisplayName(remotes, r, true) }))}
+          options={remotes.map((r) => ({
+            value: nameWithOwner(r),
+            label: repositoryDisplayName(remotes, r, true),
+            literal: true,
+          }))}
           onChange={setChosen}
           aria-label="Repository"
+          searchable
         />
         <Button
           size="small"

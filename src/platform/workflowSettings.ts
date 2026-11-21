@@ -9,6 +9,8 @@ import { DEFAULT_REMOTE, validateRemote, type RemoteSettings } from "./remoteSet
 export type UpdateMethod = "merge" | "rebase";
 export type IncomingCheck = "auto" | "always" | "never";
 export type BuildToolWindowWhen = "always" | "onError" | "never";
+/** Annotate gutter colours, IDEA's ColorMode (Order / Author / Hide). */
+export type AnnotateColors = "order" | "author" | "none";
 export type VcsConfirm = "ask" | "silently" | "never";
 export type PatchCreated = "ask" | "no" | "reveal";
 export type CursorShape = "block" | "underline" | "bar";
@@ -23,6 +25,7 @@ export interface GitSettingsValid {
   inlineBlameClickable: boolean;
   showBranchInProjectView: boolean;
   syncBranchOperations: boolean;
+  annotateColors: AnnotateColors;
   executable: string;
   updateMethod: UpdateMethod;
   autoUpdateOnPushRejected: boolean;
@@ -75,6 +78,30 @@ export interface CommitSettingsValid {
   agentButton: boolean;
 }
 
+export interface ClipFilterRuleValid {
+  type: "PATH" | "PATTERN";
+  action: "INCLUDE" | "EXCLUDE";
+  value: string;
+  enabled: boolean;
+}
+
+/** Version Control › ClipCode (the ClipCode plugins' settings, same keys and defaults). */
+export interface ClipCodeSettingsValid {
+  headerFormat: string;
+  preText: string;
+  postText: string;
+  addExtraLineBetweenFiles: boolean;
+  setMaxFileCount: boolean;
+  fileCountLimit: number;
+  maxFileSizeKB: number;
+  maxNonTextFileSizeKB: number;
+  showCopyNotification: boolean;
+  useFilters: boolean;
+  useIncludeFilters: boolean;
+  useExcludeFilters: boolean;
+  filterRules: ClipFilterRuleValid[];
+}
+
 export interface VcsSettingsValid {
   showDirtyDirectories: boolean;
   /** Off: diffs the user opens show in a separate window. */
@@ -94,6 +121,7 @@ export interface VcsSettingsValid {
   issueNavigation: IssueLinkValid[];
   /** Directory Mappings: repository roots excluded from / added to the detected ones. */
   mappings: { excluded: string[]; added: string[] };
+  clipCode: ClipCodeSettingsValid;
 }
 
 /** Mirrors `ide-core::workflow_settings::LogLevelColors` defaults. */
@@ -258,7 +286,38 @@ export const WORKFLOW_LIMITS = {
   terminalFontSize: { min: 6, max: 72 },
   terminalLineHeight: { min: 0.5, max: 3 },
   terminalColumnWidth: { min: 0.5, max: 2 },
+  clipFileCount: { min: 1, max: 100_000 },
+  clipFileSizeKb: { min: 1, max: 32_768 },
 } as const;
+
+function clipCode(c: Record<string, unknown>, d: ClipCodeSettingsValid): ClipCodeSettingsValid {
+  const L = WORKFLOW_LIMITS;
+  return {
+    headerFormat: text(c.headerFormat, d.headerFormat),
+    preText: text(c.preText, d.preText),
+    postText: text(c.postText, d.postText),
+    addExtraLineBetweenFiles: bool(c.addExtraLineBetweenFiles, d.addExtraLineBetweenFiles),
+    setMaxFileCount: bool(c.setMaxFileCount, d.setMaxFileCount),
+    fileCountLimit: num(c.fileCountLimit, d.fileCountLimit, L.clipFileCount, true),
+    maxFileSizeKB: num(c.maxFileSizeKB, d.maxFileSizeKB, L.clipFileSizeKb, true),
+    maxNonTextFileSizeKB: num(c.maxNonTextFileSizeKB, d.maxNonTextFileSizeKB, L.clipFileSizeKb, true),
+    showCopyNotification: bool(c.showCopyNotification, d.showCopyNotification),
+    useFilters: bool(c.useFilters, d.useFilters),
+    useIncludeFilters: bool(c.useIncludeFilters, d.useIncludeFilters),
+    useExcludeFilters: bool(c.useExcludeFilters, d.useExcludeFilters),
+    filterRules: Array.isArray(c.filterRules)
+      ? c.filterRules
+          .map((x) => obj(x))
+          .map((x) => ({
+            type: oneOf(x.type, ["PATH", "PATTERN"] as const, "PATH"),
+            action: oneOf(x.action, ["INCLUDE", "EXCLUDE"] as const, "EXCLUDE"),
+            value: text(x.value, ""),
+            enabled: bool(x.enabled, true),
+          }))
+          .filter((x) => x.value.trim())
+      : [],
+  };
+}
 
 export const DEFAULT_EXTERNAL_TOOL: ExternalToolValid = {
   id: "",
@@ -285,6 +344,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       inlineBlameClickable: true,
       showBranchInProjectView: false,
       syncBranchOperations: true,
+      annotateColors: "order",
       executable: "",
       updateMethod: "merge",
       autoUpdateOnPushRejected: false,
@@ -335,6 +395,21 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       onPatchCreated: "ask",
     },
     shelf: { removeApplied: false },
+    clipCode: {
+      headerFormat: "// file: $FILE_PATH",
+      preText: "",
+      postText: "",
+      addExtraLineBetweenFiles: true,
+      setMaxFileCount: true,
+      fileCountLimit: 30,
+      maxFileSizeKB: 500,
+      maxNonTextFileSizeKB: 2048,
+      showCopyNotification: true,
+      useFilters: false,
+      useIncludeFilters: true,
+      useExcludeFilters: true,
+      filterRules: [],
+    },
     issueNavigation: [],
     mappings: { excluded: [], added: [] },
   },
@@ -461,6 +536,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       inlineBlameClickable: bool(g.inlineBlameClickable, d.git.inlineBlameClickable),
       showBranchInProjectView: bool(g.showBranchInProjectView, d.git.showBranchInProjectView),
       syncBranchOperations: bool(g.syncBranchOperations, d.git.syncBranchOperations),
+      annotateColors: oneOf(g.annotateColors, ["order", "author", "none"] as const, d.git.annotateColors),
       executable: text(g.executable, d.git.executable).trim(),
       updateMethod: oneOf(g.updateMethod, ["merge", "rebase"] as const, d.git.updateMethod),
       autoUpdateOnPushRejected: bool(g.autoUpdateOnPushRejected, d.git.autoUpdateOnPushRejected),
@@ -521,6 +597,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       excluded: strings(obj(v.mappings).excluded, d.mappings.excluded),
       added: strings(obj(v.mappings).added, d.mappings.added),
     },
+    clipCode: clipCode(obj(v.clipCode), d.clipCode),
   };
 }
 

@@ -21,14 +21,13 @@ import {
   newBranchInRepos,
   rebaseInRepos,
   renameInRepos,
-  loadFavoriteBranches,
+  favoriteBranches,
   mergeIntoCurrent,
   newBranch,
   rebaseOnto,
   renameBranch,
   toggleFavoriteBranch,
   updateBranches,
-  useFavoriteBranches,
 } from "./branchOps";
 import { showCompareBranches } from "./CompareBranches";
 import { showDiffWithWorkingTree } from "./operations";
@@ -51,13 +50,13 @@ async function pullInto(remoteBranch: string, rebase: boolean) {
 
 type Run = (fn: () => unknown) => () => void;
 
-function favoriteMenuItem(b: Branch, run: Run): MenuItem {
-  loadFavoriteBranches();
-  const favorite = isFavoriteBranch(b, useFavoriteBranches.getState().names);
+/** `repo`, `branches`: the branch's repository and its branches when it is not the selected one (its favorites are its own). */
+function favoriteMenuItem(b: Branch, run: Run, repo?: string, branches?: readonly Branch[]): MenuItem {
+  const favorite = isFavoriteBranch(b, favoriteBranches(repo));
   return {
     label: favorite ? "Remove from Favorites" : "Add to Favorites",
     icon: "star",
-    run: run(() => toggleFavoriteBranch(b)),
+    run: run(() => toggleFavoriteBranch(b, repo, branches)),
   };
 }
 
@@ -71,13 +70,17 @@ export function branchMenu(
   current: string | null,
   done: () => void = () => {},
   selected: readonly { repo?: string; branch?: Branch }[] = [],
+  /** The branch's repository when it is not the selected one (its favorites are its own). */
+  repo?: string,
+  /** That repository's branches, when it is not the selected one. */
+  branches?: readonly Branch[],
 ): MenuItem[] {
   const run = (fn: () => unknown) => () => {
     done();
     void fn();
   };
   const cur = current ?? "HEAD";
-  const favoriteItem = favoriteMenuItem(b, run);
+  const favoriteItem = favoriteMenuItem(b, run, repo, branches);
   // Update Selected acts on every selected local branch, each in its own repository.
   const update: MenuItem =
     selected.filter((t) => t.branch && !t.branch.remote).length > 1
@@ -89,6 +92,14 @@ export function branchMenu(
           run: run(() => updateBranches([{ branch: b }])),
         };
   const history = historyMenuItem(b.name, run);
+  // ClipCode for VS Code's Copy Branch Commits (a local branch's own commits as an mbox).
+  const clipItems: MenuItem[] = b.remote
+    ? []
+    : [
+        { kind: "separator" },
+        { kind: "action", action: "clip.copyBranchSeries", arg: { branch: b.name } },
+        { kind: "action", action: "clip.copyBranchSeriesFull", arg: { branch: b.name } },
+      ];
   if (b.current) {
     return [
       { label: tx`New Branch from '${b.name}'…`, icon: "branch", run: run(() => newBranch()) },
@@ -99,6 +110,7 @@ export function branchMenu(
       { label: "Rename…", run: run(() => renameBranch(b)) },
       favoriteItem,
       history,
+      ...clipItems,
     ];
   }
   const items: MenuItem[] = [
@@ -139,6 +151,7 @@ export function branchMenu(
         selected.length ? deleteBranches(selected) : b.remote ? deleteRemoteBranch(b.name) : deleteBranch(b.name),
       ),
     },
+    ...clipItems,
   );
   return items;
 }

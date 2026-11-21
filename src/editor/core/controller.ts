@@ -49,6 +49,7 @@ import { ask, confirm } from "@/workbench/messages";
 import { t, tx } from "@/platform/i18n";
 import { call, commands, isErrorKind, isTauri } from "@/platform/ipc";
 import { openLightweightEditor } from "./openLightweightEditor";
+import { forkDetach } from "./forkDetach";
 import { windowBackgroundHex } from "@/workbench/theme";
 import { hoverActionsAt } from "@/platform/hoverActions";
 import { save as saveFileDialog, type DialogFilter as SaveDialogFilter } from "@/platform/dialog";
@@ -1933,7 +1934,7 @@ export class EditorController implements SlotHost {
     const project = useProject.getState().project;
     const inProject =
       !!project && (project.workspace?.projects ?? [project.root]).some((root) => isSameOrInside(path, root));
-    const light = inProject && isTextTab(tab) && isTauri();
+    const light = forkDetach.lightweight && inProject && isTextTab(tab) && isTauri();
     return this.removeGuarded((s) => (s.panes[paneId] ? closeTab(s, paneId, tabId) : s), {
       beforeRemove: async () => {
         if (!useTabs.getState().panes[paneId]?.tabs.some((t) => t.id === tabId)) return false;
@@ -1970,7 +1971,8 @@ export class EditorController implements SlotHost {
         if (isTextTab(tab)) {
           const slot = await this.ensureSlot(tabId);
           if (!slot) return false;
-          await slot.model.save("explicit");
+          // A file changed on disk keeps the tab: the new window would show the disk version.
+          if (await slot.model.save("explicit")) return false;
         }
         try {
           await call(commands.windowOpenFileInNewWindow(inProject ? project.root : null, path));
@@ -2164,9 +2166,14 @@ export class EditorController implements SlotHost {
     if (errors.length) throw combinedError(errors);
   }
 
-  async saveAll(opts?: { skipUntitled?: boolean }): Promise<void> {
+  /**
+   * Saves every dirty document. `overwriteActive` (the user's Save): the active editor's document
+   * may replace a file that changed on disk; every other document keeps such a file.
+   */
+  async saveAll(options: { overwriteActive?: boolean; skipUntitled?: boolean } = {}): Promise<void> {
+    const active = options.overwriteActive ? this.manager.get(this.activePath() ?? "") : undefined;
     const results = await Promise.allSettled([
-      this.manager.saveAll("explicit", opts?.skipUntitled),
+      this.manager.saveAll("explicit", active, options.skipUntitled),
       this.saveCustomDocuments(),
     ]);
     const errors = failures(results);

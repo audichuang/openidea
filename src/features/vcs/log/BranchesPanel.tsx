@@ -17,12 +17,13 @@ import {
   type BranchTreeNode,
 } from "../branches";
 import { branchMenu, inRepo, mergedBranchMenu, tagMenu } from "../branchMenu";
-import { canDeleteBranch, loadFavoriteBranches, useFavoriteBranches } from "../branchOps";
+import { canDeleteBranch, favoriteBranches, useFavoriteBranches, useFavoriteBranchNames } from "../branchOps";
 import { BranchSync } from "../BranchSync";
 import styles from "../GitLog.module.css";
 import { LogIdContext } from "../logContext";
 import { canUpdateBranch, useBranchesPane, type BranchTarget } from "../logPaneActions";
 import { reloadLog, scopedLogRepositories, setLogBranches, setLogFilters, useGitLog } from "../logStore";
+import { repoColor } from "../model";
 import { branchesByRepo } from "../multiRoot";
 import { commonBranches } from "../repoBranches";
 import { currentRepo, loadBranches, repoName, useVcs } from "../store";
@@ -86,6 +87,7 @@ export function BranchesPanel() {
     [availableRepositories, filters],
   );
   const scopedRepo = availableRepositories.length > 1 && repositories.length === 1 ? repositories[0] : undefined;
+  const workspaceRoots = useVcs((s) => s.roots);
   const readOnly = useReadOnlyLog();
   const version = useVcs((s) => s.version);
   const [allBranches, setAllBranches] = useState<Record<string, Branch[]>>({});
@@ -110,11 +112,16 @@ export function BranchesPanel() {
   const root = useVcs((s) => s.root);
   const branchesLoaded = useVcs((s) => s.branchesLoaded);
   const current = useVcs((s) => s.branch?.head ?? null);
-  const favorites = useFavoriteBranches((s) => s.names);
+  const favorites = useFavoriteBranchNames(repositories.length === 1 ? repositories[0] : undefined);
+  const editedFavorites = useFavoriteBranches((s) => s.byRepo);
+  // Several repositories are listed together: each one's branches carry its own favorites.
+  const favoritesOf = useCallback(
+    (repo: string) => (editedFavorites[repo] !== undefined ? editedFavorites[repo] : favoriteBranches(repo)),
+    [editedFavorites],
+  );
   const filterBranches = filters.branches;
   const [query, setQuery] = useState("");
   const [tags, setTags] = useState<string[]>([]);
-  useEffect(() => loadFavoriteBranches(), [root]);
   // Branches reload when refs move (fetch, new tag…): the tags are re-read with them.
   useEffect(() => {
     let live = true;
@@ -150,7 +157,7 @@ export function BranchesPanel() {
       tags: allTags[repo] ?? [],
     }));
     return grouped
-      ? buildRepositoryBranchTree(list, favorites)
+      ? buildRepositoryBranchTree(list, favoritesOf)
       : buildMergedBranchTree(list, favorites, currentRepository);
   }, [
     repositories,
@@ -163,6 +170,7 @@ export function BranchesPanel() {
     grouped,
     currentRepository,
     scopedRepo,
+    favoritesOf,
   ]);
   /** A merged ref acts in each repository that has it, with that repository's own branch. */
   const expand = useCallback(
@@ -212,10 +220,15 @@ export function BranchesPanel() {
     walk(allRoots);
     return out;
   }, [allRoots, expand]);
+  // One repository is listed, which need not be the selected one: its favorites are edited, not the selection's.
+  const listed = useMemo(
+    () => (repositories.length === 1 ? { repo: repositories[0]!, branches } : undefined),
+    [repositories, branches],
+  );
   const targets = useMemo(
     (): BranchTarget[] =>
-      refs.filter((r) => selected.has(r.key)).map(({ ref, branch, repo }) => ({ ref, branch, repo })),
-    [refs, selected],
+      refs.filter((r) => selected.has(r.key)).map(({ ref, branch, repo }) => ({ ref, branch, repo, listed })),
+    [refs, selected, listed],
   );
   useEffect(() => {
     if (!active) return;
@@ -223,7 +236,8 @@ export function BranchesPanel() {
     return () => useBranchesPane.setState({ selected: [] });
   }, [targets, active]);
   const target = targets[0] ?? undefined;
-  const favorite = !!target?.branch && isFavoriteBranch(target.branch, favorites);
+  const favorite =
+    !!target?.branch && isFavoriteBranch(target.branch, target.repo ? favoritesOf(target.repo) : favorites);
   const onKeyDownCapture = (e: KeyboardEvent<HTMLDivElement>) => {
     if ((e.key !== "c" && e.key !== "C") || !hasPrimaryModifier(e) || e.altKey || e.shiftKey) return;
     // The branch search keeps the browser's own copy.
@@ -332,6 +346,11 @@ export function BranchesPanel() {
                     : "folder"
           }
           getDetail={(n) => branchDetail(n, availableRepositories.length)}
+          getSwatch={(n) =>
+            n.kind === "repository" && n.repo
+              ? repoColor(n.repo, workspaceRoots.includes(n.repo) ? workspaceRoots : availableRepositories)
+              : null
+          }
           selected={selected}
           onSelectionChange={(sel) => setSelected(sel)}
           onActivate={(n) => {
@@ -374,7 +393,14 @@ export function BranchesPanel() {
             }
             const repo = n?.repo ?? (n?.repos?.length === 1 ? n.repos[0] : scopedRepo);
             const menu = n?.branch
-              ? branchMenu(n.branch, repo ? (useVcs.getState().heads[repo]?.head ?? null) : current, () => {}, picked)
+              ? branchMenu(
+                  n.branch,
+                  repo ? (useVcs.getState().heads[repo]?.head ?? null) : current,
+                  () => {},
+                  picked,
+                  repo ?? listed?.repo,
+                  (repo ?? listed?.repo) === listed?.repo ? listed?.branches : undefined,
+                )
               : n?.kind === "tag"
                 ? tagMenu(n.ref!)
                 : n?.kind === "remote" || (n?.kind === "group" && n.key.endsWith("g:remote"))

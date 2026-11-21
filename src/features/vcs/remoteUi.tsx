@@ -238,6 +238,14 @@ export function pushCandidates(repos: readonly RepoPush[]): RepoPush[] {
 
 const hasNothingToPush = (r: RepoPush) => !!r.branch.upstream && !r.commits.length;
 
+/**
+ * Checked by default: nothing, so pushing one of many repositories needs no unchecking (fork
+ * decision, #224); with `only` (Push… from one repository's branch menu), that repository.
+ */
+export function defaultPushChecked(repos: readonly RepoPush[], only?: string): Set<string> {
+  return new Set(repos.filter((r) => r.root === only).map((r) => r.root));
+}
+
 /** One node of the multi-repository Push tree: a repo group with its outgoing commits. */
 interface PushNode {
   key: string;
@@ -307,20 +315,11 @@ function MultiPushDialog({ only, onClose }: MultiPushDialogProps) {
       }
       const list = pushCandidates(loaded);
       setRepos(list);
-      // Push all checks what has outgoing commits, plus a new branch of the current repository;
-      // Push… from one repository checks it unless it is up to date.
-      const current = currentRepo();
+      // Fork decision (#224): nothing checked, or with `only` that repository unless it is up to date.
       setChecked(
-        new Set(
-          list
-            .filter((r) =>
-              only === undefined
-                ? r.branch.upstream
-                  ? r.commits.length > 0
-                  : r.root === current
-                : !hasNothingToPush(r),
-            )
-            .map((r) => r.root),
+        defaultPushChecked(
+          list.filter((r) => !hasNothingToPush(r)),
+          only,
         ),
       );
     });
@@ -362,13 +361,16 @@ function MultiPushDialog({ only, onClose }: MultiPushDialogProps) {
   const push = async () => {
     // Like the single-repository dialog: each forced target is confirmed first (once, when several
     // repositories push to the same one), and declining one pushes nothing.
-    const forced = new Set<string>();
+    const forced = new Map<string, { target: ForcePushTarget; roots: string[] }>();
     for (const r of force ? picked : []) {
       const target = targetNameOf(r);
-      const remote = shownRemoteOf(r);
-      if (!isProtectedBranch(target)) forced.add(remote ? `${remote}/${target}` : target);
+      if (isProtectedBranch(target)) continue;
+      // Keyed by the pair: `origin` + `team/feature` is not `origin/team` + `feature`.
+      const pair = { remote: shownRemoteOf(r), target };
+      const key = JSON.stringify([pair.remote, pair.target]);
+      forced.set(key, { target: pair, roots: [...(forced.get(key)?.roots ?? []), r.root] });
     }
-    for (const target of forced) if (!(await confirmForcePush(target))) return;
+    for (const { target, roots } of forced.values()) if (!(await confirmForcePush(target, roots))) return;
     onClose();
     // Every picked repository is pushed even when another fails; the outcome is summed up.
     const session: PushSession = { method: null };
@@ -462,6 +464,19 @@ function MultiPushDialog({ only, onClose }: MultiPushDialogProps) {
         onClose={closeDiff}
         commits={
           <div className={styles.pushTreeWrap}>
+            {repos && repos.length > 1 && (
+              <div className={styles.pushTreeActions}>
+                <Button
+                  size="small"
+                  onClick={() => setChecked(new Set(repos.filter((r) => !hasNothingToPush(r)).map((r) => r.root)))}
+                >
+                  Select All
+                </Button>
+                <Button size="small" onClick={() => setChecked(new Set())}>
+                  Select None
+                </Button>
+              </div>
+            )}
             {error ? (
               <div className={styles.error}>{error}</div>
             ) : !repos ? (
@@ -725,7 +740,8 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
     remoteChanged || retarget ? `${remote ? `${remote}/` : ""}${target}` : (upstream ?? "new remote branch");
   const protectedTarget = !!target && isProtectedBranch(target);
   const push = async () => {
-    if (force && !protectedTarget && !(await confirmForcePush(remote ? `${remote}/${target}` : (target ?? "")))) return;
+    if (force && !protectedTarget && !(await confirmForcePush({ remote, target: target ?? "" }, [forcePushRepo(repo)])))
+      return;
     onClose();
     if (!head) return;
     const op = pushOperation({
@@ -845,7 +861,7 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
                 value={remote ?? ""}
                 aria-label="Remote"
                 onChange={setRemote}
-                options={remotes.map((r) => ({ value: r, label: r }))}
+                options={remotes.map((r) => ({ value: r, label: r, literal: true }))}
               />
             ) : (
               remote && (
@@ -891,20 +907,57 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
   );
 }
 
-const SILENT_FORCE_PUSH_KEY = "openidea.vcs.silentForcePushTargets";
+/** A force push target: the branch `target` of `remote`. Kept apart, as both names may contain `/`. */
+interface ForcePushTarget {
+  remote: string | null;
+  target: string;
+}
 
-function silentForcePushTargets(): string[] {
+/**
+ * Repository root → the targets "Don't warn about this target" was ticked for. `origin/feat` names a
+ * different branch in each repository, so the list is per repository; the earlier global list
+ * (`openidea.vcs.silentForcePushTargets`) cannot tell them apart and is not read.
+ */
+const SILENT_FORCE_PUSH_KEY = "openidea.vcs.silentForcePushTargets.v2";
+
+const isForcePushTarget = (x: unknown): x is ForcePushTarget =>
+  !!x &&
+  typeof x === "object" &&
+  "remote" in x &&
+  "target" in x &&
+  (x.remote === null || typeof x.remote === "string") &&
+  typeof x.target === "string";
+
+function silentForcePushTargets(): Record<string, ForcePushTarget[]> {
   try {
-    const v: unknown = JSON.parse(localStorage.getItem(SILENT_FORCE_PUSH_KEY) ?? "[]");
-    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+    const v: unknown = JSON.parse(localStorage.getItem(SILENT_FORCE_PUSH_KEY) ?? "{}");
+    if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+    return Object.fromEntries(
+      Object.entries(v).map(([root, targets]) => [
+        root,
+        Array.isArray(targets) ? targets.filter(isForcePushTarget) : [],
+      ]),
+    );
   } catch {
-    return [];
+    return {};
   }
 }
 
-/** IDEA's force push confirmation, with "Don't warn about this target". */
-async function confirmForcePush(target: string): Promise<boolean> {
-  if (target && silentForcePushTargets().includes(target)) return true;
+const sameForcePushTarget = (a: ForcePushTarget) => (b: ForcePushTarget) =>
+  a.remote === b.remote && a.target === b.target;
+
+/** The root a force push of `repo` is remembered under (`null`: the selected repository). */
+const forcePushRepo = (repo: string | null) => repo ?? currentRepoRoot() ?? "";
+
+/**
+ * IDEA's force push confirmation, with "Don't warn about this target". `repos` are the repositories
+ * pushing to `target`: it is silent only when every one of them was told not to warn.
+ */
+async function confirmForcePush(to: ForcePushTarget, repos: readonly string[]): Promise<boolean> {
+  const target = to.remote ? `${to.remote}/${to.target}` : to.target;
+  const same = sameForcePushTarget(to);
+  const silent = silentForcePushTargets();
+  if (target && repos.length && repos.every((root) => silent[root]?.some(same))) return true;
   const r = await ask({
     title: "Force Push",
     body: tx`You're going to force push to '${target}'. It may overwrite commits at the remote. Are you sure you want to proceed?`,
@@ -915,7 +968,9 @@ async function confirmForcePush(target: string): Promise<boolean> {
   if (r.button !== "force") return false;
   if (r.checked && target) {
     try {
-      localStorage.setItem(SILENT_FORCE_PUSH_KEY, JSON.stringify([...silentForcePushTargets(), target]));
+      const next = silentForcePushTargets();
+      for (const root of repos) if (!next[root]?.some(same)) next[root] = [...(next[root] ?? []), to];
+      localStorage.setItem(SILENT_FORCE_PUSH_KEY, JSON.stringify(next));
     } catch {
       // Not remembered: the next force push asks again.
     }

@@ -1,8 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { commands } from "./ipc";
-import { pasteClipboardFiles, readClipboardPng, readClipboardText, writeClipboardText } from "./clipboard";
+import {
+  pasteClipboardFiles,
+  readClipboardPlainText,
+  readClipboardPng,
+  readClipboardText,
+  writeClipboardText,
+} from "./clipboard";
 
-beforeEach(() => vi.stubGlobal("__TAURI_INTERNALS__", {}));
+beforeEach(() => {
+  vi.stubGlobal("__TAURI_INTERNALS__", {});
+  // The webview reads the text, as on Windows; `readClipboardPlainText` covers the native read.
+  vi.spyOn(commands, "clipboardText").mockResolvedValue({ status: "ok", data: null });
+});
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -103,7 +113,7 @@ describe("clipboard writes", () => {
 
 describe("clipboard image", () => {
   it("is the PNG's base64, without the data URL prefix", async () => {
-    const image = vi.spyOn(commands, "clipboardImage");
+    const image = vi.spyOn(commands, "clipboardImageDataUrl");
     image.mockResolvedValue({ status: "ok", data: "data:image/png;base64,iVBORw0KGgo=" });
     expect(await readClipboardPng()).toBe("iVBORw0KGgo=");
     image.mockResolvedValue({ status: "ok", data: null });
@@ -114,8 +124,42 @@ describe("clipboard image", () => {
 
   it("is none outside the desktop app", async () => {
     vi.unstubAllGlobals();
-    const image = vi.spyOn(commands, "clipboardImage");
+    const image = vi.spyOn(commands, "clipboardImageDataUrl");
     expect(await readClipboardPng()).toBeNull();
     expect(image).not.toHaveBeenCalled();
+  });
+});
+
+describe("plain text", () => {
+  const webview = (text: string) => {
+    const readText = vi.fn(async () => text);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { readText } });
+    return readText;
+  };
+
+  it("reads natively in the app, without asking the webview", async () => {
+    vi.spyOn(commands, "clipboardText").mockResolvedValue({ status: "ok", data: "// file: a.ts\na\n" });
+    const readText = webview("webview");
+    expect(await readClipboardPlainText()).toBe("// file: a.ts\na\n");
+    expect(await readClipboardText()).toBe("// file: a.ts\na\n");
+    expect(readText).not.toHaveBeenCalled();
+  });
+
+  it("falls through to the file list when the native read hides a file's name", async () => {
+    vi.spyOn(commands, "clipboardText").mockResolvedValue({ status: "ok", data: "" });
+    vi.spyOn(commands, "clipboardFileList").mockResolvedValue({ status: "ok", data: ["/p/a b.txt"] });
+    const readText = webview("a b.txt");
+    expect(await readClipboardText()).toBe("/p/a b.txt");
+    expect(readText).not.toHaveBeenCalled();
+  });
+
+  it("uses the webview where the backend cannot read text, or outside the app", async () => {
+    webview("webview");
+    expect(await readClipboardPlainText()).toBe("webview");
+    vi.unstubAllGlobals();
+    const native = vi.spyOn(commands, "clipboardText");
+    native.mockClear();
+    expect(await readClipboardPlainText()).toBe("webview");
+    expect(native).not.toHaveBeenCalled();
   });
 });

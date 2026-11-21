@@ -1,11 +1,12 @@
 import clsx from "clsx";
-import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
+import { useMemo, useState, type KeyboardEvent } from "react";
 import type { Branch } from "@/bindings";
 import { HighlightedText, Icon, List, Popup, SearchField, T, firstSelectable, fuzzyMatch, listNavigate } from "@/ui";
 import { useRowHeight } from "@/ui/density";
 import { tx } from "@/platform/i18n";
 import { isFavoriteBranch, sortLocal, sortRemote } from "./branches";
-import { loadFavoriteBranches, useFavoriteBranches } from "./branchOps";
+import { useFavoriteBranchNames } from "./branchOps";
+import { isImeKey } from "@/platform/ime";
 import styles from "./GitLog.module.css";
 
 type Group = "local" | "remote";
@@ -84,6 +85,7 @@ export function BranchFilterPopup({
   onSelect,
   onSelectMany,
   onClose,
+  favorites: favoritesProp,
 }: {
   anchor: HTMLElement;
   branches: readonly Branch[];
@@ -91,13 +93,16 @@ export function BranchFilterPopup({
   onSelect: (branch: string) => void;
   onSelectMany: () => void;
   onClose: () => void;
+  /** Stored favorite branches, listed after the current one; null = the defaults (main / master), unset = the current repository's. */
+  favorites?: readonly string[] | null;
 }) {
   const rowHeight = useRowHeight(ROW_HEIGHT);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const [expanded, setExpanded] = useState<ReadonlySet<Group>>(new Set());
-  const favorites = useFavoriteBranches((s) => s.names);
-  useEffect(() => loadFavoriteBranches(), []);
+  const stored = useFavoriteBranchNames();
+  // The Git Graph passes another repository's favorites; Git Log reads the current one's.
+  const favorites = favoritesProp === undefined ? stored : favoritesProp;
   const rows = useMemo(() => buildRows(branches, favorites, query, expanded), [branches, favorites, query, expanded]);
   const activeIndex = rows[active] && !isSection(rows[active]!) ? active : firstSelectable(rows, isSection);
   const toggle = (group: Group, open: boolean) =>
@@ -113,6 +118,7 @@ export function BranchFilterPopup({
   };
   const onKeyDown = (e: KeyboardEvent) => {
     const row = rows[activeIndex];
+    if (isImeKey(e.nativeEvent)) return;
     if (e.key === "Enter") {
       e.preventDefault();
       activate(row);

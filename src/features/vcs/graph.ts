@@ -102,6 +102,14 @@ export function computeGraph(
   const describe = (s: GraphSegment, lane: Lane) =>
     track ? { ...s, edge: `${lane.source ?? ""}\0${lane.id}`, source: lane.source, kind: lane.kind } : s;
 
+  // A lane stays at the same index until it reaches its target. Share its
+  // straight segment between rows, and copy it only when a later pass edits it.
+  const segments = lanes.map((lane, i) => (lane ? describe(seg(i, i, lane.color, lane.dashed), lane) : null));
+  const putLane = (index: number, lane: Lane) => {
+    lanes[index] = lane;
+    segments[index] = describe(seg(index, index, lane.color, lane.dashed), lane);
+  };
+
   let nextColor = state.nextColor;
   const rows: GraphRow[] = [];
 
@@ -126,18 +134,22 @@ export function computeGraph(
     const upTargets: string[] = [];
     lanes.forEach((l, i) => {
       if (!l) return;
-      up.push(describe(seg(i, l.id === c.id ? lane : i, l.color, l.dashed), l));
+      up.push(l.id === c.id && lane !== i ? describe(seg(i, lane, l.color, l.dashed), l) : segments[i]!);
       upTargets.push(l.id);
     });
-    for (const m of matching) lanes[m] = null;
+    for (const m of matching) {
+      lanes[m] = null;
+      segments[m] = null;
+    }
     if (lane >= lanes.length) lanes.length = lane + 1;
     lanes[lane] = null;
+    segments[lane] = null;
 
     const down: GraphSegment[] = [];
     const downTargets: string[] = [];
     lanes.forEach((l, i) => {
       if (l) {
-        down.push(describe(seg(i, i, l.color, l.dashed), l));
+        down.push(segments[i]!);
         downTargets.push(l.id);
       }
     });
@@ -163,7 +175,7 @@ export function computeGraph(
       // The first parent continues this lane even if another lane also leads to it
       // (both lines then converge at the parent's node, like `git log --graph`).
       if (k === 0) {
-        lanes[lane] = { ...laneOf(p, color, dashed), ...info };
+        putLane(lane, { ...laneOf(p, color, dashed), ...info });
         down.push(describe(seg(lane, lane, color, dashed), { ...info, color }));
         downTargets.push(p);
         return;
@@ -178,12 +190,13 @@ export function computeGraph(
       }
       const slot = firstFree(lanes);
       const col = stableColor(p, nextColor++);
-      lanes[slot] = { ...laneOf(p, col, dashed), ...info };
+      putLane(slot, { ...laneOf(p, col, dashed), ...info });
       down.push(describe(seg(lane, slot, col, dashed), { ...info, color: col }));
       downTargets.push(p);
     });
 
     while (lanes.length && lanes[lanes.length - 1] === null) lanes.pop();
+    segments.length = lanes.length;
     const widthAfter = down.reduce((width, segment) => Math.max(width, segment.to + 1), 0);
     rows.push({
       ...(track ? { id: c.id } : {}),
@@ -273,33 +286,22 @@ export function collapseLinear<
 export function pruneFilteredEdges(commits: readonly GraphCommit[]): GraphCommit[] {
   const positions = new Map(commits.map((c, i) => [c.id, i]));
   const kindOf = (c: GraphCommit, i: number) => c.edgeTypes?.[i] ?? (c.dashed?.[i] ? "filtered" : "normal");
-  return commits.map((c) => {
-    if (c.parents.length < 2) return c;
-    if (!c.parents.some((_, i) => kindOf(c, i) === "filtered")) return c;
-    // Walk the parents shallowest first, tracking the rows the kept connections reach:
-    // a filtered parent already covered by them adds nothing (and a dropped one was
-    // covered itself, so its own reach is covered too). Parents only appear later in
-    // the log, so no walk goes past the deepest parent of the commit.
-    const limit = Math.max(...c.parents.map((p) => positions.get(p) ?? -1));
+  const pruned = (c: GraphCommit) => c.parents.length >= 2 && c.parents.some((_, i) => kindOf(c, i) === "filtered");
+  if (!commits.some(pruned)) return [...commits];
+  const reaches = filteredReachability(commits, positions);
+  return commits.map((c, row) => {
+    if (!pruned(c)) return c;
+    // Walk the parents shallowest first: a filtered parent that a kept connection already
+    // reaches adds nothing (and a dropped one was reached itself, so what it reaches is too).
     const drop = new Set<number>();
-    const covered = new Set<number>();
+    const kept: number[] = [];
     for (const i of c.parents
       .map((_, i) => i)
       .sort((a, b) => (positions.get(c.parents[a]!) ?? Infinity) - (positions.get(c.parents[b]!) ?? Infinity))) {
       const pos = positions.get(c.parents[i]!);
-      if (kindOf(c, i) === "filtered" && pos != null && covered.has(pos)) {
-        drop.add(i);
-        continue;
-      }
-      for (const stack = pos == null ? [] : [pos]; stack.length;) {
-        const at = stack.pop()!;
-        if (covered.has(at)) continue;
-        covered.add(at);
-        for (const p of commits[at]!.parents) {
-          const next = positions.get(p);
-          if (next != null && next <= limit) stack.push(next);
-        }
-      }
+      if (pos == null) continue;
+      if (kindOf(c, i) === "filtered" && reaches(row, kept, pos)) drop.add(i);
+      else kept.push(pos);
     }
     if (!drop.size) return c;
     const keep = c.parents.map((_, i) => i).filter((i) => !drop.has(i));
@@ -310,6 +312,128 @@ export function pruneFilteredEdges(commits: readonly GraphCommit[]): GraphCommit
       ...(c.edgeTypes ? { edgeTypes: keep.map((i) => c.edgeTypes![i]!) } : {}),
     };
   });
+}
+
+/**
+ * `reaches(row, from, target)`: whether row `target` is in `from` or an ancestor of one of
+ * them, walking only rows no deeper than the deepest parent of row `row`.
+ *
+ * In log order (parents after their children) that depth bound never cuts a path to a
+ * parent of `c`, so the answer depends only on the two rows and is shared between rows:
+ * a spanning-forest interval proves most hits at once, a post-order bound rules out most
+ * misses, and the remaining walks are memoised per target. Logs with a parent listed
+ * above its child keep a bounded walk per row.
+ */
+function filteredReachability(commits: readonly GraphCommit[], positions: ReadonlyMap<string, number>) {
+  const n = commits.length;
+  const parents = commits.map((c) =>
+    c.parents.flatMap((p) => {
+      const at = positions.get(p);
+      return at == null ? [] : [at];
+    }),
+  );
+  if (parents.some((ps, i) => ps.some((p) => p <= i))) {
+    // One walk per row as before, extended as `from` grows within the row.
+    let current = -1;
+    let covered = new Set<number>();
+    let walked = 0;
+    return (row: number, from: readonly number[], target: number) => {
+      if (row !== current) {
+        current = row;
+        covered = new Set();
+        walked = 0;
+      }
+      const limit = Math.max(...commits[row]!.parents.map((p) => positions.get(p) ?? -1));
+      for (const stack = from.slice(walked); stack.length;) {
+        const at = stack.pop()!;
+        if (covered.has(at)) continue;
+        covered.add(at);
+        for (const p of parents[at]!) if (p <= limit) stack.push(p);
+      }
+      walked = from.length;
+      return covered.has(target);
+    };
+  }
+
+  // Depth-first spanning forest from the top rows: pre/post order intervals, and `low`,
+  // the smallest post order among everything a row reaches (descendants finish first).
+  const pre = new Int32Array(n).fill(-1);
+  const post = new Int32Array(n);
+  const low = new Int32Array(n);
+  let clock = 0;
+  let finished = 0;
+  for (let root = 0; root < n; root++) {
+    if (pre[root] !== -1) continue;
+    pre[root] = clock++;
+    const stack = [root];
+    const next = [0];
+    while (stack.length) {
+      const at = stack.at(-1)!;
+      const ps = parents[at]!;
+      const k = next.at(-1)!;
+      if (k < ps.length) {
+        next[next.length - 1] = k + 1;
+        const p = ps[k]!;
+        if (pre[p] === -1) {
+          pre[p] = clock++;
+          stack.push(p);
+          next.push(0);
+        }
+        continue;
+      }
+      post[at] = finished++;
+      let min = post[at]!;
+      for (const p of ps) min = Math.min(min, low[p]!);
+      low[at] = min;
+      stack.pop();
+      next.pop();
+    }
+  }
+  const inTree = (from: number, target: number) => pre[from]! <= pre[target]! && post[target]! <= post[from]!;
+  const excluded = (from: number, target: number) =>
+    from > target || post[target]! < low[from]! || post[target]! > post[from]!;
+
+  // Walk results per target, dropped once they outgrow the log so memory stays linear.
+  const memo = new Map<number, Map<number, boolean>>();
+  let memoSize = 0;
+  const reachesOne = (from: number, target: number): boolean => {
+    if (from === target || inTree(from, target)) return true;
+    if (excluded(from, target)) return false;
+    if (memoSize > 4 * n) {
+      memo.clear();
+      memoSize = 0;
+    }
+    let known = memo.get(target);
+    if (!known) memo.set(target, (known = new Map()));
+    const cached = known.get(from);
+    if (cached != null) return cached;
+    const path = [from];
+    const next = [0];
+    const settle = (value: boolean, nodes: readonly number[]) => {
+      for (const at of nodes) known.set(at, value);
+      memoSize += nodes.length;
+      return value;
+    };
+    while (path.length) {
+      const at = path.at(-1)!;
+      const ps = parents[at]!;
+      const k = next.at(-1)!;
+      if (k === ps.length) {
+        settle(false, [at]);
+        path.pop();
+        next.pop();
+        continue;
+      }
+      next[next.length - 1] = k + 1;
+      const p = ps[k]!;
+      if (p === target || inTree(p, target) || known.get(p) === true) return settle(true, path);
+      if (excluded(p, target) || known.has(p)) continue;
+      path.push(p);
+      next.push(0);
+    }
+    return false;
+  };
+  return (_row: number, from: readonly number[], target: number) => from.some((at) => reachesOne(at, target));
 }
 
 /** Ids reachable from the given heads (log order: children before parents). */
@@ -504,60 +628,68 @@ const LONG_EDGE = 30;
 /** Rows of a hidden long edge still drawn next to each of its ends. */
 const LONG_EDGE_STUB = 2;
 
-const onLane = (i: number) => (s: GraphSegment) => s.from === i && s.to === i;
-
-/** Lanes a row's vertical lines pass straight through (other than its node's). */
-function passingLanes(row: GraphRow): Set<number> {
-  const out = new Set<number>();
-  for (const s of row.up)
-    if (s.from === s.to && s.from !== row.lane && row.down.some((d) => d.from === s.from && d.to === s.from))
-      out.add(s.from);
-  return out;
-}
-
 /**
  * Show Long Edges off: the middle of a straight run of a lane through `minLength` or
  * more rows is not drawn; the visible stubs end in arrows (IDEA's long-edge arrows).
  */
 export function hideLongEdges(rows: readonly GraphRow[], minLength = LONG_EDGE): GraphRow[] {
-  const out = rows.slice();
-  const edit = (r: number, fn: (row: GraphRow) => GraphRow) => {
-    out[r] = fn(out[r]!);
-  };
-  const hide = (i: number, start: number, end: number) => {
-    const lane = onLane(i);
-    const from = start + LONG_EDGE_STUB;
-    const to = end - 1 - LONG_EDGE_STUB;
-    for (let k = from; k <= to; k++) {
-      edit(k, (row) => ({
-        ...row,
-        up: row.up.filter((s) => !lane(s)),
-        down: row.down.filter((s) => !lane(s)),
-        upTargets: row.upTargets?.filter((_, i) => !lane(row.up[i]!)),
-        downTargets: row.downTargets?.filter((_, i) => !lane(row.down[i]!)),
-      }));
-    }
-    edit(from - 1, (row) => ({
-      ...row,
-      down: row.down.map((s) => (lane(s) ? { ...s, arrow: "down", targetRow: end } : s)),
-    }));
-    edit(to + 1, (row) => ({
-      ...row,
-      up: row.up.map((s) => (lane(s) ? { ...s, arrow: "up", targetRow: start - 1 } : s)),
-    }));
-  };
-  // One pass over the rows, following every lane's current run at once.
+  type Run = { lane: number; from: number; to: number; start: number; end: number };
+  const starts = new Map<number, Run[]>();
+  const ends = new Map<number, Run[]>();
   const runs = new Map<number, number>();
-  for (let r = 0; r <= rows.length; r++) {
-    const through = r < rows.length ? passingLanes(rows[r]!) : new Set<number>();
+  const record = (events: Map<number, Run[]>, at: number, run: Run) => {
+    const existing = events.get(at);
+    if (existing) existing.push(run);
+    else events.set(at, [run]);
+  };
+  const finish = (lane: number, start: number, end: number) => {
+    if (end - start < minLength) return;
+    const from = start + LONG_EDGE_STUB;
+    const to = end - LONG_EDGE_STUB;
+    const run = { lane, from, to, start, end };
+    record(starts, from - 1, run);
+    record(ends, to, run);
+  };
+
+  for (const [index, row] of rows.entries()) {
+    const outgoing = new Set<number>();
+    for (const s of row.down) if (s.from === s.to && s.from !== row.lane) outgoing.add(s.from);
+    const through = new Set<number>();
+    for (const s of row.up) if (s.from === s.to && outgoing.has(s.from)) through.add(s.from);
     for (const [lane, start] of runs) {
       if (through.has(lane)) continue;
-      if (r - start >= minLength) hide(lane, start, r);
+      finish(lane, start, index);
       runs.delete(lane);
     }
-    for (const lane of through) if (!runs.has(lane)) runs.set(lane, r);
+    for (const lane of through) if (!runs.has(lane)) runs.set(lane, index);
   }
-  return out;
+  for (const [lane, start] of runs) finish(lane, start, rows.length);
+  if (!starts.size) return rows.slice();
+
+  // Sweep the intervals together so a row crossed by many long edges is only
+  // filtered once. Both half-edges keep their matching navigation targets.
+  const hidden = new Map<number, Run>();
+  return rows.map((row, index) => {
+    for (const run of starts.get(index) ?? []) hidden.set(run.lane, run);
+    if (!hidden.size) return row;
+    const filter = (segments: GraphSegment[], targets: string[] | undefined, up: boolean) => {
+      const visible: GraphSegment[] = [];
+      const visibleTargets = targets ? ([] as string[]) : undefined;
+      for (const [i, s] of segments.entries()) {
+        const run = s.from === s.to ? hidden.get(s.from) : undefined;
+        if (run && index >= run.from && index < run.to) continue;
+        const targetRow =
+          run && (up && index === run.to ? run.start - 1 : !up && index === run.from - 1 ? run.end : undefined);
+        visible.push(targetRow === undefined ? s : { ...s, arrow: up ? "up" : "down", targetRow });
+        visibleTargets?.push(targets![i]!);
+      }
+      return [visible, visibleTargets] as const;
+    };
+    const [up, upTargets] = filter(row.up, row.upTargets, true);
+    const [down, downTargets] = filter(row.down, row.downTargets, false);
+    for (const run of ends.get(index) ?? []) hidden.delete(run.lane);
+    return { ...row, up, down, upTargets, downTargets };
+  });
 }
 
 /**

@@ -2,6 +2,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { useProject } from "@/platform/project";
 import { chooseProjectWindow, openPolicy } from "./projectWindow";
 import { ask } from "./messages";
+import { forkProjectTabs } from "./forkProjectTabs";
 import { commands } from "@/platform/ipc";
 
 vi.mock("./messages", () => ({ ask: vi.fn() }));
@@ -17,6 +18,7 @@ vi.mock("@/platform/ipc", () => ({
 }));
 beforeEach(() => {
   vi.clearAllMocks();
+  forkProjectTabs.upstream = false;
   useProject.setState({
     project: { root: "/a", name: "A", settings: {}, trusted: true, isGit: false },
     settings: {},
@@ -24,6 +26,7 @@ beforeEach(() => {
   });
 });
 it("offers attach for this open without remembering it", async () => {
+  forkProjectTabs.upstream = true;
   const button = "attach";
   vi.mocked(ask).mockResolvedValue({ button, checked: true });
   expect(await chooseProjectWindow("B")).toBe(button);
@@ -57,6 +60,7 @@ it.each(["new", "same", "tab"] as const)("remembers %s", async (mode) => {
 });
 
 it("opens a project tab by policy, or a new window when this one can't take one", async () => {
+  forkProjectTabs.upstream = true;
   useProject.setState({ settings: { general: { openProjectIn: "tab" } } } as never);
   expect(openPolicy()).toBe("tab");
   expect(await chooseProjectWindow("B")).toBe("tab");
@@ -64,4 +68,19 @@ it("opens a project tab by policy, or a new window when this one can't take one"
   useProject.setState({ project: null, lightEdit: true });
   expect(await chooseProjectWindow("B")).toBe("new");
   expect(ask).not.toHaveBeenCalled();
+});
+it("opens in a new tab per the setting, and asks instead from a LightEdit window", async () => {
+  useProject.setState({ settings: { general: { openProjectIn: "tab" } } as never });
+  expect(await chooseProjectWindow("B")).toBe("tab");
+  expect(ask).not.toHaveBeenCalled();
+  useProject.setState({ project: null, lightEdit: true });
+  vi.mocked(ask).mockResolvedValue({ button: "new", checked: false });
+  expect(await chooseProjectWindow("B")).toBe("new");
+  expect(vi.mocked(ask).mock.calls[0]![0].buttons.map((b) => b.id)).toEqual(["cancel", "new", "same"]);
+});
+it("keeps the fork's prompt by default: New Tab after New Window (#434)", async () => {
+  vi.mocked(ask).mockResolvedValue({ button: "tab", checked: false });
+  expect(await chooseProjectWindow("B")).toBe("tab");
+  const prompt = vi.mocked(ask).mock.calls[0]![0];
+  expect(prompt.buttons.map((b) => b.id)).toEqual(["cancel", "attach", "new", "tab", "same"]);
 });

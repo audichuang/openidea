@@ -48,11 +48,46 @@ describe("Find in Files module and custom scopes", () => {
       path: "/p/web",
     });
     expect(resolveFindScope({ ...base, scopeTab: "module", module: "" }, inputs)).toEqual({ kind: "project" });
+    // A root that ends in a slash (`/`, `C:/`) gives no doubled separator.
+    expect(resolveFindScope({ ...base, scopeTab: "module", module: "web" }, { ...inputs, root: "C:/" })).toEqual({
+      kind: "directory",
+      path: "C:/web",
+    });
     // A Windows workspace member is a drive-letter path, not one under the first project (#4069).
     const windows = { ...inputs, root: "C:/tmp/alpha" };
     expect(resolveFindScope({ ...base, scopeTab: "module", module: "C:/tmp/beta" }, windows)).toEqual({
       kind: "directory",
       path: "C:/tmp/beta",
+    });
+  });
+
+  it.each([
+    ["C:/work/svc", "C:/work/svc"],
+    ["C:\\work\\svc", "C:\\work\\svc"],
+    ["//server/share/svc", "//server/share/svc"],
+    ["/work/svc", "/work/svc"],
+    ["svc", "C:/work/p/svc"],
+  ])("resolves module %s from a Windows project root", (module, path) => {
+    expect(resolveFindScope({ ...base, scopeTab: "module", module }, { ...inputs, root: "C:/work/p" })).toEqual({
+      kind: "directory",
+      path,
+    });
+  });
+
+  it("keeps the empty module scoped to the Windows project", () => {
+    expect(resolveFindScope({ ...base, scopeTab: "module", module: "" }, { ...inputs, root: "C:/work/p" })).toEqual({
+      kind: "project",
+    });
+  });
+
+  it.each([
+    [" svc", "/work/p/ svc"],
+    ["svc ", "/work/p/svc "],
+    ["/work/svc ", "/work/svc "],
+  ])("preserves whitespace in module %s", (module, path) => {
+    expect(resolveFindScope({ ...base, scopeTab: "module", module }, { ...inputs, root: "/work/p" })).toEqual({
+      kind: "directory",
+      path,
     });
   });
 

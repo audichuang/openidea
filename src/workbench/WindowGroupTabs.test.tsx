@@ -1,6 +1,7 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { executeAction } from "@/platform/actions";
+import { usePlatform } from "@/platform/platformInfo";
 import { useWindowGroup } from "@/platform/windowGroups";
 import { useContextMenuStore } from "@/ui/Menu";
 import { projectColorVars } from "./projectColor";
@@ -68,25 +69,31 @@ it("offers closing the other tabs and those on either side of the clicked tab", 
   expect(menuFor("Docs")("Close Tabs to the Right").disabled).toBe(true);
 });
 
-it("moves any tab to a new window from its own arrow, without selecting it first", () => {
-  render(<WindowGroupTabs />);
-  fireEvent.click(screen.getByRole("button", { name: "Move Backend to New Window" }));
-  expect(executeAction).toHaveBeenLastCalledWith("window.detachTab", "project-1");
-  expect(executeAction).not.toHaveBeenCalledWith("window.selectTab", "project-1");
-});
+describe("off macOS", () => {
+  const saved = usePlatform.getState();
+  beforeEach(() => usePlatform.setState({ os: "windows" }));
+  afterEach(() => usePlatform.setState(saved));
 
-it("offers Move Tab to New Window for every tab in its context menu", () => {
-  render(<WindowGroupTabs />);
-  fireEvent.contextMenu(screen.getByRole("tab", { name: "Backend" }));
-  const item = useContextMenuStore
-    .getState()
-    .menu!.items.find((i) => "label" in i && i.label === "Move Tab to New Window") as {
-    disabled?: boolean;
-    run?: () => unknown;
-  };
-  expect(item.disabled).toBeUndefined();
-  void item.run?.();
-  expect(executeAction).toHaveBeenLastCalledWith("window.detachTab", "project-1");
+  it("moves any tab to a new window from its own arrow, without selecting it first", () => {
+    render(<WindowGroupTabs />);
+    fireEvent.click(screen.getByRole("button", { name: "Move Backend to New Window" }));
+    expect(executeAction).toHaveBeenLastCalledWith("window.detachTab", "project-1");
+    expect(executeAction).not.toHaveBeenCalledWith("window.selectTab", "project-1");
+  });
+
+  it("offers Move Tab to New Window for every tab in its context menu", () => {
+    render(<WindowGroupTabs />);
+    fireEvent.contextMenu(screen.getByRole("tab", { name: "Backend" }));
+    const item = useContextMenuStore
+      .getState()
+      .menu!.items.find((i) => "label" in i && i.label === "Move Tab to New Window") as {
+      disabled?: boolean;
+      run?: () => unknown;
+    };
+    expect(item.disabled).toBeUndefined();
+    void item.run?.();
+    expect(executeAction).toHaveBeenLastCalledWith("window.detachTab", "project-1");
+  });
 });
 
 it("offers Tab Color… in the context menu", () => {
@@ -110,4 +117,37 @@ it("tints only tabs with a stored colour override", () => {
   expect(front.hasAttribute("data-tinted")).toBe(false);
   expect(back.style.getPropertyValue("--project-color")).toBe("#112233");
   expect(back.hasAttribute("data-tinted")).toBe(true);
+});
+
+describe("macOS", () => {
+  const saved = usePlatform.getState();
+  afterEach(() => usePlatform.setState(saved));
+
+  it("draws the tabs itself below the toolbar, the system tab bar being hidden", () => {
+    usePlatform.setState({ os: "macos", overlayTitleBar: true, framelessTitleBar: false });
+    render(<WindowGroupTabs />);
+    expect(screen.getByRole("tab", { name: "Frontend" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Close Backend" }));
+    expect(executeAction).toHaveBeenLastCalledWith("window.closeTab", "project-1");
+  });
+
+  it("moves only the shown tab out, from its context menu, and draws no per-tab arrows", () => {
+    usePlatform.setState({ os: "macos", overlayTitleBar: true, framelessTitleBar: false });
+    render(<WindowGroupTabs />);
+    expect(screen.queryByRole("button", { name: "Move Backend to New Window" })).toBeNull();
+    const move = (name: string) => {
+      fireEvent.contextMenu(screen.getByRole("tab", { name }));
+      return useContextMenuStore
+        .getState()
+        .menu!.items.find((i) => "label" in i && i.label === "Move Tab to New Window") as { disabled?: boolean };
+    };
+    expect(move("Backend").disabled).toBe(true);
+    expect(move("Frontend").disabled).toBeUndefined();
+  });
+
+  it("hides them in Distraction Free Mode", () => {
+    usePlatform.setState({ os: "macos", overlayTitleBar: true, framelessTitleBar: false });
+    render(<WindowGroupTabs hidePageTabs />);
+    expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
+  });
 });
