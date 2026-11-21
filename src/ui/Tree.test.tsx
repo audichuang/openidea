@@ -1,7 +1,7 @@
 import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
 import { createRef } from "react";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
-import { Tree, type TreeHandle } from "./Tree";
+import { Tree, findOccurrence, type TreeHandle, type TreeModel, type TreeModelRow } from "./Tree";
 import { getContext } from "@/platform/context";
 import { registerAction } from "@/platform/actions";
 import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
@@ -136,6 +136,165 @@ describe("Tree directory context", () => {
     expect(getContext().focusedDirectory).toBe("/second");
     screen.getByLabelText("Editor").focus();
     expect(getContext().focusedDirectory).toBeUndefined();
+  });
+});
+
+/** A model over `data` that tracks its own expansion, as a caller indexing streamed results would. */
+function modelOf(open: Set<string>) {
+  const rows = (): TreeModelRow<N>[] => {
+    const out: TreeModelRow<N>[] = [];
+    const walk = (nodes: N[], depth: number, parentKey: string | null) =>
+      nodes.forEach((node, i) => {
+        const expandable = !!node.children;
+        const expanded = expandable && open.has(node.id);
+        out.push({
+          node,
+          key: node.id,
+          depth,
+          parentKey,
+          expandable,
+          expanded,
+          posInSet: i + 1,
+          setSize: nodes.length,
+        });
+        if (expanded) walk(node.children!, depth + 1, node.id);
+      });
+    walk(data, 0, null);
+    return out;
+  };
+  const model: TreeModel<N> = {
+    get rowCount() {
+      return rows().length;
+    },
+    rowAt: (i) => rows()[i],
+    indexOfKey: (key) => rows().findIndex((r) => r.key === key),
+    forEachRow: (visit) => rows().forEach(visit),
+    setExpanded: vi.fn((node: N, isOpen: boolean) => void (isOpen ? open.add(node.id) : open.delete(node.id))),
+    findOccurrence: vi.fn((lead, dir, options) =>
+      findOccurrence(
+        data,
+        lead,
+        dir,
+        { getKey: (n) => n.id, getChildren: (n) => n.children, isExpandable: (n) => !!n.children, ...options },
+        options.skipSubtree,
+      ),
+    ),
+  };
+  return model;
+}
+
+describe("Tree with a model", () => {
+  const view = (model: TreeModel<N>, getKey = (n: N) => n.id) => (
+    <Tree<N>
+      aria-label="Files"
+      model={model}
+      getKey={getKey}
+      getLabel={(n) => n.id}
+      getChildren={(n) => n.children}
+      isExpandable={(n) => !!n.children}
+    />
+  );
+
+  it("shows the model's rows with their levels and positions, without walking any nodes", () => {
+    const getKey = vi.fn((n: N) => n.id);
+    render(view(modelOf(new Set(["src", "main"])), getKey));
+    const tree = screen.getByRole("tree");
+    expect(labels(tree)).toEqual(["src", "main", "App.tsx", "index.ts", "util.ts", "README.md"]);
+    const rows = within(tree).getAllByRole("treeitem");
+    expect(
+      rows.map((r) => [r.getAttribute("aria-level"), r.getAttribute("aria-posinset"), r.getAttribute("aria-setsize")]),
+    ).toEqual([
+      ["1", "1", "2"],
+      ["2", "1", "2"],
+      ["3", "1", "2"],
+      ["3", "2", "2"],
+      ["2", "2", "2"],
+      ["1", "2", "2"],
+    ]);
+    expect(rows[1]).toHaveAttribute("aria-expanded", "true");
+    expect(getKey).not.toHaveBeenCalled();
+  });
+
+  it("expands and collapses through the model and moves with the keyboard", () => {
+    const open = new Set<string>();
+    const model = modelOf(open);
+    const { tree, lead, key, rerender } = (() => {
+      const utils = render(view(model));
+      const tree = screen.getByRole("tree");
+      tree.focus();
+      return {
+        ...utils,
+        tree,
+        lead: () => document.getElementById(tree.getAttribute("aria-activedescendant") ?? "")?.textContent,
+        key: (k: string, init: Partial<KeyboardEventInit> = {}) => fireEvent.keyDown(tree, { key: k, ...init }),
+      };
+    })();
+    key("ArrowDown");
+    expect(lead()).toBe("src");
+    key("ArrowRight");
+    expect(model.setExpanded).toHaveBeenLastCalledWith(expect.objectContaining({ id: "src" }), true);
+    rerender(view(model));
+    expect(labels(tree)).toEqual(["src", "main", "util.ts", "README.md"]);
+    key("ArrowRight");
+    expect(lead()).toBe("main");
+    key("End");
+    expect(lead()).toBe("README.md");
+    key("Home");
+    key("ArrowLeft");
+    expect(model.setExpanded).toHaveBeenLastCalledWith(expect.objectContaining({ id: "src" }), false);
+  });
+
+  it("selects every row with ⌘A and speed-searches the model's rows", () => {
+    const onSelectionChange = vi.fn();
+    const model = modelOf(new Set(["src", "main"]));
+    render(
+      <Tree<N>
+        aria-label="Files"
+        model={model}
+        getKey={(n) => n.id}
+        getLabel={(n) => n.id}
+        getChildren={(n) => n.children}
+        isExpandable={(n) => !!n.children}
+        onSelectionChange={onSelectionChange}
+      />,
+    );
+    const tree = screen.getByRole("tree");
+    tree.focus();
+    fireEvent.keyDown(tree, { key: "a", metaKey: true });
+    expect([...(onSelectionChange.mock.calls.at(-1)![0] as Set<string>)].sort()).toEqual([
+      "App.tsx",
+      "README.md",
+      "index.ts",
+      "main",
+      "src",
+      "util.ts",
+    ]);
+    for (const c of "ind") fireEvent.keyDown(tree, { key: c });
+    expect(document.getElementById(tree.getAttribute("aria-activedescendant")!)).toHaveTextContent("index.ts");
+    expect([...tree.querySelectorAll("mark")].map((m) => m.textContent)).toEqual(["ind"]);
+  });
+
+  it("steps through occurrences with the model, opening the ancestors it lands in", () => {
+    const handle = createRef<TreeHandle>();
+    const model = modelOf(new Set());
+    render(
+      <Tree<N>
+        aria-label="Files"
+        model={model}
+        handleRef={handle}
+        getKey={(n) => n.id}
+        getLabel={(n) => n.id}
+        getChildren={(n) => n.children}
+        isExpandable={(n) => !!n.children}
+      />,
+    );
+    let step: ReturnType<TreeHandle["selectOccurrence"]> = null;
+    act(() => void (step = handle.current!.selectOccurrence(1)));
+    expect(step).toMatchObject({ key: "App.tsx", index: 1, total: 4 });
+    expect(model.setExpanded).toHaveBeenCalledWith(expect.objectContaining({ id: "src" }), true);
+    expect(model.setExpanded).toHaveBeenCalledWith(expect.objectContaining({ id: "main" }), true);
+    act(() => void (step = handle.current!.selectOccurrence(-1)));
+    expect(step).toBeNull();
   });
 });
 

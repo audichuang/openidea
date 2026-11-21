@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { provideToolWindowService, type ToolWindowService } from "@/workbench/contributions";
 import type { FileMatches, SearchQuery } from "@/platform/ipc";
 import { findOccurrence } from "@/ui/Tree";
-import { buildFindTree, createFindTreeBuilder } from "../find/FindToolWindow";
+import { buildFindTree } from "../find/findTree";
 import type { FindDeps } from "../find/session";
 import {
   closeFindTab,
@@ -118,30 +118,6 @@ describe("buildFindTree", () => {
     ];
     const expected = [...paths].sort((a, b) => a.localeCompare(b));
     expect(buildFindTree(paths.map(file)).map((n) => n.key)).toEqual(expected.map((p) => `f:/p/${p}`));
-  });
-
-  // Streaming: the builder merges each batch of new files into the previous tree.
-  it.each([false, true])("builds a growing result list like a full rebuild (grouped: %s)", (grouped) => {
-    const all = Array.from({ length: 2_000 }, (_, i) => file(`src/m${(i * 7) % 23}/F${(i * 7919) % 2_000}.ts`));
-    const build = createFindTreeBuilder();
-    let shown = 0;
-    let previous: ReturnType<typeof buildFindTree> | null = null;
-    let previousKeys: string[] = [];
-    for (let batch = 1; shown < all.length; batch = (batch * 3) % 97 || 1) {
-      shown = Math.min(all.length, shown + batch);
-      const files = all.slice(0, shown);
-      const roots = build(files, grouped);
-      expect(roots).toEqual(buildFindTree(files, grouped));
-      if (previous) {
-        // Published trees are never changed afterwards.
-        expect(previous.map((n) => n.key)).toEqual(previousKeys);
-        if (!grouped) expect(roots.find((n) => n.key === previous![0]!.key)).toBe(previous[0]);
-      }
-      previous = roots;
-      previousKeys = roots.map((n) => n.key);
-    }
-    expect(build(all, !grouped)).toEqual(buildFindTree(all, !grouped));
-    expect(build(all, grouped)).toEqual(buildFindTree(all, grouped));
   });
 
   const occurrenceModel = {
