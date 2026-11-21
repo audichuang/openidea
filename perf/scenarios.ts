@@ -829,6 +829,84 @@ const leaks: Scenario = {
   },
 };
 
+/** Git Graph PR tab Commits list: switch to Commits and scroll through all commits to the end. */
+const prCommits: Scenario = {
+  id: "prCommits",
+  title: "Show and scroll the Git Graph PR Commits list",
+  async run(h) {
+    const count = Math.max(1, Number(process.env.OPENIDEA_PERF_PR_COMMITS) || 10_000);
+    await h.page.evaluate((n) => {
+      const probe = (
+        window as never as {
+          __openideaPerf: { fakePrCommits(n: number): void; runAction(id: string): Promise<boolean> };
+        }
+      ).__openideaPerf;
+      probe.fakePrCommits(n);
+      return probe.runAction("gitGraph.open");
+    }, count);
+    try {
+      const prTab = h.page.getByRole("tab", { name: "PR", exact: true });
+      await prTab.waitFor();
+      await prTab.click();
+      const commitsTab = h.page.getByRole("tab", { name: /^Commits/ });
+      await commitsTab.waitFor();
+      await h.page.getByText(`Commits: ${count} ahead`).waitFor();
+
+      const tShow = await h.now();
+      const beforeShow = await h.counters();
+      const showMs = await h.measure(() => commitsTab.click(), '[aria-label="Commits"]', "order flow step 0", 30_000);
+      const showWork = Harness.delta(beforeShow, await h.counters());
+      const showTasks = await h.longTasksSince(tShow);
+
+      const list = h.page.locator('[aria-label="Commits"]').first();
+      const mountedRows = await list.evaluate((el) => el.querySelectorAll('[title="Show in Graph"]').length);
+
+      const refresh = await h.refreshMs();
+      const tScroll = await h.now();
+      const beforeScroll = await h.counters();
+      await h.inPage((p) => p.startFrames());
+      const lastReached = await list.evaluate(
+        async (el, lastText) => {
+          const max = Math.max(0, el.scrollHeight - el.clientHeight);
+          let sawLast = false;
+          for (let i = 0; i <= 120; i++) {
+            const frac = i <= 60 ? i / 60 : (120 - i) / 60;
+            el.scrollTop = frac * max;
+            await new Promise(requestAnimationFrame);
+            if (i === 60) {
+              await new Promise(requestAnimationFrame);
+              sawLast = (el.textContent ?? "").includes(lastText);
+            }
+          }
+          return sawLast;
+        },
+        `order flow step ${count - 1}`,
+      );
+      const frames = await h.inPage((p) => p.stopFrames());
+      const scrollWork = Harness.delta(beforeScroll, await h.counters());
+      const scrollTasks = await h.longTasksSince(tScroll);
+      if (!lastReached) throw new Error(`last commit (order flow step ${count - 1}) not reachable at bottom`);
+
+      return {
+        mountedRows,
+        showMs,
+        showTaskMs: showWork.taskMs,
+        showStyleLayoutMs: showWork.styleLayoutMs,
+        showTbtMs: totalBlockingTime(showTasks),
+        ...frameSummary(frames, refresh),
+        scrollTaskMsPerFrame: frames.length ? scrollWork.taskMs / frames.length : NaN,
+        framesOver8ms: frames.filter((f) => f > 8).length,
+        longTasks: showTasks.length + scrollTasks.length,
+        scrollTbtMs: totalBlockingTime(scrollTasks),
+      };
+    } finally {
+      await h.page.evaluate(() =>
+        (window as never as { __openideaPerf: { fakePrCommits(n: number): void } }).__openideaPerf.fakePrCommits(0),
+      );
+    }
+  },
+};
+
 export const SCENARIOS: Scenario[] = [
   startup,
   typing,
@@ -840,6 +918,7 @@ export const SCENARIOS: Scenario[] = [
   gitLog,
   gitLogScrollbar,
   gitLogWide,
+  prCommits,
   resizePanels,
   keyRepeat,
   scroll,
