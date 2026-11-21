@@ -2,7 +2,7 @@
  * The PR view: what a pull request from one branch into another would contain, computed locally
  * with the forge's three-dot semantics (merge base ↔ head), whatever the remote is hosted on.
  */
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { memo, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import type { Branch, ChangedFile, Commit } from "@/bindings";
 import { formatDay } from "@/platform/dateFormat";
@@ -24,6 +24,7 @@ import { buildFileTree, dirKeys, type FileTreeNode } from "@/features/vcs/fileTr
 import { baseName, fileCount, KIND_COLOR } from "@/features/vcs/model";
 import { useContributions } from "@/workbench/contributions";
 import { gitGraphBridge } from "@/workbench/gitGraphBridge";
+import { usePaneList } from "./panels";
 import { PickerPopup, type PickerItem } from "./PickerPopup";
 import { prChoice, setPrChoice, useGraphView } from "./viewState";
 import styles from "./GitGraph.module.css";
@@ -281,7 +282,7 @@ function PrBody(p: {
         {p.tab === "files" ? (
           <PrFiles repo={repo} base={base} head={head} mergeBase={data.mergeBase} files={data.files} file={p.file} />
         ) : (
-          <PrCommits repo={repo} commits={data.commits} />
+          <PrCommits repo={repo} commits={data.commits} resetKey={`${repo}\0${base}\0${head}`} />
         )}
       </div>
     </>
@@ -419,25 +420,90 @@ function PrFiles(p: {
   );
 }
 
-function PrCommits({ repo, commits }: { repo: string; commits: Commit[] }) {
+function PrCommits({ repo, commits, resetKey }: { repo: string; commits: Commit[]; resetKey: string }) {
   if (!commits.length) return <EmptyState title="No commits" className={styles.empty} />;
+  return <PrCommitList repo={repo} commits={commits} resetKey={resetKey} />;
+}
+
+function PrCommitList({ repo, commits, resetKey }: { repo: string; commits: Commit[]; resetKey: string }) {
+  const [activeRow, setActiveRow] = useState<{ key: string; index: number }>({ key: "", index: -1 });
+  const active = activeRow.key === resetKey && activeRow.index < commits.length ? activeRow.index : -1;
+  const reveal = useCallback(
+    (id: string) => useGraphView.setState({ mode: "graph", selection: { repo, ids: [id] }, panel: "details" }),
+    [repo],
+  );
+  const { scrollRef, rows, height, listProps, rowProps } = usePaneList({
+    count: commits.length,
+    resetKey,
+    version: resetKey,
+    active,
+    setActive: (index) => setActiveRow({ key: resetKey, index }),
+    open: (index) => {
+      const c = commits[index];
+      if (c) reveal(c.id);
+    },
+  });
+  const title = tx("Show in Graph");
   return (
-    <div className={styles.prCommits} role="list" aria-label={tx("Commits")}>
-      {commits.map((c) => (
-        <div key={c.id} role="listitem">
-          <button
-            type="button"
-            className={styles.prCommit}
-            title={tx("Show in Graph")}
-            onClick={() => useGraphView.setState({ mode: "graph", selection: { repo, ids: [c.id] }, panel: "details" })}
-          >
-            <span className={styles.subject}>{c.summary}</span>
-            <span className={styles.prCommitMeta}>{c.author}</span>
-            <span className={styles.prCommitMeta}>{c.timeMs ? formatDay(new Date(c.timeMs)) : ""}</span>
-            <span className={clsx(styles.prCommitMeta, styles.mono)}>{c.shortId}</span>
-          </button>
-        </div>
-      ))}
+    <div ref={scrollRef} className={styles.prCommits} aria-label={tx("Commits")} {...listProps}>
+      <div role="presentation" className={styles.virtualRows} style={{ height }}>
+        {rows.map((v) => {
+          const c = commits[v.index]!;
+          const rp = rowProps(v.index);
+          return (
+            <PrCommitRow
+              key={c.id}
+              commit={c}
+              id={rp.id}
+              posInSet={rp["aria-posinset"]}
+              setSize={rp["aria-setsize"]}
+              start={v.start}
+              selected={v.index === active}
+              title={title}
+              onReveal={reveal}
+            />
+          );
+        })}
+      </div>
     </div>
   );
 }
+
+const PrCommitRow = memo(function PrCommitRow({
+  commit: c,
+  id,
+  posInSet,
+  setSize,
+  start,
+  selected,
+  title,
+  onReveal,
+}: {
+  commit: Commit;
+  id: string;
+  posInSet: number;
+  setSize: number;
+  start: number;
+  selected: boolean;
+  title: string;
+  onReveal: (id: string) => void;
+}) {
+  return (
+    <div
+      id={id}
+      role="option"
+      aria-selected={selected}
+      aria-setsize={setSize}
+      aria-posinset={posInSet}
+      className={clsx(styles.prCommit, styles.virtualRow, selected && styles.selected)}
+      style={{ transform: `translateY(${start}px)` }}
+      title={title}
+      onClick={() => onReveal(c.id)}
+    >
+      <span className={styles.subject}>{c.summary}</span>
+      <span className={styles.prCommitMeta}>{c.author}</span>
+      <span className={styles.prCommitMeta}>{c.timeMs ? formatDay(new Date(c.timeMs)) : ""}</span>
+      <span className={clsx(styles.prCommitMeta, styles.mono)}>{c.shortId}</span>
+    </div>
+  );
+});
