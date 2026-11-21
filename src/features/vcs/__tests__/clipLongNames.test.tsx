@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import type { ClipNonTextSummary, ClipPasteFile, ClipPastePreview, ClipReplayFile } from "@/bindings";
 
@@ -13,6 +13,12 @@ import { NonTextDialog, replayFileNote, skipReasonText, visibleName } from "../c
 import { PathText } from "../PathText";
 import { splitDir, splitFirstSegment } from "../fitText";
 import { readFileSync } from "node:fs";
+
+// No canvas measure, as jsdom had before upstream's test setup added one: the boxes show their full
+// text, which is what these tests read (fitting itself is covered by fitText's own tests).
+beforeAll(() => {
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+});
 
 const names = [
   "name-alpha-0123456789-0123456789-0123456789-0123456789-first.png",
