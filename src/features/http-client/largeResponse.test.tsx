@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditorView } from "@codemirror/view";
 import type { HttpExchange } from "@/platform/ipc";
 import { DEFAULT_FIND_OPTIONS, findInLines } from "@/ui/consoleFind";
+import { DISPLAY_LINE, displayed } from "./displayLines";
 
 vi.mock("./store", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./store")>()),
@@ -90,12 +91,26 @@ function editorOf(el: Element): EditorView {
   return view;
 }
 
-/**
- * The body shown. A new view gets a long line on screen after its first
- * measure (a frame later), so this waits for it.
- */
+/** The text in the view: its document without the line breaks that split long lines for display. */
+function shownText(view: EditorView): string {
+  const { offsets } = view.state.field(displayed);
+  const doc = view.state.doc.toString();
+  if (!offsets.length) return doc;
+  const parts: string[] = [];
+  let from = 0;
+  offsets.forEach((offset, i) => {
+    const at = offset + i;
+    expect(doc[at]).toBe("\n");
+    parts.push(doc.slice(from, at));
+    from = at + 1;
+  });
+  parts.push(doc.slice(from));
+  return parts.join("");
+}
+
+/** The body shown. */
 async function expectBody(text: string) {
-  await vi.waitFor(() => expect(editorOf(screen.getByLabelText("Response body")).state.doc.toString()).toBe(text));
+  await vi.waitFor(() => expect(shownText(editorOf(screen.getByLabelText("Response body")))).toBe(text));
 }
 
 describe("HTTP Client large responses", () => {
@@ -120,7 +135,7 @@ describe("HTTP Client large responses", () => {
     expect(screen.getByLabelText("Formatting")).toBeTruthy();
     FakeWorker.all[0]!.answer();
     const view = editorOf(screen.getByLabelText("Response body"));
-    expect(view.state.doc.toString()).toBe(format.prettyJson(body));
+    expect(shownText(view)).toBe(format.prettyJson(body));
   });
 
   it("mounts only part of a large body, with the whole text in the view", () => {
@@ -128,15 +143,13 @@ describe("HTTP Client large responses", () => {
     show(exchangeWith(body, "text/plain"));
     const el = screen.getByLabelText("Response body");
     expect((el.textContent ?? "").length).toBeLessThan(body.length / 10);
-    expect(editorOf(el).state.doc.toString()).toBe(body);
+    expect(shownText(editorOf(el))).toBe(body);
   });
 
   it("formats small bodies at once, without a worker", () => {
     show(exchangeWith('{"a":[1,2]}', "application/json"));
     expect(FakeWorker.all).toHaveLength(0);
-    expect(editorOf(screen.getByLabelText("Response body")).state.doc.toString()).toBe(
-      '{\n  "a": [\n    1,\n    2\n  ]\n}',
-    );
+    expect(shownText(editorOf(screen.getByLabelText("Response body")))).toBe('{\n  "a": [\n    1,\n    2\n  ]\n}');
   });
 
   it("cancels formatting when switched to Raw, and keeps the result once formatted", async () => {
@@ -150,12 +163,12 @@ describe("HTTP Client large responses", () => {
     expect(FakeWorker.all).toHaveLength(2);
     FakeWorker.all[1]!.answer();
     const pretty = format.prettyJson(body);
-    expect(editorOf(screen.getByLabelText("Response body")).state.doc.toString()).toBe(pretty);
+    expect(shownText(editorOf(screen.getByLabelText("Response body")))).toBe(pretty);
     // Back and forth again: no more formatting.
     fireEvent.click(screen.getByRole("button", { name: "Show Raw" }));
     fireEvent.click(screen.getByRole("button", { name: "Show Formatted" }));
     expect(FakeWorker.all).toHaveLength(2);
-    expect(editorOf(screen.getByLabelText("Response body")).state.doc.toString()).toBe(pretty);
+    expect(shownText(editorOf(screen.getByLabelText("Response body")))).toBe(pretty);
   });
 
   it("offers Find only once a body being formatted is shown", () => {
@@ -304,6 +317,42 @@ describe("HTTP Client large responses", () => {
     const setData = vi.fn();
     fireEvent.copy(view.contentDOM, { clipboardData: { setData, clearData: () => {}, getData: () => "" } });
     expect(setData).toHaveBeenCalledWith("text/plain", body);
+  });
+
+  it("copies and finds a long line as received, across the splits that display it", async () => {
+    const body = Array.from({ length: 4_000 }, (_, i) => `item-${i}`).join(" ");
+    expect(body.length).toBeGreaterThan(3 * DISPLAY_LINE);
+    show(exchangeWith(body, "text/plain"));
+    const el = screen.getByLabelText("Response body");
+    const view = editorOf(el);
+    expect(view.state.doc.lines).toBeGreaterThan(3);
+    // A selection across a split copies the text as received.
+    const at = view.state.field(displayed).offsets[0]!;
+    view.focus();
+    view.dispatch({ selection: { anchor: at - 5, head: at + 6 } });
+    const setData = vi.fn();
+    const copy = () =>
+      fireEvent.copy(view.contentDOM, { clipboardData: { setData, clearData: () => {}, getData: () => "" } });
+    copy();
+    expect(setData).toHaveBeenLastCalledWith("text/plain", body.slice(at - 5, at + 5));
+    view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } });
+    copy();
+    expect(setData).toHaveBeenLastCalledWith("text/plain", body);
+    // A match across a split is marked whole.
+    const query = body.slice(at - 20, at + 20);
+    fireEvent.keyDown(el, { key: "f", metaKey: true, ctrlKey: true });
+    act(() => {
+      fireEvent.change(screen.getByLabelText("Find in response", { selector: "input" }), {
+        target: { value: query },
+      });
+    });
+    expect(screen.getByText("1/1")).toBeTruthy();
+    const current: string[] = [];
+    for (const set of view.state.facet(EditorView.decorations))
+      (typeof set === "function" ? set(view) : set).between(0, view.state.doc.length, (from, to, deco) => {
+        if (deco.spec.attributes?.["data-find-current"] != null) current.push(view.state.sliceDoc(from, to));
+      });
+    expect(current).toEqual([`${query.slice(0, 20)}\n${query.slice(20)}`]);
   });
 
   it("hands the focus from the pane to the body, so Select All covers all of it", () => {
