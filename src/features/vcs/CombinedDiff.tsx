@@ -389,9 +389,13 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
       }),
     [],
   );
+  // Built once per list: every toggle checks whether all files are collapsed, which can only
+  // be so once as many keys are collapsed as there are files.
+  const keys = useMemo(() => items.map(diffKey), [items]);
+  const distinct = useMemo(() => new Set(keys).size, [keys]);
   const allCollapsed = useMemo(
-    () => items.length > 0 && items.every((i) => collapsed.has(diffKey(i))),
-    [items, collapsed],
+    () => distinct > 0 && collapsed.size >= distinct && keys.every((k) => collapsed.has(k)),
+    [keys, distinct, collapsed],
   );
 
   return (
@@ -403,7 +407,7 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
           icon={allCollapsed ? "expand-all" : "collapse-all"}
           title={allCollapsed ? "Expand All Files" : "Collapse All Files"}
           size="small"
-          onClick={() => setCollapsed(allCollapsed ? new Set() : new Set(items.map(diffKey)))}
+          onClick={() => setCollapsed(allCollapsed ? new Set() : new Set(keys))}
         />
         <span className={styles.sep} />
         <IconButton

@@ -362,6 +362,12 @@ describe("the all-in-one diff with many files", () => {
       fireEvent.click(screen.getAllByRole("button", { name: "Expand File" })[0]!);
     });
     expect(mounted()).toContain(shown[0]);
+    // One file open: the toolbar offers to collapse all again, and to expand all once it is closed.
+    expect(screen.getByRole("button", { name: "Collapse All Files" })).toBeTruthy();
+    act(() => {
+      fireEvent.click(screen.getAllByRole("button", { name: "Collapse File" })[0]!);
+    });
+    expect(screen.getByRole("button", { name: "Expand All Files" })).toBeTruthy();
   });
 
   it("does not revert pending scroll movement when an above-fold block resizes before its scroll event", () => {
