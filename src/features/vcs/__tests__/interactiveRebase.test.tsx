@@ -380,4 +380,109 @@ describe("InteractiveRebaseDialog", () => {
     expect(screen.queryByRole("list", { name: "Commits to rebase" })).toBeNull();
     expect(mocks.operations).toEqual([]);
   });
+
+  it("keeps a focused row control mounted across scroll so Enter does not submit the rebase", async () => {
+    const { commits, list } = await openRebase(200);
+    const firstCommit = commits[0]!;
+
+    // Make the plan non-noop so Start Rebasing is enabled and Enter on body would submit it.
+    await chooseAction(firstCommit.id, "Drop");
+    expect(screen.getByRole("button", { name: "Start Rebasing" })).toBeEnabled();
+
+    const trigger = screen.getByRole("button", { name: `Action for ${firstCommit.id.slice(0, 8)}` });
+    trigger.focus();
+    expect(document.activeElement).toBe(trigger);
+
+    scrollToBottom(list);
+    await waitFor(() => {
+      expect(within(list).getByText("Commit message #200")).toBeInTheDocument();
+    });
+
+    // Focused control must stay mounted and keep focus; Enter must not fall through to Start Rebasing.
+    expect(trigger.isConnected).toBe(true);
+    expect(document.activeElement).toBe(trigger);
+    fireEvent.keyDown(document.activeElement!, { key: "Enter" });
+    expect(mocks.operations).toEqual([]);
+    expect(screen.getByRole("list", { name: "Commits to rebase" })).toBeInTheDocument();
+    expect(document.activeElement).toBe(trigger);
+
+    // Moving focus to another row unpins the scrolled-out row so DOM stays bounded.
+    const lastTrigger = screen.getByRole("button", { name: `Action for ${commits[199]!.id.slice(0, 8)}` });
+    act(() => {
+      lastTrigger.focus();
+    });
+    expect(document.activeElement).toBe(lastTrigger);
+    expect(screen.queryByRole("button", { name: `Action for ${firstCommit.id.slice(0, 8)}` })).toBeNull();
+  });
+
+  it("keeps a focused commit row mounted across scroll while its reword message stays in the details pane", async () => {
+    const { commits, list } = await openRebase(200);
+    const firstCommit = commits[0]!;
+
+    await chooseAction(firstCommit.id, "Reword");
+    const textarea = screen.getByLabelText(`New message for ${firstCommit.id.slice(0, 8)}`) as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "Reworded commit #1" } });
+    const commitButton = within(list).getByText("Commit message #1").closest("button")!;
+    commitButton.focus();
+    expect(document.activeElement).toBe(commitButton);
+
+    scrollToBottom(list);
+    await waitFor(() => {
+      expect(within(list).getByText("Commit message #200")).toBeInTheDocument();
+    });
+
+    expect(commitButton.isConnected).toBe(true);
+    expect(document.activeElement).toBe(commitButton);
+    expect(textarea.isConnected).toBe(true);
+    expect(textarea).toHaveValue("Reworded commit #1");
+
+    fireEvent.keyDown(document.activeElement!, { key: "Enter" });
+    expect(mocks.operations).toEqual([]);
+  });
+
+  it("keeps an open Select popup mounted across scroll and follows a moved focused row", async () => {
+    const { commits, list } = await openRebase(200);
+    const firstCommit = commits[0]!;
+    const secondCommit = commits[1]!;
+
+    // Enable Start Rebasing first, then open commit #1's Select popup.
+    await chooseAction(secondCommit.id, "Drop");
+    const trigger = screen.getByRole("button", { name: `Action for ${firstCommit.id.slice(0, 8)}` });
+    trigger.focus();
+    fireEvent.click(trigger);
+    const listbox = await screen.findByRole("listbox", { name: `Action for ${firstCommit.id.slice(0, 8)}` });
+    expect(listbox).toBeInTheDocument();
+
+    scrollToBottom(list);
+    await waitFor(() => {
+      expect(within(list).getByText("Commit message #200")).toBeInTheDocument();
+    });
+
+    // The open Select popup and its row must remain mounted; Escape dismisses the popup without closing the dialog.
+    expect(screen.getByRole("listbox", { name: `Action for ${firstCommit.id.slice(0, 8)}` })).toBeInTheDocument();
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    expect(screen.queryByRole("listbox", { name: `Action for ${firstCommit.id.slice(0, 8)}` })).toBeNull();
+    expect(screen.getByRole("list", { name: "Commits to rebase" })).toBeInTheDocument();
+    expect(document.activeElement).toBe(trigger);
+
+    // WebKit does not focus a clicked button, so focus stays on commit #1's Select while the toolbar moves
+    // the selected row (index 0 -> 1); scrolling far away must keep the moved commit's row mounted.
+    scrollToTop(list);
+    await waitFor(() => {
+      expect(within(list).getByText("Commit message #1")).toBeInTheDocument();
+    });
+    selectCommit(list, "Commit message #1");
+    fireEvent.click(moveDown());
+    expect(within(within(list).getAllByRole("listitem")[1]!).getByText("Commit message #1")).toBeInTheDocument();
+    expect(document.activeElement).toBe(trigger);
+
+    scrollToBottom(list);
+    await waitFor(() => {
+      expect(within(list).getByText("Commit message #200")).toBeInTheDocument();
+    });
+    expect(trigger.isConnected).toBe(true);
+    expect(document.activeElement).toBe(trigger);
+    fireEvent.keyDown(document.activeElement!, { key: "Enter" });
+    expect(mocks.operations).toEqual([]);
+  });
 });
