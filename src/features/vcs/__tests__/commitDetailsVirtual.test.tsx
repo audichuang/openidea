@@ -5,6 +5,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const keyCalls = vi.hoisted(() => ({ count: 0 }));
+const formatCalls = vi.hoisted(() => ({ count: 0 }));
 
 vi.mock("../multiRoot", async (original) => {
   const real = await original<typeof import("../multiRoot")>();
@@ -13,6 +14,17 @@ vi.mock("../multiRoot", async (original) => {
     commitKey: (...args: Parameters<typeof real.commitKey>) => {
       keyCalls.count++;
       return real.commitKey(...args);
+    },
+  };
+});
+
+vi.mock("../log/CommitMessage", async (original) => {
+  const real = await original<typeof import("../log/CommitMessage")>();
+  return {
+    ...real,
+    compactCommitText: (...args: Parameters<typeof real.compactCommitText>) => {
+      formatCalls.count++;
+      return real.compactCommitText(...args);
     },
   };
 });
@@ -550,5 +562,38 @@ describe("CommitDetails multi-selection virtualization", () => {
     box.dispatchEvent(tripleCopy);
     expect(tripleCopy.defaultPrevented).toBe(false);
     expect(setData).not.toHaveBeenCalled();
+  });
+
+  it("defers formatting selected commits on context menu open until Copy is run", () => {
+    const commits = makeCommits(2_000);
+    const keys = commits.map(commitKey);
+    useGitLog.setState({ commits, selected: keys[0]!, selection: keys });
+    const { container } = render(<CommitDetails commits={commits} />);
+    const box = messageBoxOf(container);
+    box.focus();
+
+    window.getSelection()!.selectAllChildren(box);
+    formatCalls.count = 0;
+
+    // Opening and cancelling the context menu must not format every selected commit.
+    fireEvent.contextMenu(box);
+    const menu = useContextMenuStore.getState().menu;
+    const copyItem = menu?.items.find((item) => "id" in item && item.id === "copy");
+    expect(copyItem).toBeDefined();
+    expect(formatCalls.count).toBe(0);
+
+    // Cancelling leaves formatting untouched and writes nothing to the clipboard.
+    useContextMenuStore.setState({ menu: null });
+    expect(formatCalls.count).toBe(0);
+    expect(api.writeClipboardText).not.toHaveBeenCalled();
+
+    // Invoking Copy formats the captured range on demand and copies every selected commit.
+    if (copyItem && "run" in copyItem && copyItem.run) copyItem.run();
+    expect(formatCalls.count).toBe(2_000);
+    expect(api.writeClipboardText).toHaveBeenCalledTimes(1);
+    const text = api.writeClipboardText.mock.calls[0]![0] as string;
+    expect(text).toContain(commits[0]!.summary);
+    expect(text).toContain(commits[1_999]!.summary);
+    expect(text.split("\n\n")).toHaveLength(2_000);
   });
 });
