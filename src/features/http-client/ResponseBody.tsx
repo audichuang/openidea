@@ -1,15 +1,17 @@
 /**
  * The response body in a read-only CodeMirror view: only the visible part of
- * the text is laid out, so a body of many megabytes (or one very long line)
- * opens, scrolls and searches without laying out all of it. Select All and
- * Copy take the whole text, as in a read-only editor.
+ * the text is laid out, so a body of many megabytes opens, scrolls and
+ * searches without laying out all of it. Long lines are split for display
+ * (`displayLines.ts`). Select All and Copy take the whole text as received,
+ * as in a read-only editor.
  */
 import { useEffect, useRef, type MutableRefObject } from "react";
 import clsx from "clsx";
-import { EditorState, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
+import { EditorState, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, keymap, type DecorationSet } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
 import type { ConsoleMatch } from "@/ui/consoleFind";
+import { displayText, displayed, docPosition, setDisplayText, textBetween } from "./displayLines";
 import { tx } from "@/platform/i18n";
 import styles from "./HttpClient.module.css";
 
@@ -82,66 +84,6 @@ const redrawStaleViewport = EditorView.updateListener.of((u) => {
     view.dispatch({ effects: resync.of(from) });
 });
 
-/** Longer lines are drawn only in part (twice the editor's 10,000-character wrapped-line margin). */
-const LONG_LINE = 20_000;
-const longLineOnScreen = (view: EditorView) => view.viewportLineBlocks.some((b) => b.length > LONG_LINE);
-/** Views that have measured their line metrics with layout, and text waiting for that (see `show`). */
-const measured = new WeakSet<EditorView>();
-const waiting = new WeakMap<EditorView, () => void>();
-/** Per view: the width and document of the last re-insert, so it happens once per width. */
-const resized = new WeakMap<EditorView, { width: number; doc: Text }>();
-
-/**
- * The part of a long line that is not drawn gets a height estimated from the
- * line metrics, and once drawn that height is measured back as the line's own.
- * When the metrics change after that (the pane resized), the line keeps the
- * stale height: too little of it drawn on screen, and parts never drawn. When a
- * long line on screen is far from the height its length gives, put the text in
- * again, through an empty document (a line replaced by one about as long keeps
- * its height), keeping the selection, the find marks and the part of the text
- * on screen.
- */
-const sizeLongLines = EditorView.updateListener.of((u) => {
-  const { view } = u;
-  const width = view.contentDOM.clientWidth;
-  // A measure without layout (a hidden pane) gives no metrics.
-  if (u.transactions.length || !width) return;
-  measured.add(view);
-  const pending = waiting.get(view);
-  if (pending) {
-    waiting.delete(view);
-    queueMicrotask(pending);
-    return;
-  }
-  const last = resized.get(view);
-  if (last && last.width === width && last.doc === view.state.doc) return;
-  const perRow = Math.max(1, Math.floor(width / view.defaultCharacterWidth));
-  const stale = view.viewportLineBlocks.some((b) => {
-    if (b.length <= LONG_LINE) return false;
-    const expected = Math.ceil(b.length / perRow) * view.defaultLineHeight;
-    return b.height < expected / 1.25 || b.height > expected * 1.25;
-  });
-  if (!stale) return;
-  const doc = view.state.doc;
-  queueMicrotask(() => {
-    if (view.state.doc !== doc) return;
-    const selection = view.state.selection;
-    const kept: MarkRange[] = [];
-    view.state.field(marks).between(0, doc.length, (from, to, mark) => {
-      kept.push({ from, to, current: mark === currentMark });
-    });
-    // The position at the top of the screen, in proportion within its line (heights there are estimates).
-    const y = Math.max(0, view.scrollDOM.getBoundingClientRect().top - view.documentTop);
-    const block = view.lineBlockAtHeight(y);
-    const top = block.from + Math.round(Math.min(1, Math.max(0, (y - block.top) / (block.height || 1))) * block.length);
-    view.dispatch({ changes: { from: 0, to: doc.length } });
-    view.dispatch({ changes: { from: 0, insert: doc }, selection });
-    // Separately: positions in effects are read before the transaction's changes.
-    view.dispatch({ effects: [setMarks.of(kept), EditorView.scrollIntoView(top, { y: "start" })] });
-    resized.set(view, { width, doc: view.state.doc });
-  });
-});
-
 function extensions(): Extension[] {
   return [
     EditorState.readOnly.of(true),
@@ -153,46 +95,37 @@ function extensions(): Extension[] {
     marks,
     resyncMark,
     redrawStaleViewport,
-    sizeLongLines,
+    displayed,
+    // Copies and drags take the text as received, without the splits of long lines.
+    EditorView.clipboardOutputFilter.of((copied, state) => {
+      const ranges = state.selection.ranges.filter((r) => !r.empty);
+      return ranges.length ? ranges.map((r) => textBetween(state, r.from, r.to)).join(state.lineBreak) : copied;
+    }),
   ];
 }
 
 /**
- * Puts `text` into the view, from its start: now (true), or after the view's
- * first measure with layout, then calling `later`.
- * It replaces the document of the same state rather than starting a new one: a
- * state created with a long line draws its hidden part unwrapped, so its first
- * measure finds the line short and draws all of it once (over a second of
- * layout for a 16 MB line), and a new state starts with default line metrics.
- * A view that has not measured them yet (new, or in a hidden pane) gets a long
- * line on screen only after that: sized from the default metrics (a 30-character, 14 px row)
- * the line would keep a wrong height (see `sizeLongLines`), and past the
- * editor's scaling limit (~15 M characters) it breaks the measure.
+ * Puts `text` into the view, from its start. It replaces the document of the
+ * same state rather than starting a new one, which keeps the line metrics the
+ * view has measured.
  */
-function show(v: EditorView, text: string, current: () => boolean, later: () => void): boolean {
+function show(v: EditorView, text: string) {
+  const d = displayText(text);
   v.dispatch({
-    changes: { from: 0, to: v.state.doc.length, insert: text },
+    changes: { from: 0, to: v.state.doc.length, insert: d.doc },
     selection: { anchor: 0 },
-    effects: EditorView.scrollIntoView(0, { y: "start" }),
+    effects: [setDisplayText.of(d), EditorView.scrollIntoView(0, { y: "start" })],
   });
-  if (measured.has(v) || !longLineOnScreen(v)) return true;
-  const doc = v.state.doc;
-  v.dispatch({ changes: { from: 0, to: doc.length } });
-  waiting.set(v, () => {
-    if (!current() || v.state.doc.length) return;
-    v.dispatch({ changes: { from: 0, insert: doc } });
-    later();
-  });
-  return false;
 }
 
 /** Marks the find matches, scrolling to the current one. */
 function mark(v: EditorView, matches: readonly ConsoleMatch[], current: number) {
-  const doc = v.state.doc;
-  const ranges = matches.map((m, i) => {
-    const from = doc.line(m.line + 1).from + m.start;
-    return { from, to: from + (m.end - m.start), current: i === current };
-  });
+  const d = v.state.field(displayed);
+  const ranges = matches.map((m, i) => ({
+    from: docPosition(d, m.line, m.start),
+    to: docPosition(d, m.line, m.end, true),
+    current: i === current,
+  }));
   const at = ranges[current];
   v.dispatch({
     effects: [setMarks.of(ranges), ...(at ? [EditorView.scrollIntoView(at.from, { y: "nearest", x: "nearest" })] : [])],
@@ -213,30 +146,14 @@ export function ResponseBody({
 }) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
-  /** The text last asked for, and the text in the document (null while it waits for the first measure). */
+  /** The text in the document. */
   const shown = useRef(text);
-  const inDoc = useRef<string | null>(null);
-  const find = useRef({ matches, current });
-
-  // Marked by the effect below when the text goes in now, here when it goes in later.
-  const load = (v: EditorView, next: string) => {
-    const now = show(
-      v,
-      next,
-      () => shown.current === next,
-      () => {
-        inDoc.current = next;
-        mark(v, find.current.matches, find.current.current);
-      },
-    );
-    inDoc.current = now ? next : null;
-  };
 
   useEffect(() => {
     const v = new EditorView({ parent: host.current!, state: EditorState.create({ extensions: extensions() }) });
     view.current = v;
     if (viewRef) viewRef.current = v;
-    load(v, text);
+    show(v, text);
     return () => {
       v.destroy();
       view.current = null;
@@ -250,14 +167,13 @@ export function ResponseBody({
     const v = view.current;
     if (!v || shown.current === text) return;
     shown.current = text;
-    load(v, text);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    show(v, text);
   }, [text]);
 
+  // After the effects above: the marks are for the text in the document.
   useEffect(() => {
-    find.current = { matches, current };
     const v = view.current;
-    if (v && inDoc.current === text) mark(v, matches, current);
+    if (v) mark(v, matches, current);
   }, [text, matches, current]);
 
   return <div ref={host} className={styles.responseBody} />;
