@@ -27,6 +27,7 @@ import { connectRemote, isRemoteWindow, parseRemoteLocation } from "@/platform/r
 import { holdSplash } from "@/platform/splash";
 import { editorService, maybeEditorService, notifications } from "@/workbench/contributions";
 import { chooseProjectWindow, openRemoteProject, type ProjectWindowOverride } from "@/workbench/projectWindow";
+import { forkProjectTabs } from "@/workbench/forkProjectTabs";
 import { openTabColorPicker } from "@/workbench/TabColorPicker";
 import { cycleWindowTab, useWindowGroup } from "@/platform/windowGroups";
 import { editorSwitching } from "@/editor/api";
@@ -226,7 +227,7 @@ export async function openProjectWithPolicy(
     }
   }
   if (mode === "new") return openProjectInWindow(path, true, files);
-  if (mode === "tab") {
+  if (mode === "tab" && !forkProjectTabs.upstream) {
     try {
       await call(commands.windowOpenProjectTab(path, [...files]));
     } catch (e) {
