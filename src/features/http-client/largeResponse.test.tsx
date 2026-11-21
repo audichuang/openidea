@@ -355,6 +355,22 @@ describe("HTTP Client large responses", () => {
     expect(current).toEqual([`${query.slice(0, 20)}\n${query.slice(20)}`]);
   });
 
+  it("copies the whole line as received with nothing selected, also when it is split for display", () => {
+    const body = `first\n${"x".repeat(2 * DISPLAY_LINE + 5)}\nlast`;
+    show(exchangeWith(body, "text/plain"));
+    const view = editorOf(screen.getByLabelText("Response body"));
+    view.focus();
+    const setData = vi.fn();
+    const copyAt = (pos: number) => {
+      view.dispatch({ selection: { anchor: pos } });
+      fireEvent.copy(view.contentDOM, { clipboardData: { setData, clearData: () => {}, getData: () => "" } });
+    };
+    copyAt(view.state.doc.line(3).from + 5);
+    expect(setData).toHaveBeenLastCalledWith("text/plain", body.split("\n")[1]);
+    copyAt(2);
+    expect(setData).toHaveBeenLastCalledWith("text/plain", "first");
+  });
+
   it("widens a Select All of the drawn lines (WebKit's Edit menu) to the whole body", () => {
     const body = Array.from({ length: 20_000 }, (_, i) => `line ${i}`).join("\n");
     show(exchangeWith(body, "text/plain"));
