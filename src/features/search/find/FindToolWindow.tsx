@@ -515,15 +515,7 @@ function FindNodeContent({ node, state, tab }: { node: Node; state: TreeRowState
   }
 }
 
-function FindActions({
-  tab,
-  canExclude,
-  onExclude,
-}: {
-  tab: FindTab;
-  canExclude: boolean;
-  onExclude: () => void;
-}) {
+function FindActions({ tab, canExclude, onExclude }: { tab: FindTab; canExclude: boolean; onExclude: () => void }) {
   const searching = tab.state.status === "searching";
   return (
     <div className={styles.toolbar} role="toolbar" aria-orientation="vertical" aria-label={tx("Find actions")}>
