@@ -3,12 +3,15 @@ import type { EditorView } from "@codemirror/view";
 import { createRoot } from "react-dom/client";
 import "../src/styles/global.css";
 import { ResponseBody } from "../src/features/http-client/ResponseBody";
-import { displayed, textOffset } from "../src/features/http-client/displayLines";
+import { DISPLAY_LINE, displayed, textOffset } from "../src/features/http-client/displayLines";
 import { DEFAULT_FIND_OPTIONS, findInLines } from "../src/ui/consoleFind";
 
 // `?chars=<n>`: a response body that is one line of ~n characters (a minified body in Raw), ending in
 // `last-item`. "Show Formatted" / "Show Raw" swap it with a multi-line text, as the response toggle does.
 // `&find=<query>`: the find bar's matches for that query, the first one current.
+// `&cross`: leading spaces put `last-item` across a split of the line for display (`displayLines.ts`), its
+// first character ending one display line and the rest starting the next, and trailing text puts more of the
+// line after it.
 // `&hidden`: the body starts in a hidden pane (as in a hidden tool window); "Show Pane" shows it.
 const params = new URLSearchParams(location.search);
 const chars = Number(params.get("chars") ?? 1_000_000);
@@ -18,7 +21,11 @@ for (let i = 0, size = 0; size < chars; i++) {
   parts.push((i ? "," : "[") + record(i));
   size += parts[i]!.length;
 }
-const raw = `${parts.join("")},{"name":"last-item"}]`;
+const unpadded = `${parts.join("")},{"name":"last-item"}]`;
+const pad = params.has("cross")
+  ? (DISPLAY_LINE - 1 - (unpadded.indexOf("last-item") % DISPLAY_LINE) + DISPLAY_LINE) % DISPLAY_LINE
+  : 0;
+const raw = params.has("cross") ? " ".repeat(pad) + unpadded + "x".repeat(5 * DISPLAY_LINE) : unpadded;
 const formatted = Array.from({ length: 2000 }, (_, i) => record(i)).join("\n");
 
 // Characters put into text nodes: what the browser has to lay out.
