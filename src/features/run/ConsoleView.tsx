@@ -408,6 +408,8 @@ export function ConsoleView({
   // Find (⌘F): search the whole buffer, not just the rendered rows, caching completed lines across flushes.
   // A row cut at MAX_LINE_LENGTH is searched joined with the rows continuing it (as `findInCutLines`).
   const findCache = useRef<{
+    model: ConsoleModel;
+    lines: readonly ConsoleLine[];
     query: string;
     options: FindOptions;
     invalid: boolean;
@@ -421,13 +423,15 @@ export function ConsoleView({
     let cache = findCache.current;
     if (
       !cache ||
+      cache.model !== model ||
+      cache.lines !== lines ||
       cache.query !== query ||
       cache.options.caseSensitive !== findOptions.caseSensitive ||
       cache.options.wholeWord !== findOptions.wholeWord ||
       cache.options.regex !== findOptions.regex
     ) {
       const probe = findInLines([], query, findOptions, 1);
-      cache = { query, options: findOptions, invalid: probe.invalid, byId: new Map() };
+      cache = { model, lines, query, options: findOptions, invalid: probe.invalid, byId: new Map() };
       findCache.current = cache;
     }
     if (cache.invalid) return { matches: [], overflow: false, invalid: true };
@@ -438,10 +442,9 @@ export function ConsoleView({
       else joined.push({ id: row.id, text: row.text, row: i });
     });
     const firstId = lines[0]?.id ?? 0;
-    const lastId = lines[lines.length - 1]?.id ?? -1;
     if (cache.byId.size > joined.length + 512) {
       for (const id of cache.byId.keys()) {
-        if (id < firstId || id > lastId) cache.byId.delete(id);
+        if (id < firstId) cache.byId.delete(id);
       }
     }
     // A match is reported on the row where it starts; its `end` runs past that row across a cut.
@@ -480,7 +483,7 @@ export function ConsoleView({
     }
     return { matches, overflow: false, invalid: false };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `version` marks in-place appends to `lines`
-  }, [findOpen, lines, version, query, findOptions]);
+  }, [findOpen, model, lines, version, query, findOptions]);
   const activeIndex = found.matches.length ? Math.min(Math.max(active, 0), found.matches.length - 1) : -1;
   const activeMatch = activeIndex >= 0 ? found.matches[activeIndex] : undefined;
   const marksByLine = useMemo(() => marksByRow(found.matches, activeIndex, lines, cut), [found, activeIndex, lines]);

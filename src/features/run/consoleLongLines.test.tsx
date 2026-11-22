@@ -3,7 +3,6 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
 import { setInvokeRoute } from "@/platform/tauriCore";
-import * as consoleFindModule from "@/ui/consoleFind";
 import { ConsoleModel } from "./console";
 import { ConsoleView } from "./ConsoleView";
 import * as linksModule from "./links";
@@ -411,64 +410,6 @@ describe("ConsoleView long lines and no-newline output", () => {
       vi.unstubAllGlobals();
       ctxSpy.mockRestore();
       rectSpy.mockRestore();
-    }
-  });
-
-  it("keeps per-line Find cache hits when ConsoleModel is rebuilt with unchanged lines on version updates", () => {
-    const body = Array.from({ length: 200 }, (_, i) => `{"row":${i},"payload":"${"x".repeat(300)}"}\n`).join("");
-    const buildModel = (extra = "") => {
-      const m = new ConsoleModel();
-      m.append({ kind: "stdout", text: body + extra });
-      return m;
-    };
-
-    const view = render(
-      <ConsoleView
-        model={buildModel()}
-        version={1}
-        softWrap={false}
-        follow={false}
-        onFollowChange={() => {}}
-        cwd="/p"
-      />,
-    );
-    const log = screen.getByRole("log");
-    fireEvent.keyDown(log, { key: "f", code: "KeyF", metaKey: true });
-    fireEvent.click(screen.getByRole("button", { name: "Words" }));
-    fireEvent.change(screen.getByRole("textbox", { name: "Find in console" }), { target: { value: "needle" } });
-    expect(screen.getByText("0 results")).toBeInTheDocument();
-
-    const findSpy = vi.spyOn(consoleFindModule, "findInLines");
-    try {
-      // Simulate RunView rebuilding testModel on another test's output (new ConsoleModel, same text).
-      view.rerender(
-        <ConsoleView
-          model={buildModel()}
-          version={2}
-          softWrap={false}
-          follow={false}
-          onFollowChange={() => {}}
-          cwd="/p"
-        />,
-      );
-      expect(screen.getByText("0 results")).toBeInTheDocument();
-      expect(findSpy.mock.calls.length).toBeLessThan(10);
-
-      // Appending one new matching line in a rebuilt model scans only the new line.
-      view.rerender(
-        <ConsoleView
-          model={buildModel("found needle here\n")}
-          version={3}
-          softWrap={false}
-          follow={false}
-          onFollowChange={() => {}}
-          cwd="/p"
-        />,
-      );
-      expect(screen.getByText("1/1")).toBeInTheDocument();
-      expect(findSpy.mock.calls.length).toBeLessThan(10);
-    } finally {
-      findSpy.mockRestore();
     }
   });
 });
