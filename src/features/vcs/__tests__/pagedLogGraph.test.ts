@@ -576,3 +576,189 @@ describe("paged Git Log graph", () => {
     pageThrough([...all.slice(0, 200), { ...all[50]! }, ...all.slice(200)], [120]);
   });
 });
+
+/**
+ * `graph-extreme`'s shape (the perf probe's `fakeGitLogBranches`): `total` commits on `lanes`
+ * long-lived branches, about one in five merging another branch's tip, newest first. The newest
+ * is a merge on the checked-out branch; `before` is the history without it (the branch one commit
+ * back), `after` with it.
+ */
+function mergingBranches(seed: number, total: number, lanes: number) {
+  const random = rng(seed);
+  const tips = new Map<string, number>();
+  const made: Array<{ branch: string; parents: number[] }> = [];
+  for (let i = 1; i <= total; i++) {
+    const lane = i <= lanes ? (i - 1) % lanes : Math.floor(random() * lanes);
+    const branch = lane ? `feature/${lane}` : "main";
+    const parents = i > 1 ? [tips.get(branch) ?? 1] : [];
+    if (tips.size > 3 && i > lanes && (i === total || random() < 0.19)) {
+      const others = [...tips.values()].filter((t) => !parents.includes(t));
+      parents.push(others[Math.floor(random() * others.length)]!);
+    }
+    made.push({ branch, parents });
+    tips.set(branch, i);
+  }
+  const moving = made[total - 1]!.branch;
+  const history = (withTop: boolean) => {
+    const refs = new Map<number, string[]>();
+    for (const [branch, tip] of tips) {
+      const at = branch === moving && !withTop ? made[total - 1]!.parents[0]! : tip;
+      refs.set(at, [...(refs.get(at) ?? []), branch === moving ? `HEAD -> ${branch}` : branch]);
+    }
+    const out: Commit[] = [];
+    for (let i = withTop ? total : total - 1; i >= 1; i--)
+      out.push(
+        commit(
+          `c${i}`,
+          made[i - 1]!.parents.map((p) => `c${p}`),
+          refs.get(i) ?? [],
+        ),
+      );
+    return out;
+  };
+  return { before: history(false), after: history(true) };
+}
+
+/** Slices that end after `steps` steps each, run when `flush` is called. */
+function countedSlices(steps: number) {
+  const queue: Array<() => void> = [];
+  let slices = 0;
+  return {
+    slices: {
+      start() {
+        slices++;
+        let left = steps;
+        return () => --left <= 0;
+      },
+      later: (run: () => void) => void queue.push(run),
+    },
+    flush() {
+      while (queue.length) queue.shift()!();
+    },
+    count: () => slices,
+  };
+}
+
+/** A presenter laying out in slices of `steps` steps, each call driven until its layout is done. */
+function slicedPresenter(steps: number) {
+  const counted = countedSlices(steps);
+  let ready = 0;
+  const present = createLogGraphPresenter(() => ready++, counted.slices);
+  return (...args: Parameters<typeof present>) => {
+    let got = present(...args);
+    while (got.pending) {
+      const before = ready;
+      counted.flush();
+      expect(ready).toBe(before + 1);
+      got = present(...args);
+    }
+    return got;
+  };
+}
+
+describe("Git Log graph laid out over several tasks", () => {
+  it("shows the previous rows while a Refresh that reorders the lanes below a merge on top is laid out", () => {
+    const { before, after } = mergingBranches(11, 2_500, 120);
+    const loaded = 1_500;
+    const counted = countedSlices(1);
+    let ready = 0;
+    const present = createLogGraphPresenter(() => ready++, counted.slices);
+    for (let n = 300; n <= loaded; n += 300) {
+      let got = present(before.slice(0, n), DEFAULT_LOG_OPTIONS, fragments, keep);
+      for (; got.pending; got = present(before.slice(0, n), DEFAULT_LOG_OPTIONS, fragments, keep)) counted.flush();
+    }
+    const shown = present(before.slice(0, loaded), DEFAULT_LOG_OPTIONS, fragments, keep);
+    const list = after.slice(0, loaded + 1);
+    const slicesBefore = counted.count();
+    const readyBefore = ready;
+    const compactLanes = vi.mocked(graphModule.compactLanes);
+    compactLanes.mockClear();
+    const pending = present(list, DEFAULT_LOG_OPTIONS, fragments, keep);
+    // The call returns before the list is laid out, with the previous commits and rows together.
+    expect(pending.pending).toBe(true);
+    expect(pending.commits).toBe(shown.commits);
+    expect(pending.row(0)).toBe(shown.row(0));
+    // Calls in the meantime keep it.
+    expect(present(list, DEFAULT_LOG_OPTIONS, fragments, keep).commits).toBe(shown.commits);
+    expect(ready).toBe(readyBefore);
+    counted.flush();
+    expect(ready).toBe(readyBefore + 1);
+    // The whole list was laid out again (the rows below the merge cannot be kept), over many tasks.
+    expect(compactLanes.mock.calls.reduce((sum, [rows]) => sum + rows.length, 0)).toBeGreaterThanOrEqual(loaded);
+    expect(counted.count() - slicesBefore).toBeGreaterThan(2);
+    const got = present(list, DEFAULT_LOG_OPTIONS, fragments, keep);
+    expect(got.pending).toBe(false);
+    expect(got.commits).toBe(list);
+    expectStrictEqual(
+      got.rows.map((_, i) => got.row(i)),
+      full(list).rows,
+    );
+  }, 60_000);
+
+  it("presents commits that came in during a layout with the next one", () => {
+    const { before, after } = mergingBranches(12, 1_500, 80);
+    const counted = countedSlices(1);
+    let ready = 0;
+    const present = createLogGraphPresenter(() => ready++, counted.slices);
+    let got = present(before.slice(0, 300), DEFAULT_LOG_OPTIONS, fragments, keep);
+    for (; got.pending; got = present(before.slice(0, 300), DEFAULT_LOG_OPTIONS, fragments, keep)) counted.flush();
+    const refreshed = after.slice(0, 301);
+    expect(present(refreshed, DEFAULT_LOG_OPTIONS, fragments, keep).pending).toBe(true);
+    // A page arrives before the Refresh's layout is done: the Refresh is shown first, then the page.
+    const paged = after.slice(0, 601);
+    expect(present(paged, DEFAULT_LOG_OPTIONS, fragments, keep).commits).toBe(got.commits);
+    counted.flush();
+    expect(ready).toBe(1);
+    got = present(paged, DEFAULT_LOG_OPTIONS, fragments, keep);
+    if (got.pending) {
+      counted.flush();
+      expect(ready).toBe(2);
+      got = present(paged, DEFAULT_LOG_OPTIONS, fragments, keep);
+    }
+    expect(got.commits).toBe(paged);
+    expectStrictEqual(
+      got.rows.map((_, i) => got.row(i)),
+      full(paged).rows,
+    );
+  }, 60_000);
+
+  it("gives the full computation's rows when every layout is cut into small slices", () => {
+    for (const steps of [1, 3]) {
+      const present = slicedPresenter(steps);
+      const { before, after } = mergingBranches(13 + steps, 1_200, 60);
+      for (let n = 97; n < 900; n += 131) {
+        const got = present(before.slice(0, n), DEFAULT_LOG_OPTIONS, fragments, keep);
+        expectStrictEqual(
+          got.rows.map((_, i) => got.row(i)),
+          full(before.slice(0, n)).rows,
+        );
+      }
+      for (const list of [after.slice(0, 900), after.slice(0, 1_050), before.slice(0, 1_050).map((c) => ({ ...c }))]) {
+        const got = present(list, DEFAULT_LOG_OPTIONS, fragments, keep);
+        expectStrictEqual(
+          got.rows.map((_, i) => got.row(i)),
+          full(list).rows,
+        );
+      }
+      const base = history(40 + steps, 600, 14);
+      for (const [name, list] of refreshed(base, 40 + steps)) {
+        const sliced = slicedPresenter(steps);
+        for (let n = 150; n <= 450; n += 150) sliced(base.slice(0, n), DEFAULT_LOG_OPTIONS, fragments, keep);
+        const got = sliced(list, DEFAULT_LOG_OPTIONS, fragments, keep);
+        const rows = got.rows.map((_, i) => got.row(i));
+        const want = full(list).rows;
+        if (!isDeepStrictEqual(rows, want)) expect({ name, rows }).toStrictEqual({ name, rows: want });
+      }
+    }
+  }, 120_000);
+
+  it("lays out within the call when it fits in a slice, and without a previous presentation", () => {
+    const counted = countedSlices(1);
+    const present = createLogGraphPresenter(() => {}, counted.slices);
+    const base = history(50, 400, 10);
+    // Nothing shown yet: laid out within the call however long it takes.
+    expect(present(base.slice(0, 300), DEFAULT_LOG_OPTIONS, fragments, keep).pending).toBe(false);
+    // The same list again takes no step.
+    expect(present(base.slice(0, 300), DEFAULT_LOG_OPTIONS, fragments, keep).pending).toBe(false);
+  });
+});
