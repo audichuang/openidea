@@ -3865,5 +3865,7 @@
   "Mark as Unread": "Mark as Unread",
   "Archive All Below": "Archive All Below",
   "Mark Agent Tasks as Unread": "Mark Agent Tasks as Unread",
-  "Mark Agent Tasks as Read": "Mark Agent Tasks as Read"
+  "Mark Agent Tasks as Read": "Mark Agent Tasks as Read",
+  "Find in build output": "Find in build output",
+  "Find in Build Output": "Find in Build Output"
 }

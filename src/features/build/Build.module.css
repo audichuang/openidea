@@ -115,6 +115,24 @@
   outline: none;
   contain: strict;
 }
+.consoleWrap {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.consoleWrap > .console {
+  flex: 1;
+  min-height: 0;
+}
+.match {
+  border-radius: 2px;
+  color: var(--fg-search-match);
+  background: var(--bg-search-match);
+}
+.matchCurrent {
+  background: var(--bg-search-match-current);
+}
 .consoleInner {
   position: relative;
   width: 100%;
