@@ -8,7 +8,7 @@ import { syntaxParserRunning } from "@codemirror/language";
 import { forEachDiagnostic } from "@codemirror/lint";
 import { executeAction } from "@/platform/actions";
 import { bindingsFor } from "@/platform/keymap";
-import { activeEditor } from "@/editor/api";
+import { activeEditor, documentSynced, editorsFor } from "@/editor/api";
 import { docBackend, type MemoryBackend } from "@/editor/core/backend";
 import { subscribeDiagnostics } from "@/editor/lsp/diagnostics";
 import type {
@@ -24,7 +24,7 @@ import type {
   SearchQuery,
   SearchSummary,
 } from "@/bindings";
-import { openProject } from "@/platform/project";
+import { openProject, useProject } from "@/platform/project";
 import { setInvokeRoute } from "@/platform/tauriCore";
 import { nextRequestId } from "@/platform/ipc";
 import { editorService } from "./contributions";
@@ -113,9 +113,34 @@ export interface PerfProbe {
    * text lines), ending in `last-item`. `0` bytes removes it.
    */
   fakeHttpResponse(shape: HttpBodyShape, bytes: number): void;
+  /**
+   * Opens an all-in-one diff of `files` generated files, answering the Git and file reads its
+   * blocks make. By default builds mixed data: small edits between two revisions, every 25th
+   * file binary (except the last), every 100th one of 2,000 lines, one of `bigLines` changed
+   * lines, and editable working files half-way down and at the end. With `options.allEditable`,
+   * every file is an editable working-tree `.ts` file seeded in the in-memory backend.
+   */
+  openCombinedDiff(
+    files: number,
+    bigLines: number,
+    options?: { allEditable?: boolean; lines?: number; tag?: string },
+  ): Promise<{ first: string; big: string; editable: string; last: string; binary: string; paths: string[] }>;
+  /** Whether a mounted editor handle exists for `path`. */
+  hasEditor(path: string): boolean;
+  /**
+   * Appends `marker` to a mounted worktree diff editor for `path`, waits for sync, reads back
+   * editor text and dirty state, then saves so the block can unmount cleanly and returns the
+   * persisted backend text.
+   */
+  editAndSaveDiff(path: string, marker: string): Promise<{ text: string; unsaved: boolean; savedText: string }>;
+  /** Whether a document of `path` shown in a view (an editor, a diff pane) has unsaved changes. */
+  unsaved(path: string): boolean;
 }
 
 export type HttpBodyShape = "json" | "nested" | "xml" | "text";
+
+/** The sample project the perf build opens (`registerDevSamples`). */
+const PERF_ROOT = "/dev/acme-api";
 
 const KINDS: CompletionKind[] = [
   "method",
@@ -217,6 +242,18 @@ function httpBody(shape: HttpBodyShape, bytes: number): string {
       for (let i = 0; size < bytes; i++) push(`${i} INFO  order-service  processed order item-${i} in ${i % 50} ms\n`);
       return `${parts.join("")}last-item`;
   }
+}
+
+/** `lines` lines of a generated source file; `rev` changes every 7th line (all of them with `all`). */
+function combinedSource(n: number, lines: number, rev: string, all = false): string {
+  const out: string[] = [];
+  for (let i = 0; i < lines; i++)
+    out.push(
+      all || i % 7 === 3
+        ? `export const value${n}_${i} = compute("${rev}", ${i}); // ${rev}`
+        : `export const value${n}_${i} = compute("base", ${i});`,
+    );
+  return out.join("\n");
 }
 
 type Route = (cmd: string, args: unknown) => Promise<unknown> | null;
@@ -635,6 +672,102 @@ export function installPerfProbe(): () => void {
         if (cmd === "http_history_get") return Promise.resolve(exchange);
         return null;
       });
+    },
+    async openCombinedDiff(files, bigLines, options) {
+      const allEditable = !!options?.allEditable;
+      const dir = (i: number) => `${PERF_ROOT}/src/gen/pkg${Math.floor(i / 50)}`;
+      const bigAt = Math.floor(files / 3);
+      const editAt = Math.floor(files / 2);
+      const lastAt = files - 1;
+      const path = (i: number) =>
+        allEditable
+          ? `${dir(i)}/File${i}.ts`
+          : i === bigAt
+            ? `${dir(i)}/Generated${i}.ts`
+            : i % 25 === 24 && i !== lastAt
+              ? `${dir(i)}/image${i}.png`
+              : `${dir(i)}/File${i}.ts`;
+      const first = path(0);
+      const big = path(bigAt);
+      const editable = path(editAt);
+      const last = path(lastAt);
+      const binary = !allEditable && files > 25 ? path(24) : "";
+      const lines = (i: number) =>
+        allEditable ? (options?.lines ?? 6) : i === bigAt ? bigLines : i % 100 === 50 ? 2_000 : 40;
+      const index = new Map(Array.from({ length: files }, (_, i) => [path(i), i]));
+      const items = Array.from({ length: files }, (_, i) => {
+        const p = path(i);
+        const worktree = allEditable || i === editAt || i === lastAt || p.endsWith(".png");
+        return {
+          path: p,
+          left: { type: "rev", rev: "HEAD~1" },
+          right: worktree ? { type: "worktree" } : { type: "rev", rev: "HEAD" },
+        };
+      });
+      const backend = docBackend() as Partial<MemoryBackend>;
+      if (!backend.files) throw new Error("openCombinedDiff() needs the in-memory backend");
+      // Disable blur-autosave so the scenario exercises the unsaved-edits keep-mounted guard after blurring.
+      useProject.setState((s) => ({
+        settings: { ...(s.settings ?? ({} as never)), files: { ...s.settings?.files, autoSave: false } } as never,
+      }));
+      if (allEditable) {
+        for (let i = 0; i < files; i++) backend.files.set(items[i]!.path, combinedSource(i, lines(i), "HEAD"));
+      } else {
+        backend.files.set(editable, combinedSource(editAt, lines(editAt), "HEAD"));
+        backend.files.set(last, combinedSource(lastAt, lines(lastAt), "HEAD"));
+        for (const item of items)
+          if (item.path.endsWith(".png")) backend.files.set(item.path, "\u0089PNG\r\n\u001a\n\u0000");
+      }
+      setRoute("combinedDiff", (cmd, args) => {
+        const { path: p, rev } = (args ?? {}) as { path?: string; rev?: string | null };
+        const i = p == null ? undefined : index.get(p);
+        if (i === undefined) return null;
+        if (cmd === "vcs_file_mode") return Promise.resolve("100644");
+        if (cmd === "fs_probe") return Promise.resolve({ size: 1024, binary: p!.endsWith(".png"), tooLarge: false });
+        if (cmd === "vcs_file_at")
+          return Promise.resolve(
+            p!.endsWith(".png")
+              ? "\u0089PNG\r\n\u001a\n\u0000"
+              : combinedSource(
+                  i,
+                  lines(i),
+                  rev === "HEAD" ? "HEAD" : "base",
+                  !allEditable && i === bigAt && rev === "HEAD",
+                ),
+          );
+        return null;
+      });
+      const tag = options?.tag ?? (allEditable ? "editable" : "mixed");
+      await editorService().openInput({
+        kind: "combined-diff",
+        key: `combined-diff:perf:${tag}:${files}`,
+        path: items[0]?.path ?? "",
+        data: { items, title: "Combined Changes Diff" },
+      });
+      return { first, big, editable, last, binary, paths: items.map((item) => item.path) };
+    },
+    hasEditor(path) {
+      return editorsFor(path).length > 0;
+    },
+    async editAndSaveDiff(path, marker) {
+      const backend = docBackend() as Partial<MemoryBackend>;
+      if (!backend.files) throw new Error("editAndSaveDiff() needs the in-memory backend");
+      const handle = editorsFor(path)[0];
+      if (!handle) throw new Error(`no mounted editor for ${path}`);
+      const { view, ctx } = handle;
+      if (view.state.readOnly) throw new Error(`editor for ${path} is read-only`);
+      const end = view.state.doc.length;
+      view.dispatch({ changes: { from: end, insert: marker }, userEvent: "input" });
+      await view.state.facet(documentSynced)?.();
+      const text = view.state.doc.toString();
+      const dirty = new Set(editorService().dirtyDocumentIds?.() ?? []).has(ctx.doc);
+      await docBackend().save(ctx.doc);
+      const savedText = backend.files.get(path) ?? "";
+      return { text, unsaved: dirty, savedText };
+    },
+    unsaved(path) {
+      const dirty = new Set(editorService().dirtyDocumentIds?.() ?? []);
+      return editorsFor(path).some((e) => dirty.has(e.ctx.doc));
     },
     insertAfter(after, text) {
       const view = requireView();
