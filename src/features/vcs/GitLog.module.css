@@ -567,6 +567,22 @@
   padding: var(--space-2) var(--space-3);
   border-top: 0;
 }
+.messageBoxVirtual {
+  overflow-anchor: none;
+}
+.messageList {
+  position: relative;
+  width: 100%;
+}
+.messageItem {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+}
+.messageItemSeparated {
+  padding-top: 10px;
+}
 .commitTooltip {
   width: min(520px, calc(100vw - 32px));
   max-height: 60vh;
@@ -649,8 +665,7 @@
   color: var(--fg-subtle);
   line-height: 1.5;
 }
-.commitEntry + .commitEntry {
-  margin-top: 10px;
+.messageItemSeparated .commitEntry {
   padding-top: 10px;
   border-top: 1px solid var(--border);
 }
