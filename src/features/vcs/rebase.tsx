@@ -449,8 +449,8 @@ const ACTIONS: Array<{ value: RebaseAction; label: string }> = [
   { value: "drop", label: "Drop" },
 ];
 
-// Rows show the subject over the short hash; measureElement corrects the estimate after mount.
-const REBASE_ROW_HEIGHT = 44;
+// Rows show the subject over the short hash (49 px in Chromium); measureElement corrects the estimate after mount.
+const REBASE_ROW_HEIGHT = 49;
 const REBASE_OVERSCAN = 6;
 const REBASE_INITIAL_RECT = { width: 470, height: 420 };
 const estimateRebaseRow = () => REBASE_ROW_HEIGHT;
