@@ -482,7 +482,7 @@ const RebaseRowItem = memo(function RebaseRowItem({
   measureRef: (node: HTMLDivElement | null) => void;
   onSelect: (commitId: string) => void;
   onAction: (index: number, commitId: string, action: RebaseAction) => void;
-  onRowFocus: (commitId: string) => void;
+  onRowFocus: (commitId: string, index: number) => void;
   onRowBlur: (commitId: string) => void;
 }) {
   return (
@@ -495,9 +495,11 @@ const RebaseRowItem = memo(function RebaseRowItem({
       aria-setsize={total}
       data-selected={selected || undefined}
       style={{ transform: `translateY(${start}px)` }}
-      onFocus={() => onRowFocus(row.commit.id)}
+      onFocus={() => onRowFocus(row.commit.id, index)}
       onBlur={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget)) onRowBlur(row.commit.id);
+        // Tab into a neighbor row blurs this one first; the neighbor's focus moves the pin. Clearing it here would
+        // re-render with focus on body and unmount the row the browser is about to focus.
+        if (!e.currentTarget.parentElement?.contains(e.relatedTarget)) onRowBlur(row.commit.id);
       }}
     >
       <button
@@ -560,7 +562,6 @@ function InteractiveRebaseDialog({
   const getItemKey = useCallback((index: number) => rowsRef.current[index]!.commit.id, [order]);
   const getScrollElement = useCallback(() => listRef.current, []);
   const [activeCommitId, setActiveCommitId] = useState<string | null>(null);
-  const onRowFocus = useCallback((id: string) => setActiveCommitId(id), []);
   const onRowBlur = useCallback((id: string) => setActiveCommitId((prev) => (prev === id ? null : prev)), []);
   const pinnedIndex = useMemo(
     () => (activeCommitId ? rows.findIndex((r) => r.commit.id === activeCommitId) : -1),
@@ -606,6 +607,18 @@ function InteractiveRebaseDialog({
     overscan: REBASE_OVERSCAN,
     initialRect: REBASE_INITIAL_RECT,
   });
+  // Tab after a wheel scroll focuses a row outside the viewport; bring it into view instead of relying on the
+  // engine to scroll a transform-positioned row.
+  const onRowFocus = useCallback(
+    (id: string, index: number) => {
+      setActiveCommitId(id);
+      const visible = virtualizer.range;
+      if (visible && (index < visible.startIndex || index > visible.endIndex)) {
+        virtualizer.scrollToIndex(index, { align: "auto" });
+      }
+    },
+    [virtualizer],
+  );
   const update = useCallback(
     (i: number, patch: Partial<RebaseRow>) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r))),
     [],
