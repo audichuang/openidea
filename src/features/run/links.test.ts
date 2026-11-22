@@ -1,6 +1,13 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest";
-import { findOutputLinks, joinPath, type OutputLink } from "./links";
+import { describe, expect, it, vi } from "vitest";
+import {
+  findOutputLinks,
+  horizontalColumnWindow,
+  joinPath,
+  sliceRangesInWindow,
+  visibleCharWindow,
+  type OutputLink,
+} from "./links";
 
 function files(text: string) {
   return findOutputLinks(text)
@@ -122,6 +129,68 @@ describe("findOutputLinks", () => {
     const links = findOutputLinks("a.rs:1 then b.ts:2:3");
     expect(links.map((l) => l.start)).toEqual([0, 12]);
   });
+
+  it("detects links at start, middle, end and across 4000/8000-char boundaries on long lines", () => {
+    const pad = (n: number) => "x".repeat(n);
+    // Build a >10 KiB line with links at start, straddling 4000, middle, straddling 8000, and end.
+    const head = "target.txt:1:1 ";
+    const boundary4k = "src/cross4k.ts:42:7";
+    const midJvm = "at com.acme.Service.run(Service.kt:99)";
+    const midPy = 'File "app/worker.py", line 17';
+    const midUrl = "https://example.dev/docs(v2)";
+    const boundary8k = "[ERROR] /p/src/Cross8k.java:[12,5]";
+    const tail = "end/file.go:88";
+
+    let line = head;
+    line += pad(3995 - line.length) + " " + boundary4k + " ";
+    line += pad(5000 - line.length) + " " + midJvm + " " + midPy + " " + midUrl + " ";
+    line += pad(7990 - line.length) + " " + boundary8k + " ";
+    line += pad(10200 - line.length) + " " + tail;
+
+    expect(line.length).toBeGreaterThan(10_000);
+    const links = findOutputLinks(line);
+    expect(
+      links.map((l) => (l.kind === "url" ? l.url : `${l.target.path}:${l.target.line}:${l.target.col ?? ""}`)),
+    ).toEqual([
+      "target.txt:1:1",
+      "src/cross4k.ts:42:7",
+      "com/acme/Service.kt:99:",
+      "app/worker.py:17:",
+      "https://example.dev/docs(v2)",
+      "/p/src/Cross8k.java:12:5",
+      "end/file.go:88:",
+    ]);
+    for (const l of links) {
+      expect(line.slice(l.start, l.end).length).toBeGreaterThan(0);
+    }
+  });
+
+  it("scales linearly on long lines without links and caches repeated scans", () => {
+    const t0 = performance.now();
+    for (const s of ["x".repeat(3_999), "x".repeat(16_000), "a.b.".repeat(1_000), "a/b/".repeat(1_000)]) {
+      expect(findOutputLinks(s)).toEqual([]);
+    }
+    const elapsed = performance.now() - t0;
+    // Before the fix, "x".repeat(3999) + "a.b."*1000 + "a/b/"*1000 alone take >60 ms due to O(n^2) backtracking.
+    expect(elapsed).toBeLessThan(25);
+
+    const tailLine = `${"x".repeat(8_000)} src/tail.ts:12:3`;
+    const tailLinks = findOutputLinks(tailLine);
+    expect(tailLinks).toHaveLength(1);
+    expect(tailLinks[0]).toMatchObject({ kind: "file", target: { path: "src/tail.ts", line: 12, col: 3 } });
+
+    // Repeating the same line text must hit the cache instead of re-running regex scans.
+    const cachedLine = `cached ${"y".repeat(2000)} src/cached.ts:5:2`;
+    const first = findOutputLinks(cachedLine);
+    const spy = vi.spyOn(RegExp.prototype, "exec");
+    try {
+      const second = findOutputLinks(cachedLine);
+      expect(second).toEqual(first);
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
 
 describe("joinPath", () => {
@@ -130,5 +199,49 @@ describe("joinPath", () => {
     expect(joinPath("/p/app", "./a/../b.ts")).toBe("/p/app/b.ts");
     expect(joinPath("/p/app", "/abs/x.py")).toBe("/abs/x.py");
     expect(joinPath("/p/app/", "file:///abs/y.js")).toBe("/abs/y.js");
+  });
+});
+
+describe("horizontal window helpers", () => {
+  it("maps visual columns to UTF-16 offsets across ASCII, tabs and CJK characters", () => {
+    expect(visibleCharWindow("abcdefghij", 2, 6)).toEqual({ start: 2, end: 6 });
+    expect(visibleCharWindow("a\tbcdefgh", 0, 5, 4)).toEqual({ start: 0, end: 3 });
+    expect(visibleCharWindow("中文abcd", 2, 6)).toEqual({ start: 1, end: 4 });
+  });
+
+  it("slices ranges to the window while retaining alwaysKeep items", () => {
+    const items = [
+      { start: 0, end: 5, current: false },
+      { start: 50, end: 55, current: false },
+      { start: 100, end: 105, current: true },
+    ];
+    expect(sliceRangesInWindow(items, 40, 70)).toEqual([{ start: 50, end: 55, current: false }]);
+    expect(sliceRangesInWindow(items, 40, 70, (m) => m.current)).toEqual([
+      { start: 50, end: 55, current: false },
+      { start: 100, end: 105, current: true },
+    ]);
+  });
+
+  it("covers real 0.60em monospace columns when scrolled horizontally", () => {
+    // At 13px and 0.60em (7.8px/ch), scrollLeft 20,280 in an 800px viewport displays cols 2600..2703.
+    const win = horizontalColumnWindow(20_280, 800, 13);
+    expect(win).not.toBeNull();
+    expect(win!.start).toBeLessThanOrEqual(2_600);
+    expect(win!.end).toBeGreaterThanOrEqual(2_703);
+
+    // With a measured 1ch advance width and left padding, the window stays tight around the visible cols.
+    const measured = horizontalColumnWindow(20_280, 800, 13, { charWidthPx: 7.8, paddingLeftPx: 12 });
+    expect(measured).not.toBeNull();
+    expect(measured!.start).toBeLessThanOrEqual(2_598);
+    expect(measured!.end).toBeGreaterThanOrEqual(2_702);
+    expect(measured!.end - measured!.start).toBeLessThan(400);
+
+    // Wide (0.70em) and narrow (0.50em) fonts both stay covered when measured.
+    const wide = horizontalColumnWindow(20_000, 800, 13, { charWidthPx: 9.1, paddingLeftPx: 12 });
+    expect(wide!.start).toBeLessThanOrEqual(Math.floor((20_000 - 12) / 9.1));
+    expect(wide!.end).toBeGreaterThanOrEqual(Math.ceil((20_800 - 12) / 9.1));
+    const narrow = horizontalColumnWindow(20_000, 800, 13, { charWidthPx: 6.5, paddingLeftPx: 12 });
+    expect(narrow!.start).toBeLessThanOrEqual(Math.floor((20_000 - 12) / 6.5));
+    expect(narrow!.end).toBeGreaterThanOrEqual(Math.ceil((20_800 - 12) / 6.5));
   });
 });

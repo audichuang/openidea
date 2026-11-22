@@ -6,6 +6,7 @@
  */
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -18,6 +19,7 @@ import {
 import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { basename, relativeDir, useProject } from "@/platform/project";
+import { fontsLoaded, monoStack } from "@/platform/fonts";
 import {
   EmptyState,
   Icon,
@@ -45,12 +47,20 @@ import {
   type BuildStatus,
   type ConsoleLine,
 } from "./model";
-import { findOutputLinks, type OutputLink } from "@/features/run/links";
+import {
+  findOutputLinks,
+  horizontalColumnWindow,
+  measureMonoCharWidth,
+  sliceRangesInWindow,
+  visibleCharWindow,
+  type OutputLink,
+  type TextWindow,
+} from "@/features/run/links";
 import { openTarget, openUrl } from "@/features/run/navigate";
 import { navigateToMessage, rerunBuild, selectBuildNode, useBuildRun } from "./store";
 import styles from "./Build.module.css";
 import { WidestColumns } from "@/platform/consoleColumns";
-import { useConsoleFont } from "@/platform/consoleFont";
+import { useConsoleFont, type ConsoleFont } from "@/platform/consoleFont";
 import { tx } from "@/platform/i18n";
 
 const SEVERITY_ICON: Record<Severity, string> = { error: "error", warning: "warning", info: "info", hint: "info" };
@@ -213,14 +223,34 @@ function BuildTree() {
   );
 }
 
+/** Matches `.line { padding: 0 12px }` in `Build.module.css`. */
+const BUILD_PADDING_LEFT_PX = 12;
+
 /**
  * One console line: file locations and URLs (compiler diagnostics, stack
  * frames) are links, resolved against the directory of the step that printed
  * the line (Maven reactor modules run in their own directory), then the
  * project root and a name search as in the run console.
  */
-function ConsoleLineText({ line, root }: { line: ConsoleLine; root: string }) {
-  const links = useMemo(() => (line.kind === "system" ? [] : findOutputLinks(line.text)), [line.text, line.kind]);
+const ConsoleLineText = memo(function ConsoleLineText({
+  line,
+  root,
+  colStart,
+  colEnd,
+}: {
+  line: ConsoleLine;
+  root: string;
+  colStart?: number;
+  colEnd?: number;
+}) {
+  const rawLinks = useMemo(() => (line.kind === "system" ? [] : findOutputLinks(line.text)), [line.text, line.kind]);
+  const links = useMemo(() => {
+    if (colStart === undefined || colEnd === undefined || (colStart === 0 && line.text.length <= colEnd)) {
+      return rawLinks;
+    }
+    const win = visibleCharWindow(line.text, colStart, colEnd);
+    return sliceRangesInWindow(rawLinks, win.start, win.end);
+  }, [rawLinks, line.text, colStart, colEnd]);
   const activate = (e: MouseEvent, link: OutputLink) => {
     e.preventDefault();
     if (window.getSelection()?.toString()) return;
@@ -248,13 +278,50 @@ function ConsoleLineText({ line, root }: { line: ConsoleLine; root: string }) {
   }
   out.push(line.text.slice(pos));
   return <>{out}</>;
-}
+});
 
-function BuildConsole({ rowHeight }: { rowHeight: number }) {
+function BuildConsole({ font }: { font: ConsoleFont }) {
+  const { rowHeight } = font;
   const root = useProject((s) => s.project?.root ?? "/");
   const lines = useBuildRun((s) => s.lines);
   const ref = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  const charWidthRef = useRef<number | null | undefined>(undefined);
+  const [colWindow, setColWindow] = useState<TextWindow | null>(null);
+  const syncHorizontalWindow = (el: HTMLDivElement | null) => {
+    if (!el) {
+      setColWindow(null);
+      return;
+    }
+    if (charWidthRef.current === undefined && el.clientWidth > 0) {
+      charWidthRef.current = measureMonoCharWidth(el);
+    }
+    const next = horizontalColumnWindow(el.scrollLeft, el.clientWidth, font.size, {
+      charWidthPx: charWidthRef.current,
+      paddingLeftPx: BUILD_PADDING_LEFT_PX,
+    });
+    setColWindow((prev) => (prev?.start === next?.start && prev?.end === next?.end ? prev : next));
+  };
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    let active = true;
+    charWidthRef.current = el.clientWidth > 0 ? measureMonoCharWidth(el) : undefined;
+    syncHorizontalWindow(el);
+    const fontStack = font.family.replaceAll("var(--font-mono)", monoStack());
+    void fontsLoaded(fontStack, font.size).then(() => {
+      if (!active) return;
+      charWidthRef.current = el.clientWidth > 0 ? measureMonoCharWidth(el) : undefined;
+      syncHorizontalWindow(el);
+    });
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => syncHorizontalWindow(el)) : null;
+    ro?.observe(el);
+    return () => {
+      active = false;
+      ro?.disconnect();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the console font's metrics govern the window width
+  }, [font.family, font.size, font.weight]);
   const [widest] = useState(() => new WidestColumns());
   const columns = useMemo(() => widest.measure(lines), [widest, lines]);
   const virtualizer = useVirtualizer({
@@ -279,6 +346,7 @@ function BuildConsole({ rowHeight }: { rowHeight: number }) {
       aria-label={tx("Build output")}
       onScroll={(e) => {
         const el = e.currentTarget;
+        syncHorizontalWindow(el);
         stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < rowHeight * 2;
       }}
     >
@@ -294,7 +362,7 @@ function BuildConsole({ rowHeight }: { rowHeight: number }) {
               className={clsx(styles.line, styles[line.kind])}
               style={{ transform: `translateY(${v.start}px)` }}
             >
-              <ConsoleLineText line={line} root={root} />
+              <ConsoleLineText line={line} root={root} colStart={colWindow?.start} colEnd={colWindow?.end} />
             </div>
           );
         })}
@@ -330,11 +398,11 @@ function MessageDetail({ message }: { message: BuildMessage }) {
   );
 }
 
-function BuildOutput({ rowHeight }: { rowHeight: number }) {
+function BuildOutput({ font }: { font: ConsoleFont }) {
   const selected = useBuildRun((s) => s.selected);
   const messages = useBuildRun((s) => s.messages);
   const node = useMemo(() => (selected ? findNode(messages, selected) : undefined), [selected, messages]);
-  return node?.kind === "message" ? <MessageDetail message={node.message} /> : <BuildConsole rowHeight={rowHeight} />;
+  return node?.kind === "message" ? <MessageDetail message={node.message} /> : <BuildConsole font={font} />;
 }
 
 export function BuildView() {
@@ -372,7 +440,7 @@ export function BuildView() {
             lineHeight: `${font.rowHeight}px`,
           }}
         >
-          <BuildOutput rowHeight={font.rowHeight} />
+          <BuildOutput font={font} />
         </SplitPanel>
       </SplitGroup>
     </div>
