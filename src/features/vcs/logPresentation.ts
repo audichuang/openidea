@@ -77,7 +77,6 @@ export function createLogGraphPresenter() {
     };
     return {
       ...full,
-      width: full.rows.reduce((width, row) => Math.max(width, row.width), 0),
       row: (index: number): GraphRow | undefined => full.rows[index],
       rowsOf: (id: string) => indexed().rows.get(id) ?? [],
       childCount: (id: string) => indexed().children.get(id) ?? 0,

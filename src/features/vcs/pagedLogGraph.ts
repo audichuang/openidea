@@ -87,8 +87,6 @@ interface Checkpoint {
   tips: number;
   /** Runs of `hideLongEdges` open before the row (lane identity → first row). */
   runs: ReadonlyMap<number, number>;
-  /** The widest of rows `[0, row + 2)`. */
-  width: number;
   /** Whether its lanes are numbered for the layout of the list that keeps it. */
   numbered: boolean;
   /** One of the states kept every `CHECKPOINT` rows (the others are where a page restarted). */
@@ -762,8 +760,6 @@ interface Paged {
   checkpoints: Checkpoint[];
   /** Rows with a long-edge arrow to another row, ascending. */
   arrowRows: number[];
-  /** The widest row. */
-  width: number;
   /** Colour keys of rows kept below commits made on top ({@link resync}), applied in order. */
   recolor: Recolor[];
 }
@@ -812,13 +808,11 @@ function emptyPaged(longEdges: boolean): Paged {
         ranks: 0,
         tips: 0,
         runs: new Map(),
-        width: 0,
         numbered: true,
         periodic: true,
       },
     ],
     arrowRows: [],
-    width: 0,
     recolor: [],
   };
 }
@@ -975,10 +969,7 @@ function resume(prev: Paged, index: number, input: Input, numbered?: LaneSnapsho
 
   const checkpoints = periodicKept.filter((p) => !snapRows.has(p.row));
   const rowsAt = [...snapRows].sort((a, b) => a - b);
-  let width = c > 0 ? cp.width : 0;
-  let r = outFrom;
   for (const row of rowsAt) {
-    for (const end = Math.min(row + 2, n); r < end; r++) width = Math.max(width, rows[r]!.width);
     const snap = laid.snaps.get(row)!;
     const identityAt = new Map<number, number>();
     for (const [slot, lane] of snap.lanes.slots) if (lane) identityAt.set(slot, lane.identity);
@@ -990,14 +981,12 @@ function resume(prev: Paged, index: number, input: Input, numbered?: LaneSnapsho
       ranks: snap.ranks,
       tips: snap.tips,
       runs: new Map([...hidden.snaps.get(row)!].map(([lane, start]) => [identityAt.get(lane)!, start])),
-      width,
       numbered: true,
       periodic: periodic.has(row),
     });
   }
-  for (; r < n; r++) width = Math.max(width, rows[r]!.width);
   const recolor = recolorRows(prev.recolor, 0, outFrom);
-  return { ...input, rows, ranks, rankRows, tips, checkpoints, arrowRows, width, recolor };
+  return { ...input, rows, ranks, rankRows, tips, checkpoints, arrowRows, recolor };
 }
 
 /** `row` with its arrows' target rows moved by `shift`. */
@@ -1135,12 +1124,6 @@ function resync(prev: Paged, input: Input, shift: number, tail: number): Paged |
     }
 
     const checkpoints = [prev.checkpoints[0]!];
-    let width = 0;
-    let r = 0;
-    const widest = (upTo: number) => {
-      for (; r < upTo; r++) width = Math.max(width, rows[r]!.width);
-      return width;
-    };
     for (const row of [...snapRows].sort((a, b) => a - b)) {
       const fresh = laid.snaps.get(row)!;
       const identityAt = new Map<number, number>();
@@ -1149,7 +1132,6 @@ function resync(prev: Paged, input: Input, shift: number, tail: number): Paged |
         ...fresh,
         row,
         runs: new Map([...hidden.snaps.get(row)!].map(([lane, start]) => [identityAt.get(lane)!, start])),
-        width: widest(row + 2),
         numbered: true,
         periodic: row !== at || cp.periodic,
       });
@@ -1173,7 +1155,6 @@ function resync(prev: Paged, input: Input, shift: number, tail: number): Paged |
         ranks: p.ranks - cp.ranks + snap.ranks,
         tips: p.tips - cp.tips + snap.tips,
         runs: new Map([...p.runs].map(([id, start]) => [id + identities, start + shift])),
-        width: widest(Math.min(p.row + shift + 2, rows.length)),
         // Numbered for the layout `prev` had: laying out from it replays the lanes first.
         numbered: false,
         periodic: p.periodic,
@@ -1186,7 +1167,6 @@ function resync(prev: Paged, input: Input, shift: number, tail: number): Paged |
       tips: tips.slice(0, snap.tips).concat(prev.tips.slice(cp.tips).map((row) => row + shift)),
       checkpoints: spaced(checkpoints, restart),
       arrowRows,
-      width: widest(rows.length),
       recolor: recolorRows(prev.recolor, c + 2, prev.rows.length, shift).concat(
         keys.size ? [{ from: at + 2, to: rows.length, keys }] : [],
       ),
@@ -1227,8 +1207,6 @@ export interface PagedLogGraph {
   graph: readonly GraphCommit[];
   /** Presented rows; only their geometry (lanes, widths, targets) is final. */
   rows: readonly GraphRow[];
-  /** The widest row's lane count. */
-  width: number;
   /** Row `index` as `presentLogGraph` returns it. */
   row(index: number): GraphRow | undefined;
   /** Rows of `graph` with this id, ascending. */
@@ -1280,7 +1258,6 @@ function toResult(paged: Paged): PagedLogGraph {
     commits: paged.all,
     graph,
     rows,
-    width: paged.width,
     row(index) {
       let row = resolved.get(index);
       if (!row && rows[index]) resolved.set(index, (row = resolveRow(rows[index], colorOf(index), loaded)));
