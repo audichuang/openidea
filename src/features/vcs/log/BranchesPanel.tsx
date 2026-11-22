@@ -17,6 +17,7 @@ import {
   type BranchTreeNode,
 } from "../branches";
 import { branchMenu, inRepo, mergedBranchMenu, tagMenu } from "../branchMenu";
+import { forkBranchesPane } from "./forkBranchesPane";
 import { canDeleteBranch, favoriteBranches, useFavoriteBranches, useFavoriteBranchNames } from "../branchOps";
 import { BranchSync } from "../BranchSync";
 import styles from "../GitLog.module.css";
@@ -61,10 +62,12 @@ const GROUP_KEY = "openidea.vcs.branchesPane.groupByRepository";
 
 function loadGrouped(): boolean {
   try {
-    return localStorage.getItem(GROUP_KEY) === "true";
+    const stored = localStorage.getItem(GROUP_KEY);
+    if (stored !== null) return stored === "true";
   } catch {
-    return false;
+    // Fall through to the default.
   }
+  return !forkBranchesPane.upstreamMerged;
 }
 
 /** The branch the repositories `roots` are all on, else null. */
