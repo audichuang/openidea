@@ -30,6 +30,7 @@ vi.mock("@/platform/actions", async (importOriginal) => ({
 import { ContextMenuHost } from "@/ui";
 import syncStyles from "../BranchSync.module.css";
 import { BranchesPanel } from "../log/BranchesPanel";
+import { forkBranchesPane } from "../log/forkBranchesPane";
 import { useBranchesPane } from "../logPaneActions";
 import { emptyFilters, useGitLog } from "../logStore";
 import { useVcs } from "../store";
@@ -239,6 +240,8 @@ describe("Git Log branches pane with several repositories", () => {
   const aBranches = [b("main", { current: true }), b("dev"), b("solo")];
   const bBranches = [b("main"), b("dev", { current: true }), b("other")];
   beforeEach(() => {
+    // Upstream's merged rows; the fork default (grouped) is covered below.
+    forkBranchesPane.upstreamMerged = true;
     localStorage.removeItem("openidea.vcs.branchesPane.groupByRepository");
     repoData.branches = { "/p/a": aBranches, "/p/b": bBranches };
     repoData.tags = {};
@@ -250,7 +253,22 @@ describe("Git Log branches pane with several repositories", () => {
       branches: aBranches,
     });
   });
-  afterEach(() => useVcs.setState({ roots: [], branchRoots: {}, heads: {} }));
+  afterEach(() => {
+    forkBranchesPane.upstreamMerged = false;
+    useVcs.setState({ roots: [], branchRoots: {}, heads: {} });
+  });
+
+  it("groups by repository by default in the fork, until the user turns it off", async () => {
+    forkBranchesPane.upstreamMerged = false;
+    const { unmount } = render(<BranchesPanel />);
+    expect(await screen.findAllByText("dev")).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "Group by Repository" })).toHaveAttribute("aria-pressed", "true");
+    unmount();
+    localStorage.setItem("openidea.vcs.branchesPane.groupByRepository", "false");
+    render(<BranchesPanel />);
+    await screen.findByText("solo");
+    expect(screen.getAllByText("dev")).toHaveLength(1);
+  });
 
   it("lists branches once, naming the repositories of partial ones", async () => {
     render(<BranchesPanel />);
