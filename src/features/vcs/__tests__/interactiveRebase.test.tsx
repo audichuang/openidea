@@ -485,6 +485,71 @@ describe("InteractiveRebaseDialog", () => {
     expect(tops.some((top) => Math.abs(top - rowStart) < total / 100)).toBe(true);
   });
 
+  // The list scroller has top padding, so every row sits that far below its virtual start. A row scrolled in
+  // from below must land with its real bottom inside the viewport, not clipped by the padding.
+  describe("brings a row below the viewport fully into view despite the scroller's top padding", () => {
+    const PAD = 4;
+    async function setup() {
+      const { commits, list } = await openRebase(5000);
+      list.style.paddingTop = `${PAD}px`;
+      list.style.paddingBottom = `${PAD}px`;
+      // jsdom reports scrollHeight 0, which clamps every virtualizer scroll target to the top.
+      const sizer = list.firstElementChild as HTMLElement;
+      Object.defineProperty(list, "scrollHeight", {
+        configurable: true,
+        get: () => parseFloat(sizer.style.height) + 2 * PAD,
+      });
+      const rowOf = (i: number) =>
+        screen
+          .queryByRole("button", { name: `Action for ${commits[i]!.id.slice(0, 8)}` })
+          ?.closest<HTMLElement>('[role="listitem"]') ?? null;
+      return { commits, list, rowOf, scrollTo: vi.spyOn(list, "scrollTo") };
+    }
+    // jsdom gives every element the same fake height, so the virtualizer's layout says where the target row
+    // ends: at the start of the row below it.
+    function expectRowAboveVisible(list: HTMLElement, below: HTMLElement, scrollTo: ReturnType<typeof vi.spyOn>) {
+      expect(scrollTo).toHaveBeenCalled();
+      const top = (scrollTo.mock.calls.at(-1)![0] as ScrollToOptions).top!;
+      const startOf = (el: HTMLElement) => Number(/translateY\(([\d.]+)px\)/.exec(el.style.transform)![1]);
+      const realBottom = PAD + startOf(below);
+      expect(realBottom).toBeLessThanOrEqual(top + list.clientHeight);
+    }
+
+    it("Shift+Tab from the last row into the row above it after scrolling to the top", async () => {
+      const { list, rowOf, scrollTo } = await setup();
+      scrollToBottom(list);
+      await waitFor(() => expect(within(list).getByText("Commit message #5000")).toBeInTheDocument());
+      const source = rowOf(4999)!.querySelector<HTMLElement>("button")!;
+      act(() => source.focus());
+      scrollToTop(list);
+      await waitFor(() => expect(within(list).getByText("Commit message #1")).toBeInTheDocument());
+      scrollTo.mockClear();
+      const target = Array.from(rowOf(4998)!.querySelectorAll<HTMLElement>("button")).at(-1)!;
+      act(() => target.focus());
+      // Rows measure after they mount, so the virtualizer re-aims over a few frames; judge where it settles.
+      await waitFor(() => expectRowAboveVisible(list, rowOf(4999)!, scrollTo));
+    });
+
+    it("Tab into the next row while the list is scrolled above it", async () => {
+      const { list, rowOf, scrollTo } = await setup();
+      const source = Array.from(rowOf(1)!.querySelectorAll<HTMLElement>("button")).at(-1)!;
+      act(() => source.focus());
+      scrollToTop(list);
+      scrollTo.mockClear();
+      const target = rowOf(2)!.querySelector<HTMLElement>("button")!;
+      act(() => target.focus());
+      await waitFor(() => expectRowAboveVisible(list, rowOf(3)!, scrollTo));
+    });
+
+    it("Move Down into the row below the viewport", async () => {
+      const { list, rowOf, scrollTo } = await setup();
+      selectCommit(list, "Commit message #1");
+      act(() => fireEvent.click(moveDown()));
+      // Commit #1 moved to index 1; commit #3 still sits below it.
+      await waitFor(() => expectRowAboveVisible(list, rowOf(2)!, scrollTo));
+    });
+  });
+
   it("keeps a focused commit row mounted across scroll while its reword message stays in the details pane", async () => {
     const { commits, list } = await openRebase(200);
     const firstCommit = commits[0]!;
