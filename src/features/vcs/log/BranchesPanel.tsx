@@ -18,6 +18,7 @@ import {
   type BranchTreeNode,
 } from "../branches";
 import { branchMenu, inRepo, mergedBranchMenu, showTagContextMenu } from "../branchMenu";
+import { forkBranchesPane } from "./forkBranchesPane";
 import { canDeleteBranch, favoriteBranches, useFavoriteBranches, useFavoriteBranchNames } from "../branchOps";
 import { BranchSync } from "../BranchSync";
 import { summarizeBranchSync, type BranchSyncSummary } from "../branchSyncState";
@@ -70,10 +71,12 @@ function expand(n: BranchTreeNode, scopedRepo?: string): BranchTarget[] {
 
 function loadGrouped(): boolean {
   try {
-    return localStorage.getItem(GROUP_KEY) === "true";
+    const stored = localStorage.getItem(GROUP_KEY);
+    if (stored !== null) return stored === "true";
   } catch {
-    return false;
+    // Fall through to the default.
   }
+  return !forkBranchesPane.upstreamMerged;
 }
 
 /** The branch the repositories `roots` are all on, else null. */
