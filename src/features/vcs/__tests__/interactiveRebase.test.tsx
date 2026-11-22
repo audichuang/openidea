@@ -415,6 +415,76 @@ describe("InteractiveRebaseDialog", () => {
     expect(screen.queryByRole("button", { name: `Action for ${firstCommit.id.slice(0, 8)}` })).toBeNull();
   });
 
+  it("keeps the rows next to the focused row mounted so Tab and Shift+Tab reach the neighbors after a scroll", async () => {
+    const { commits, list } = await openRebase(5000);
+    const trigger = (i: number) => screen.queryByRole("button", { name: `Action for ${commits[i]!.id.slice(0, 8)}` });
+    const focusables = () => Array.from(list.querySelectorAll<HTMLElement>("button"));
+
+    trigger(0)!.focus();
+    scrollToBottom(list);
+    await waitFor(() => expect(within(list).getByText("Commit message #5000")).toBeInTheDocument());
+
+    expect(trigger(0)!.isConnected).toBe(true);
+    const next = trigger(1);
+    expect(next).not.toBeNull();
+    const row1First = next!.closest('[role="listitem"]')!.querySelector<HTMLElement>("button")!;
+    const order = focusables();
+    expect(order[order.indexOf(trigger(0)!) + 1]).toBe(row1First);
+
+    // Landing on the neighbor re-pins around it, so both of its own neighbors are mounted for the next Tab/Shift+Tab.
+    act(() => {
+      next!.focus();
+    });
+    expect(document.activeElement).toBe(next);
+    expect(trigger(0)).not.toBeNull();
+    expect(trigger(2)).not.toBeNull();
+  });
+
+  // A browser Tab blurs the old control first (activeElement is body, relatedTarget is the next control) and
+  // React commits that focusout before the focusin, so the target row must survive that render.
+  it.each([
+    { from: 0, to: 1, away: scrollToBottom, wait: "Commit message #5000" },
+    { from: 4999, to: 4998, away: scrollToTop, wait: "Commit message #1" },
+  ])("moves Tab focus from row $from into row $to after a scroll and scrolls it into view", async (c) => {
+    const { commits, list } = await openRebase(5000);
+    if (c.from > 0) {
+      scrollToBottom(list);
+      await waitFor(() => expect(within(list).getByText("Commit message #5000")).toBeInTheDocument());
+    }
+    const rowOf = (i: number) =>
+      screen
+        .queryByRole("button", { name: `Action for ${commits[i]!.id.slice(0, 8)}` })
+        ?.closest<HTMLElement>('[role="listitem"]') ?? null;
+    const buttons = (i: number) => Array.from(rowOf(i)!.querySelectorAll<HTMLElement>("button"));
+    // Tab leaves row 0 from its action control into row 1's commit; Shift+Tab goes the other way.
+    const source = c.to > c.from ? buttons(c.from).at(-1)! : buttons(c.from)[0]!;
+    act(() => source.focus());
+    c.away(list);
+    await waitFor(() => expect(within(list).getByText(c.wait)).toBeInTheDocument());
+    const target = c.to > c.from ? buttons(c.to)[0]! : buttons(c.to).at(-1)!;
+    // jsdom reports scrollHeight 0, which clamps every virtualizer scroll target to the top.
+    const total = parseFloat((list.firstElementChild as HTMLElement).style.height);
+    Object.defineProperty(list, "scrollHeight", { configurable: true, value: total });
+    const scrollTo = vi.spyOn(list, "scrollTo");
+
+    const active = vi.spyOn(document, "activeElement", "get").mockReturnValue(document.body);
+    act(() => {
+      fireEvent.focusOut(source, { relatedTarget: target });
+    });
+    active.mockRestore();
+    expect(target.isConnected).toBe(true);
+
+    act(() => target.focus());
+    expect(document.activeElement).toBe(target);
+    expect(rowOf(c.to)).toBe(target.closest('[role="listitem"]'));
+    const tops = scrollTo.mock.calls.map(([opts]) => (opts as ScrollToOptions).top ?? NaN);
+    // The list was scrolled to the far end; the row must be brought near the viewport, not left ~250k px away.
+    const rowStart = Number(
+      /translateY\(([\d.]+)px\)/.exec(target.closest<HTMLElement>("[data-index]")!.style.transform)![1],
+    );
+    expect(tops.some((top) => Math.abs(top - rowStart) < total / 100)).toBe(true);
+  });
+
   it("keeps a focused commit row mounted across scroll while its reword message stays in the details pane", async () => {
     const { commits, list } = await openRebase(200);
     const firstCommit = commits[0]!;

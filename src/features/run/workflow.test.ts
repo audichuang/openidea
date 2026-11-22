@@ -46,6 +46,22 @@ describe("console settings", () => {
     expect(rows.map((r) => r.kind)).toEqual(["fold", "line"]);
   });
 
+  it("recomputes fold matching after a same-length \\r overwrite in place", () => {
+    const m = new ConsoleModel();
+    const patterns = ["at org.junit."];
+    m.append({ kind: "stdout", text: "running step1" });
+    expect(foldRows(m.lines, patterns, new Set()).map((r) => r.kind)).toEqual(["line"]);
+
+    // Same-length carriage-return overwrite mutates the open ConsoleLine in place.
+    m.append({ kind: "stdout", text: "\rat org.junit." });
+    expect(m.lines).toHaveLength(1);
+    expect(m.lines[0]!.text).toBe("at org.junit.");
+    expect(foldRows(m.lines, patterns, new Set()).map((r) => r.kind)).toEqual(["fold"]);
+
+    m.append({ kind: "stdout", text: "\rrunning step2" });
+    expect(foldRows(m.lines, patterns, new Set()).map((r) => r.kind)).toEqual(["line"]);
+  });
+
   it("exposes the open (prompt) line", () => {
     const m = new ConsoleModel();
     m.append({ kind: "stdout", text: "done\nName: " });

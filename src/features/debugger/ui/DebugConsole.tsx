@@ -16,7 +16,8 @@ import { formatBinding, hasPrimaryModifier, hostBinding, registerKeyClaim } from
 import { tx } from "@/platform/i18n";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { useConsoleFont } from "@/platform/consoleFont";
-import { spanStyle } from "@/ui/ansi";
+import { fontsLoaded, monoStack } from "@/platform/fonts";
+import { spanStyle, type Span } from "@/ui/ansi";
 import { logLineColor } from "@/ui/logColors";
 import { compileConsoleRules, matchConsoleRules, styleSpans, type ConsoleRuleMatch } from "@/ui/consoleRules";
 import { useConsoleRules } from "@/workbench/contributions";
@@ -35,7 +36,15 @@ import {
 } from "../state";
 import { pushHistory, readHistory, setConsoleHistoryBrowser } from "./expressionHistory";
 import { useExpressionCompletion } from "./ExpressionCompletion";
-import { findOutputLinks, type OutputLink } from "@/features/run/links";
+import {
+  findOutputLinks,
+  horizontalColumnWindow,
+  measureMonoCharWidth,
+  sliceRangesInWindow,
+  visibleCharWindow,
+  type OutputLink,
+  type TextWindow,
+} from "@/features/run/links";
 import { debugConsoleUrl, openTarget, openUrl, runDirectory } from "@/features/run/navigate";
 import { segmentLine, type SegmentMark } from "@/features/run/segments";
 import styles from "./DebugToolWindow.module.css";
@@ -45,6 +54,20 @@ const EMPTY_FIND: FindResult = { matches: [], overflow: false, invalid: false };
 
 const MARK_COLOR = "var(--bg-search-match)";
 const CURRENT_MARK_COLOR = "var(--bg-search-match-current)";
+const isCurrentMark = (m: SegmentMark) => !!m.current;
+/** Matches `.consoleOutput { padding: 6px 14px }` in `DebugToolWindow.module.css`. */
+const DEBUG_PADDING_LEFT_PX = 14;
+
+function sameMarks(a: readonly SegmentMark[] | undefined, b: readonly SegmentMark[] | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]!;
+    const y = b[i]!;
+    if (x.start !== y.start || x.end !== y.end || !!x.current !== !!y.current) return false;
+  }
+  return true;
+}
 
 const DebugLine = memo(
   function DebugLine({
@@ -52,15 +75,28 @@ const DebugLine = memo(
     marks,
     rules,
     cwd,
+    colStart,
+    colEnd,
   }: {
     line: ConsoleLine;
     marks?: readonly SegmentMark[];
     rules?: ConsoleRuleMatch;
-    length: number;
+    text: string;
+    spans: readonly Span[];
     cwd: string;
+    colStart?: number;
+    colEnd?: number;
   }) {
     const spans = rules ? styleSpans(line.spans, rules) : line.spans;
-    const segments = segmentLine(spans, line.category === "system" ? [] : findOutputLinks(line.text), marks);
+    const rawLinks = line.category === "system" ? [] : findOutputLinks(line.text);
+    let links: readonly OutputLink[] = rawLinks;
+    let visibleMarks: readonly SegmentMark[] | undefined = marks;
+    if (colStart !== undefined && colEnd !== undefined && (colStart > 0 || line.text.length > colEnd)) {
+      const win = visibleCharWindow(line.text, colStart, colEnd);
+      links = sliceRangesInWindow(rawLinks, win.start, win.end);
+      if (marks) visibleMarks = sliceRangesInWindow(marks, win.start, win.end, isCurrentMark);
+    }
+    const segments = segmentLine(spans, links, visibleMarks);
     const activate = (e: MouseEvent, link: OutputLink) => {
       e.preventDefault();
       if (window.getSelection()?.toString()) return;
@@ -105,7 +141,15 @@ const DebugLine = memo(
       </>
     );
   },
-  (a, b) => a.line === b.line && a.length === b.length && a.cwd === b.cwd && a.marks === b.marks && a.rules === b.rules,
+  (a, b) =>
+    a.line === b.line &&
+    a.text === b.text &&
+    a.spans === b.spans &&
+    a.cwd === b.cwd &&
+    a.rules === b.rules &&
+    a.colStart === b.colStart &&
+    a.colEnd === b.colEnd &&
+    sameMarks(a.marks, b.marks),
 );
 
 export function DebugServiceConsole({ sessionId }: { sessionId: number }) {
@@ -143,6 +187,46 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   const [widest] = useState(() => new WidestColumns());
   const columns = useMemo(() => widest.measure(lines ?? []), [widest, lines]);
   const programmatic = useRef(false);
+  const charWidthRef = useRef<number | null | undefined>(undefined);
+  const [colWindow, setColWindow] = useState<TextWindow | null>(null);
+  const syncHorizontalWindow = (el: HTMLDivElement | null) => {
+    if (softWrap || !el) {
+      setColWindow(null);
+      return;
+    }
+    if (charWidthRef.current === undefined && el.clientWidth > 0) {
+      charWidthRef.current = measureMonoCharWidth(el);
+    }
+    const next = horizontalColumnWindow(el.scrollLeft, el.clientWidth, consoleFont.size, {
+      charWidthPx: charWidthRef.current,
+      paddingLeftPx: DEBUG_PADDING_LEFT_PX,
+    });
+    setColWindow((prev) => (prev?.start === next?.start && prev?.end === next?.end ? prev : next));
+  };
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (softWrap || !el) {
+      charWidthRef.current = undefined;
+      setColWindow(null);
+      return;
+    }
+    let active = true;
+    charWidthRef.current = el.clientWidth > 0 ? measureMonoCharWidth(el) : undefined;
+    syncHorizontalWindow(el);
+    const fontStack = consoleFont.family.replaceAll("var(--font-mono)", monoStack());
+    void fontsLoaded(fontStack, consoleFont.size).then(() => {
+      if (!active) return;
+      charWidthRef.current = el.clientWidth > 0 ? measureMonoCharWidth(el) : undefined;
+      syncHorizontalWindow(el);
+    });
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => syncHorizontalWindow(el)) : null;
+    ro?.observe(el);
+    return () => {
+      active = false;
+      ro?.disconnect();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- consoleFont metrics and softWrap govern window width
+  }, [softWrap, consoleFont.family, consoleFont.size, consoleFont.weight]);
   const [input, setInput] = useState("");
   const history = useRef<string[]>(readHistory("console"));
   const historyPos = useRef(-1);
@@ -452,8 +536,9 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
           className={clsx(styles.consoleOutput, !softWrap && styles.noWrap)}
           style={{ ...fontStyle, lineHeight: `${rowHeight}px` }}
           onScroll={(e) => {
-            if (programmatic.current) return;
             const el = e.currentTarget;
+            if (!softWrap) syncHorizontalWindow(el);
+            if (programmatic.current) return;
             const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
             if (atEnd !== stick.current) setFollow(atEnd);
           }}
@@ -489,8 +574,11 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
                     line={l}
                     marks={marksByLine.get(item.index)}
                     rules={ruled}
-                    length={l.text.length}
+                    text={l.text}
+                    spans={l.spans}
                     cwd={cwd}
+                    colStart={colWindow?.start}
+                    colEnd={colWindow?.end}
                   />
                 </span>
               );
