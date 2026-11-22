@@ -144,6 +144,25 @@ const currentRow = (list: Element) => {
 };
 
 describe("PR refresh and paging", () => {
+  it("falls back to counting via vcsLog when the remote server lacks graph_rev_counts", async () => {
+    const ahead = commitsOf(5);
+    setupPr(ahead, 3);
+    graphRevCounts.mockImplementation(() =>
+      Promise.resolve({
+        status: "error",
+        error: { kind: "internal", message: "command graph_rev_counts is not available remotely" },
+      }),
+    );
+    vcsLog.mockImplementation((_repo: string, q: { range?: string | null; skip: number; limit: number }) => {
+      if (q.range === "main..feature") return ok(ahead.slice(q.skip, q.limit > 0 ? q.skip + q.limit : undefined));
+      if (q.range === "feature..main") return ok(commitsOf(3));
+      return ok([]);
+    });
+    render(<PrView repo={REPO} current="feature" version={0} reload={0} />);
+    await flush();
+    expect(screen.getByRole("status").textContent).toBe("Commits: 5 ahead, 3 behind main");
+  });
+
   it("counts ahead/behind via graphRevCounts without materializing the behind commit list or using limit:0", async () => {
     const ahead = commitsOf(1_000);
     setupPr(ahead, 100_000);
