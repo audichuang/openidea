@@ -170,3 +170,30 @@ describe("Debug console find", () => {
     expect(screen.getByText("Copy").closest("[aria-disabled]")).not.toBeNull();
   });
 });
+
+describe("Debug console find on a long line (#452)", () => {
+  it("scrolls horizontally to a match at the end of a 7,000-character line", () => {
+    const CH = 8;
+    const PAD = 14;
+    const rectSpy = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      const width = this.textContent === "0".repeat(100) ? 100 * CH : 0;
+      return { width, height: 0, top: 0, left: 0, bottom: 0, right: width, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+    });
+    try {
+      const { log } = setup(`${"x".repeat(7_000)} uniquetail target.txt:1:1\n`);
+      Object.defineProperty(log, "clientWidth", { configurable: true, value: 800 });
+      Object.defineProperty(log, "scrollLeft", { configurable: true, writable: true, value: 0 });
+      fireEvent.scroll(log);
+      openFind(log);
+      type("uniquetail");
+      expect(screen.getByText("1/1")).toBeInTheDocument();
+      const left = PAD + 7_001 * CH;
+      const right = PAD + 7_011 * CH;
+      expect(left >= log.scrollLeft && right <= log.scrollLeft + log.clientWidth).toBe(true);
+    } finally {
+      rectSpy.mockRestore();
+    }
+  });
+});
