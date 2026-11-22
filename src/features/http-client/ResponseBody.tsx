@@ -230,7 +230,7 @@ export function ResponseBody({
     const resized = new ResizeObserver(() => {
       if (v.scrollDOM.clientWidth === width) return;
       width = v.scrollDOM.clientWidth;
-      scrollAgain();
+      if (marked.current.matches[marked.current.current]) scrollAgain();
     });
     resized.observe(v.scrollDOM);
     return () => {
