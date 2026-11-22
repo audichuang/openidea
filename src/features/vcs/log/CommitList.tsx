@@ -608,6 +608,15 @@ export function CommitList({ fileHistory = false }: { fileHistory?: boolean }) {
           {speedSearch}
         </div>
       )}
+      {/* The rows shown are the previous ones until the graph of the new ones is laid out. */}
+      {laying && !speedSearch && (
+        <div className={styles.speedSearch} data-laying-out="">
+          <Spinner size={12} />{" "}
+          <span className={styles.muted}>
+            <T>Loading…</T>
+          </span>
+        </div>
+      )}
       {error && (
         <div role="alert" className={styles.message}>
           {error}
