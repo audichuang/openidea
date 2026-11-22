@@ -4052,5 +4052,6 @@
   "channel {channel}": "channel {channel}",
   "Dart {dart}": "Dart {dart}",
   "Find in build output": "Find in build output",
-  "Find in Build Output": "Find in Build Output"
+  "Find in Build Output": "Find in Build Output",
+  "{count} earlier lines were discarded": "{count} earlier lines were discarded"
 }
