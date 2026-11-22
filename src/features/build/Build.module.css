@@ -91,6 +91,14 @@
   min-width: 0;
   min-height: 0;
 }
+/* Matches the Run console's notice above its output. */
+.notice {
+  flex: none;
+  padding: 4px 12px;
+  font-size: var(--fs-small);
+  color: var(--fg-subtle);
+  border-bottom: 1px solid var(--border);
+}
 .consoleWrap > .console {
   flex: 1;
   min-height: 0;

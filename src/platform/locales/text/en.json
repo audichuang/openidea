@@ -2956,5 +2956,6 @@
   "This CLI discovers the folder itself: off hides the skill from OpenIDEA's / menu and applies only where the CLI supports disabling.": "This CLI discovers the folder itself: off hides the skill from OpenIDEA's / menu and applies only where the CLI supports disabling.",
   "Cannot find the source of {0}": "Cannot find the source of {0}",
   "Find in build output": "Find in build output",
-  "Find in Build Output": "Find in Build Output"
+  "Find in Build Output": "Find in Build Output",
+  "{count} earlier lines were discarded": "{count} earlier lines were discarded"
 }

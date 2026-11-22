@@ -320,6 +320,7 @@ function BuildConsole({ font }: { font: ConsoleFont }) {
   const { rowHeight } = font;
   const root = useProject((s) => s.project?.root ?? "/");
   const lines = useBuildRun((s) => s.lines);
+  const dropped = useBuildRun((s) => s.dropped);
   const ref = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -509,6 +510,9 @@ function BuildConsole({ font }: { font: ConsoleFont }) {
 
   return (
     <div className={styles.consoleWrap}>
+      {dropped > 0 && (
+        <div className={styles.notice}>{tx`${dropped.toLocaleString()} earlier lines were discarded`}</div>
+      )}
       {findOpen && (
         <ConsoleFindBar
           label="Find in build output"
