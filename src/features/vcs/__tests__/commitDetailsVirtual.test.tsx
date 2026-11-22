@@ -336,6 +336,25 @@ describe("CommitDetails multi-selection virtualization", () => {
     expect(mountedMessageButtons(container).length).toBeLessThan(40);
   });
 
+  it("names the focusable message list of a multi-selection in the Git Log", () => {
+    const commits = makeCommits(2_000);
+    const keys = commits.map(commitKey);
+    useGitLog.setState({ commits, selected: keys[0]!, selection: keys });
+    const { container } = render(<CommitDetails commits={commits} />);
+
+    const box = messageBoxOf(container);
+    expect(box.tabIndex).toBe(0);
+    expect(screen.getByRole("region", { name: "Commit messages" })).toBe(box);
+    // No keyboard stop in the message pane is left without a role and a name.
+    const stops = [box, ...box.querySelectorAll<HTMLElement>('[tabindex]:not([tabindex="-1"])')];
+    const unnamed = stops.filter(
+      (el) =>
+        !/^(BUTTON|INPUT|SELECT|TEXTAREA|A)$/.test(el.tagName) &&
+        !(el.getAttribute("role") && el.getAttribute("aria-label")),
+    );
+    expect(unnamed).toEqual([]);
+  });
+
   it("handles multi-root multi-selection and transitions cleanly back to single selection", async () => {
     const repoA = makeCommits(3, "/repo-a");
     const repoB = makeCommits(2, "/repo-b");
