@@ -194,7 +194,11 @@ async function expectWholeCurrentMatchOnScreen(page: Page) {
           const r = p.getBoundingClientRect();
           return r.top >= box.top && r.bottom <= box.bottom;
         });
-        return pieces.length && onScreen ? pieces.map((p) => p.textContent).join("") : null;
+        if (pieces.length && onScreen) return pieces.map((p) => p.textContent).join("");
+        // Where things are, for the failure message.
+        const at = (r: DOMRect) => `${Math.round(r.top)}..${Math.round(r.bottom)}`;
+        const scroller = el.closest(".cm-scroller") as HTMLElement;
+        return `pieces ${pieces.map((p) => `${p.textContent}@${at(p.getBoundingClientRect())}`).join(" ")} in ${at(box)}, scrollTop ${Math.round(scroller.scrollTop)}/${scroller.scrollHeight}, lines ${el.querySelectorAll(".cm-line").length}, fonts ${document.fonts.status}`;
       }),
     )
     .toBe("last-item");
