@@ -633,6 +633,9 @@ function PrCommitList({
     return pages.size ? [...pages] : EMPTY_PAGE_NUMBERS;
   }, [total, firstPage.length, firstRow, lastRow, active, currentPages]);
 
+  // Later pages count from the head the first page saw: a branch name would move with new commits
+  // and shift every offset until the next refresh (#452).
+  const anchor = firstPage[0]?.id ?? head;
   const currentToken = useRef({ key: resetKey, snapshot, alive: true });
   const inFlight = useRef<{ key: string; snapshot: number; pages: Set<number> }>({
     key: resetKey,
@@ -656,7 +659,7 @@ function PrCommitList({
     for (const page of neededPages) {
       if (flight.pages.has(page)) continue;
       flight.pages.add(page);
-      void rangePage(repo, base, head, page * PR_COMMIT_PAGE, PR_COMMIT_PAGE).then(
+      void rangePage(repo, base, anchor, page * PR_COMMIT_PAGE, PR_COMMIT_PAGE).then(
         (list) => {
           flight.pages.delete(page);
           if (!token.alive) return;
@@ -680,7 +683,7 @@ function PrCommitList({
         },
       );
     }
-  }, [repo, base, head, resetKey, snapshot, neededPages]);
+  }, [repo, base, anchor, resetKey, snapshot, neededPages]);
 
   const title = tx("Show in Graph");
   // Rows used to be buttons, which Space activates; keep that by routing Space through the Enter path.
