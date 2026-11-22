@@ -322,6 +322,20 @@ describe("CommitDetails multi-selection virtualization", () => {
     expect(api.commitsChanges).not.toHaveBeenCalled();
   });
 
+  it("virtualizes a multi-selection in File History's labelled message pane", () => {
+    const commits = makeCommits(2_000);
+    const keys = commits.map(commitKey);
+    useGitLog.setState({ commits, selected: keys[0]!, selection: keys });
+    const { container } = render(<CommitDetails commits={commits} fileHistory />);
+
+    const region = screen.getByRole("region", { name: "Commit message" });
+    expect(region).toBe(messageBoxOf(container));
+    expect(region.className).toMatch(/historyMessageBox/);
+    expect(region.textContent).toContain("commit 0");
+    expect(region.textContent).not.toContain("commit 1999");
+    expect(mountedMessageButtons(container).length).toBeLessThan(40);
+  });
+
   it("handles multi-root multi-selection and transitions cleanly back to single selection", async () => {
     const repoA = makeCommits(3, "/repo-a");
     const repoB = makeCommits(2, "/repo-b");
