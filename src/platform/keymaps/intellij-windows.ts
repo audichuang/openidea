@@ -67,6 +67,7 @@ export const intellijWindows: Record<string, string[]> = {
   // Find
   "find.inFile": ["Ctrl+F"],
   "agents.findInConversation": ["Ctrl+F"],
+  "build.findInOutput": ["Ctrl+F"],
   "find.replaceInFile": ["Ctrl+R"],
   "find.next": ["F3", "Ctrl+L"],
   "find.previous": ["Shift+F3", "Ctrl+Shift+L"],

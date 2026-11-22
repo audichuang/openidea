@@ -4050,5 +4050,7 @@
   "flutter --version did not answer in {root}.": "flutter --version did not answer in {root}.",
   "Flutter {framework}": "Flutter {framework}",
   "channel {channel}": "channel {channel}",
-  "Dart {dart}": "Dart {dart}"
+  "Dart {dart}": "Dart {dart}",
+  "Find in build output": "Find in build output",
+  "Find in Build Output": "Find in Build Output"
 }
