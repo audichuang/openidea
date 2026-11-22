@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { usePlatform } from "@/platform/platformInfo";
+import { getAction, isActionEnabled, registerActions } from "@/platform/actions";
+import { setContext } from "@/platform/context";
+import { bindingsFor, installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
+import { activate } from "./index";
 import { BuildView } from "./BuildView";
 import { useBuildRun } from "./store";
 import type { ConsoleLine } from "./model";
@@ -76,5 +80,70 @@ describe("Build output Select All + Copy (#452)", () => {
     const selectStart = new Event("selectstart", { bubbles: true, cancelable: true });
     document.body.dispatchEvent(selectStart);
     expect(selectStart.defaultPrevented).toBe(false);
+  });
+});
+
+describe("Build output Find (#452)", () => {
+  let disposers: Array<() => void> = [];
+  const inFile = vi.fn();
+  beforeEach(() => {
+    useKeymap.setState({ preset: "intellij-macos", overrides: {} });
+    disposers = [
+      activate(),
+      registerActions([
+        {
+          id: "find.inFile",
+          title: "Find",
+          category: "Find",
+          when: "textEditorActive && (editorFocus || !toolWindowFocus)",
+          run: inFile,
+        },
+      ]),
+      installKeyboardDispatcher(),
+    ];
+    // An editor is open, but focus is in the Build tool window.
+    setContext("textEditorActive", true);
+    setContext("toolWindowFocus", "build");
+    useBuildRun.setState({ status: "success", lines: LINES, messages: [], selected: null });
+  });
+  afterEach(() => {
+    disposers.reverse().forEach((d) => d());
+    setContext("textEditorActive", false);
+    setContext("toolWindowFocus", null);
+    inFile.mockClear();
+  });
+
+  const input = () => screen.getByRole("textbox", { name: "Find in build output" });
+
+  it("is an action bound to ⌘F, enabled while the output has focus", () => {
+    expect(bindingsFor("build.findInOutput")).toEqual(["Meta+F"]);
+    const log = setup();
+    expect(isActionEnabled(getAction("build.findInOutput")!)).toBe(true);
+    log.blur();
+    expect(isActionEnabled(getAction("build.findInOutput")!)).toBe(false);
+  });
+
+  it("opens on ⌘F in the output instead of the editor's Find, and searches every line", () => {
+    const log = setup();
+    fireEvent.keyDown(log, { key: "f", code: "KeyF", metaKey: true });
+    expect(inFile).not.toHaveBeenCalled();
+    expect(input()).toHaveFocus();
+    // An early, unmounted line is found too.
+    fireEvent.change(input(), { target: { value: "t3row00007" } });
+    expect(screen.getByText("1/1")).toBeInTheDocument();
+    fireEvent.change(input(), { target: { value: "t3row0249" } });
+    expect(screen.getByText("1/10")).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("search"), { key: "Enter", shiftKey: true });
+    expect(screen.getByText("10/10")).toBeInTheDocument();
+    expect(log.querySelector("[data-find-current]")?.textContent).toBe("t3row0249");
+    expect(log.querySelectorAll("[data-find-match]")).toHaveLength(10);
+  });
+
+  it("closes on Escape and returns focus to the output", () => {
+    const log = setup();
+    fireEvent.keyDown(log, { key: "f", code: "KeyF", metaKey: true });
+    fireEvent.keyDown(input(), { key: "Escape" });
+    expect(screen.queryByRole("search")).not.toBeInTheDocument();
+    expect(log).toHaveFocus();
   });
 });
