@@ -520,21 +520,17 @@ export function ConsoleView({
           if (matches.length >= MAX_MATCHES) return { matches, overflow: true, invalid: false };
           matches.push(toRow(line.row, s.start, s.end));
         }
-        continue;
+        spans = res.matches.map((m) => ({ start: m.start, end: m.end }));
+        overflow = res.overflow;
+        if (!overflow) cache.byId.set(line.id, { text, spans });
+        else cache.byId.delete(line.id);
       }
-      const remaining = MAX_MATCHES - matches.length;
-      const res = findInLines([line], query, findOptions, remaining);
-      if (res.invalid) {
-        cache.invalid = true;
-        return { matches: [], overflow: false, invalid: true };
-      }
-      if (!res.overflow) {
-        cache.byId.set(line.id, {
-          text: line.text,
-          spans: res.matches.map((m) => ({ start: m.start, end: m.end })),
-        });
-      } else {
-        cache.byId.delete(line.id);
+      let row = i;
+      let rowStart = 0;
+      for (const s of spans) {
+        if (matches.length >= MAX_MATCHES) return { matches, overflow: true, invalid: false };
+        while (row < next - 1 && s.start >= rowStart + lines[row]!.text.length) rowStart += lines[row++]!.text.length;
+        matches.push({ line: row, lineId: lines[row]!.id, start: s.start - rowStart, end: s.end - rowStart });
       }
       for (const m of res.matches) matches.push(toRow(line.row, m.start, m.end));
       if (res.overflow) return { matches, overflow: true, invalid: false };
