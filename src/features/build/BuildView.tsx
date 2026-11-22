@@ -5,7 +5,10 @@
  * its source (as IDEA: selection shows, navigation jumps).
  */
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
-import { hasPrimaryModifier } from "@/platform/keymap";
+import { hasPrimaryModifier, registerKeyClaim } from "@/platform/keymap";
+import { setContext } from "@/platform/context";
+import { ConsoleFindBar } from "@/ui/ConsoleFindBar";
+import { DEFAULT_FIND_OPTIONS, findInLines, type FindOptions, type FindResult } from "@/ui/consoleFind";
 import {
   memo,
   useCallback,
@@ -52,12 +55,14 @@ import {
   findOutputLinks,
   horizontalColumnWindow,
   measureMonoCharWidth,
+  revealScrollLeft,
   sliceRangesInWindow,
   visibleCharWindow,
   type OutputLink,
   type TextWindow,
 } from "@/features/run/links";
 import { openTarget, openUrl } from "@/features/run/navigate";
+import { segmentLine, type SegmentMark } from "@/features/run/segments";
 import { navigateToMessage, rerunBuild, selectBuildNode, useBuildRun } from "./store";
 import styles from "./Build.module.css";
 import { WidestColumns } from "@/platform/consoleColumns";
@@ -233,53 +238,83 @@ const BUILD_PADDING_LEFT_PX = 12;
  * the line (Maven reactor modules run in their own directory), then the
  * project root and a name search as in the run console.
  */
+const isCurrentMark = (m: SegmentMark) => !!m.current;
+
 const ConsoleLineText = memo(function ConsoleLineText({
   line,
   root,
+  marks,
   colStart,
   colEnd,
 }: {
   line: ConsoleLine;
   root: string;
+  /** Find matches on this line. */
+  marks?: readonly SegmentMark[];
   colStart?: number;
   colEnd?: number;
 }) {
   const rawLinks = useMemo(() => (line.kind === "system" ? [] : findOutputLinks(line.text)), [line.text, line.kind]);
-  const links = useMemo(() => {
-    if (colStart === undefined || colEnd === undefined || (colStart === 0 && line.text.length <= colEnd)) {
-      return rawLinks;
-    }
-    const win = visibleCharWindow(line.text, colStart, colEnd);
-    return sliceRangesInWindow(rawLinks, win.start, win.end);
-  }, [rawLinks, line.text, colStart, colEnd]);
+  const windowed = colStart !== undefined && colEnd !== undefined && (colStart > 0 || line.text.length > colEnd);
+  const win = windowed ? visibleCharWindow(line.text, colStart, colEnd) : null;
+  const links = useMemo(
+    () => (win ? sliceRangesInWindow(rawLinks, win.start, win.end) : rawLinks),
+    [rawLinks, win?.start, win?.end], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  const visibleMarks = marks && win ? sliceRangesInWindow(marks, win.start, win.end, isCurrentMark) : marks;
   const activate = (e: MouseEvent, link: OutputLink) => {
     e.preventDefault();
     if (window.getSelection()?.toString()) return;
     if (link.kind === "url") void openUrl(link.url);
     else void openTarget(link.target, line.cwd ?? root);
   };
-  if (!links.length) return <>{line.text}</>;
+  if (!links.length && !visibleMarks?.length) return <>{line.text}</>;
   const out: ReactNode[] = [];
-  let pos = 0;
-  for (const link of links) {
-    if (link.start > pos) out.push(line.text.slice(pos, link.start));
-    out.push(
-      <a
-        key={link.start}
-        href={link.kind === "url" ? link.url : undefined}
-        className={styles.link}
-        onClick={(e) => activate(e, link)}
-        role="link"
-        tabIndex={-1}
-      >
-        {line.text.slice(link.start, link.end)}
-      </a>,
-    );
-    pos = link.end;
-  }
-  out.push(line.text.slice(pos));
+  segmentLine([{ text: line.text }], links, visibleMarks).forEach((seg, i) => {
+    const marked = seg.mark
+      ? {
+          className: clsx(styles.match, seg.current && styles.matchCurrent),
+          "data-find-match": "",
+          "data-find-current": seg.current ? "" : undefined,
+        }
+      : null;
+    if (seg.link) {
+      const link = seg.link;
+      out.push(
+        <a
+          key={i}
+          href={link.kind === "url" ? link.url : undefined}
+          {...marked}
+          className={clsx(styles.link, marked?.className)}
+          onClick={(e) => activate(e, link)}
+          role="link"
+          tabIndex={-1}
+        >
+          {seg.text}
+        </a>,
+      );
+    } else if (marked) {
+      out.push(
+        <mark key={i} {...marked}>
+          {seg.text}
+        </mark>,
+      );
+    } else {
+      out.push(seg.text);
+    }
+  });
   return <>{out}</>;
 });
+
+/** The Build console holding focus, for `build.findInOutput`. */
+let focusedConsole: { openFind(): void } | null = null;
+
+/** Opens the find bar of the focused Build console (`build.findInOutput`). */
+export function openBuildFind() {
+  focusedConsole?.openFind();
+}
+
+const EMPTY_FIND: FindResult = { matches: [], overflow: false, invalid: false };
 
 function BuildConsole({ font }: { font: ConsoleFont }) {
   const { rowHeight } = font;
@@ -372,50 +407,190 @@ function BuildConsole({ font }: { font: ConsoleFont }) {
     return () => document.removeEventListener("selectstart", onSelectStart, true);
   }, []);
 
+  // Find (⌘F, `build.findInOutput`): searches every line, not just the mounted rows.
+  const [findOpen, setFindOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [findOptions, setFindOptions] = useState<FindOptions>(DEFAULT_FIND_OPTIONS);
+  const [active, setActive] = useState(0);
+  const findInput = useRef<HTMLInputElement>(null);
+  /** Line the next search starts from (the top of the viewport when the query changed). */
+  const findAnchor = useRef(0);
+  const scrolledMatch = useRef<string | null>(null);
+  const found = useMemo(
+    () =>
+      findOpen && query
+        ? findInLines(
+            lines.map((l, i) => ({ id: i, text: l.text })),
+            query,
+            findOptions,
+          )
+        : EMPTY_FIND,
+    [findOpen, query, findOptions, lines],
+  );
+  const activeIndex = found.matches.length ? Math.min(Math.max(active, 0), found.matches.length - 1) : -1;
+  const current = activeIndex >= 0 ? found.matches[activeIndex] : undefined;
+  const marksByLine = useMemo(() => {
+    const byLine = new Map<number, SegmentMark[]>();
+    found.matches.forEach((m, i) => {
+      const mark: SegmentMark = { start: m.start, end: m.end, current: i === activeIndex };
+      const marks = byLine.get(m.line);
+      if (marks) marks.push(mark);
+      else byLine.set(m.line, [mark]);
+    });
+    return byLine;
+  }, [found, activeIndex]);
+  const topLine = () => {
+    const offset = ref.current?.scrollTop ?? 0;
+    const items = virtualizer.getVirtualItems();
+    // The virtualizer also renders overscan rows above the viewport.
+    return (items.find((item) => item.start + item.size > offset) ?? items[0])?.index ?? 0;
+  };
+  const openFind = () => {
+    findAnchor.current = topLine();
+    scrolledMatch.current = null;
+    setFindOpen(true);
+    findInput.current?.focus();
+    findInput.current?.select();
+  };
+  const closeFind = () => {
+    scrolledMatch.current = null;
+    setFindOpen(false);
+    ref.current?.focus();
+  };
+  const goToMatch = (direction: 1 | -1) => {
+    const total = found.matches.length;
+    if (total) setActive((activeIndex + direction + total) % total);
+  };
+  const handle = useRef({ openFind });
+  handle.current.openFind = openFind;
+  useEffect(() => {
+    const own = handle.current;
+    return () => {
+      if (focusedConsole !== own) return;
+      focusedConsole = null;
+      setContext("buildConsoleFocus", false);
+    };
+  }, []);
+  useEffect(() => {
+    if (!findOpen) return;
+    findInput.current?.focus();
+    findInput.current?.select();
+    // The bar owns Escape / Enter / F3 / ⌘G while it is focused; keep the IDE keymap out.
+    return registerKeyClaim((e) => !!(e.target as Element | null)?.closest?.("[data-console-find]"));
+  }, [findOpen]);
+  // A new query (or option) starts from the viewport, not from the top of the output.
+  useEffect(() => {
+    if (!findOpen) return;
+    const next = found.matches.findIndex((m) => m.line >= findAnchor.current);
+    setActive(next >= 0 ? next : 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- new output keeps the current match
+  }, [findOpen, query, findOptions]);
+  // Bring the current match into view, horizontally too on a long line.
+  useEffect(() => {
+    if (!findOpen || !current) return;
+    const key = `${current.line}:${current.start}`;
+    if (scrolledMatch.current === key) return;
+    scrolledMatch.current = key;
+    stick.current = false;
+    virtualizer.scrollToIndex(current.line, { align: "center" });
+    const el = ref.current;
+    const text = lines[current.line]?.text;
+    if (!el || text === undefined) return;
+    if (charWidthRef.current === undefined && el.clientWidth > 0) charWidthRef.current = measureMonoCharWidth(el);
+    const left = revealScrollLeft(text, current.start, current.end, el, font.size, {
+      charWidthPx: charWidthRef.current,
+      paddingLeftPx: BUILD_PADDING_LEFT_PX,
+    });
+    if (left === null) return;
+    el.scrollLeft = left;
+    syncHorizontalWindow(el);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the viewport and font are read when the match changes
+  }, [findOpen, current, virtualizer]);
+
   return (
-    <div
-      ref={ref}
-      className={styles.console}
-      tabIndex={0}
-      role="log"
-      onKeyDown={(e) => {
-        if (hasPrimaryModifier(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "a") {
-          e.preventDefault();
-          selectAll();
-          return;
-        }
-        copySelectionOnKeyDown(e, (selection) => (allSelected() ? allText() : selection.toString()));
-      }}
-      onCopy={(e) => {
-        // Native copy (Edit menu, macOS) would take only the mounted rows.
-        if (!allSelected()) return;
-        e.preventDefault();
-        e.clipboardData.setData("text/plain", allText());
-      }}
-      aria-label={tx("Build output")}
-      onScroll={(e) => {
-        const el = e.currentTarget;
-        syncHorizontalWindow(el);
-        stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < rowHeight * 2;
-      }}
-    >
+    <div className={styles.consoleWrap}>
+      {findOpen && (
+        <ConsoleFindBar
+          label="Find in build output"
+          query={query}
+          onChange={(value) => {
+            findAnchor.current = topLine();
+            setQuery(value);
+          }}
+          options={findOptions}
+          onOptionsChange={(next) => {
+            findAnchor.current = topLine();
+            setFindOptions(next);
+          }}
+          count={found.matches.length}
+          active={activeIndex}
+          overflow={found.overflow}
+          invalid={found.invalid}
+          inputRef={findInput}
+          onNext={() => goToMatch(1)}
+          onPrevious={() => goToMatch(-1)}
+          onClose={closeFind}
+        />
+      )}
       <div
-        ref={innerRef}
-        className={styles.consoleInner}
-        style={{ height: virtualizer.getTotalSize(), minWidth: `calc(${columns}ch + 24px)` }}
+        ref={ref}
+        className={styles.console}
+        tabIndex={0}
+        role="log"
+        onFocus={() => {
+          focusedConsole = handle.current;
+          setContext("buildConsoleFocus", true);
+        }}
+        onBlur={() => {
+          if (focusedConsole !== handle.current) return;
+          focusedConsole = null;
+          setContext("buildConsoleFocus", false);
+        }}
+        onKeyDown={(e) => {
+          if (hasPrimaryModifier(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "a") {
+            e.preventDefault();
+            selectAll();
+            return;
+          }
+          copySelectionOnKeyDown(e, (selection) => (allSelected() ? allText() : selection.toString()));
+        }}
+        onCopy={(e) => {
+          // Native copy (Edit menu, macOS) would take only the mounted rows.
+          if (!allSelected()) return;
+          e.preventDefault();
+          e.clipboardData.setData("text/plain", allText());
+        }}
+        aria-label={tx("Build output")}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          syncHorizontalWindow(el);
+          stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < rowHeight * 2;
+        }}
       >
-        {virtualizer.getVirtualItems().map((v) => {
-          const line = lines[v.index]!;
-          return (
-            <div
-              key={v.key}
-              className={clsx(styles.line, styles[line.kind])}
-              style={{ transform: `translateY(${v.start}px)` }}
-            >
-              <ConsoleLineText line={line} root={root} colStart={colWindow?.start} colEnd={colWindow?.end} />
-            </div>
-          );
-        })}
+        <div
+          ref={innerRef}
+          className={styles.consoleInner}
+          style={{ height: virtualizer.getTotalSize(), minWidth: `calc(${columns}ch + 24px)` }}
+        >
+          {virtualizer.getVirtualItems().map((v) => {
+            const line = lines[v.index]!;
+            return (
+              <div
+                key={v.key}
+                className={clsx(styles.line, styles[line.kind])}
+                style={{ transform: `translateY(${v.start}px)` }}
+              >
+                <ConsoleLineText
+                  line={line}
+                  root={root}
+                  marks={marksByLine.get(v.index)}
+                  colStart={colWindow?.start}
+                  colEnd={colWindow?.end}
+                />
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
