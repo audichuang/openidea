@@ -764,7 +764,7 @@ describe("build feature", () => {
     Object.defineProperty(log, "scrollLeft", { configurable: true, writable: true, value: 0 });
     fireEvent.scroll(log);
     expect(container.querySelectorAll('[role="link"]')[0]?.textContent).toBe("src/start.java:1:1");
-    // At --fs-code (13px) * 0.60em (7.8px/ch), scrollLeft 20,280 in an 800px viewport displays cols 2,600..2,703.
+    // At the default console font size (13px) * 0.60em (7.8px/ch), scrollLeft 20,280 in an 800px viewport displays cols 2,600..2,703.
     Object.defineProperty(log, "scrollLeft", { configurable: true, writable: true, value: 20_280 });
     fireEvent.scroll(log);
     expect(Array.from(container.querySelectorAll('[role="link"]')).map((a) => a.textContent)).toContain(

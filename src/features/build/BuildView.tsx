@@ -320,7 +320,8 @@ function BuildConsole({ font }: { font: ConsoleFont }) {
     let active = true;
     charWidthRef.current = el.clientWidth > 0 ? measureMonoCharWidth(el) : undefined;
     syncHorizontalWindow(el);
-    void fontsLoaded(monoStack(), BUILD_FONT_PX).then(() => {
+    const fontStack = font.family.replaceAll("var(--font-mono)", monoStack());
+    void fontsLoaded(fontStack, font.size).then(() => {
       if (!active) return;
       charWidthRef.current = el.clientWidth > 0 ? measureMonoCharWidth(el) : undefined;
       syncHorizontalWindow(el);
