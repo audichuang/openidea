@@ -247,13 +247,16 @@ export function CommitList({ fileHistory = false }: { fileHistory?: boolean }) {
         : null,
     [collapseLinear, fragments.collapsed, headKeys, selection, bookmarks],
   );
-  // Lays out only the rows a page appends; rows are resolved as they are drawn.
-  const [presentGraph] = useState(createLogGraphPresenter);
+  // Lays out only the rows a page appends; rows are resolved as they are drawn. A layout too long
+  // for one task goes on in later ones, showing the previous rows until `layoutDone` bumps.
+  const [layouts, layoutDone] = useState(0);
+  const [presentGraph] = useState(() => createLogGraphPresenter(() => layoutDone((n) => n + 1)));
   const presented = useMemo(
     () => presentGraph(all, { collapseLinear, linearizeMerges, longEdges }, fragments, keep ?? new Set()),
-    [presentGraph, all, collapseLinear, linearizeMerges, longEdges, fragments, keep],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `layouts` brings a finished layout in
+    [presentGraph, all, collapseLinear, linearizeMerges, longEdges, fragments, keep, layouts],
   );
-  const { commits, row: graphRow, linear, collapsed, graph: displayedGraph } = presented;
+  const { commits, row: graphRow, linear, collapsed, graph: displayedGraph, pending: laying } = presented;
   // The first row of each key in `commits`, and the list it grew from.
   const rowKeys = useMemo(
     () =>
@@ -356,8 +359,10 @@ export function CommitList({ fileHistory = false }: { fileHistory?: boolean }) {
   // The next page is requested while a page of rows is still ahead, so scrolling
   // quickly doesn't reach the end before `git log` answers.
   useEffect(() => {
-    if (!finished && !loading && last && last.index >= commits.length - PAGE) void loadMore(scope ?? undefined);
-  }, [last, commits.length, finished, loading, active, scope]);
+    // Not while the rows of the last page are still being laid out: they are not shown yet.
+    if (!finished && !loading && !laying && last && last.index >= commits.length - PAGE)
+      void loadMore(scope ?? undefined);
+  }, [last, commits.length, finished, loading, laying, active, scope]);
 
   useLayoutEffect(() => {
     if (revealTick === lastRevealed.current || selectedIndex < 0) return;
