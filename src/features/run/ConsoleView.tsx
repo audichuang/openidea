@@ -26,6 +26,7 @@ import {
   findOutputLinks,
   horizontalColumnWindow,
   measureMonoCharWidth,
+  revealScrollLeft,
   sliceRangesInWindow,
   visibleCharWindow,
   type OutputLink,
@@ -541,6 +542,21 @@ export function ConsoleView({
     });
   };
 
+  /** Scrolls a match on a long unwrapped line into the horizontal viewport (the virtualizer scrolls rows only). */
+  const revealColumns = (match: ConsoleMatch) => {
+    const el = scrollRef.current;
+    const text = lines[match.line]?.text;
+    if (softWrap || !el || text === undefined) return;
+    if (charWidthRef.current === undefined && el.clientWidth > 0) charWidthRef.current = measureMonoCharWidth(el);
+    const left = revealScrollLeft(text, match.start, match.end, el, consoleFont.size, {
+      charWidthPx: charWidthRef.current,
+      paddingLeftPx: LINE_PADDING_LEFT_PX,
+    });
+    if (left === null) return;
+    el.scrollLeft = left;
+    syncHorizontalWindow(el);
+  };
+
   const findWasOpen = useRef(false);
   useEffect(() => {
     if (findOpen) {
@@ -589,7 +605,9 @@ export function ConsoleView({
       return;
     }
     virtualizer.scrollToIndex(rowIndex, { align: "center" });
+    revealColumns(activeMatch);
     scrolledMatch.current = key;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- revealColumns reads the current viewport
   }, [findOpen, activeMatch, rowOfLine, rows, virtualizer]);
 
   /** Rows are virtualized, so "everything" is a selection of the container, not of the mounted rows. */

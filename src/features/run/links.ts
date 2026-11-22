@@ -425,6 +425,56 @@ export function visibleCharWindow(text: string, startCol: number, endCol: number
   return { start, end: text.length };
 }
 
+/** Visual column at which UTF-16 index `index` of `text` starts (the rules of `visibleCharWindow`). */
+export function columnAt(text: string, index: number, tabSize = 4): number {
+  let col = 0;
+  const stop = Math.min(index, text.length);
+  for (let i = 0; i < stop;) {
+    const code = text.charCodeAt(i);
+    if (code >= 32 && code < 127) {
+      col++;
+      i++;
+    } else if (code === 9) {
+      col += tabSize - (col % tabSize);
+      i++;
+    } else {
+      const cp = text.codePointAt(i)!;
+      if (cp >= 32) col += isWideCodePoint(cp) ? 2 : 1;
+      i += cp > 0xffff ? 2 : 1;
+    }
+  }
+  return col;
+}
+
+/**
+ * The `scrollLeft` that brings `[start, end)` of `text` into a non-wrapped console viewport
+ * (centred, or from its start when wider than the viewport), or `null` when it is already visible.
+ */
+export function revealScrollLeft(
+  text: string,
+  start: number,
+  end: number,
+  viewport: { scrollLeft: number; clientWidth: number },
+  fontSizePx: number,
+  options?: HorizontalWindowOptions,
+): number | null {
+  const { scrollLeft, clientWidth } = viewport;
+  if (clientWidth <= 0) return null;
+  const measured = options?.charWidthPx;
+  const charWidth =
+    typeof measured === "number" && Number.isFinite(measured) && measured > 0
+      ? measured
+      : fontSizePx * ((MIN_MONO_CHAR_EM + MAX_MONO_CHAR_EM) / 2);
+  const pad = Math.max(0, options?.paddingLeftPx ?? 0);
+  const startCol = columnAt(text, start);
+  const left = pad + startCol * charWidth;
+  const right = pad + (startCol + columnAt(text.slice(start, end), end - start)) * charWidth;
+  if (left >= scrollLeft && right <= scrollLeft + clientWidth) return null;
+  const width = right - left;
+  const target = width >= clientWidth ? left - pad : left - (clientWidth - width) / 2;
+  return Math.max(0, Math.round(target));
+}
+
 /**
  * Slices sorted, non-overlapping `[start, end)` ranges to those intersecting
  * `[winStart, winEnd)`, always keeping any entry matched by `alwaysKeep` (such as
