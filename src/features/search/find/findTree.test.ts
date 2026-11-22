@@ -170,7 +170,7 @@ describe("FindTreeIndex", () => {
       });
     collect(roots);
     const excluded = new Set(keys.filter((k) => k.startsWith("m:") && k.length % 4 === 0));
-    const leads: Array<string | null> = [null, "m:/missing:0", ...keys.filter((_, i) => i % 7 === 0)];
+    const leads: Array<string | null> = [null, "m:/missing:0:0", ...keys.filter((_, i) => i % 7 === 0)];
     for (const lead of leads)
       for (const dir of [1, -1] as const)
         for (const skipSubtree of dir === 1 ? [false, true] : [false]) {
@@ -211,8 +211,8 @@ describe("FindTreeIndex", () => {
     const index = new FindTreeIndex();
     const model = index.sync([big], false, NONE, noop);
     expect(model.rowCount).toBe(10_001);
-    expect(model.indexOfKey("m:/p/big.ts:9999")).toBe(10_000);
-    expect(model.rowAt(10_000)).toMatchObject({ key: "m:/p/big.ts:9999", posInSet: 10_000, setSize: 10_000 });
+    expect(model.indexOfKey("m:/p/big.ts:9999:0")).toBe(10_000);
+    expect(model.rowAt(10_000)).toMatchObject({ key: "m:/p/big.ts:9999:0", posInSet: 10_000, setSize: 10_000 });
     expect(index.allGroups()).toHaveLength(10_000);
   });
 
@@ -234,6 +234,22 @@ describe("FindTreeIndex", () => {
     expect(model.rowAt(model.indexOfKey(`f:${late.path}`))).toMatchObject({ expanded: true });
   });
 
+  it("tells apart the windows of one very long line by their column", () => {
+    const long: FileMatches = {
+      path: "/p/long.ts",
+      relPath: "long.ts",
+      matches: [
+        { line: 3, text: "a", ranges: [[0, 1]], textOffset: 0 },
+        { line: 3, text: "b", ranges: [[0, 1]], textOffset: 900 },
+      ],
+    };
+    const index = new FindTreeIndex();
+    const model = index.sync([long], false, NONE, noop);
+    expect(model.indexOfKey("m:/p/long.ts:3:0")).toBe(1);
+    expect(model.indexOfKey("m:/p/long.ts:3:900")).toBe(2);
+    expect(index.getNode("m:/p/long.ts:3:900")).toMatchObject({ col: 900 });
+  });
+
   it("finds a match by its key for any path, and only by the key it was listed with", () => {
     const at = (path: string): FileMatches => ({
       path,
@@ -245,11 +261,20 @@ describe("FindTreeIndex", () => {
     const files = [at(""), at("C:\\repo\\a.ts"), at("/p/a.ts")];
     const model = index.sync(files, false, NONE, noop);
     for (const f of files) {
-      const key = `m:${f.path}:7`;
+      const key = `m:${f.path}:7:0`;
       expect(index.getNode(key)).toMatchObject({ kind: "match", key });
       expect(model.rowAt(model.indexOfKey(key))?.key).toBe(key);
     }
-    for (const key of ["m:/p/a.ts:", "m:/p/a.ts:07", "m:/p/a.ts:7.0", "m:/p/a.ts:8", "m:/p/b.ts:7"]) {
+    for (const key of [
+      "m:/p/a.ts:",
+      "m:/p/a.ts:7:",
+      "m:/p/a.ts:07:0",
+      "m:/p/a.ts:7:00",
+      "m:/p/a.ts:7.0:0",
+      "m:/p/a.ts:8:0",
+      "m:/p/a.ts:7:1",
+      "m:/p/b.ts:7:0",
+    ]) {
       expect(index.getNode(key)).toBeUndefined();
       expect(model.indexOfKey(key)).toBe(-1);
     }
