@@ -196,7 +196,14 @@ function usePrData(repo: string, base: string | null, head: string, version: num
       if (!mergeBase) return { status: "unrelated" };
       const [files, counts, commits] = await Promise.all([
         call(commands.vcsDiffRevisions(repo, mergeBase, head)),
-        call(commands.graphRevCounts(repo, base, head)),
+        // Fork-only command: a remote project's upstream server rejects it, so count the old way (limit 0 = all).
+        call(commands.graphRevCounts(repo, base, head)).catch(async () => {
+          const [aheadAll, behindAll] = await Promise.all([
+            rangePage(repo, base, head, 0, 0),
+            rangePage(repo, head, base, 0, 0),
+          ]);
+          return { ahead: aheadAll.length, behind: behindAll.length };
+        }),
         rangePage(repo, base, head, 0, PR_COMMIT_PAGE),
       ]);
       return {
