@@ -576,9 +576,14 @@ function InteractiveRebaseDialog({
       const list = listRef.current;
       // A Select popup that unmounts while focused fires no blur, so trust the pin only while focus is in the list.
       const focusInList = !!list?.contains(document.activeElement);
+      const focusIdx = focusInList && pinnedIndex >= 0 && pinnedIndex < r.count ? pinnedIndex : -1;
+      const activeIdx = rowIndexIn(list, document.activeElement, r.count);
+      // Native Tab/Shift+Tab walk the DOM, so the rows next to the focused one stay mounted to be its neighbors
+      // instead of the far-away rendered window; focus() then scrolls the new row into view.
       const candidates = [
-        focusInList && pinnedIndex >= 0 && pinnedIndex < r.count ? pinnedIndex : -1,
-        rowIndexIn(list, document.activeElement, r.count),
+        focusIdx,
+        activeIdx,
+        ...[focusIdx, activeIdx].flatMap((i) => (i < 0 ? [] : [i - 1, i + 1])).filter((i) => i >= 0 && i < r.count),
         rowIndexIn(list, list?.querySelector('[aria-expanded="true"]') ?? null, r.count),
       ];
       let merged: number[] | null = null;
