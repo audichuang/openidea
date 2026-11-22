@@ -3867,5 +3867,6 @@
   "Mark Agent Tasks as Unread": "Mark Agent Tasks as Unread",
   "Mark Agent Tasks as Read": "Mark Agent Tasks as Read",
   "Find in build output": "Find in build output",
-  "Find in Build Output": "Find in Build Output"
+  "Find in Build Output": "Find in Build Output",
+  "{count} earlier lines were discarded": "{count} earlier lines were discarded"
 }

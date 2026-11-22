@@ -6,7 +6,7 @@ import { setContext } from "@/platform/context";
 import { bindingsFor, installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
 import { activate } from "./index";
 import { BuildView } from "./BuildView";
-import { useBuildRun } from "./store";
+import { applyBuildEvent, useBuildRun } from "./store";
 import type { ConsoleLine } from "./model";
 
 /** Like a real viewport scrolled to the end: only the last 30 rows are mounted. */
@@ -37,7 +37,7 @@ beforeEach(() => {
   usePlatform.setState({ os: "macos" });
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: clipboard });
   clipboard.writeText.mockClear();
-  useBuildRun.setState({ status: "success", lines: LINES, messages: [], selected: null });
+  useBuildRun.setState({ status: "success", lines: LINES, dropped: 0, messages: [], selected: null });
 });
 afterEach(() => {
   cleanup();
@@ -104,7 +104,7 @@ describe("Build output Find (#452)", () => {
     // An editor is open, but focus is in the Build tool window.
     setContext("textEditorActive", true);
     setContext("toolWindowFocus", "build");
-    useBuildRun.setState({ status: "success", lines: LINES, messages: [], selected: null });
+    useBuildRun.setState({ status: "success", lines: LINES, dropped: 0, messages: [], selected: null });
   });
   afterEach(() => {
     disposers.reverse().forEach((d) => d());
@@ -145,5 +145,22 @@ describe("Build output Find (#452)", () => {
     fireEvent.keyDown(input(), { key: "Escape" });
     expect(screen.queryByRole("search")).not.toBeInTheDocument();
     expect(log).toHaveFocus();
+  });
+});
+
+describe("Build output line cap (#452)", () => {
+  it("says how many earlier lines the 20,000-line cap discarded", () => {
+    useBuildRun.setState({ status: "success", lines: [], dropped: 0, messages: [], selected: null });
+    let text = "";
+    for (let i = 0; i < 25_000; i++) text += `line ${i}\n`;
+    useBuildRun.setState(applyBuildEvent(useBuildRun.getState(), { kind: "output", text, stderr: false }));
+    expect(useBuildRun.getState().lines).toHaveLength(20_000);
+    render(<BuildView />);
+    expect(screen.getByText("5,000 earlier lines were discarded")).toBeInTheDocument();
+  });
+
+  it("shows no notice while nothing was discarded", () => {
+    render(<BuildView />);
+    expect(screen.queryByText(/earlier lines were discarded/)).not.toBeInTheDocument();
   });
 });
