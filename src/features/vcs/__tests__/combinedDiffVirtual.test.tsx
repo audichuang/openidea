@@ -509,38 +509,110 @@ describe("the all-in-one diff with many files", () => {
     }
   });
 
-  it("reaches all 5,000 mixed files with bounded editors and lets the last file be expanded and edited", () => {
+  it("reaches, expands, edits, and reads back every one of 5,000 editable files without skipping ranges", () => {
+    const items = files(5_000);
+    render(<CombinedDiffTab input={combinedDiffInput({ items })} />);
+    expect(screen.getByText("5000 files")).toBeTruthy();
+    const initialCount = mounted().length;
+    let most = initialCount;
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Collapse All Files" }));
+    });
+
+    const seenIndexes = new Set<number>();
+    const seenPaths = new Set<string>();
+    const verified = new Set<number>();
+    let maxSeen = -1;
+    // Step at most one viewport (VIEW) per stop so no index can be skipped between frames.
+    for (let top = 0; ; top += VIEW) {
+      scroll(scroller(), top);
+      const slots = [...document.querySelectorAll<HTMLElement>("[data-index]")];
+      expect(slots.length).toBeGreaterThan(0);
+      const idxs = slots.map((s) => Number(s.dataset.index));
+      for (let k = 1; k < idxs.length; k++) expect(idxs[k]).toBe(idxs[k - 1]! + 1);
+      if (maxSeen >= 0) expect(idxs[0]!).toBeLessThanOrEqual(maxSeen + 1);
+      for (let k = 0; k < slots.length; k++) {
+        const idx = idxs[k]!;
+        const block = slots[k]!.querySelector<HTMLElement>("[data-combined-block]")!;
+        const path = block.dataset.combinedBlock!;
+        expect(path).toBe(items[idx]!.path);
+        seenIndexes.add(idx);
+        seenPaths.add(path);
+        if (idx > maxSeen) maxSeen = idx;
+        if (verified.has(idx)) continue;
+
+        const expandBtn = block.querySelector<HTMLButtonElement>('button[aria-label="Expand File"]');
+        if (expandBtn) act(() => void fireEvent.click(expandBtn));
+        most = Math.max(most, mounted().length);
+        const field = block.querySelector<HTMLInputElement>(`input[aria-label="Edit ${path}"]`)!;
+        expect(field).toBeTruthy();
+        const marker = `edit-${idx}`;
+        act(() => void fireEvent.change(field, { target: { value: marker } }));
+        expect(field.value).toBe(marker);
+        const docId = editorsFor(path)[0]!.ctx.doc;
+        expect(dirtyDocs.has(docId)).toBe(true);
+        // Save so the block unmounts cleanly once scrolled out of view.
+        dirtyDocs.delete(docId);
+        const collapseBtn = block.querySelector<HTMLButtonElement>('button[aria-label="Collapse File"]');
+        if (collapseBtn) act(() => void fireEvent.click(collapseBtn));
+        verified.add(idx);
+      }
+      if (top >= scroller().scrollHeight) break;
+    }
+
+    expect(seenIndexes.size).toBe(5_000);
+    expect(seenPaths.size).toBe(5_000);
+    expect(verified.size).toBe(5_000);
+    expect(most).toBeLessThanOrEqual(12);
+    // Scroll back to top and confirm no leaked editors.
+    scroll(scroller(), 0);
+    expect(mounted().length).toBeLessThanOrEqual(initialCount);
+  }, 30_000);
+
+  it("reaches all 5,000 mixed files without skipping ranges and expands binary, large, and last files", () => {
+    const bigAt = Math.floor(5_000 / 3);
     const items = Array.from({ length: 5_000 }, (_, i) =>
       diff(
-        i % 25 === 24 && i !== 4_999
-          ? `/r/src/img${String(i).padStart(5, "0")}.png`
-          : `/r/src/f${String(i).padStart(5, "0")}.ts`,
+        i === bigAt
+          ? `/r/src/Generated${String(i).padStart(5, "0")}.ts`
+          : i % 25 === 24 && i !== 4_999
+            ? `/r/src/img${String(i).padStart(5, "0")}.png`
+            : `/r/src/f${String(i).padStart(5, "0")}.ts`,
       ),
     );
+    const binary = items[24]!.path;
+    const big = items[bigAt]!.path;
     const last = items[4_999]!.path;
     render(<CombinedDiffTab input={combinedDiffInput({ items })} />);
     expect(screen.getByText("5000 files")).toBeTruthy();
     const initialCount = mounted().length;
     let most = initialCount;
-    const end = scroller().scrollHeight;
-    // Sweep from top to bottom and back across all 5,000 files in 100-file bands:
-    // every band renders in order without gaps, the 5,000th file is reached, and the
-    // mounted editor count stays bounded with no leak back at the top.
-    const visitedBands = new Set<number>();
-    for (let top = 0; top <= end; top += Math.ceil(end / 50)) {
+    const seenIndexes = new Set<number>();
+    const seenPaths = new Set<string>();
+    let maxSeen = -1;
+    // Sweep top → bottom stepping at most one viewport (VIEW) per stop, asserting every index/path is seen.
+    for (let top = 0; ; top += VIEW) {
       scroll(scroller(), top);
       most = Math.max(most, mounted().length);
-      const shown = headers();
-      expect(shown.length).toBeGreaterThan(0);
-      const first = Number(/(\d+)\.\w+$/.exec(shown[0]!)![1]);
-      expect(shown).toEqual(items.slice(first, first + shown.length).map((i) => i.path));
-      visitedBands.add(Math.floor(first / 100));
+      const slots = [...document.querySelectorAll<HTMLElement>("[data-index]")];
+      expect(slots.length).toBeGreaterThan(0);
+      const idxs = slots.map((s) => Number(s.dataset.index));
+      for (let k = 1; k < idxs.length; k++) expect(idxs[k]).toBe(idxs[k - 1]! + 1);
+      if (maxSeen >= 0) expect(idxs[0]!).toBeLessThanOrEqual(maxSeen + 1);
+      for (let k = 0; k < slots.length; k++) {
+        const idx = idxs[k]!;
+        const path = slots[k]!.querySelector<HTMLElement>("[data-combined-block]")!.dataset.combinedBlock!;
+        expect(path).toBe(items[idx]!.path);
+        seenIndexes.add(idx);
+        seenPaths.add(path);
+        if (idx > maxSeen) maxSeen = idx;
+      }
+      if (top >= scroller().scrollHeight) break;
     }
-    scroll(scroller(), end);
-    expect(headers()).toContain(last);
-    most = Math.max(most, mounted().length);
-    expect(visitedBands.size).toBeGreaterThanOrEqual(45);
-    for (let top = end; top >= 0; top -= Math.ceil(end / 25)) {
+    expect(seenIndexes.size).toBe(5_000);
+    expect(seenPaths.size).toBe(5_000);
+    for (let top = scroller().scrollHeight; top >= 0; top -= VIEW) {
       scroll(scroller(), top);
       most = Math.max(most, mounted().length);
     }
@@ -549,11 +621,22 @@ describe("the all-in-one diff with many files", () => {
     // Returning to the top leaves no leaked editors.
     expect(mounted().length).toBe(initialCount);
 
-    // Collapse all, jump to the 5,000th file, expand it, edit it, blur, scroll back to top and return.
+    // Collapse all, then reach and expand a binary file, the large file, and the 5,000th file.
     act(() => {
       fireEvent.click(screen.getByRole("button", { name: "Collapse All Files" }));
     });
-    scroll(scroller(), end);
+    for (const [idx, path] of [
+      [24, binary],
+      [bigAt, big],
+    ] as const) {
+      scroll(scroller(), idx * 200);
+      expect(headers()).toContain(path);
+      const blockEl = document.querySelector<HTMLElement>(`[data-combined-block="${path}"]`)!;
+      act(() => void fireEvent.click(blockEl.querySelector<HTMLButtonElement>('button[aria-label="Expand File"]')!));
+      expect(mounted()).toContain(path);
+    }
+
+    scroll(scroller(), scroller().scrollHeight);
     expect(headers()).toContain(last);
     expect(mounted()).toEqual([]);
     const lastBlock = document.querySelector<HTMLElement>(`[data-combined-block="${last}"]`)!;
@@ -573,9 +656,9 @@ describe("the all-in-one diff with many files", () => {
     expect(mounted()).toContain(last);
     expect(dirtyDocs.has(lastDocId)).toBe(true);
     expect(mounted().length).toBeLessThanOrEqual(initialCount + 1);
-    scroll(scroller(), end);
+    scroll(scroller(), scroller().scrollHeight);
     expect(screen.getByLabelText(`Edit ${last}`)).toBe(field);
     expect(field.value).toBe("edited 5000th file");
     expect(dirtyDocs.has(lastDocId)).toBe(true);
-  });
+  }, 30_000);
 });
