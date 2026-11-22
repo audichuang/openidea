@@ -903,6 +903,7 @@
   "Search file revisions": "Search file revisions",
   "File revisions": "File revisions",
   "Commit message": "Commit message",
+  "Commit messages": "Commit messages",
   "Edit message for commit {hash}": "Edit message for commit {hash}",
   "Edit message for commit {hash} by {author}": "Edit message for commit {hash} by {author}",
   "Squashed Commit Message": "Squashed Commit Message",
