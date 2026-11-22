@@ -117,6 +117,7 @@ export const vscodeMacos: Record<string, string[]> = {
   // Find
   "find.inFile": ["Meta+F"],
   "agents.findInConversation": ["Meta+F"],
+  "build.findInOutput": ["Meta+F"],
   "find.replaceInFile": ["Meta+Alt+F"],
   "find.next": ["Meta+G"],
   "find.previous": ["Meta+Shift+G"],
