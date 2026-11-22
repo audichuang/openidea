@@ -4223,5 +4223,7 @@
   "Use {suggested} for this project": "Use {suggested} for this project",
   "GitHub account: @{activeLogin}": "GitHub account: @{activeLogin}",
   "Uses GitHub CLI's active account without setting GH_TOKEN in the project environment.": "Uses GitHub CLI's active account without setting GH_TOKEN in the project environment.",
-  "Passes this account's GH_TOKEN to processes started in this project (terminals, agents, Git, and run configurations).": "Passes this account's GH_TOKEN to processes started in this project (terminals, agents, Git, and run configurations)."
+  "Passes this account's GH_TOKEN to processes started in this project (terminals, agents, Git, and run configurations).": "Passes this account's GH_TOKEN to processes started in this project (terminals, agents, Git, and run configurations).",
+  "Find in build output": "Find in build output",
+  "Find in Build Output": "Find in Build Output"
 }
