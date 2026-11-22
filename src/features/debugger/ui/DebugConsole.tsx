@@ -40,6 +40,7 @@ import {
   findOutputLinks,
   horizontalColumnWindow,
   measureMonoCharWidth,
+  revealScrollLeft,
   sliceRangesInWindow,
   visibleCharWindow,
   type OutputLink,
@@ -365,7 +366,22 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
     const key = `${current.lineId}:${current.start}`;
     if (scrolledMatch.current === key) return;
     virtualizer.scrollToIndex(current.line, { align: "center" });
+    // The virtualizer scrolls rows only; bring a match on a long unwrapped line into view too.
+    const el = scroller.current;
+    const text = lines?.[current.line]?.text;
+    if (!softWrap && el && text !== undefined) {
+      if (charWidthRef.current === undefined && el.clientWidth > 0) charWidthRef.current = measureMonoCharWidth(el);
+      const left = revealScrollLeft(text, current.start, current.end, el, consoleFont.size, {
+        charWidthPx: charWidthRef.current,
+        paddingLeftPx: DEBUG_PADDING_LEFT_PX,
+      });
+      if (left !== null) {
+        el.scrollLeft = left;
+        syncHorizontalWindow(el);
+      }
+    }
     scrolledMatch.current = key;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the viewport and font are read when the match changes
   }, [findOpen, current, virtualizer]);
 
   const submit = async () => {
