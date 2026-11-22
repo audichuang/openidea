@@ -123,10 +123,12 @@ const setupPr = (aheadCommits: Commit[], behindCount: number, files: ChangedFile
       : ok({ ahead: behindCount, behind: aheadCommits.length }),
   );
   vcsLog.mockImplementation((_repo: string, q: { range?: string | null; skip: number; limit: number }) => {
-    if (q.range === "main..feature") {
-      return ok(aheadCommits.slice(q.skip, q.limit > 0 ? q.skip + q.limit : undefined));
-    }
-    return ok([]);
+    // Later pages pin head to the first page's tip commit (`main..<id>`).
+    const tip = q.range?.startsWith("main..") ? q.range.slice("main..".length) : null;
+    const start = tip === "feature" ? 0 : aheadCommits.findIndex((c) => c.id === tip);
+    if (tip === null || start < 0) return ok([]);
+    const from = start + q.skip;
+    return ok(aheadCommits.slice(from, q.limit > 0 ? from + q.limit : undefined));
   });
 };
 
