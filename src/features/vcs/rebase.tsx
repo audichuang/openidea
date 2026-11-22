@@ -598,6 +598,9 @@ function InteractiveRebaseDialog({
     },
     [pinnedIndex],
   );
+  // Rows sit below the scroller's top padding, which the virtualizer's offsets leave out, so an end-aligned row
+  // needs that much end padding to land with its bottom inside the viewport.
+  const padTopRef = useRef(0);
   const virtualizer = useVirtualizer({
     count: rowCount,
     getScrollElement,
@@ -606,18 +609,27 @@ function InteractiveRebaseDialog({
     rangeExtractor,
     overscan: REBASE_OVERSCAN,
     initialRect: REBASE_INITIAL_RECT,
+    scrollPaddingEnd: padTopRef.current,
   });
+  const scrollRowIntoView = useCallback(
+    (index: number) => {
+      const list = listRef.current;
+      const pad = (list && Number.parseFloat(getComputedStyle(list).paddingTop)) || 0;
+      padTopRef.current = pad;
+      virtualizer.options.scrollPaddingEnd = pad;
+      virtualizer.scrollToIndex(index, { align: "auto" });
+    },
+    [virtualizer],
+  );
   // Tab after a wheel scroll focuses a row outside the viewport; bring it into view instead of relying on the
   // engine to scroll a transform-positioned row.
   const onRowFocus = useCallback(
     (id: string, index: number) => {
       setActiveCommitId(id);
       const visible = virtualizer.range;
-      if (visible && (index < visible.startIndex || index > visible.endIndex)) {
-        virtualizer.scrollToIndex(index, { align: "auto" });
-      }
+      if (visible && (index < visible.startIndex || index > visible.endIndex)) scrollRowIntoView(index);
     },
-    [virtualizer],
+    [virtualizer, scrollRowIntoView],
   );
   const update = useCallback(
     (i: number, patch: Partial<RebaseRow>) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r))),
@@ -636,7 +648,7 @@ function InteractiveRebaseDialog({
     if (selectedIndex < 0 || to < 0 || to >= rowCount) return;
     setRows((rs) => moveRow(rs, selectedIndex, delta));
     setOrder((n) => n + 1);
-    virtualizer.scrollToIndex(to, { align: "auto" });
+    scrollRowIntoView(to);
   };
   const start = () => {
     if (problem || noop) return;
