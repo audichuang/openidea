@@ -94,8 +94,8 @@ describe("ConsoleView long lines and no-newline output", () => {
     fireEvent.change(input, { target: { value: "t" } });
     expect(screen.getByText("1/2000+")).toBeInTheDocument();
 
-    // Full text stays intact in the DOM (no truncation).
-    expect(firstRow.textContent).toBe(`${fullFirstLine}\n`);
+    // Full text stays intact in the DOM (no truncation); the row continues on the next, so no line break.
+    expect(firstRow.textContent).toBe(fullFirstLine);
 
     // Inline DOM nodes on the first 8,000-char line stay bounded to the horizontal viewport window
     // instead of mounting all 127 links and 500+ <mark> elements at once.

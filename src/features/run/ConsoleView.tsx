@@ -439,32 +439,42 @@ export function ConsoleView({
       }
     }
     const matches: ConsoleMatch[] = [];
-    for (let i = 0; i < lines.length; i++) {
+    // Search physical lines: rows cut at MAX_LINE_LENGTH are joined back, and a match is reported on the
+    // row where it starts, with offsets relative to that row (its end may run into the following rows).
+    for (let i = 0; i < lines.length;) {
       const line = lines[i]!;
+      let next = i + 1;
+      let text = line.text;
+      if (line.continues) {
+        const parts = [text];
+        while (next < lines.length && lines[next - 1]!.continues) parts.push(lines[next++]!.text);
+        text = parts.join("");
+      }
+      let spans: Array<{ start: number; end: number }>;
       const hit = cache.byId.get(line.id);
-      if (hit && hit.text === line.text) {
-        for (const s of hit.spans) {
-          if (matches.length >= MAX_MATCHES) return { matches, overflow: true, invalid: false };
-          matches.push({ line: i, lineId: line.id, start: s.start, end: s.end });
-        }
-        continue;
-      }
-      const remaining = MAX_MATCHES - matches.length;
-      const res = findInLines([line], query, findOptions, remaining);
-      if (res.invalid) {
-        cache.invalid = true;
-        return { matches: [], overflow: false, invalid: true };
-      }
-      if (!res.overflow) {
-        cache.byId.set(line.id, {
-          text: line.text,
-          spans: res.matches.map((m) => ({ start: m.start, end: m.end })),
-        });
+      let overflow = false;
+      if (hit && hit.text === text) {
+        spans = hit.spans;
       } else {
-        cache.byId.delete(line.id);
+        const res = findInLines([{ id: line.id, text }], query, findOptions, MAX_MATCHES - matches.length);
+        if (res.invalid) {
+          cache.invalid = true;
+          return { matches: [], overflow: false, invalid: true };
+        }
+        spans = res.matches.map((m) => ({ start: m.start, end: m.end }));
+        overflow = res.overflow;
+        if (!overflow) cache.byId.set(line.id, { text, spans });
+        else cache.byId.delete(line.id);
       }
-      for (const m of res.matches) matches.push({ line: i, lineId: line.id, start: m.start, end: m.end });
-      if (res.overflow) return { matches, overflow: true, invalid: false };
+      let row = i;
+      let rowStart = 0;
+      for (const s of spans) {
+        if (matches.length >= MAX_MATCHES) return { matches, overflow: true, invalid: false };
+        while (row < next - 1 && s.start >= rowStart + lines[row]!.text.length) rowStart += lines[row++]!.text.length;
+        matches.push({ line: row, lineId: lines[row]!.id, start: s.start - rowStart, end: s.end - rowStart });
+      }
+      if (overflow) return { matches, overflow: true, invalid: false };
+      i = next;
     }
     return { matches, overflow: false, invalid: false };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `version` marks in-place appends to `lines`
@@ -473,13 +483,27 @@ export function ConsoleView({
   const activeMatch = activeIndex >= 0 ? found.matches[activeIndex] : undefined;
   const marksByLine = useMemo(() => {
     const byLine = new Map<number, SegmentMark[]>();
-    found.matches.forEach((match, i) => {
-      const mark: SegmentMark = { start: match.start, end: match.end, current: i === activeIndex };
-      const marks = byLine.get(match.line);
+    const add = (line: number, mark: SegmentMark) => {
+      const marks = byLine.get(line);
       if (marks) marks.push(mark);
-      else byLine.set(match.line, [mark]);
+      else byLine.set(line, [mark]);
+    };
+    found.matches.forEach((match, i) => {
+      const current = i === activeIndex;
+      // A match across a MAX_LINE_LENGTH cut is marked on each row it covers.
+      let line = match.line;
+      let { start, end } = match;
+      for (let len = lines[line]?.text.length ?? end; end > len && lines[line]?.continues;) {
+        if (start < len) add(line, { start, end: len, current });
+        start = Math.max(0, start - len);
+        end -= len;
+        line++;
+        len = lines[line]?.text.length ?? end;
+      }
+      add(line, { start, end, current });
     });
     return byLine;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `found` is recomputed whenever `lines` change
   }, [found, activeIndex]);
   const rowOfLine = useMemo(() => {
     if (!findOpen) return EMPTY_ROW_MAP;
@@ -869,7 +893,8 @@ export function ConsoleView({
                 />
                 {row.fold && !row.fold.expanded && foldButton(row.fold, true)}
                 {inputInline && item.index === rows.length - 1 && pendingInput}
-                {"\n"}
+                {/* A row cut at MAX_LINE_LENGTH continues on the next: no line break in a copied selection. */}
+                {!line.continues && "\n"}
               </div>
             );
           })}
