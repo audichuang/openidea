@@ -198,12 +198,22 @@ export function ResponseBody({
     if (viewRef) viewRef.current = v;
     show(v, text);
     // Laid out in the swap font until the body's web font loads (the bundled JetBrains Mono on first use): long
-    // lines wrap to another height in it, which moves the current match scrolled to out of view. Scroll to it again.
+    // lines wrap to another height in it, which moves the current match scrolled to out of view. Scroll to it again,
+    // after the editor's next measure: it takes in the new heights there, and in a body past its scaling limit a
+    // scroll handled in the same measure lands short by the change (#457).
     let alive = true;
     const { fontFamily, fontSize } = getComputedStyle(v.scrollDOM);
     void fontsLoaded(fontFamily, parseFloat(fontSize)).then(() => {
-      const m = marked.current.matches[marked.current.current];
-      if (alive && m) v.dispatch({ effects: scrollTo(docPosition(v.state.field(displayed), m.line, m.start)) });
+      if (!alive) return;
+      v.requestMeasure({
+        read: () => {},
+        // The view cannot be updated while it measures.
+        write: () =>
+          queueMicrotask(() => {
+            const m = marked.current.matches[marked.current.current];
+            if (alive && m) v.dispatch({ effects: scrollTo(docPosition(v.state.field(displayed), m.line, m.start)) });
+          }),
+      });
     });
     return () => {
       alive = false;
