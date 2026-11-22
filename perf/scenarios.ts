@@ -838,6 +838,79 @@ const gitLogDeepCommit: Scenario = {
 };
 
 /**
+ * Refresh after a merge is made on top of a Git Log with ~1,000 long-lived branches merging into
+ * each other (`graph-extreme`'s shape): `OPENIDEA_PERF_GIT_LOG_BRANCHES_LOADED` commits (default
+ * 10,000) of a history 1/0.6 times as long are in the log, then the log's Refresh brings the
+ * merge in on top. Its lanes change the order of the lanes below it, so the rows below cannot be
+ * kept and the graph is laid out again.
+ */
+const gitLogBranchesMerge: Scenario = {
+  id: "gitLogBranchesMerge",
+  title: "Refresh a Git Log of 1,000 merging branches after a merge on top",
+  async run(h) {
+    const loaded = Number(process.env.OPENIDEA_PERF_GIT_LOG_BRANCHES_LOADED ?? 10_000);
+    const total = Math.ceil(loaded / 0.6);
+    await h.page.evaluate(
+      async ({ total, loaded }) => {
+        const { __openideaPerf: probe } = window as never as {
+          __openideaPerf: {
+            fakeGitLogBranches(total: number, lanes: number, loaded: number): Promise<void>;
+            runAction(id: string): Promise<boolean>;
+          };
+        };
+        await probe.fakeGitLogBranches(total, 1001, Math.min(loaded, 300));
+        await probe.runAction("vcs.showLog");
+      },
+      { total, loaded },
+    );
+    const list = h.page.getByRole("listbox", { name: "Commits" });
+    await list.getByRole("option").first().waitFor();
+    await h.page.evaluate(
+      ({ total, loaded }) =>
+        (
+          window as never as {
+            __openideaPerf: { fakeGitLogBranches(total: number, lanes: number, loaded: number): Promise<void> };
+          }
+        ).__openideaPerf.fakeGitLogBranches(total, 1001, loaded),
+      { total, loaded },
+    );
+    // Set-up: every loaded commit is a row (rows are at least 20 px).
+    await list.evaluate(async (el, loaded) => {
+      const started = performance.now();
+      while (el.scrollHeight < loaded * 20) {
+        if (performance.now() - started > 4 * 60_000) throw new Error("Git Log did not show the loaded commits");
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }, loaded);
+    await h.page.waitForTimeout(500);
+    await h.page.evaluate(() =>
+      (window as never as { __openideaPerf: { fakeGitLogMergeOnTop(): void } }).__openideaPerf.fakeGitLogMergeOnTop(),
+    );
+    const refresh = await h.refreshMs();
+    const refreshButton = h.page.getByRole("button", { name: "Refresh", exact: true });
+    const logPane = h.page.locator("div").filter({ has: list }).filter({ has: refreshButton }).last();
+    const refreshStarted = await h.now();
+    await h.inPage((p) => p.startFrames());
+    await logPane.getByRole("button", { name: "Refresh", exact: true }).first().click();
+    await list.getByText("merge on top").waitFor({ timeout: 60_000 });
+    const refreshShownMs = (await h.now()) - refreshStarted;
+    await h.page.waitForTimeout(1500);
+    await h.inPage((p) => p.afterNextPaint().then(() => p.afterNextPaint()));
+    const frames = frameSummary(await h.inPage((p) => p.stopFrames()), refresh);
+    const refreshTasks = await h.longTasksSince(refreshStarted);
+    const rows = await list.evaluate((el) => Math.round(el.scrollHeight));
+    return {
+      refreshShownMs,
+      refreshFrameMaxMs: frames.frameMaxMs,
+      refreshLongTasks: refreshTasks.length,
+      refreshLongTaskMaxMs: Math.max(0, ...refreshTasks.map((t) => t.duration)),
+      refreshTbtMs: totalBlockingTime(refreshTasks),
+      listHeightPx: rows,
+    };
+  },
+};
+
+/**
  * Dragging the splitters with an editor, the Project tree and the Git Log
  * open: every pointer move resizes the islands, so each frame relays them out.
  */
@@ -2533,6 +2606,7 @@ export const SCENARIOS: Scenario[] = [
   gitLogMultiSelect,
   interactiveRebase,
   gitLogDeepCommit,
+  gitLogBranchesMerge,
   resizePanels,
   keyRepeat,
   scroll,
