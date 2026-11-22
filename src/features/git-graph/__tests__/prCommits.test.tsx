@@ -103,10 +103,24 @@ const flush = async () => {
   await act(async () => {});
 };
 
+/**
+ * A linear `main..feature` history, newest first: `main..feature` starts at its current tip and
+ * `main..<id>` at that commit, the way git resolves a pinned range.
+ */
+const linearRange =
+  (history: () => readonly Commit[]) => (q: { range?: string | null; skip: number; limit: number }) => {
+    const tip = q.range?.startsWith("main..") ? q.range.slice("main..".length) : null;
+    const list = history();
+    const start = tip === "feature" ? 0 : list.findIndex((c) => c.id === tip);
+    if (tip === null || start < 0) return ok([]);
+    const from = start + q.skip;
+    return ok(list.slice(from, q.limit > 0 ? from + q.limit : undefined));
+  };
+
 const setupCommits = (commits: Commit[]) => {
   graphRevCounts.mockImplementation(() => ok({ ahead: commits.length, behind: 0 }));
   vcsLog.mockImplementation((_repo: string, q: { range?: string | null; skip: number; limit: number }) =>
-    q.range === "main..feature" ? ok(commits.slice(q.skip, q.limit > 0 ? q.skip + q.limit : undefined)) : ok([]),
+    linearRange(() => commits)(q),
   );
 };
 
@@ -299,6 +313,36 @@ describe("PR Commits virtualization", () => {
       selection: { repo: REPO, ids: [commits[index]!.id] },
       panel: "details",
     });
+  });
+
+  it("loads later pages from the head the first page saw, even after head moved without a refresh (#452)", async () => {
+    let history = commitsOf(1_000);
+    graphRevCounts.mockImplementation(() => ok({ ahead: history.length, behind: 0 }));
+    vcsLog.mockImplementation((_repo: string, q: { range?: string | null; skip: number; limit: number }) =>
+      linearRange(() => history)(q),
+    );
+    render(<PrView repo={REPO} current="feature" version={0} reload={0} />);
+    await flush();
+    const list = screen.getByRole("listbox", { name: "Commits" });
+    expect(within(list).getAllByRole("option")[0]!.textContent).toContain("commit 0");
+
+    // Someone pushes 5 commits onto feature; nothing has refreshed the view yet.
+    const pushed = Array.from({ length: 5 }, (_, i): Commit => {
+      const id = `f${i}`.padEnd(40, "f");
+      return { ...history[0]!, id, shortId: id.slice(0, 8), summary: `pushed ${i}`, message: `pushed ${i}` };
+    });
+    history = [...pushed, ...history];
+
+    // Scroll across the first page boundary (index 300) so page 2 loads.
+    list.scrollTop = 290 * 24;
+    fireEvent.scroll(list);
+    await flush();
+    const rows = within(list).getAllByRole("option");
+    const byIndex = new Map(rows.map((r) => [Number(r.getAttribute("aria-posinset")) - 1, r.textContent ?? ""]));
+    for (let i = 290; i <= 310; i++) {
+      expect(byIndex.get(i), `row ${i}`).toContain(`commit ${i}`);
+      expect(byIndex.get(i), `row ${i}`).toContain(commitsOf(i + 1)[i]!.shortId);
+    }
   });
 
   it("preserves commit metadata and resets scroll and selection when refs change", async () => {
