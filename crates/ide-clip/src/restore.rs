@@ -1159,7 +1159,7 @@ mod tests {
         RestoreBase::Strip { segment: segment.into() }
     }
 
-    const REPO: &str = "inv-svc-console";
+    const REPO: &str = "sample-web-shop";
 
     #[test]
     fn restore_base_apply_adds_and_strips() {
@@ -1170,7 +1170,7 @@ mod tests {
 
     #[test]
     fn restore_base_suggests_adding_missing_wrapper() {
-        let p = probe(&["/work/inv-svc-console", "/work/inv-svc-console/src", "/work/inv-svc-console/lib"], &[REPO]);
+        let p = probe(&["/work/sample-web-shop", "/work/sample-web-shop/src", "/work/sample-web-shop/lib"], &[REPO]);
         let s = suggest("/work", &["src/a.ts", "src/b.ts", "lib/c.ts"], &p, None).unwrap();
         assert_eq!(s.base, add(REPO));
         assert_eq!(s.matched, 3);
@@ -1178,8 +1178,8 @@ mod tests {
 
     #[test]
     fn restore_base_suggests_stripping_redundant_wrapper() {
-        let p = probe(&["/work/inv-svc-console/src", "/work/inv-svc-console/lib"], &["src", "lib"]);
-        let s = suggest("/work/inv-svc-console", &["inv-svc-console/src/a.ts", "inv-svc-console/lib/c.ts"], &p, None)
+        let p = probe(&["/work/sample-web-shop/src", "/work/sample-web-shop/lib"], &["src", "lib"]);
+        let s = suggest("/work/sample-web-shop", &["sample-web-shop/src/a.ts", "sample-web-shop/lib/c.ts"], &p, None)
             .unwrap();
         assert_eq!(s.base, strip(REPO));
     }
@@ -1189,7 +1189,7 @@ mod tests {
         let aligned = probe(&["/work/src", "/work/lib"], &["src", "lib"]);
         assert!(suggest("/work", &["src/a.ts", "lib/c.ts"], &aligned, None).is_none());
         assert!(suggest("/work", &["src/a.ts", "lib/c.ts"], &probe(&[], &[]), None).is_none());
-        let repo = probe(&["/work/inv-svc-console"], &[REPO]);
+        let repo = probe(&["/work/sample-web-shop"], &[REPO]);
         assert!(suggest("/work", &["a.ts", "README.md"], &repo, None).is_none());
         // Ambiguous add: two child dirs match equally well.
         let two =
@@ -1197,7 +1197,7 @@ mod tests {
         assert!(suggest("/work", &["src/a.ts", "src/b.ts"], &two, None).is_none());
         // A top folder not named like the workspace is never stripped.
         assert!(suggest("/work", &["examples/src/a.ts", "examples/lib/b.ts"], &aligned, None).is_none());
-        let one = probe(&["/work/inv-svc-console", "/work/inv-svc-console/src"], &[REPO]);
+        let one = probe(&["/work/sample-web-shop", "/work/sample-web-shop/src"], &[REPO]);
         assert!(suggest("/work", &["src/a.ts"], &one, None).is_none());
         // Majority required.
         assert!(suggest("/work", &["src/a.ts", "lib/b.ts", "app/c.ts", "web/d.ts"], &one, None).is_none());
@@ -1205,20 +1205,20 @@ mod tests {
 
     #[test]
     fn restore_base_metadata_cases() {
-        let p = probe(&["/work/inv-svc-console"], &[REPO, "other"]);
+        let p = probe(&["/work/sample-web-shop"], &[REPO, "other"]);
         assert_eq!(suggest("/work", &["src/a.ts", "lib/b.ts"], &p, Some(REPO)).unwrap().base, add(REPO));
-        let p = probe(&["/work/inv-svc-console"], &[REPO]);
+        let p = probe(&["/work/sample-web-shop"], &[REPO]);
         assert_eq!(suggest("/work", &["src/a.ts"], &p, Some(REPO)).unwrap().base, add(REPO));
         assert_eq!(suggest("/work", &["README.md"], &p, Some(REPO)).unwrap().base, add(REPO));
         let s = suggest(
-            "/work/inv-svc-console",
-            &["inv-svc-console/src/a.ts", "inv-svc-console/lib/b.ts"],
+            "/work/sample-web-shop",
+            &["sample-web-shop/src/a.ts", "sample-web-shop/lib/b.ts"],
             &probe(&[], &[]),
             Some("work"),
         );
         assert_eq!(s.unwrap().base, strip(REPO));
-        let same = probe(&["/work/inv-svc-console/src"], &["src"]);
-        assert!(suggest("/work/inv-svc-console", &["src/a.ts", "lib/b.ts"], &same, Some(REPO)).is_none());
+        let same = probe(&["/work/sample-web-shop/src"], &["src"]);
+        assert!(suggest("/work/sample-web-shop", &["src/a.ts", "lib/b.ts"], &same, Some(REPO)).is_none());
         let bar = probe(&["/work/bar/src"], &["src"]);
         assert!(suggest("/work/bar", &["src/a.ts", "lib/b.ts"], &bar, Some("foo")).is_none());
         // Flat-layout repo: already-anchored paths are left alone.

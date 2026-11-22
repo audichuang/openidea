@@ -715,10 +715,10 @@ mod tests {
     #[test]
     fn source_root_round_trips_and_is_ignored_by_parser() {
         let mut o = opts(DEFAULT, "", "", true, vec![file("src/a.ts", "x")]);
-        o.source_root = Some("inv-svc-console".into());
+        o.source_root = Some("sample-web-shop".into());
         let payload = build_payload(&o);
-        assert!(payload.starts_with("// clipcode-root: inv-svc-console\n"));
-        assert_eq!(extract_source_root(&payload).as_deref(), Some("inv-svc-console"));
+        assert!(payload.starts_with("// clipcode-root: sample-web-shop\n"));
+        assert_eq!(extract_source_root(&payload).as_deref(), Some("sample-web-shop"));
         let parsed = parse_clipboard(&payload, DEFAULT);
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].path, "src/a.ts");
