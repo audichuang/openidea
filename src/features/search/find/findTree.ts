@@ -54,7 +54,7 @@ function fileEntry(f: FileMatches): FileEntry {
     const first = m.ranges[0] ?? [0, 0];
     return {
       kind: "match",
-      key: `m:${f.path}:${m.line}`,
+      key: `m:${f.path}:${m.line}:${first[0] + m.textOffset}`,
       path: f.path,
       line: m.line,
       col: first[0] + m.textOffset,
@@ -444,33 +444,34 @@ interface GroupedFileRef {
 const compareFlat = (a: FlatFileItem, b: FlatFileItem) => collator.compare(a.rel, b.rel);
 const compareDir = (a: DirItem, b: DirItem) => collator.compare(a.node.label, b.node.label);
 
-/** Lazily cached `line -> childIndex` lookup for files with many matches. */
-const matchLineMaps = new WeakMap<FileNode, Map<number, number>>();
+/** Lazily cached `line:col -> childIndex` lookup for files with many matches. */
+const matchLineMaps = new WeakMap<FileNode, Map<string, number>>();
 
-function findMatchIndex(file: FileNode, line: number): number {
+/** Index of the match at `line` whose first range starts at `col` (a very long line yields several matches). */
+function findMatchIndex(file: FileNode, line: number, col: number): number {
   const children = file.children as MatchNode[];
   const len = children.length;
   if (len <= 32) {
-    for (let i = 0; i < len; i++) if (children[i]!.line === line) return i;
+    for (let i = 0; i < len; i++) if (children[i]!.line === line && children[i]!.col === col) return i;
     return -1;
   }
-  // Matches from search are sorted by line; check binary search first, fall back to a cached map.
+  // Matches from search are sorted by line, then column; check binary search first, fall back to a cached map.
   let lo = 0;
   let hi = len - 1;
   while (lo <= hi) {
     const mid = (lo + hi) >>> 1;
-    const ml = children[mid]!.line;
-    if (ml === line) return mid;
-    if (ml < line) lo = mid + 1;
+    const c = children[mid]!;
+    if (c.line === line && c.col === col) return mid;
+    if (c.line < line || (c.line === line && c.col < col)) lo = mid + 1;
     else hi = mid - 1;
   }
   let map = matchLineMaps.get(file);
   if (!map) {
-    map = new Map<number, number>();
-    for (let i = 0; i < len; i++) map.set(children[i]!.line, i);
+    map = new Map<string, number>();
+    for (let i = 0; i < len; i++) map.set(`${children[i]!.line}:${children[i]!.col}`, i);
     matchLineMaps.set(file, map);
   }
-  return map.get(line) ?? -1;
+  return map.get(`${line}:${col}`) ?? -1;
 }
 
 /** An occurrence found while walking the matches: the match, its file and directory. */
@@ -490,14 +491,20 @@ function fillSlot(slot: OccurrenceSlot, match: MatchNode, file: FileNode, dir: D
   slot.index = index;
 }
 
-function parseMatchKey(key: string): { fileKey: string; line: number } | null {
+function parseMatchKey(key: string): { fileKey: string; line: number; col: number } | null {
   if (!key.startsWith("m:")) return null;
-  const sep = key.lastIndexOf(":");
-  if (sep < 2) return null;
-  const line = Number(key.slice(sep + 1));
-  // Only the key `fileEntry` writes for that line, e.g. not "m:/a.ts:" or "m:/a.ts:01".
-  if (!Number.isInteger(line) || String(line) !== key.slice(sep + 1)) return null;
-  return { fileKey: `f:${key.slice(2, sep)}`, line };
+  const colSep = key.lastIndexOf(":");
+  if (colSep < 2) return null;
+  const lineSep = key.lastIndexOf(":", colSep - 1);
+  if (lineSep < 2) return null;
+  const lineText = key.slice(lineSep + 1, colSep);
+  const colText = key.slice(colSep + 1);
+  const line = Number(lineText);
+  const col = Number(colText);
+  // Only the key `fileEntry` writes, e.g. not "m:/a.ts:1:" or "m:/a.ts:01:2".
+  if (!Number.isInteger(line) || String(line) !== lineText) return null;
+  if (!Number.isInteger(col) || String(col) !== colText) return null;
+  return { fileKey: `f:${key.slice(2, lineSep)}`, line, col };
 }
 
 /**
@@ -560,7 +567,7 @@ export class FindTreeIndex {
       ? this.groupedByFileKey.get(parsed.fileKey)?.node
       : this.flatByKey.get(parsed.fileKey)?.node;
     if (!file) return undefined;
-    const idx = findMatchIndex(file, parsed.line);
+    const idx = findMatchIndex(file, parsed.line, parsed.col);
     return idx >= 0 ? file.children[idx] : undefined;
   }
 
@@ -787,7 +794,7 @@ export class FindTreeIndex {
       if (!parsed) return -1;
       const item = this.flatByKey.get(parsed.fileKey);
       if (!item?.treeNode || this.collapsed.has(parsed.fileKey)) return -1;
-      const childIdx = findMatchIndex(item.node, parsed.line);
+      const childIdx = findMatchIndex(item.node, parsed.line, parsed.col);
       return childIdx >= 0 ? this.flatTree.rowStartOf(item.treeNode) + 1 + childIdx : -1;
     }
 
@@ -804,7 +811,7 @@ export class FindTreeIndex {
     if (!parsed) return -1;
     const ref = this.groupedByFileKey.get(parsed.fileKey);
     if (!ref?.dir.treeNode || this.collapsed.has(ref.dir.node.key) || this.collapsed.has(parsed.fileKey)) return -1;
-    const childIdx = findMatchIndex(ref.node, parsed.line);
+    const childIdx = findMatchIndex(ref.node, parsed.line, parsed.col);
     if (childIdx < 0) return -1;
     return this.dirTree.rowStartOf(ref.dir.treeNode) + 1 + ref.dir.bit.sumBefore(ref.indexInDir) + 1 + childIdx;
   }
