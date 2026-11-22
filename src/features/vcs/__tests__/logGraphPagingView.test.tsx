@@ -31,6 +31,7 @@ vi.mock("../multiRoot", async (importOriginal) => {
 
 import * as graph from "../graph";
 import { LogView } from "../GitLog";
+import { CommitList } from "../log/CommitList";
 import { DEFAULT_LOG_OPTIONS, useLogOptions } from "../logOptions";
 import * as multiRoot from "../multiRoot";
 import { PAGE, emptyFilters, loadMore, reloadLog, useGitLog } from "../logStore";
@@ -117,5 +118,23 @@ describe("Git Log paging", () => {
     expect(useGitLog.getState().commits).toHaveLength(2_400 + PAGE);
     expect(graphCommit.mock.calls.length).toBeLessThanOrEqual(PAGE);
     expect(commitKey.mock.calls.length).toBeLessThanOrEqual(6 * PAGE);
+  });
+
+  // File History's list puts author and date before the subject and pages like the log.
+  it("pages the File History list with its own column order", async () => {
+    render(<CommitList fileHistory />);
+    const list = await screen.findByRole("listbox", { name: "Commits" });
+    await act(() => reloadLog());
+    while (useGitLog.getState().commits.length < 2_400) await act(() => loadMore());
+    const compactLanes = vi.mocked(graph.compactLanes);
+    compactLanes.mockClear();
+    await act(() => loadMore());
+    expect(useGitLog.getState().commits).toHaveLength(2_400 + PAGE);
+    const presented = compactLanes.mock.calls.reduce((sum, [rows]) => sum + rows.length, 0);
+    expect(presented).toBeLessThanOrEqual(PAGE + 34);
+    const newest = within(list).getAllByRole("option")[0]!;
+    const author = within(newest).getByText("Author", { exact: true });
+    const subject = within(newest).getByText("c0", { exact: true });
+    expect(author.compareDocumentPosition(subject) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });
