@@ -68,6 +68,26 @@ interface Stream {
   synced: number;
 }
 
+const streamOrigins = new WeakMap<readonly FileMatches[], Stream>();
+
+function snapshotStream(stream: Stream): FileMatches[] {
+  const copy = stream.files.slice();
+  streamOrigins.set(copy, stream);
+  return copy;
+}
+
+/**
+ * True when `files` starts with the exact same elements as `prefix`.
+ * O(1) when both snapshots came from the same `FindSession` stream.
+ */
+export function isStreamExtension(files: readonly FileMatches[], prefix: readonly FileMatches[]): boolean {
+  if (prefix.length > files.length) return false;
+  const origin = streamOrigins.get(files);
+  if (origin !== undefined && origin === streamOrigins.get(prefix)) return true;
+  for (let i = 0; i < prefix.length; i++) if (files[i] !== prefix[i]) return false;
+  return true;
+}
+
 export class FindSession {
   private seq = 0;
   private request: RequestId | null = null;
@@ -163,7 +183,7 @@ export class FindSession {
   }
 
   private finalState(stream: Stream): FindState {
-    return { ...this.state, stale: false, files: [...stream.files], matchCount: stream.matchCount };
+    return { ...this.state, stale: false, files: snapshotStream(stream), matchCount: stream.matchCount };
   }
 
   /** Brings the state up to date with the streamed files (without publishing). */
@@ -171,7 +191,7 @@ export class FindSession {
     const stream = this.stream;
     if (!stream || stream.synced === stream.files.length) return;
     stream.synced = stream.files.length;
-    this.state = { ...this.state, stale: false, files: stream.files.slice(), matchCount: stream.matchCount };
+    this.state = { ...this.state, stale: false, files: snapshotStream(stream), matchCount: stream.matchCount };
   }
 
   /** Folds the stream's last files into the state and stops its scheduled publish. */
