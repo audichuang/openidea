@@ -4429,5 +4429,6 @@
   "Keep Index": "Keep Index",
   "SQLite cannot drop the index of a primary key or unique constraint.": "SQLite cannot drop the index of a primary key or unique constraint.",
   "Find in build output": "Find in build output",
-  "Find in Build Output": "Find in Build Output"
+  "Find in Build Output": "Find in Build Output",
+  "{count} earlier lines were discarded": "{count} earlier lines were discarded"
 }
