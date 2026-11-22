@@ -74,7 +74,7 @@ function exchangeWith(body: string, contentType: string, truncated = false): Htt
 }
 
 function show(ex: HttpExchange) {
-  useHttpClient.setState({ history: [ex.entry], exchanges: { e1: ex }, selected: "e1" });
+  useHttpClient.setState({ history: [ex.entry], exchanges: [ex], selected: "e1" });
   return render(<HttpClientView />);
 }
 
@@ -122,7 +122,7 @@ describe("HTTP Client large responses", () => {
   });
   afterEach(() => {
     vi.unstubAllGlobals();
-    useHttpClient.setState({ history: [], exchanges: {}, selected: null });
+    useHttpClient.setState({ history: [], exchanges: [], selected: null });
   });
 
   it("formats a large body in a worker, not on the main thread", () => {

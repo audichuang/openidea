@@ -76,7 +76,7 @@ describe("HTTP response find", () => {
       ...exchange,
       response: { ...exchange.response!, contentType: "application/json", body: '{"a":[1,2]}' },
     };
-    useHttpClient.setState({ history: [json.entry], exchanges: { e1: json }, selected: "e1" });
+    useHttpClient.setState({ history: [json.entry], exchanges: [json], selected: "e1" });
     render(<HttpClientView />);
     const find = () => screen.queryByLabelText("Find in response", { selector: "input" });
     // Where the click leaves the focus: on the button (Chromium) …
@@ -107,7 +107,7 @@ describe("HTTP response find", () => {
       installKeyboardDispatcher(window),
     ];
     try {
-      useHttpClient.setState({ history: [exchange.entry], exchanges: { e1: exchange }, selected: "e1" });
+      useHttpClient.setState({ history: [exchange.entry], exchanges: [exchange], selected: "e1" });
       render(<HttpClientView />);
       fireEvent.click(screen.getByRole("button", { name: /^Find/ }));
       const input = screen.getByLabelText("Find in response", { selector: "input" });
