@@ -149,7 +149,7 @@ export function sideLabel(s: DiffSide): string {
   }
 }
 
-const diffKey = (data: DiffData) => {
+export const diffKey = (data: DiffData) => {
   const key = (side: DiffSide) => sideKey(diffSideSource(side));
   const ends = `diff:${data.path}:${key(data.left)}:${key(data.right)}`;
   return data.middle ? `${ends}:middle:${key(data.middle)}` : ends;
@@ -208,7 +208,7 @@ export function diffTitle(data: DiffData): string {
 
 export async function openDiff(data: DiffData, opts: { preview?: boolean; focus?: boolean } = {}) {
   const combined = combinedOf(data);
-  const input = combined ? combinedDiffInput(combined) : diffInput(data);
+  const input = combined ? combinedDiffInput({ ...combined, revealKey: diffKey(data) }) : diffInput(data);
   await editorService().openInput(input, { preview: opts.preview, focus: opts.focus ?? true });
 }
 
