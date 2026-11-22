@@ -2,7 +2,9 @@ import type { Commit } from "@/bindings";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const api = vi.hoisted(() => ({ commits: [] as Commit[] }));
+const api = vi.hoisted(() => ({ commits: [] as Commit[], pages: 0 }));
+/** Layout slices of `steps` steps (unlimited by default), the later ones run by `flush`. */
+const slices = vi.hoisted(() => ({ steps: Infinity, queue: [] as Array<() => void> }));
 vi.mock("@/platform/ipc", async (original) => {
   const real = await original<typeof import("@/platform/ipc")>();
   const ok = <T,>(data: T) => Promise.resolve({ status: "ok" as const, data });
@@ -10,8 +12,10 @@ vi.mock("@/platform/ipc", async (original) => {
     ...real,
     commands: {
       ...real.commands,
-      vcsLog: (_repo: string, query: { skip: number; limit: number | null }) =>
-        ok(api.commits.slice(query.skip, query.limit ? query.skip + query.limit : undefined)),
+      vcsLog: (_repo: string, query: { skip: number; limit: number | null }) => {
+        if (query.skip) api.pages++;
+        return ok(api.commits.slice(query.skip, query.limit ? query.skip + query.limit : undefined));
+      },
       vcsLogRefs: () => ok({}),
       vcsBranches: () => ok([]),
       vcsTags: () => ok([]),
@@ -23,6 +27,20 @@ vi.mock("@/platform/ipc", async (original) => {
 vi.mock("../graph", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../graph")>();
   return { ...actual, compactLanes: vi.fn(actual.compactLanes) };
+});
+vi.mock("../logPresentation", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../logPresentation")>();
+  return {
+    ...actual,
+    createLogGraphPresenter: (onReady?: () => void) =>
+      actual.createLogGraphPresenter(onReady, {
+        start() {
+          let left = slices.steps;
+          return () => --left <= 0;
+        },
+        later: (run) => void slices.queue.push(run),
+      }),
+  };
 });
 vi.mock("../multiRoot", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../multiRoot")>();
@@ -80,6 +98,8 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  slices.steps = Infinity;
+  slices.queue.length = 0;
   api.commits = [];
   await reloadLog();
 });
@@ -136,5 +156,73 @@ describe("Git Log paging", () => {
     const author = within(newest).getByText("Author", { exact: true });
     const subject = within(newest).getByText("c0", { exact: true });
     expect(author.compareDocumentPosition(subject) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
+/**
+ * 300 commits on 120 long-lived branches merging into each other, newest first, and the same
+ * history after a merge was made on top of the newest branch (`c300`, merging another tip).
+ */
+function mergingBranches() {
+  const tips = new Map<string, number>();
+  const made: number[][] = [];
+  for (let i = 1; i <= 301; i++) {
+    const branch = `b${(i * 7) % 120}`;
+    const parents = i > 1 ? [tips.get(branch) ?? 1] : [];
+    if (i > 120 && (i === 301 || i % 5 === 0)) {
+      const other = [...tips.values()].find((t) => !parents.includes(t) && t % 3 === i % 3);
+      if (other !== undefined) parents.push(other);
+    }
+    made.push(parents);
+    tips.set(branch, i);
+  }
+  const commit = (i: number, refs: string[]): Commit => ({
+    ...history(1)[0]!,
+    id: `c${i}`,
+    shortId: `c${i}`,
+    summary: `c${i}`,
+    message: `c${i}`,
+    parents: made[i - 1]!.map((p) => `c${p}`),
+    refs,
+  });
+  const list = (top: number) => {
+    const refs = new Map<number, string[]>();
+    for (const [branch, tip] of tips) {
+      const at = tip === 301 ? (top === 301 ? 301 : made[300]![0]!) : tip;
+      refs.set(at, [...(refs.get(at) ?? []), tip === 301 ? `HEAD -> ${branch}` : branch]);
+    }
+    return Array.from({ length: top }, (_, k) => commit(top - k, refs.get(top - k) ?? []));
+  };
+  return { before: list(300), after: list(301) };
+}
+
+describe("Git Log laid out over several tasks", () => {
+  it("shows the previous rows and asks for no page until a Refresh's layout is done", async () => {
+    const { before, after } = mergingBranches();
+    api.commits = before;
+    render(<LogView />);
+    const list = await screen.findByRole("listbox", { name: "Commits" });
+    await waitFor(() => expect(useGitLog.getState()).toMatchObject({ done: true, loading: false }));
+    expect(within(list).getAllByRole("option")[0]).toHaveTextContent("c300");
+
+    // The merge made on top reorders the lanes below it: the list is laid out again, in slices.
+    slices.steps = 1;
+    api.commits = after;
+    api.pages = 0;
+    // The log's Refresh keeps the rows shown while it loads.
+    await act(() => reloadLog({ preserve: true }));
+    expect(useGitLog.getState().commits[0]!.id).toBe("c301");
+    expect(slices.queue.length).toBeGreaterThan(0);
+    const top = () => within(screen.getByRole("listbox", { name: "Commits" })).getAllByRole("option")[0];
+    expect(top()).toHaveTextContent("c300");
+    // Its last rows are not shown yet: the next page waits.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 50)));
+    expect(api.pages).toBe(0);
+
+    await act(async () => {
+      while (slices.queue.length) slices.queue.shift()!();
+    });
+    expect(top()).toHaveTextContent("c301");
+    await waitFor(() => expect(api.pages).toBeGreaterThan(0));
   });
 });
