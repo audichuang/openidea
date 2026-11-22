@@ -42,6 +42,23 @@ const LONG_EDGE_STUB = 2;
 const WINDOW = LONG_EDGE + 4;
 /** Rows between the lane states kept for laying out again from a change deep in the list. */
 const CHECKPOINT = 512;
+/** Lanes a step of laying out goes over before it yields (about a millisecond of work). */
+const STEP_LANES = 8_192;
+/** Rows of cheaper per-row passes between yields. */
+const STEP_ROWS = 2_048;
+
+/**
+ * Work that yields between steps so a caller can spread it over several tasks ({@link
+ * createPagedLogGraph}'s `steps`); `run` does it all at once.
+ */
+export type Steps<T> = Generator<void, T, void>;
+
+export function run<T>(steps: Steps<T>): T {
+  for (;;) {
+    const next = steps.next();
+    if (next.done) return next.value;
+  }
+}
 
 /** A segment as laid out, with what {@link resolveRow} needs to finish it. */
 interface LaidSegment extends GraphSegment {
@@ -140,13 +157,13 @@ interface LayoutIndex {
  * `children` hold), reusing `prev`'s for rows before `from`. Commits appended to a list in log
  * order give no commit above them a child or a parent, so the heads above stay heads, in order.
  */
-function indexLayout(
+function* indexLayout(
   prev: LayoutIndex | null,
   graph: readonly GraphCommit[],
   from: number,
   positions: ReadonlyMap<string, number>,
   children: ReadonlyMap<string, number>,
-): LayoutIndex {
+): Steps<LayoutIndex> {
   const loadedParents = (c: GraphCommit) => c.parents.flatMap((p) => positions.get(p) ?? []);
   const linksOf = (c: GraphCommit) =>
     c.parents.map((p, k) => {
@@ -175,6 +192,7 @@ function indexLayout(
   const { parents, links, waiting } = index;
   const heads: number[] = [];
   for (let j = from; j < graph.length; j++) {
+    if ((j - from) % STEP_ROWS === STEP_ROWS - 1) yield;
     const c = graph[j]!;
     parents[j] = loadedParents(c);
     links[j] = linksOf(c);
@@ -356,10 +374,11 @@ type Snapshot = LaneState & { ranks: number; tips: number };
  * keep their fallback numbers and a `colorKey`, edges keep the parent they lead to, and the last
  * row's arrows into unloaded parents are left to the presentation. `ranks` gets each new lane's
  * place among the lanes in use (see {@link replay}) and `rankRows` its row, `tips` the rows of
- * commits that start a lane; `snaps` gets the state before each row of `snapRows`. Stops before
+ * commits that start a lane; `snaps` gets the state before each row of `snapRows`. Each row goes
+ * to `sink` as it is laid out (a row holds every lane in use, so they are not kept). Stops before
  * row `end`.
  */
-function layOut(
+function* layOut(
   commits: readonly GraphCommit[],
   start: number,
   from: LaneState,
@@ -368,8 +387,9 @@ function layOut(
   rankRows: number[],
   tips: number[],
   snapRows: ReadonlySet<number>,
+  sink: (row: LaidRow) => void,
   end = commits.length,
-) {
+): Steps<Map<number, Snapshot>> {
   const { positions, refAware } = whole;
   const lanes = new LaneSlots(from.lanes);
   let { nextColor, nextIdentity } = from;
@@ -397,9 +417,14 @@ function layOut(
     ranks.push(lanes.usedBelow(index));
     rankRows.push(row);
   };
-  const rows: LaidRow[] = [];
+  let work = 0;
 
   for (let row = start; row < end; row++) {
+    work += lanes.inUse().length + 1;
+    if (work >= STEP_LANES) {
+      work = 0;
+      yield;
+    }
     if (snapRows.has(row))
       snaps.set(row, { lanes: lanes.snapshot(), nextColor, nextIdentity, ranks: ranks.length, tips: tips.length });
     const c = commits[row]!;
@@ -422,11 +447,9 @@ function layOut(
     const widthBefore = lanes.length;
 
     const up: LaidSegment[] = [];
-    const upTargets: string[] = [];
     for (const i of lanes.inUse()) {
       const l = lanes.get(i)!;
       up.push(l.id === c.id && lane !== i ? describe(seg(i, lane, l.color, l.dashed), l) : segments.get(i)!);
-      upTargets.push(l.id);
     }
     for (const m of matching) {
       lanes.clear(m);
@@ -436,11 +459,7 @@ function layOut(
     segments.delete(lane);
 
     const down: LaidSegment[] = [];
-    const downTargets: string[] = [];
-    for (const i of lanes.inUse()) {
-      down.push(segments.get(i)!);
-      downTargets.push(lanes.get(i)!.id);
-    }
+    for (const i of lanes.inUse()) down.push(segments.get(i)!);
 
     c.parents.forEach((p, k) => {
       const dashed = !!c.dashed?.[k];
@@ -460,21 +479,18 @@ function layOut(
           arrow: "down",
           targetRow: -1,
         });
-        downTargets.push(p);
         return;
       }
       // The first parent continues this lane even if another lane also leads to it.
       if (k === 0) {
         putLane(lane, laneOf(color, colorKey));
         down.push(describe(seg(lane, lane, color, dashed), laneOf(color, colorKey)));
-        downTargets.push(p);
         return;
       }
       const existing = lanes.withId(p)[0];
       if (existing !== undefined) {
         const into = lanes.get(existing)!;
         down.push(describe(seg(lane, existing, into.color, dashed), laneOf(into.color, into.colorKey)));
-        downTargets.push(p);
         return;
       }
       const slot = lanes.firstFree();
@@ -482,24 +498,21 @@ function layOut(
       const col = nextColor++;
       putLane(slot, laneOf(col, p));
       down.push(describe(seg(lane, slot, col, dashed), laneOf(col, p)));
-      downTargets.push(p);
     });
 
     lanes.trim();
     const widthAfter = down.reduce((width, segment) => Math.max(width, segment.to + 1), 0);
-    rows.push({
+    sink({
       id: c.id,
       lane,
       color,
       colorKey,
       up,
       down,
-      upTargets,
-      downTargets,
       width: Math.max(widthBefore, widthAfter, lane + 1),
     });
   }
-  return { rows, snaps };
+  return snaps;
 }
 
 const START = { row: 0, lanes: { length: 0, slots: [] }, nextIdentity: 0 };
@@ -539,13 +552,18 @@ const USED = 2;
  * and the lane slots before row `upTo` (`identities` of the lanes in use by slot). Lanes are keyed
  * by the rows and numbers of `index.links`, not by id.
  */
-function replay(
+function* replay(
   index: LayoutIndex,
   upTo: number,
   whole: Layout,
   from: { row: number; lanes: LaneSnapshot; nextIdentity: number } = START,
   keepAt = -1,
-) {
+): Steps<{
+  ranks: number[];
+  slots: Uint8Array;
+  identities: Int32Array;
+  kept: { slots: Uint8Array; identities: Int32Array } | null;
+}> {
   // Lanes are either preferred ones or below the number of lanes in use.
   let size = from.lanes.length + 2;
   for (let row = from.row; row < upTo; row++) size = Math.max(size, whole.layout[row]! + 1) + index.links[row]!.length;
@@ -599,6 +617,7 @@ function replay(
   };
   let kept: { slots: Uint8Array; identities: Int32Array } | null = null;
   for (let row = from.row; row < upTo; row++) {
+    if ((row - from.row) % STEP_ROWS === STEP_ROWS - 1) yield;
     if (row === keepAt) kept = { slots: slots.slice(0, length), identities: identities.slice() };
     const links = index.links[row]!;
     // The commit's lane goes on to its first parent: it stays in use (no counts to update).
@@ -643,60 +662,97 @@ function replay(
  * Decided by the parent, as {@link resolveRow} decides the kind: a lane carried from a kept lane
  * state has the kind it got while its parent was still loaded.
  */
-function withUnloadedArrows(rows: readonly LaidRow[], loaded: (id: string) => boolean): LaidRow[] {
-  const last = rows.at(-1);
-  if (!last) return rows.slice();
+function withUnloadedArrows(last: LaidRow, loaded: (id: string) => boolean): LaidRow {
   const down = last.down.map((s) =>
     s.target !== undefined && s.loadedKind !== "shallow" && !loaded(s.target)
       ? { ...s, arrow: "down" as const, targetRow: -1 }
       : s,
   );
-  return [...rows.slice(0, -1), { ...last, down }];
+  return { ...last, down };
 }
 
-type Run = { lane: number; from: number; to: number; start: number; end: number };
+/** The commit a laid out segment leads to (rows from {@link layOut} keep no targets of their own). */
+const targetOf = (s: LaidSegment) => s.target!;
 
 /**
- * `hideLongEdges` over rows `[w, w + raw.length)` of a longer list, `raw` being its rows from `w`
- * on and `entering` its runs open before row `w` (lane → first row), as that sweep holds them there.
- * Same output rows; also returns the runs open before each row of `snapRows` (in `[w, end)`) and
- * where the runs of `entering` ended. `minLength` Infinity draws every edge (Show Long Edges on).
+ * `hideLongEdges` over rows `[w, …)` of a longer list, given one row at a time (`push`), `entering`
+ * being its runs open before row `w` (lane → first row), as that sweep holds them there. `finish`
+ * ends the list at row `n` (applying `last` to its last row) and returns the same rows as
+ * `hideLongEdges`, the runs open before each row of `snapRows` and where the runs of `entering`
+ * ended. A row is decided once enough rows follow it to tell whether a run through it is long, so
+ * only that many rows with every lane in use are held. `minLength` Infinity draws every edge (Show
+ * Long Edges on).
  */
 function hideLongEdgesFrom(
-  raw: readonly LaidRow[],
   w: number,
   entering: ReadonlyMap<number, number>,
   snapRows: ReadonlySet<number>,
   minLength: number,
 ) {
-  const n = w + raw.length;
-  const starts = new Map<number, Run[]>();
-  const ends = new Map<number, Run[]>();
-  const seeds: Run[] = [];
-  const enteringEnds = new Map<number, number>();
-  const record = (events: Map<number, Run[]>, at: number, run: Run) => {
-    const existing = events.get(at);
-    if (existing) existing.push(run);
-    else events.set(at, [run]);
-  };
-  const finish = (lane: number, start: number, end: number) => {
-    if (entering.get(lane) === start && !enteringEnds.has(lane)) enteringEnds.set(lane, end);
-    if (end - start < minLength) return;
-    const from = start + LONG_EDGE_STUB;
-    const to = end - LONG_EDGE_STUB;
-    const run = { lane, from, to, start, end };
-    // Entered the sweep's hidden runs above row `w`: carried in while it still covers row `w`.
-    if (from - 1 < w) {
-      if (to < w) return;
-      seeds.push(run);
-    } else record(starts, from - 1, run);
-    record(ends, to, run);
-  };
-
+  // A run open through `delay` rows is long, and ends more than two rows below the first of them;
+  // the last row is held for `finish` in any case.
+  const delay = minLength === Infinity ? 2 : minLength + LONG_EDGE_STUB + 1;
   const runs = new Map(entering);
+  /** Runs that ended, by lane, the oldest first, from the first one the decided rows still meet. */
+  const ended = new Map<number, Array<{ start: number; end: number }>>();
+  /** The down arrow at the start of each long run still open, whose target row is its end. */
+  const arrows = new Map<number, LaidSegment>();
   const snaps = new Map<number, Map<number, number>>();
-  for (const [i, row] of raw.entries()) {
-    const index = w + i;
+  const enteringEnds = new Map<number, number>();
+  const held: LaidRow[] = [];
+  const rows: LaidRow[] = [];
+  let pushed = w;
+
+  const close = (lane: number, start: number, end: number) => {
+    if (entering.get(lane) === start && !enteringEnds.has(lane)) enteringEnds.set(lane, end);
+    const list = ended.get(lane);
+    if (list) list.push({ start, end });
+    else ended.set(lane, [{ start, end }]);
+    const arrow = arrows.get(lane);
+    if (arrow) {
+      arrow.targetRow = end;
+      arrows.delete(lane);
+    }
+  };
+  /** The run of `lane` through row `index`, if it is long; `end` undefined while it is open. */
+  const longRun = (lane: number, index: number) => {
+    const list = ended.get(lane);
+    while (list?.length && list[0]!.end <= index) list.shift();
+    const closed = list?.[0];
+    if (closed && closed.start <= index) return closed.end - closed.start >= minLength ? closed : undefined;
+    const start = runs.get(lane);
+    return start !== undefined && start <= index ? { start, end: undefined } : undefined;
+  };
+  const decide = (row: LaidRow, index: number): LaidRow => {
+    const filter = (segments: LaidSegment[], up: boolean) => {
+      const visible: LaidSegment[] = [];
+      const targets: string[] = [];
+      for (const s of segments) {
+        const run = s.from === s.to && minLength !== Infinity ? longRun(s.from, index) : undefined;
+        let shown = s;
+        if (run) {
+          const { start, end } = run;
+          // The stubs next to each end stay; the arrows point at the row past the other end.
+          const from = start + LONG_EDGE_STUB;
+          const to = end === undefined ? Infinity : end - LONG_EDGE_STUB;
+          if (index >= from && index < to) continue;
+          if (up && index === to) shown = { ...s, arrow: "up", targetRow: start - 1 };
+          else if (!up && index === from - 1) {
+            shown = { ...s, arrow: "down", targetRow: end ?? -1 };
+            if (end === undefined) arrows.set(s.from, shown);
+          }
+        }
+        visible.push(shown);
+        targets.push(targetOf(s));
+      }
+      return [visible, targets] as const;
+    };
+    const [up, upTargets] = filter(row.up, true);
+    const [down, downTargets] = filter(row.down, false);
+    return { ...row, up, down, upTargets, downTargets };
+  };
+  const push = (row: LaidRow) => {
+    const index = pushed++;
     if (snapRows.has(index)) snaps.set(index, new Map(runs));
     const outgoing = new Set<number>();
     for (const s of row.down) if (s.from === s.to && s.from !== row.lane) outgoing.add(s.from);
@@ -704,38 +760,40 @@ function hideLongEdgesFrom(
     for (const s of row.up) if (s.from === s.to && outgoing.has(s.from)) through.add(s.from);
     for (const [lane, start] of runs) {
       if (through.has(lane)) continue;
-      finish(lane, start, index);
+      close(lane, start, index);
       runs.delete(lane);
     }
     for (const lane of through) if (!runs.has(lane)) runs.set(lane, index);
-  }
-  for (const [lane, start] of runs) finish(lane, start, n);
+    held.push(row);
+    while (held.length >= delay) {
+      const at = pushed - held.length;
+      rows.push(decide(held.shift()!, at));
+    }
+  };
+  const finish = (n: number, last?: (row: LaidRow) => LaidRow) => {
+    if (last && held.length) held[held.length - 1] = last(held.at(-1)!);
+    for (const [lane, start] of runs) close(lane, start, n);
+    runs.clear();
+    for (let at = pushed - held.length; held.length; at++) rows.push(decide(held.shift()!, at));
+    return { rows, snaps, enteringEnds };
+  };
+  return { push, finish };
+}
 
-  if (!starts.size && !seeds.length) return { rows: raw.slice(), snaps, enteringEnds };
-  const hidden = new Map<number, Run>(seeds.map((run) => [run.lane, run]));
-  const rows = raw.map((row, i): LaidRow => {
-    const index = w + i;
-    for (const run of starts.get(index) ?? []) hidden.set(run.lane, run);
-    if (!hidden.size) return row;
-    const filter = (segments: LaidSegment[], targets: string[] | undefined, up: boolean) => {
-      const visible: LaidSegment[] = [];
-      const visibleTargets = targets ? ([] as string[]) : undefined;
-      for (const [k, s] of segments.entries()) {
-        const run = s.from === s.to ? hidden.get(s.from) : undefined;
-        if (run && index >= run.from && index < run.to) continue;
-        const targetRow =
-          run && (up && index === run.to ? run.start - 1 : !up && index === run.from - 1 ? run.end : undefined);
-        visible.push(targetRow === undefined ? s : { ...s, arrow: up ? "up" : "down", targetRow });
-        visibleTargets?.push(targets![k]!);
-      }
-      return [visible, visibleTargets] as const;
-    };
-    const [up, upTargets] = filter(row.up, row.upTargets, true);
-    const [down, downTargets] = filter(row.down, row.downTargets, false);
-    for (const run of ends.get(index) ?? []) hidden.delete(run.lane);
-    return { ...row, up, down, upTargets, downTargets };
-  });
-  return { rows, snaps, enteringEnds };
+/**
+ * `straightenLaneChanges(compactLanes(rows)).slice(from)`, a stretch of rows at a time: a row of
+ * the result reads the row on each side of it.
+ */
+function* finishRows(rows: readonly LaidRow[], from: number): Steps<LaidRow[]> {
+  const out: LaidRow[] = [];
+  for (let a = from; a < rows.length; a += STEP_ROWS) {
+    if (a > from) yield;
+    const b = Math.min(rows.length, a + STEP_ROWS);
+    const context = a > 0 ? 1 : 0;
+    const done = straightenLaneChanges(compactLanes(rows.slice(a - context, b + 1)));
+    for (let i = a; i < b; i++) out.push(done[i - a + context] as LaidRow);
+  }
+  return out;
 }
 
 /** A laid out graph: the presented rows, and what laying it out again from a row needs. */
@@ -853,13 +911,13 @@ interface Changed {
 }
 
 /** The lanes of `cp` numbered for `whole`'s layout, or the first row whose lanes would change. */
-function lanesAt(
+function* lanesAt(
   prev: Paged,
   cp: Checkpoint,
   latest: boolean,
   index: LayoutIndex | null,
   whole: Layout,
-): LaneSnapshot | Changed {
+): Steps<LaneSnapshot | Changed> {
   // Without refs no lane depends on the layout. The last checkpoint is numbered for the last one.
   if (!whole.refAware || !index) return cp.lanes;
   const moved = (row: number) => preferredLane(prev.layout, row) !== preferredLane(whole.layout, row);
@@ -868,7 +926,7 @@ function lanesAt(
     while (i < cp.tips && !moved(prev.tips[i]!)) i++;
     if (i === cp.tips) return cp.lanes;
   }
-  const { ranks, slots, identities } = replay(index, cp.row, whole);
+  const { ranks, slots, identities } = yield* replay(index, cp.row, whole);
   const differs = ranks.findIndex((r, i) => r !== prev.ranks[i]);
   if (differs >= 0) return { changed: prev.rankRows[differs]! };
   if (ranks.length !== cp.ranks) return { changed: 0 };
@@ -897,13 +955,14 @@ function renumbered(lanes: LaneSnapshot, slots: Uint8Array, identities: ArrayLik
  * The commits before the checkpoint and `WINDOW` rows after it must be `prev`'s. `numbered` is the
  * checkpoint's lanes numbered for `input`'s layout, when the caller has them.
  */
-function resume(prev: Paged, index: number, input: Input, numbered?: LaneSnapshot): Paged | Changed {
+function* resume(prev: Paged, index: number, input: Input, numbered?: LaneSnapshot): Steps<Paged | Changed> {
   const cp = prev.checkpoints[index]!;
   const { graph, positions, refAware, layout, longEdges } = input;
   const c = cp.row;
   const n = graph.length;
   const whole = { positions, layout, refAware };
-  const lanes = numbered ?? lanesAt(prev, cp, cp.numbered && index === prev.checkpoints.length - 1, input.index, whole);
+  const lanes =
+    numbered ?? (yield* lanesAt(prev, cp, cp.numbered && index === prev.checkpoints.length - 1, input.index, whole));
   if ("changed" in lanes) return lanes;
   const ranks = prev.ranks.slice(0, cp.ranks);
   const rankRows = prev.rankRows.slice(0, cp.ranks);
@@ -920,13 +979,6 @@ function resume(prev: Paged, index: number, input: Input, numbered?: LaneSnapsho
   // A periodic state laid out again stays one.
   for (const p of periodicKept) if (snapRows.has(p.row)) periodic.add(p.row);
   const from = { lanes, nextColor: cp.nextColor, nextIdentity: cp.nextIdentity };
-  const laid = layOut(graph, c, from, whole, ranks, rankRows, tips, snapRows);
-  // The two rows kept before the window are context only: lanes started on them keep their place.
-  const outFrom = c > 0 ? c + 2 : 0;
-  const kept = below(rankRows, outFrom);
-  if (kept !== below(prev.rankRows, outFrom)) return { changed: c };
-  for (let i = cp.ranks; i < kept; i++) if (ranks[i] !== prev.ranks[i]) return { changed: c };
-
   const slotOf = new Map<number, number>();
   const laneOf = new Map<number, Lane>();
   for (const [slot, lane] of lanes.slots)
@@ -936,13 +988,14 @@ function resume(prev: Paged, index: number, input: Input, numbered?: LaneSnapsho
     }
   const entering = new Map<number, number>();
   for (const [identity, start] of cp.runs) entering.set(slotOf.get(identity)!, start);
-  const hidden = hideLongEdgesFrom(
-    withUnloadedArrows(laid.rows, (id) => positions.has(id)),
-    c,
-    entering,
-    snapRows,
-    longEdges ? Infinity : LONG_EDGE,
-  );
+  const hide = hideLongEdgesFrom(c, entering, snapRows, longEdges ? Infinity : LONG_EDGE);
+  const snaps = yield* layOut(graph, c, from, whole, ranks, rankRows, tips, snapRows, hide.push);
+  // The two rows kept before the window are context only: lanes started on them keep their place.
+  const outFrom = c > 0 ? c + 2 : 0;
+  const kept = below(rankRows, outFrom);
+  if (kept !== below(prev.rankRows, outFrom)) return { changed: c };
+  for (let i = cp.ranks; i < kept; i++) if (ranks[i] !== prev.ranks[i]) return { changed: c };
+  const hidden = hide.finish(n, (row) => withUnloadedArrows(row, (id) => positions.has(id)));
 
   // Rows above the window are final but for the down arrows of runs open there.
   const out = prev.rows.slice(0, outFrom);
@@ -966,8 +1019,7 @@ function resume(prev: Paged, index: number, input: Input, numbered?: LaneSnapsho
   }
 
   // compactLanes row r reads rows r ± 1, straightenLaneChanges as well: drop one context row each.
-  const skip = c > 0 ? 1 : 0;
-  const presented = straightenLaneChanges(compactLanes(hidden.rows).slice(skip)).slice(skip) as LaidRow[];
+  const presented = yield* finishRows(hidden.rows, c > 0 ? 2 : 0);
   const rows = out;
   for (const row of presented) rows.push(row);
   const arrowRows = prev.arrowRows.slice(0, below(prev.arrowRows, outFrom));
@@ -979,7 +1031,7 @@ function resume(prev: Paged, index: number, input: Input, numbered?: LaneSnapsho
   let r = outFrom;
   for (const row of rowsAt) {
     for (const end = Math.min(row + 2, n); r < end; r++) width = Math.max(width, rows[r]!.width);
-    const snap = laid.snaps.get(row)!;
+    const snap = snaps.get(row)!;
     const identityAt = new Map<number, number>();
     for (const [slot, lane] of snap.lanes.slots) if (lane) identityAt.set(slot, lane.identity);
     checkpoints.push({
@@ -1039,7 +1091,7 @@ function sameOrder(a: LaneSnapshot, b: LaneSnapshot, identities: number, sameCol
  * rows below that (arrows moved by `shift`), then lays out again where `prev`'s list ended. Null
  * when no checkpoint matches.
  */
-function resync(prev: Paged, input: Input, shift: number, tail: number): Paged | null {
+function* resync(prev: Paged, input: Input, shift: number, tail: number): Steps<Paged | null> {
   const { graph, positions, refAware, layout, longEdges } = input;
   const n = graph.length;
   const n0 = prev.graph.length;
@@ -1055,7 +1107,7 @@ function resync(prev: Paged, input: Input, shift: number, tail: number): Paged |
     // One try: the first checkpoint below the changes, with the rows after it to compare.
     if (at + 2 * WINDOW > shared) return null;
     const latest = cp.numbered && cpIndex === prev.checkpoints.length - 1;
-    const old = lanesAt(prev, cp, latest, prev.index, oldWhole);
+    const old = yield* lanesAt(prev, cp, latest, prev.index, oldWhole);
     if ("changed" in old) return null;
 
     const ranks: number[] = [];
@@ -1064,8 +1116,20 @@ function resync(prev: Paged, input: Input, shift: number, tail: number): Paged |
     const snapRows = new Set<number>([at]);
     for (let row = CHECKPOINT; row < at; row += CHECKPOINT) snapRows.add(row);
     const end = at + WINDOW;
-    const laid = layOut(graph, 0, { ...START, nextColor: 0 }, whole, ranks, rankRows, tips, snapRows, end);
-    const snap = laid.snaps.get(at)!;
+    const hide = hideLongEdgesFrom(0, new Map(), snapRows, longEdges ? Infinity : LONG_EDGE);
+    const snaps = yield* layOut(
+      graph,
+      0,
+      { ...START, nextColor: 0 },
+      whole,
+      ranks,
+      rankRows,
+      tips,
+      snapRows,
+      hide.push,
+      end,
+    );
+    const snap = snaps.get(at)!;
     const identities = snap.nextIdentity - cp.nextIdentity;
     // The same lanes in the same order (the layout may number them otherwise)...
     // A lane through the old head now colours like a commit made on top: the rows kept below
@@ -1101,12 +1165,12 @@ function resync(prev: Paged, input: Input, shift: number, tail: number): Paged |
               .map((p) => p.row + shift)
               .filter((row) => row <= shared - WINDOW),
           );
-    const later = replay(input.index!, shared, whole, { row: at, ...snap }, restart);
+    const later = yield* replay(input.index!, shared, whole, { row: at, ...snap }, restart);
     const before = below(prev.rankRows, shared - shift);
     if (later.ranks.length !== before - cp.ranks || later.ranks.some((rank, i) => rank !== prev.ranks[cp.ranks + i]))
       return null;
     // ... and the same long-edge runs through them.
-    const hidden = hideLongEdgesFrom(laid.rows, 0, new Map(), snapRows, longEdges ? Infinity : LONG_EDGE);
+    const hidden = hide.finish(end);
     const runs = hidden.snaps.get(at)!;
     const placeOf = new Map<number, number>();
     for (const [slot, lane] of old.slots) if (lane) placeOf.set(lane.identity, order.b.get(slot)!);
@@ -1118,7 +1182,7 @@ function resync(prev: Paged, input: Input, shift: number, tail: number): Paged |
       return null;
 
     // The rows above `at + 2`; down arrows of runs still open at `end` lead where `prev`'s did.
-    const rows = straightenLaneChanges(compactLanes(hidden.rows)).slice(0, at + 2) as LaidRow[];
+    const rows = (yield* finishRows(hidden.rows, 0)).slice(0, at + 2);
     for (const [r, row] of rows.entries())
       for (const [i, s] of row.down.entries()) {
         if (s.arrow !== "down" || s.targetRow !== end) continue;
@@ -1142,7 +1206,7 @@ function resync(prev: Paged, input: Input, shift: number, tail: number): Paged |
       return width;
     };
     for (const row of [...snapRows].sort((a, b) => a - b)) {
-      const fresh = laid.snaps.get(row)!;
+      const fresh = snaps.get(row)!;
       const identityAt = new Map<number, number>();
       for (const [slot, lane] of fresh.lanes.slots) if (lane) identityAt.set(slot, lane.identity);
       checkpoints.push({
@@ -1195,7 +1259,7 @@ function resync(prev: Paged, input: Input, shift: number, tail: number): Paged |
     // `prev`'s rows end where its list did: lay out the rest as a page.
     const last = synced.checkpoints.findIndex((p) => p.row === restart);
     const lanes = later.kept && renumbered(synced.checkpoints[last]!.lanes, later.kept.slots, later.kept.identities);
-    const next = resume(synced, last, input, lanes ?? undefined);
+    const next = yield* resume(synced, last, input, lanes ?? undefined);
     return "changed" in next ? null : next;
   }
   return null;
@@ -1300,7 +1364,9 @@ function toResult(paged: Paged): PagedLogGraph {
  * rows resolved one at a time through `row`. Each call lays out again only from the first row the
  * previous call's commits do not give (a page appended, or a Refresh with a change somewhere).
  * Returns null when the graph has to come from `presentLogGraph` (filtered merges are pruned, or
- * two commits share a key). `reset` drops what the previous call kept.
+ * two commits share a key). `reset` drops what the previous call kept. `steps` is `present` in
+ * steps: what it keeps changes only once they are all taken, and a call to `steps` or `present`
+ * before then would start from what the previous completed call kept, so finish or drop it first.
  */
 export function createPagedLogGraph() {
   let paged: Paged | null = null;
@@ -1310,7 +1376,7 @@ export function createPagedLogGraph() {
     result = null;
     return null;
   };
-  const present = (all: readonly RepoCommit[], options: LogOptions): PagedLogGraph | null => {
+  function* steps(all: readonly RepoCommit[], options: LogOptions): Steps<PagedLogGraph | null> {
     const { longEdges } = options;
     if (paged && result && paged.all === all && paged.longEdges === longEdges) return result;
     const prev = paged && paged.longEdges === longEdges ? paged : emptyPaged(longEdges);
@@ -1318,7 +1384,11 @@ export function createPagedLogGraph() {
     const n = all.length;
     let same = 0;
     while (same < n0 && same < n && prev.all[same] === all[same]) same++;
-    const added = all.slice(same).map(graphCommit);
+    const added: GraphCommit[] = [];
+    for (let i = same; i < n; i++) {
+      if ((i - same) % STEP_ROWS === STEP_ROWS - 1) yield;
+      added.push(graphCommit(all[i]!));
+    }
     if (added.some(prunable)) return reset();
     // Commits the store replaced (a Refresh) that the graph passes read the same.
     let unchanged = same;
@@ -1330,6 +1400,7 @@ export function createPagedLogGraph() {
     const positions = extending ? prev.positions : new Map<string, number>();
     const children = extending ? prev.children : new Map<string, number>();
     for (let i = extending ? n0 : 0; i < n; i++) {
+      if (i % STEP_ROWS === STEP_ROWS - 1) yield;
       const c = graph[i]!;
       if (positions.has(c.id)) return reset();
       positions.set(c.id, i);
@@ -1346,7 +1417,7 @@ export function createPagedLogGraph() {
       return (result = toResult(paged));
     }
     const index = refAware
-      ? indexLayout(prev.index, graph, extending && prev.refAware ? n0 : 0, positions, children)
+      ? yield* indexLayout(prev.index, graph, extending && prev.refAware ? n0 : 0, positions, children)
       : null;
     const { layout, owner } = index ? layoutChains(graph, index.parents, index.heads) : { layout: [], owner: () => "" };
     const input = { all, graph, positions, children, refAware, longEdges, layout, owner, index };
@@ -1359,7 +1430,7 @@ export function createPagedLogGraph() {
       let tail = n;
       while (tail > 0 && tail - 1 - shift >= 0 && sameGraphCommit(prev.graph[tail - 1 - shift]!, graph[tail - 1]!))
         tail--;
-      const synced = resync(prev, input, shift, tail);
+      const synced = yield* resync(prev, input, shift, tail);
       if (synced) {
         paged = synced;
         return (result = toResult(paged));
@@ -1367,13 +1438,14 @@ export function createPagedLogGraph() {
     }
     for (;;) {
       const index = prev.checkpoints.findLastIndex((cp) => cp.row === 0 || cp.row <= first - WINDOW);
-      const next = resume(prev, index, input);
+      const next = yield* resume(prev, index, input);
       if (!("changed" in next)) {
         paged = next;
         return (result = toResult(paged));
       }
       first = Math.min(first, next.changed);
     }
-  };
-  return { present, reset };
+  }
+  const present = (all: readonly RepoCommit[], options: LogOptions) => run(steps(all, options));
+  return { present, steps, reset };
 }
