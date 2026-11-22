@@ -11,14 +11,7 @@ import { bindingsFor } from "@/platform/keymap";
 import { activeEditor } from "@/editor/api";
 import { docBackend, type MemoryBackend } from "@/editor/core/backend";
 import { subscribeDiagnostics } from "@/editor/lsp/diagnostics";
-import type {
-  Branch,
-  ChangedFile,
-  Commit,
-  CompletionItem,
-  CompletionKind,
-  LogQuery,
-} from "@/bindings";
+import type { Branch, ChangedFile, Commit, CompletionItem, CompletionKind, LogQuery } from "@/bindings";
 import { openProject } from "@/platform/project";
 import { setInvokeRoute } from "@/platform/tauriCore";
 import { editorService } from "./contributions";
@@ -539,7 +532,6 @@ export function installPerfProbe(): () => void {
     resetPrRefreshStats() {
       prStats = { logCalls: 0, commitsFetched: 0, countCalls: 0, diffCalls: 0 };
     },
-    editorText: () => activeEditor()?.view.state.doc.toString() ?? null,
     insertAfter(after, text) {
       const view = requireView();
       const at = view.state.doc.toString().indexOf(after);
