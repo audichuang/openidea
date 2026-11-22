@@ -1112,6 +1112,7 @@
   "Commit Message Inspections": "提交消息检查",
   "Commit Options": "提交选项",
   "Commit message": "提交消息",
+  "Commit messages": "提交消息列表",
   "Edit Commit Message": "编辑提交消息",
   "Edit message for commit {hash}": "编辑提交 {hash} 的消息",
   "Edit message for commit {hash} by {author}": "编辑 {author} 的提交 {hash} 的消息",

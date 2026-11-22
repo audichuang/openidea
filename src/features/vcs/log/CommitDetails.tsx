@@ -635,7 +635,7 @@ const CommitMessageList = memo(function CommitMessageList({
 }: {
   commits: readonly Commit[];
   className: string;
-  /** Names the list as a region (file history's message pane). */
+  /** Names the list (file history's message pane); the Git Log's defaults to "Commit messages". */
   label?: string;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -796,8 +796,8 @@ const CommitMessageList = memo(function CommitMessageList({
       ref={scrollRef}
       tabIndex={0}
       className={clsx(className, styles.messageBoxVirtual)}
-      role={label ? "region" : undefined}
-      aria-label={label}
+      role="region"
+      aria-label={label ?? tx("Commit messages")}
       onKeyDown={onKeyDown}
       onCopy={onCopy}
       onContextMenu={onContextMenu}
