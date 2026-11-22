@@ -168,7 +168,6 @@ export function CommitList({ fileHistory = false }: { fileHistory?: boolean }) {
   const [presentGraph] = useState(createLogGraphPresenter);
   const {
     commits,
-    rows,
     row: graphRow,
     linear,
     collapsed,
