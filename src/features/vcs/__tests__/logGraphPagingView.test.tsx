@@ -215,6 +215,9 @@ describe("Git Log laid out over several tasks", () => {
     expect(slices.queue.length).toBeGreaterThan(0);
     const top = () => within(screen.getByRole("listbox", { name: "Commits" })).getAllByRole("option")[0];
     expect(top()).toHaveTextContent("c300");
+    // The Git Log's loading indicator tells the rows are about to change.
+    const laying = () => document.querySelector("[data-laying-out]");
+    expect(laying()).toHaveTextContent("Loading…");
     // Its last rows are not shown yet: the next page waits.
     await act(() => new Promise((resolve) => setTimeout(resolve, 50)));
     expect(api.pages).toBe(0);
@@ -223,6 +226,7 @@ describe("Git Log laid out over several tasks", () => {
       while (slices.queue.length) slices.queue.shift()!();
     });
     expect(top()).toHaveTextContent("c301");
+    expect(laying()).toBeNull();
     await waitFor(() => expect(api.pages).toBeGreaterThan(0));
   });
 });
