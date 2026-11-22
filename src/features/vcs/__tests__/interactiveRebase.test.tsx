@@ -415,6 +415,31 @@ describe("InteractiveRebaseDialog", () => {
     expect(screen.queryByRole("button", { name: `Action for ${firstCommit.id.slice(0, 8)}` })).toBeNull();
   });
 
+  it("keeps the rows next to the focused row mounted so Tab and Shift+Tab reach the neighbors after a scroll", async () => {
+    const { commits, list } = await openRebase(5000);
+    const trigger = (i: number) => screen.queryByRole("button", { name: `Action for ${commits[i]!.id.slice(0, 8)}` });
+    const focusables = () => Array.from(list.querySelectorAll<HTMLElement>("button"));
+
+    trigger(0)!.focus();
+    scrollToBottom(list);
+    await waitFor(() => expect(within(list).getByText("Commit message #5000")).toBeInTheDocument());
+
+    expect(trigger(0)!.isConnected).toBe(true);
+    const next = trigger(1);
+    expect(next).not.toBeNull();
+    const row1First = next!.closest('[role="listitem"]')!.querySelector<HTMLElement>("button")!;
+    const order = focusables();
+    expect(order[order.indexOf(trigger(0)!) + 1]).toBe(row1First);
+
+    // Landing on the neighbor re-pins around it, so both of its own neighbors are mounted for the next Tab/Shift+Tab.
+    act(() => {
+      next!.focus();
+    });
+    expect(document.activeElement).toBe(next);
+    expect(trigger(0)).not.toBeNull();
+    expect(trigger(2)).not.toBeNull();
+  });
+
   it("keeps a focused commit row mounted across scroll while its reword message stays in the details pane", async () => {
     const { commits, list } = await openRebase(200);
     const firstCommit = commits[0]!;
