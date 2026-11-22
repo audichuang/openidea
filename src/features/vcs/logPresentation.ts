@@ -41,8 +41,9 @@ export function presentLogGraph(
 }
 
 /**
- * `presentLogGraph`, reusing the previous call's layout when a page of commits was appended (see
- * `pagedLogGraph.ts`). Rows are resolved one at a time: draw `row(index)`, not `rows[index]`.
+ * `presentLogGraph`, reusing the previous call's layout when a page of commits was appended or a
+ * Refresh changed little (see `pagedLogGraph.ts`). Rows are resolved one at a time: draw
+ * `row(index)`, not `rows[index]`.
  */
 export function createLogGraphPresenter() {
   type Full = ReturnType<typeof presentLogGraph>;
@@ -51,12 +52,31 @@ export function createLogGraphPresenter() {
   let last: { result: PagedLogGraph; presented: Presented } | null = null;
   return (...args: Parameters<typeof presentLogGraph>): Presented => {
     const [all, options, fragments] = args;
-    const result = pagesLogGraph(options, fragments) ? paged(all, options) : null;
+    const result = pagesLogGraph(options, fragments) ? paged.present(all, options) : paged.reset();
     if (result) {
       if (last?.result !== result) last = { result, presented: { ...result, linear: null, collapsed: null } };
       return last.presented;
     }
+    last = null;
     const full = presentLogGraph(...args);
-    return { ...full, row: (index: number): GraphRow | undefined => full.rows[index] };
+    let index: { rows: Map<string, number[]>; children: Map<string, number> } | undefined;
+    const indexed = () => {
+      if (index) return index;
+      index = { rows: new Map(), children: new Map() };
+      for (const [i, c] of full.graph.entries()) {
+        const rows = index.rows.get(c.id);
+        if (rows) rows.push(i);
+        else index.rows.set(c.id, [i]);
+        for (const p of c.parents) index.children.set(p, (index.children.get(p) ?? 0) + 1);
+      }
+      return index;
+    };
+    return {
+      ...full,
+      width: full.rows.reduce((width, row) => Math.max(width, row.width), 0),
+      row: (index: number): GraphRow | undefined => full.rows[index],
+      rowsOf: (id: string) => indexed().rows.get(id) ?? [],
+      childCount: (id: string) => indexed().children.get(id) ?? 0,
+    };
   };
 }
