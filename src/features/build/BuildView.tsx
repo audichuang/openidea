@@ -55,6 +55,7 @@ import {
   findOutputLinks,
   horizontalColumnWindow,
   measureMonoCharWidth,
+  canvasTextMeasure,
   revealScrollLeft,
   sliceRangesInWindow,
   visibleCharWindow,
@@ -501,6 +502,7 @@ function BuildConsole({ font }: { font: ConsoleFont }) {
     const left = revealScrollLeft(text, current.start, current.end, el, font.size, {
       charWidthPx: charWidthRef.current,
       paddingLeftPx: BUILD_PADDING_LEFT_PX,
+      measure: canvasTextMeasure(el),
     });
     if (left === null) return;
     el.scrollLeft = left;
