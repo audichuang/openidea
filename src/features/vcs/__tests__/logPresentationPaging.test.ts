@@ -115,7 +115,7 @@ describe("Git Log deep paging", () => {
 
   // The Git Log draws from `row(index)`; nothing reads a whole-list width, so no page computes one.
   it("returns only what the Git Log reads, paged or not", () => {
-    const fields = ["childCount", "collapsed", "commits", "graph", "linear", "row", "rows", "rowsOf"];
+    const fields = ["childCount", "collapsed", "commits", "graph", "linear", "pending", "row", "rows", "rowsOf"];
     const present = createLogGraphPresenter();
     const all = history(1_000);
     expect(Object.keys(present(all, DEFAULT_LOG_OPTIONS, fragments, new Set())).sort()).toEqual(fields);
