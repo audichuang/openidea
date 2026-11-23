@@ -204,8 +204,9 @@ async function expectWholeCurrentMatchOnScreen(page: Page) {
     .toBe("last-item");
 }
 
+// Fails now and then in Fork CI only, scrolled to the match's first row (#474).
 for (const width of [300, 700])
-  test(`a find match across a split of a 16 MB line in a ${width} px pane is marked and shown whole`, async ({
+  test.fixme(`a find match across a split of a 16 MB line in a ${width} px pane is marked and shown whole`, async ({
     page,
   }) => {
     await page.setViewportSize({ width, height: 900 });
