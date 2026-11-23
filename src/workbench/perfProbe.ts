@@ -149,6 +149,15 @@ export interface PerfProbe {
   fakeInteractiveRebase(commits: number): Commit | null;
   /** Makes `commits` new commits on top of the fake Git Log's newest one, which hands them its refs. */
   fakeGitLogCommit(commits: number): void;
+  /**
+   * A Git Log of `total` commits on `lanes` long-lived branches that merge into each other (the
+   * `graph-extreme` fixture's shape), the newest a merge on the checked-out branch that is not
+   * made yet: `vcs_log` answers without it and `loaded` of its commits are put in the log at
+   * once. `fakeGitLogMergeOnTop` then makes that merge, as a commit or a fetch would.
+   */
+  fakeGitLogBranches(total: number, lanes: number, loaded: number): Promise<void>;
+  /** Makes the merge `fakeGitLogBranches` held back; its summary is `merge on top`. */
+  fakeGitLogMergeOnTop(): void;
   /** Opens an empty Run console session before streaming starts so UI (e.g. Find) can mount first. */
   openConsoleSession(mode: "long" | "no-lf"): Promise<string>;
   /** Streams long-line or no-newline output into a Run console session. */
@@ -284,6 +293,8 @@ type Route = (cmd: string, args: unknown) => Promise<unknown> | null;
 const routes = new Map<string, Route>();
 /** The fake Git Log's history, newest first (`fakeGitLog`). */
 let fakeLog: Commit[] = [];
+/** `fakeGitLogBranches`' history without and with the merge made on top. */
+let branchesLog: { before: Commit[]; after: Commit[]; merged: boolean } | null = null;
 
 /** Installs (or with `null` removes) one fake backend; the first that answers a command wins. */
 function setRoute(name: string, next: Route | null) {
@@ -576,6 +587,91 @@ export function installPerfProbe(): () => void {
         return null;
       });
       return chronological[0]!;
+    },
+    async fakeGitLogBranches(total, lanes, loaded) {
+      const id = (n: number) => n.toString(16).padStart(40, "0");
+      let seed = 11;
+      const random = () => {
+        seed = (seed + 0x6d2b79f5) >>> 0;
+        let t = seed;
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+      // Oldest first, as `mk-batch-fixtures.py` makes them: a commit on a random branch, about
+      // one in five also merging another branch's tip.
+      const tips = new Map<string, number>();
+      const made: Array<{ branch: string; parents: number[] }> = [];
+      for (let i = 1; i <= total; i++) {
+        const lane = i <= lanes ? (i - 1) % lanes : Math.floor(random() * lanes);
+        const branch = lane ? `feature/${lane}` : "main";
+        const parents = i > 1 ? [tips.get(branch) ?? 1] : [];
+        const last = i === total;
+        if (tips.size > 3 && i > lanes && (last || random() < 0.19)) {
+          const others = [...tips.values()].filter((t) => !parents.includes(t));
+          parents.push(others[Math.floor(random() * others.length)]!);
+        }
+        made.push({ branch, parents });
+        tips.set(branch, i);
+      }
+      const moving = made[total - 1]!.branch;
+      const toCommit = (i: number, refs: string[]): Commit => {
+        const { branch, parents } = made[i - 1]!;
+        const time = Date.UTC(2026, 10, 5) - (total - i) * 60_000;
+        const summary = i === total ? "merge on top" : `${branch} work ${i}`;
+        return {
+          id: id(i),
+          shortId: id(i).slice(-8),
+          parents: parents.map(id),
+          author: "Perf",
+          email: "p@x",
+          committer: "Perf",
+          committerEmail: "p@x",
+          timeMs: time,
+          commitTimeMs: time,
+          summary,
+          message: summary,
+          messageTruncated: false,
+          refs,
+        };
+      };
+      const history = (withTop: boolean) => {
+        const refs = new Map<number, string[]>();
+        for (const [branch, tip] of tips) {
+          const at = branch === moving && !withTop ? made[total - 1]!.parents[0]! : tip;
+          refs.set(at, [...(refs.get(at) ?? []), branch === moving ? `HEAD -> ${branch}` : branch]);
+        }
+        const out: Commit[] = [];
+        for (let i = withTop ? total : total - 1; i >= 1; i--) out.push(toCommit(i, refs.get(i) ?? []));
+        return out;
+      };
+      branchesLog = { before: history(false), after: history(true), merged: false };
+      setRoute("gitLog", null);
+      setRoute("gitLogBranches", (cmd, args) => {
+        if (cmd !== "vcs_log" || !branchesLog) return null;
+        const { skip, limit, range } = (args as { query: LogQuery }).query;
+        if (range) return Promise.resolve([]);
+        const commits = branchesLog.merged ? branchesLog.after : branchesLog.before;
+        return Promise.resolve(commits.slice(skip, limit ? skip + limit : undefined));
+      });
+      const [{ useGitLog }, { commitKey }] = await Promise.all([
+        import("@/features/vcs/logStore"),
+        import("@/features/vcs/multiRoot"),
+      ]);
+      const commits = branchesLog.before.slice(0, loaded);
+      const firstKey = commitKey(commits[0]!);
+      useGitLog.setState({
+        commits,
+        done: false,
+        loading: false,
+        error: null,
+        selected: firstKey,
+        selection: [firstKey],
+      });
+    },
+    fakeGitLogMergeOnTop() {
+      if (!branchesLog) throw new Error("fakeGitLogBranches first");
+      branchesLog.merged = true;
     },
     fakeGitLogCommit(made) {
       const top = fakeLog[0];
