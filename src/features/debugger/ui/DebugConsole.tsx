@@ -40,6 +40,7 @@ import {
   findOutputLinks,
   horizontalColumnWindow,
   measureMonoCharWidth,
+  canvasTextMeasure,
   revealScrollLeft,
   sliceRangesInWindow,
   visibleCharWindow,
@@ -374,6 +375,7 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
       const left = revealScrollLeft(text, current.start, current.end, el, consoleFont.size, {
         charWidthPx: charWidthRef.current,
         paddingLeftPx: DEBUG_PADDING_LEFT_PX,
+        measure: canvasTextMeasure(el),
       });
       if (left !== null) {
         el.scrollLeft = left;
