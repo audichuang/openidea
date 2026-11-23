@@ -93,4 +93,22 @@ describe("response body scroll to the current find match", () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(scroll).not.toHaveBeenCalled();
   });
+
+  it("brings the match back when the pane was laid out narrower and scrolled before its resize observer ran", async () => {
+    const coords = vi.mocked(EditorView.prototype.coordsAtPos);
+    const { container } = render(<ResponseBody text={text} matches={[match]} current={0} />);
+    const scroller = container.querySelector(".cm-scroller") as HTMLElement;
+    await waitFor(() => expect(scroll).toHaveBeenCalledTimes(3));
+    await new Promise((r) => setTimeout(r, 50));
+    scroll.mockClear();
+    // A splitter drag: the pane is already narrower, its lines rewrapped push the match below, and the scroll this
+    // causes is handled before the resize observer reports the new width.
+    Object.defineProperty(scroller, "clientWidth", { configurable: true, get: () => 300 });
+    coords.mockReturnValue({ top: 2500, bottom: 2517, left: 0, right: 0 });
+    scroller.dispatchEvent(new Event("scroll"));
+    await new Promise((r) => setTimeout(r, 50));
+    for (const o of observers.filter((o) => o.targets.includes(scroller)))
+      o.callback([{ target: scroller } as unknown as ResizeObserverEntry], {} as ResizeObserver);
+    await waitFor(() => expect(targets(scroll).at(-1)).toEqual(whole));
+  });
 });
