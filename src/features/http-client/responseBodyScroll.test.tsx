@@ -111,4 +111,30 @@ describe("response body scroll to the current find match", () => {
       o.callback([{ target: scroller } as unknown as ResizeObserverEntry], {} as ResizeObserver);
     await waitFor(() => expect(targets(scroll).at(-1)).toEqual(whole));
   });
+
+  it("brings the match back after a splitter drag through many widths, with scrolls in between", async () => {
+    const coords = vi.mocked(EditorView.prototype.coordsAtPos);
+    const { container } = render(<ResponseBody text={text} matches={[match]} current={0} />);
+    const scroller = container.querySelector(".cm-scroller") as HTMLElement;
+    const observed = () => observers.filter((o) => o.targets.includes(scroller));
+    await waitFor(() => expect(scroll).toHaveBeenCalledTimes(3));
+    await new Promise((r) => setTimeout(r, 50));
+    scroll.mockClear();
+    // Each step: laid out narrower (the rewrapped lines push the match below), a scroll read, then the resize
+    // observer; the scroll back from one step is overtaken by the next.
+    coords.mockReturnValue({ top: 2500, bottom: 2517, left: 0, right: 0 });
+    for (let width = 390; width >= 300; width -= 10) {
+      Object.defineProperty(scroller, "clientWidth", { configurable: true, get: () => width });
+      scroller.dispatchEvent(new Event("scroll"));
+      for (const o of observed())
+        o.callback([{ target: scroller } as unknown as ResizeObserverEntry], {} as ResizeObserver);
+      await new Promise((r) => setTimeout(r, 5));
+      scroller.dispatchEvent(new Event("scroll"));
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const during = scroll.mock.calls.length;
+    // The drag has ended: the match ends up on screen once scrolled back to.
+    await waitFor(() => expect(scroll.mock.calls.length).toBeGreaterThan(during));
+    expect(targets(scroll).at(-1)).toEqual(whole);
+  });
 });

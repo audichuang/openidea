@@ -229,13 +229,15 @@ export function ResponseBody({
     // not when the user has scrolled away from it.
     let shown = false;
     let width = v.scrollDOM.clientWidth;
+    /** While the width keeps changing (a splitter drag): the frame of the check for its end, else 0. */
+    let resizing = 0;
     const noteShown = () =>
       v.requestMeasure({
         key: noteShown,
         read: () => {
-          // Laid out at a width the resize observer has not reported yet (a splitter drag): the match moved because
-          // the lines rewrapped, not because the user scrolled; keep what held before the change.
-          if (v.scrollDOM.clientWidth !== width) return null;
+          // While the width changes, or laid out at one the resize observer has not reported yet: the match moved
+          // because the lines rewrapped, not because the user scrolled; keep what held before the change.
+          if (resizing || v.scrollDOM.clientWidth !== width) return null;
           const m = marked.current.matches[marked.current.current];
           const at = m && v.coordsAtPos(matchRange(v.state.field(displayed), m).from, 1);
           const box = v.scrollDOM.getBoundingClientRect();
@@ -250,11 +252,26 @@ export function ResponseBody({
     // Laid out in the swap font until the web font loads (the bundled JetBrains Mono on first use).
     const { fontFamily, fontSize } = getComputedStyle(v.scrollDOM);
     void fontsLoaded(fontFamily, parseFloat(fontSize)).then(() => alive && scrollAgain());
+    // The width has held for a frame: the drag is over; scroll to the match once more, after the last width.
+    const settle = () => {
+      const at = width;
+      const frame = requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          if (!alive || resizing !== frame) return;
+          if (v.scrollDOM.clientWidth !== at) return settle();
+          resizing = 0;
+          scrollAgain();
+        }),
+      );
+      resizing = frame;
+    };
     // A narrower or wider pane; a height change wraps nothing.
     const resized = new ResizeObserver(() => {
       if (v.scrollDOM.clientWidth === width) return;
       width = v.scrollDOM.clientWidth;
-      if (shown && marked.current.matches[marked.current.current]) scrollAgain();
+      if (!resizing && !(shown && marked.current.matches[marked.current.current])) return;
+      scrollAgain();
+      settle();
     });
     resized.observe(v.scrollDOM);
     return () => {
