@@ -17,7 +17,7 @@ import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import { useSelectionVisibility } from "@/ui/useSelectionBoundary";
 import { spanStyle } from "@/ui/ansi";
 import clsx from "clsx";
-import { useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { LocalChangesView, StashContent, tabItems, useStashTabCounts } from "./CommitView";
 import styles from "./GitLog.module.css";
 import { WorktreesPanel } from "./WorktreesPanel";
@@ -42,7 +42,7 @@ import {
   selectGitTab,
   useGitLog,
 } from "./logStore";
-import { branchesByRepo } from "./multiRoot";
+import { branchesByRepo, commitKey } from "./multiRoot";
 import { stripSlash } from "./model";
 import { clearConsole, useVcsConsole } from "./ops";
 import { loadBranches, useVcs } from "./store";
@@ -321,8 +321,16 @@ export function LogView() {
 }
 
 function LogCommitDetails({ fileHistory = false }: { fileHistory?: boolean }) {
-  const commits = useGitLog((s) => s.commits);
+  const all = useGitLog((s) => s.commits);
   const selection = useGitLog((s) => s.selection);
+  const selected = useGitLog((s) => s.selected);
+  // Only the commits it shows: a prop holding every loaded commit made React's development build
+  // compare the old and new lists of a Refresh (0.3 s at 50,000 commits).
+  const commits = useMemo(() => {
+    const ids = new Set(selection);
+    if (selected) ids.add(selected);
+    return all.filter((c) => ids.has(commitKey(c)));
+  }, [all, selection, selected]);
   return <CommitDetails key={selection.join(" ") || "none"} commits={commits} fileHistory={fileHistory} />;
 }
 
