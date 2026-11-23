@@ -43,6 +43,8 @@ describe("response body scroll to the current find match", () => {
       },
     );
     scroll = vi.spyOn(EditorView, "scrollIntoView");
+    // jsdom lays nothing out: every position is at 0, in the scroller's box at 0 (on screen).
+    vi.spyOn(EditorView.prototype, "coordsAtPos").mockReturnValue({ top: 0, bottom: 0, left: 0, right: 0 });
   });
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -73,5 +75,21 @@ describe("response body scroll to the current find match", () => {
     expect(scroll).not.toHaveBeenCalled();
     resize(300);
     await waitFor(() => expect(targets(scroll).at(-1)).toEqual(whole));
+  });
+
+  it("scrolls again when the whole match is not on screen after the editor's next measure, twice at most", async () => {
+    const coords = vi.mocked(EditorView.prototype.coordsAtPos);
+    // The line after the split is not drawn yet: no place for the end of the match.
+    coords.mockImplementation((pos) => (pos === whole.to ? null : { top: 0, bottom: 0, left: 0, right: 0 }));
+    render(<ResponseBody text={text} matches={[match]} current={0} />);
+    // Past the scroll to the start: to the match, then again after the measure.
+    await waitFor(() => expect(targets(scroll).length).toBeGreaterThan(3));
+    await new Promise((r) => setTimeout(r, 100));
+    const settled = targets(scroll);
+    expect(settled.slice(1)).toEqual(settled.slice(1).map(() => whole));
+    // The scroll on showing the match and the one after the font has loaded, each followed by two at most.
+    expect(settled.length).toBeLessThanOrEqual(1 + 2 * 3);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(targets(scroll)).toHaveLength(settled.length);
   });
 });
