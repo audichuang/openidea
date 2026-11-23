@@ -6,6 +6,7 @@ What a change to the all-in-one diff (`src/features/vcs/CombinedDiff.tsx`, one t
 
 ```bash
 C=.agents/skills/fork-verify/scripts/combined-diff
+export PYTHONDONTWRITEBYTECODE=1   # keep __pycache__ out of the tracked script directory
 python3 $C/mk-fixture.py ~/openidea-perf-fixtures   # recreates u4-mix (+ u4-sub-origin), seed 42
 ```
 
@@ -13,11 +14,11 @@ python3 $C/mk-fixture.py ~/openidea-perf-fixtures   # recreates u4-mix (+ u4-sub
 
 Open it with the `openProjectInWindow` recipe (`../SKILL.md`), then through the bridge:
 
-- `localStorage.setItem("openidea.diff.allInOne", "true")` (what the diff viewer's Show All Files in One Diff View does), and `settingsSet("global", "vcs.commit.doubleClickOpensDiff", "true")` so a double-click in Changes opens the diff at that file.
+- `localStorage.setItem("openidea.diff.allInOne", "true")` (what the diff viewer's Show All Files in One Diff View does), and, in the project window, `import("/src/features/vcs/settingsUi.ts").then(m => m.saveVcsSetting("vcs.commit.doubleClickOpensDiff", true))` (the Changes view's Show on Double-Click item) so a double-click in Changes opens the diff at that file. `reveal.py` pages the first tree on the page, so keep the Commit tool window's Changes tree showing.
 - The scripts read `PERF_WT` (worktree of the dev app, default the current git root), `PERF_PORT` (bridge port from `pnpm dev:status`), `W` (window label, `project-1`), `T` (AppKit window title, `u4-mix`) and `OUT` (records and `shots/`, default `/tmp/oi-verify/<worktree>/combined-diff`). Each run appends one JSON line per measurement to `$OUT/<script>.jsonl`; pass a tag (`before`, `after`) to tell runs apart.
 - Split or unified is the diff toolbar's viewer buttons; measure both, the mode label is free text.
 
-Restore afterwards: `doubleClickOpensDiff` and the two localStorage keys (`openidea.diff.allInOne`, `openidea.vcs.groupByStaging` if you changed grouping).
+Restore afterwards: `saveVcsSetting("vcs.commit.doubleClickOpensDiff", null)` and `localStorage.removeItem("openidea.diff.allInOne")`.
 
 ## What to measure
 
