@@ -749,6 +749,19 @@ const CommitMessageList = memo(function CommitMessageList({
     allSelectedRangeRef.current = selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
   }, [commits.length]);
 
+  // Edit › Select All (the native menu role on macOS, execCommand elsewhere) asks the body with
+  // `selectstart` before selecting the whole window; with the list focused, select the list instead.
+  useEffect(() => {
+    const onSelectStart = (e: Event) => {
+      const scrollEl = scrollRef.current;
+      if (e.target !== document.body || !scrollEl || !scrollEl.contains(document.activeElement)) return;
+      e.preventDefault();
+      selectAll();
+    };
+    document.addEventListener("selectstart", onSelectStart, true);
+    return () => document.removeEventListener("selectstart", onSelectStart, true);
+  }, [selectAll]);
+
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     if (e.nativeEvent.isComposing) return;
     if (hasPrimaryModifier(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "a") {
