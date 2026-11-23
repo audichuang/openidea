@@ -228,17 +228,21 @@ export function ResponseBody({
     // Whether the current match is on screen, as of the last scroll: a width change brings it back only then,
     // not when the user has scrolled away from it.
     let shown = false;
+    let width = v.scrollDOM.clientWidth;
     const noteShown = () =>
       v.requestMeasure({
         key: noteShown,
         read: () => {
+          // Laid out at a width the resize observer has not reported yet (a splitter drag): the match moved because
+          // the lines rewrapped, not because the user scrolled; keep what held before the change.
+          if (v.scrollDOM.clientWidth !== width) return null;
           const m = marked.current.matches[marked.current.current];
           const at = m && v.coordsAtPos(matchRange(v.state.field(displayed), m).from, 1);
           const box = v.scrollDOM.getBoundingClientRect();
           return !!at && at.bottom >= box.top && at.top <= box.bottom;
         },
         write: (value) => {
-          shown = value;
+          if (value != null) shown = value;
         },
       });
     notesShown.current = noteShown;
@@ -247,7 +251,6 @@ export function ResponseBody({
     const { fontFamily, fontSize } = getComputedStyle(v.scrollDOM);
     void fontsLoaded(fontFamily, parseFloat(fontSize)).then(() => alive && scrollAgain());
     // A narrower or wider pane; a height change wraps nothing.
-    let width = v.scrollDOM.clientWidth;
     const resized = new ResizeObserver(() => {
       if (v.scrollDOM.clientWidth === width) return;
       width = v.scrollDOM.clientWidth;
