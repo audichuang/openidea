@@ -43,6 +43,8 @@ describe("response body scroll to the current find match", () => {
       },
     );
     scroll = vi.spyOn(EditorView, "scrollIntoView");
+    // jsdom lays nothing out: every position is at 0, in the scroller's box at 0 (on screen).
+    vi.spyOn(EditorView.prototype, "coordsAtPos").mockReturnValue({ top: 0, bottom: 0, left: 0, right: 0 });
   });
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -73,5 +75,22 @@ describe("response body scroll to the current find match", () => {
     expect(scroll).not.toHaveBeenCalled();
     resize(300);
     await waitFor(() => expect(targets(scroll).at(-1)).toEqual(whole));
+  });
+
+  it("leaves the view where it is on a width change when the match was scrolled out of view before it", async () => {
+    const coords = vi.mocked(EditorView.prototype.coordsAtPos);
+    const { container } = render(<ResponseBody text={text} matches={[match]} current={0} />);
+    const scroller = container.querySelector(".cm-scroller") as HTMLElement;
+    await waitFor(() => expect(scroll).toHaveBeenCalledTimes(3));
+    // Scrolled away: the match is below the scroller's box.
+    coords.mockReturnValue({ top: 1000, bottom: 1017, left: 0, right: 0 });
+    scroller.dispatchEvent(new Event("scroll"));
+    await new Promise((r) => setTimeout(r, 50));
+    scroll.mockClear();
+    Object.defineProperty(scroller, "clientWidth", { configurable: true, get: () => 300 });
+    for (const o of observers.filter((o) => o.targets.includes(scroller)))
+      o.callback([{ target: scroller } as unknown as ResizeObserverEntry], {} as ResizeObserver);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(scroll).not.toHaveBeenCalled();
   });
 });
