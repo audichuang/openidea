@@ -164,3 +164,49 @@ describe("Build output line cap (#452)", () => {
     expect(screen.queryByText(/earlier lines were discarded/)).not.toBeInTheDocument();
   });
 });
+
+describe("Build output Find after wide characters (#477)", () => {
+  it("scrolls to CJKNEEDLE after 3,000 「中」 by their drawn width", () => {
+    // 13px Menlo in Chromium and WebKit: 1ch is 7.827px, a CJK ideograph 13px (1em, not 2ch).
+    const CH = 7.827;
+    const rectSpy = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      const width = this.textContent === "0".repeat(100) ? 100 * CH : 0;
+      return { width, height: 0, top: 0, left: 0, bottom: 0, right: width, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+    });
+    const ctx = document.createElement("canvas").getContext("2d")!;
+    const measureSpy = vi
+      .spyOn(ctx, "measureText")
+      .mockImplementation(
+        (t: string) => ({ width: [...t].reduce((w, c) => w + (c === "中" ? 13 : CH), 0) }) as TextMetrics,
+      );
+    useKeymap.setState({ preset: "intellij-macos", overrides: {} });
+    const disposers = [activate(), installKeyboardDispatcher()];
+    try {
+      useBuildRun.setState({
+        status: "success",
+        lines: [{ kind: "out", text: `${"中".repeat(3_000)}CJKNEEDLE` }],
+        dropped: 0,
+        messages: [],
+        selected: null,
+      });
+      const log = setup();
+      Object.defineProperty(log, "clientWidth", { configurable: true, value: 800 });
+      Object.defineProperty(log, "scrollLeft", { configurable: true, writable: true, value: 0 });
+      fireEvent.scroll(log);
+      fireEvent.keyDown(log, { key: "f", code: "KeyF", metaKey: true });
+      fireEvent.change(screen.getByRole("textbox", { name: "Find in build output" }), {
+        target: { value: "CJKNEEDLE" },
+      });
+      expect(screen.getByText("1/1")).toBeInTheDocument();
+      const x = 12 + 3_000 * 13;
+      expect(x).toBeGreaterThanOrEqual(log.scrollLeft);
+      expect(x + 9 * CH).toBeLessThanOrEqual(log.scrollLeft + 800);
+    } finally {
+      disposers.reverse().forEach((d) => d());
+      rectSpy.mockRestore();
+      measureSpy.mockRestore();
+    }
+  });
+});
