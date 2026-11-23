@@ -48,13 +48,26 @@ export interface LayoutSlices {
   later(run: () => void): void;
 }
 
-/** Slices of about half a frame, each in its own task, so frames are drawn between them. */
+/** Time a slice takes: most of a frame, leaving the rest to draw it and handle input. */
+const SLICE_MS = 12;
+
+/**
+ * Slices of most of a frame, each in its own task. The next slice is posted as a message:
+ * `setTimeout` waits at least 4 ms once nested, which made laying out take a third longer.
+ */
 const taskSlices: LayoutSlices = {
   start() {
-    const end = performance.now() + 8;
+    const end = performance.now() + SLICE_MS;
     return () => performance.now() >= end;
   },
-  later: (run) => void setTimeout(run, 0),
+  later(run) {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => {
+      channel.port1.close();
+      run();
+    };
+    channel.port2.postMessage(null);
+  },
 };
 
 /**
