@@ -55,6 +55,7 @@ vi.mock("@/platform/clipboard", () => ({
 }));
 
 import { CommitDetails } from "../log/CommitDetails";
+import { compactCommitText } from "../log/CommitMessage";
 import { DEFAULT_LOG_OPTIONS, useLogOptions } from "../logOptions";
 import { emptyFilters, useGitLog } from "../logStore";
 import { commitKey, type RepoCommit } from "../multiRoot";
@@ -505,6 +506,50 @@ describe("CommitDetails multi-selection virtualization", () => {
     expect(text).toContain(commits[0]!.summary);
     expect(text).toContain(commits[1_999]!.summary);
     expect(text.split("\n\n")).toHaveLength(2_000);
+  });
+
+  describe("Edit › Select All, Edit › Copy (#479)", () => {
+    /** The menu path: `selectstart` at the body, then the browser's default, then `copy` at the selection's start. */
+    function editSelectAllThenCopy() {
+      const selectStart = new Event("selectstart", { bubbles: true, cancelable: true });
+      document.body.dispatchEvent(selectStart);
+      const selection = window.getSelection()!;
+      if (!selectStart.defaultPrevented) selection.selectAllChildren(document.body);
+      const start = selection.anchorNode;
+      const target = (start instanceof Element ? start : start?.parentElement) ?? document.body;
+      const copied = new Map<string, string>();
+      const copyEvent = new Event("copy", { bubbles: true, cancelable: true });
+      Object.defineProperty(copyEvent, "clipboardData", {
+        value: { setData: (type: string, data: string) => copied.set(type, data) },
+      });
+      target.dispatchEvent(copyEvent);
+      return { selectStart, text: copied.get("text/plain") ?? null };
+    }
+
+    it("copies all 300 selected commit messages with the list focused", () => {
+      const commits = makeCommits(300);
+      const keys = commits.map(commitKey);
+      useGitLog.setState({ commits, selected: keys[0]!, selection: keys });
+      const { container } = render(<CommitDetails commits={commits} />);
+      const box = messageBoxOf(container);
+      box.focus();
+      expect(mountedMessageButtons(container).length).toBeLessThan(300);
+
+      const { selectStart, text } = editSelectAllThenCopy();
+      expect(text).toBe(commits.map((c) => compactCommitText(c)).join("\n\n"));
+      expect(selectStart.defaultPrevented).toBe(true);
+    });
+
+    it("leaves Edit › Select All to the window when the list does not have focus", () => {
+      const commits = makeCommits(300);
+      const keys = commits.map(commitKey);
+      useGitLog.setState({ commits, selected: keys[0]!, selection: keys });
+      render(<CommitDetails commits={commits} />);
+      (document.activeElement as HTMLElement | null)?.blur();
+
+      const { selectStart } = editSelectAllThenCopy();
+      expect(selectStart.defaultPrevented).toBe(false);
+    });
   });
 
   it("copies every commit between the first and last selected rows during a scrolled drag-selection", () => {
