@@ -230,6 +230,9 @@ export async function startCompileFile(file: string, activate = true): Promise<B
   );
 }
 
+/** The latest build: its channel may still deliver output after its result (see `executeBuild`). */
+let currentBuild: RequestId | null = null;
+
 /** Streams one backend build into the Build tool window until it finishes. */
 async function executeBuild(
   request: RequestId,
@@ -239,6 +242,12 @@ async function executeBuild(
   cancel: () => void,
 ): Promise<BuildResult | null> {
   const ownsBuild = () => useBuildRun.getState().request === request;
+  currentBuild = request;
+  // Tauri delivers a channel message over 8 KiB through an async fetch and holds the later ones back
+  // to keep their order, so output can still arrive after the command's result. It belongs to this
+  // build until another one starts; messages and progress are complete in the result by then.
+  const accepts = () => currentBuild === request;
+  let finished = false;
   await maybeEditorService()
     ?.saveAll()
     .catch(() => undefined);
@@ -251,15 +260,17 @@ async function executeBuild(
     timer = undefined;
     const events = queue;
     queue = [];
-    if (!ownsBuild() || !events.length) return;
+    if (!accepts() || !events.length) return;
     let s = useBuildRun.getState();
-    for (const e of events) s = { ...s, ...applyBuildEvent(s, e) };
+    for (const e of events) {
+      if (!finished || e.kind === "output" || e.kind === "step") s = { ...s, ...applyBuildEvent(s, e) };
+    }
     useBuildRun.setState(s);
-    if (s.message)
+    if (!finished && s.message)
       upsertTask({ id: BUILD_TASK_ID, title: taskTitle, message: s.message, fraction: null, done: false, cancel });
   };
   const onEvent = (e: BuildEvent) => {
-    if (!ownsBuild()) return;
+    if (!accepts()) return;
     queue.push(e);
     timer ??= setTimeout(flush, 16);
   };
@@ -269,6 +280,7 @@ async function executeBuild(
     result = await invoke(useBuildRun.getState().files, onEvent);
     if (!ownsBuild()) return null;
     flush();
+    finished = true;
     const status: BuildStatus = result.success ? "success" : "failed";
     useBuildRun.setState({
       status,
@@ -304,6 +316,7 @@ async function executeBuild(
   } catch (e) {
     if (!ownsBuild()) return null;
     flush();
+    finished = true;
     if (isCancelled(e)) {
       useBuildRun.setState({ status: "cancelled", files: [], message: null });
     } else {
@@ -451,6 +464,7 @@ export function rerunBuild() {
 }
 
 export function resetBuildRun() {
+  currentBuild = null;
   stopBuild();
   removeTask(BUILD_TASK_ID);
   setContext(BUILD_RUNNING, false);

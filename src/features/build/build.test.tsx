@@ -223,6 +223,48 @@ describe("build feature", () => {
     });
   });
 
+  it("keeps output the channel delivers after the build result (an >8 KiB line is fetched late) (#452)", async () => {
+    // Tauri sends a channel message over 8 KiB through an async fetch and holds every later message
+    // back to keep their order, so the command's result can arrive before the rest of the output.
+    const run = startBuild("build");
+    await act(async () => {});
+    const long = `${"w".repeat(8_307)}`;
+    const warning = warn("/p/src/B.java", 2);
+    await act(async () => {
+      fake.emit!({ kind: "output", text: "short\n", stderr: false });
+      fake.resolve(result([warning], true));
+      await run;
+    });
+    expect(useBuildRun.getState().status).toBe("success");
+    await act(async () => {
+      fake.emit!({ kind: "output", text: `${long}\n`, stderr: false });
+      fake.emit!({ kind: "output", text: "stream-done\n", stderr: false });
+      fake.emit!({ kind: "message", message: warning });
+      fake.emit!({ kind: "progress", message: "late", fraction: null });
+      fake.emit!({ kind: "output", text: "\nProcess finished with exit code 0\n", stderr: false });
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    const s = useBuildRun.getState();
+    expect(s.lines.map((l) => l.text)).toEqual(["short", long, "stream-done", "", "Process finished with exit code 0"]);
+    // The result already carries every message; a late one is not added twice.
+    expect(s.messages).toEqual([warning]);
+    expect(s.message).toBeNull();
+
+    // A newer build owns the console: the old channel's stragglers are dropped.
+    const stale = fake.emit!;
+    const second = startBuild("build");
+    await act(async () => {});
+    await act(async () => {
+      stale({ kind: "output", text: "stale\n", stderr: false });
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    expect(useBuildRun.getState().lines.map((l) => l.text)).not.toContain("stale");
+    await act(async () => {
+      fake.resolve(result([], true));
+      await second;
+    });
+  });
+
   it("streams a failing build into the tree and console, then notifies and clears next time", async () => {
     const run = startBuild("build");
     await act(async () => {});
