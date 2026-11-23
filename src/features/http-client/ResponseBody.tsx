@@ -176,43 +176,12 @@ const matchRange = (d: DisplayText, m: ConsoleMatch) => ({
 const scrollTo = ({ from, to }: { from: number; to: number }) =>
   EditorView.scrollIntoView(EditorSelection.range(to, from), { y: "nearest", x: "nearest" });
 
-/** The latest scroll to a match in each view: a check of an earlier one gives way to it. */
-const scrolls = new WeakMap<EditorView, number>();
-
-/**
- * After a scroll to a match, checks in the editor's next measure that all of it is on screen, and scrolls again if
- * not, at most twice. A scroll can end beside the match when the lines next to it were not drawn yet (only the
- * start's are brought into view) or their heights were still estimates.
- */
-function ensureShown(v: EditorView, range: { from: number; to: number }, retries = 2) {
-  const id = (scrolls.get(v) ?? 0) + 1;
-  scrolls.set(v, id);
-  v.requestMeasure({
-    read: () => {
-      const box = v.scrollDOM.getBoundingClientRect();
-      const start = v.coordsAtPos(range.from, 1);
-      const end = v.coordsAtPos(range.to, -1);
-      return !!start && !!end && start.top >= box.top && end.bottom <= box.bottom;
-    },
-    write: (shown) => {
-      if (shown || !retries) return;
-      // The view cannot be updated while it measures.
-      queueMicrotask(() => {
-        if (scrolls.get(v) !== id || !v.dom.isConnected) return;
-        v.dispatch({ effects: scrollTo(range) });
-        ensureShown(v, range, retries - 1);
-      });
-    },
-  });
-}
-
 /** Marks the find matches, scrolling to the current one. */
 function mark(v: EditorView, matches: readonly ConsoleMatch[], current: number) {
   const d = v.state.field(displayed);
   const ranges = matches.map((m, i) => ({ ...matchRange(d, m), current: i === current }));
   const at = ranges[current];
   v.dispatch({ effects: [setMarks.of(ranges), ...(at ? [scrollTo(at)] : [])] });
-  if (at) ensureShown(v, at);
 }
 
 export function ResponseBody({
@@ -250,10 +219,7 @@ export function ResponseBody({
         write: () =>
           queueMicrotask(() => {
             const m = marked.current.matches[marked.current.current];
-            if (!alive || !m) return;
-            const range = matchRange(v.state.field(displayed), m);
-            v.dispatch({ effects: scrollTo(range) });
-            ensureShown(v, range);
+            if (alive && m) v.dispatch({ effects: scrollTo(matchRange(v.state.field(displayed), m)) });
           }),
       });
     // Laid out in the swap font until the web font loads (the bundled JetBrains Mono on first use).
