@@ -202,6 +202,8 @@ export function ResponseBody({
   const shown = useRef(text);
   /** The matches marked in it. */
   const marked = useRef({ matches, current });
+  /** Records whether the current match is on screen. */
+  const notesShown = useRef<() => void>(() => {});
 
   useEffect(() => {
     const v = new EditorView({ parent: host.current!, state: EditorState.create({ extensions: extensions() }) });
@@ -220,8 +222,27 @@ export function ResponseBody({
           queueMicrotask(() => {
             const m = marked.current.matches[marked.current.current];
             if (alive && m) v.dispatch({ effects: scrollTo(matchRange(v.state.field(displayed), m)) });
+            if (alive) noteShown();
           }),
       });
+    // Whether the current match is on screen, as of the last scroll: a width change brings it back only then,
+    // not when the user has scrolled away from it.
+    let shown = false;
+    const noteShown = () =>
+      v.requestMeasure({
+        key: noteShown,
+        read: () => {
+          const m = marked.current.matches[marked.current.current];
+          const at = m && v.coordsAtPos(matchRange(v.state.field(displayed), m).from, 1);
+          const box = v.scrollDOM.getBoundingClientRect();
+          return !!at && at.bottom >= box.top && at.top <= box.bottom;
+        },
+        write: (value) => {
+          shown = value;
+        },
+      });
+    notesShown.current = noteShown;
+    v.scrollDOM.addEventListener("scroll", noteShown, { passive: true });
     // Laid out in the swap font until the web font loads (the bundled JetBrains Mono on first use).
     const { fontFamily, fontSize } = getComputedStyle(v.scrollDOM);
     void fontsLoaded(fontFamily, parseFloat(fontSize)).then(() => alive && scrollAgain());
@@ -230,7 +251,7 @@ export function ResponseBody({
     const resized = new ResizeObserver(() => {
       if (v.scrollDOM.clientWidth === width) return;
       width = v.scrollDOM.clientWidth;
-      if (marked.current.matches[marked.current.current]) scrollAgain();
+      if (shown && marked.current.matches[marked.current.current]) scrollAgain();
     });
     resized.observe(v.scrollDOM);
     return () => {
@@ -256,6 +277,8 @@ export function ResponseBody({
     marked.current = { matches, current };
     const v = view.current;
     if (v) mark(v, matches, current);
+    // A scroll to a match already on screen moves nothing and fires no scroll event.
+    notesShown.current();
   }, [text, matches, current]);
 
   return <div ref={host} className={styles.responseBody} />;
