@@ -98,6 +98,7 @@ class FakeIntersectionObserver {
 const offsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight")!;
 const scrollHeight = Object.getOwnPropertyDescriptor(Element.prototype, "scrollHeight")!;
 const scrollTo = Element.prototype.scrollTo;
+const scrollBy = Element.prototype.scrollBy;
 
 beforeEach(() => {
   localStorage.clear();
@@ -128,6 +129,10 @@ beforeEach(() => {
       this.dispatchEvent(new Event("scroll"));
     }
   } as Element["scrollTo"];
+  Element.prototype.scrollBy = vi.fn(function (this: Element, opts?: ScrollToOptions | number) {
+    (this as HTMLElement).scrollTop += typeof opts === "number" ? opts : (opts?.top ?? 0);
+    this.dispatchEvent(new Event("scroll"));
+  }) as Element["scrollBy"];
 });
 
 afterEach(() => {
@@ -135,6 +140,7 @@ afterEach(() => {
   Object.defineProperty(HTMLElement.prototype, "offsetHeight", offsetHeight);
   Object.defineProperty(Element.prototype, "scrollHeight", scrollHeight);
   Element.prototype.scrollTo = scrollTo;
+  Element.prototype.scrollBy = scrollBy;
 });
 
 const scroller = () => document.querySelector<HTMLElement>("[data-combined-scroll]")!;
@@ -507,6 +513,75 @@ describe("the all-in-one diff with many files", () => {
       window.cancelAnimationFrame = origCAF;
       Object.defineProperty(HTMLElement.prototype, "clientHeight", origClientHeight);
     }
+  });
+
+  describe("as blocks above the view grow once their diffs load", () => {
+    // Slots report their size through the virtualizer's ResizeObserver, the way a loaded diff does.
+    const observers = new Map<ResizeObserverCallback, Set<Element>>();
+    beforeEach(() => {
+      vi.stubGlobal(
+        "ResizeObserver",
+        class {
+          targets = new Set<Element>();
+          constructor(callback: ResizeObserverCallback) {
+            observers.set(callback, this.targets);
+          }
+          observe(target: Element) {
+            this.targets.add(target);
+          }
+          unobserve(target: Element) {
+            this.targets.delete(target);
+          }
+          disconnect() {
+            this.targets.clear();
+          }
+        },
+      );
+    });
+    afterEach(() => observers.clear());
+    const grow = (index: number, height: number) => {
+      const slot = document.querySelector(`[data-index="${index}"]`)!;
+      const [callback] = [...observers].find(([, targets]) => targets.has(slot))!;
+      act(() =>
+        callback([{ target: slot, borderBoxSize: [{ blockSize: height, inlineSize: 400 }] }] as never, {} as never),
+      );
+    };
+    /** How far below the top of the view a file's block starts. */
+    const below = (path: string) => {
+      const slot = document.querySelector(`[data-combined-block="${path}"]`)!.closest<HTMLElement>("[data-index]")!;
+      return parseFloat(slot.style.top) - scroller().scrollTop;
+    };
+    const items = files(60);
+    const target = items[40]!.path;
+
+    it("stays on the file it opened at", async () => {
+      // Still loading, the blocks are shorter than the estimate.
+      Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, get: () => 40 });
+      render(<CombinedDiffTab input={combinedDiffInput({ items, reveal: target })} />);
+      await act(() => new Promise((r) => setTimeout(r, 50)));
+      expect(below(target)).toBe(0);
+      grow(38, 3000);
+      grow(39, 5000);
+      expect(below(target)).toBe(0);
+    });
+
+    it("keeps what is shown in place while scrolling up", async () => {
+      render(<CombinedDiffTab input={combinedDiffInput({ items, reveal: target })} />);
+      await act(() => new Promise((r) => setTimeout(r, 50)));
+      scroll(scroller(), scroller().scrollTop - 100);
+      expect(below(target)).toBe(100);
+      grow(38, 130_000);
+      expect(below(target)).toBe(100);
+    });
+
+    it("moves the view by a correction relative to where it is, so wheel scrolling in flight is kept", async () => {
+      render(<CombinedDiffTab input={combinedDiffInput({ items, reveal: target })} />);
+      await act(() => new Promise((r) => setTimeout(r, 50)));
+      const scrollTo = vi.spyOn(scroller(), "scrollTo");
+      grow(38, 1000);
+      expect(Element.prototype.scrollBy).toHaveBeenCalledWith({ top: 700, behavior: undefined });
+      expect(scrollTo).not.toHaveBeenCalled();
+    });
   });
 
   it("reaches, expands, edits, and reads back every one of 5,000 editable files without skipping ranges", () => {
