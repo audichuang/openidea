@@ -13,7 +13,7 @@ import {
   registerToolWindow,
 } from "@/workbench/contributions";
 import { BuildTitleItem } from "./BuildTitleItem";
-import { BuildHeaderActions, BuildView } from "./BuildView";
+import { BuildHeaderActions, BuildView, openBuildFind } from "./BuildView";
 import { BUILD_RUNNING, resetBuildRun, startBuild, startCompileFile, stopBuild, useBuildRun } from "./store";
 
 const WHEN = `projectOpen && !${BUILD_RUNNING}`;
@@ -126,6 +126,14 @@ export function activate(): () => void {
           const build = startBuild("artifacts", moduleTarget(arg), activate);
           if ("wait" in options && options.wait === true) return build.then(() => undefined);
         },
+      },
+      {
+        id: "build.findInOutput",
+        title: "Find in Build Output",
+        category: "Build",
+        icon: "search",
+        when: "buildConsoleFocus",
+        run: () => openBuildFind(),
       },
       {
         id: "build.stop",

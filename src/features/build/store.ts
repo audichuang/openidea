@@ -28,7 +28,15 @@ import { useProject } from "@/platform/project";
 import { workflowSettings, type BuildToolWindowWhen } from "@/platform/workflowSettings";
 import { maybeEditorService, notifications, toolWindowService } from "@/workbench/contributions";
 import { cancelTask, removeTask, upsertTask, useTasks } from "@/workbench/tasks";
-import { appendOutput, finishSummary, firstError, messageFiles, type BuildStatus, type ConsoleLine } from "./model";
+import {
+  appendOutput,
+  finishSummary,
+  firstError,
+  messageFiles,
+  outputLines,
+  type BuildStatus,
+  type ConsoleLine,
+} from "./model";
 
 function whenMatches(when: BuildToolWindowWhen, reason: "start" | "error"): boolean {
   return when === "always" || (when === "onError" && reason === "error");
@@ -107,6 +115,8 @@ export interface BuildState {
   durationMs: number | null;
   messages: BuildMessage[];
   lines: ConsoleLine[];
+  /** Lines dropped from the front by `MAX_CONSOLE_LINES`. */
+  dropped: number;
   /** Files with diagnostics from the last build. */
   files: string[];
   /** Key of the selected tree node (a message node shows its detail beside the tree). */
@@ -126,6 +136,7 @@ const INITIAL: BuildState = {
   durationMs: null,
   messages: [],
   lines: [],
+  dropped: 0,
   files: [],
   selected: null,
   stepCwd: null,
@@ -135,15 +146,26 @@ export const useBuildRun = create<BuildState>(() => INITIAL);
 
 const TITLES: Record<BuildKind, string> = { build: "Build", rebuild: "Rebuild", artifacts: "Build Artifacts" };
 
+/** Appends console output, counting the lines the cap drops from the front. */
+function withOutput(
+  s: BuildState,
+  text: string,
+  kind: ConsoleLine["kind"],
+  cwd?: string,
+): Pick<BuildState, "lines" | "dropped"> {
+  const lines = appendOutput(s.lines, text, kind, cwd);
+  return { lines, dropped: s.dropped + s.lines.length + outputLines(text).length - lines.length };
+}
+
 /** Applies one streamed event (pure; batched by the caller). */
 export function applyBuildEvent(s: BuildState, e: BuildEvent): Partial<BuildState> {
   switch (e.kind) {
     case "started":
       return { title: e.title, system: e.system, stepCwd: null };
     case "step":
-      return { stepCwd: e.cwd, lines: appendOutput(s.lines, `${e.command}\n`, "system", e.cwd) };
+      return { stepCwd: e.cwd, ...withOutput(s, `${e.command}\n`, "system", e.cwd) };
     case "output":
-      return { lines: appendOutput(s.lines, e.text, e.stderr ? "err" : "out", s.stepCwd ?? undefined) };
+      return withOutput(s, e.text, e.stderr ? "err" : "out", s.stepCwd ?? undefined);
     case "message":
       return { messages: [...s.messages, e.message] };
     case "progress":
@@ -206,6 +228,9 @@ export async function startCompileFile(file: string, activate = true): Promise<B
   );
 }
 
+/** The latest build: its channel may still deliver output after its result (see `executeBuild`). */
+let currentBuild: RequestId | null = null;
+
 /** Streams one backend build into the Build tool window until it finishes. */
 async function executeBuild(
   request: RequestId,
@@ -214,6 +239,12 @@ async function executeBuild(
   cancel: () => void,
 ): Promise<BuildResult | null> {
   const ownsBuild = () => useBuildRun.getState().request === request;
+  currentBuild = request;
+  // Tauri delivers a channel message over 8 KiB through an async fetch and holds the later ones back
+  // to keep their order, so output can still arrive after the command's result. It belongs to this
+  // build until another one starts; messages and progress are complete in the result by then.
+  const accepts = () => currentBuild === request;
+  let finished = false;
   await maybeEditorService()
     ?.saveAll()
     .catch(() => undefined);
@@ -226,15 +257,17 @@ async function executeBuild(
     timer = undefined;
     const events = queue;
     queue = [];
-    if (!ownsBuild() || !events.length) return;
+    if (!accepts() || !events.length) return;
     let s = useBuildRun.getState();
-    for (const e of events) s = { ...s, ...applyBuildEvent(s, e) };
+    for (const e of events) {
+      if (!finished || e.kind === "output" || e.kind === "step") s = { ...s, ...applyBuildEvent(s, e) };
+    }
     useBuildRun.setState(s);
-    if (s.message)
+    if (!finished && s.message)
       upsertTask({ id: BUILD_TASK_ID, title: taskTitle, message: s.message, fraction: null, done: false, cancel });
   };
   const onEvent = (e: BuildEvent) => {
-    if (!ownsBuild()) return;
+    if (!accepts()) return;
     queue.push(e);
     timer ??= setTimeout(flush, 16);
   };
@@ -244,6 +277,7 @@ async function executeBuild(
     result = await invoke(useBuildRun.getState().files, onEvent);
     if (!ownsBuild()) return null;
     flush();
+    finished = true;
     const status: BuildStatus = result.success ? "success" : "failed";
     useBuildRun.setState({
       status,
@@ -270,6 +304,7 @@ async function executeBuild(
   } catch (e) {
     if (!ownsBuild()) return null;
     flush();
+    finished = true;
     if (isCancelled(e)) {
       useBuildRun.setState({ status: "cancelled", files: [], message: null });
     } else {
@@ -278,7 +313,7 @@ async function executeBuild(
         status: "failed",
         files: [],
         message: null,
-        lines: appendOutput(s.lines, `${text}\n`, "err"),
+        ...withOutput(s, `${text}\n`, "err"),
         messages: [...s.messages, { severity: "error", text, path: null, range: null, code: null }],
       }));
       notifications().notify({
@@ -346,6 +381,7 @@ export function rerunBuild() {
 }
 
 export function resetBuildRun() {
+  currentBuild = null;
   stopBuild();
   removeTask(BUILD_TASK_ID);
   setContext(BUILD_RUNNING, false);

@@ -113,6 +113,16 @@ describe("Git Log deep paging", () => {
     for (const i of [0, 9_999, 18_000, 19_499, 19_500, 19_999]) expect(got.row(i)).toStrictEqual(want[i]);
   });
 
+  // The Git Log draws from `row(index)`; nothing reads a whole-list width, so no page computes one.
+  it("returns only what the Git Log reads, paged or not", () => {
+    const fields = ["childCount", "collapsed", "commits", "graph", "linear", "pending", "row", "rows", "rowsOf"];
+    const present = createLogGraphPresenter();
+    const all = history(1_000);
+    expect(Object.keys(present(all, DEFAULT_LOG_OPTIONS, fragments, new Set())).sort()).toEqual(fields);
+    const linearized = { ...DEFAULT_LOG_OPTIONS, linearizeMerges: true };
+    expect(Object.keys(present(all, linearized, fragments, new Set())).sort()).toEqual(fields);
+  });
+
   // With refs the lane colours come from `graphLayout` over the whole loaded list, whose owner
   // suffixes count the side chains below each one: a page arriving recolours merged side-branch
   // lanes up to the top of the log. The paged presenter resolves colours per drawn row to follow.

@@ -182,3 +182,45 @@ test("a 16 MB line shown wide, then in a 300 px pane: every part can be scrolled
   await expectEveryPartReachable(page);
   expect(errors).toEqual([]);
 });
+
+/** Every piece of the current find match (one per display line it spans), all on screen. */
+async function expectWholeCurrentMatchOnScreen(page: Page) {
+  await expect
+    .poll(() =>
+      body(page).evaluate((el) => {
+        const box = (el.closest(".cm-scroller") as HTMLElement).getBoundingClientRect();
+        const pieces = [...el.querySelectorAll("[data-find-current]")];
+        const onScreen = pieces.every((p) => {
+          const r = p.getBoundingClientRect();
+          return r.top >= box.top && r.bottom <= box.bottom;
+        });
+        if (pieces.length && onScreen) return pieces.map((p) => p.textContent).join("");
+        // Where things are, for the failure message.
+        const at = (r: DOMRect) => `${Math.round(r.top)}..${Math.round(r.bottom)}`;
+        const scroller = el.closest(".cm-scroller") as HTMLElement;
+        return `pieces ${pieces.map((p) => `${p.textContent}@${at(p.getBoundingClientRect())}`).join(" ")} in ${at(box)}, scrollTop ${Math.round(scroller.scrollTop)}/${scroller.scrollHeight}, lines ${el.querySelectorAll(".cm-line").length}, fonts ${document.fonts.status}`;
+      }),
+    )
+    .toBe("last-item");
+}
+
+// Fails now and then in Fork CI only, scrolled to the match's first row (#474).
+for (const width of [300, 700])
+  test.fixme(`a find match across a split of a 16 MB line in a ${width} px pane is marked and shown whole`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`/e2e/httpResponseBody.html?chars=${16 * 1024 * 1024}&raw&cross&find=last-item`);
+    await expect(body(page).locator(".cm-line").first()).toBeVisible();
+    await settle(page);
+    await expectWholeCurrentMatchOnScreen(page);
+  });
+
+test("a find match at the end of a 16 MB line is scrolled to again after the pane gets narrower", async ({ page }) => {
+  await page.setViewportSize({ width: 700, height: 900 });
+  await open(page, "opened", 16 * 1024 * 1024, "last-item");
+  await expectWholeCurrentMatchOnScreen(page);
+  await page.setViewportSize({ width: 300, height: 900 });
+  await settle(page);
+  await expectWholeCurrentMatchOnScreen(page);
+});
