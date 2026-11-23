@@ -191,11 +191,11 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
     ) => {
       const el = instance.scrollElement;
       if (!el) return;
-      // ResizeObserver can run after a scrollTop write (e.g. inside rAF) and before the
-      // browser dispatches its scroll event; `offset` is then stale, so apply size
-      // adjustments relative to the live scrollTop instead of reverting pending movement.
-      const base = options.adjustments ? el.scrollTop : offset;
-      el.scrollTo({ top: base + (options.adjustments ?? 0), behavior: options.behavior });
+      // A size adjustment moves the view by its delta from wherever it is now: `offset` can be
+      // stale (ResizeObserver running before the scroll event of a write), and any absolute
+      // `scrollTo` can drop wheel scrolling still in flight in WebKit.
+      if (options.adjustments) el.scrollBy({ top: options.adjustments, behavior: options.behavior });
+      else el.scrollTo({ top: offset, behavior: options.behavior });
     },
     [],
   );
@@ -209,6 +209,11 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
     scrollPaddingStart: -insetRef.current,
     scrollToFn,
   });
+  // A block's real height is only known once its diff loads, up to thousands of lines past the
+  // estimate. The view moves with every block above it that grows, scrolling up too (the library
+  // skips that), or a reveal, Previous File and scrolling up land blocks early.
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) =>
+    item.end <= (instance.scrollOffset ?? 0);
 
   /** Index of the block at the top of the view. */
   const current = () =>
