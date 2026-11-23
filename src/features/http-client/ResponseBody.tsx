@@ -7,11 +7,19 @@
  */
 import { useEffect, useRef, type MutableRefObject } from "react";
 import clsx from "clsx";
-import { EditorState, StateEffect, StateField, type Extension } from "@codemirror/state";
+import { EditorSelection, EditorState, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, keymap, type Command, type DecorationSet } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
 import type { ConsoleMatch } from "@/ui/consoleFind";
-import { displayText, displayed, docPosition, lineAt, setDisplayText, textBetween } from "./displayLines";
+import {
+  displayText,
+  displayed,
+  docPosition,
+  lineAt,
+  setDisplayText,
+  textBetween,
+  type DisplayText,
+} from "./displayLines";
 import { fontsLoaded } from "@/platform/fonts";
 import { tx } from "@/platform/i18n";
 import styles from "./HttpClient.module.css";
@@ -159,18 +167,21 @@ function show(v: EditorView, text: string) {
   });
 }
 
-const scrollTo = (from: number) => EditorView.scrollIntoView(from, { y: "nearest", x: "nearest" });
+const matchRange = (d: DisplayText, m: ConsoleMatch) => ({
+  from: docPosition(d, m.line, m.start),
+  to: docPosition(d, m.line, m.end, true),
+});
+
+/** The whole match, which may go on in the next display line past a split, not only its start. */
+const scrollTo = ({ from, to }: { from: number; to: number }) =>
+  EditorView.scrollIntoView(EditorSelection.range(to, from), { y: "nearest", x: "nearest" });
 
 /** Marks the find matches, scrolling to the current one. */
 function mark(v: EditorView, matches: readonly ConsoleMatch[], current: number) {
   const d = v.state.field(displayed);
-  const ranges = matches.map((m, i) => ({
-    from: docPosition(d, m.line, m.start),
-    to: docPosition(d, m.line, m.end, true),
-    current: i === current,
-  }));
+  const ranges = matches.map((m, i) => ({ ...matchRange(d, m), current: i === current }));
   const at = ranges[current];
-  v.dispatch({ effects: [setMarks.of(ranges), ...(at ? [scrollTo(at.from)] : [])] });
+  v.dispatch({ effects: [setMarks.of(ranges), ...(at ? [scrollTo(at)] : [])] });
 }
 
 export function ResponseBody({
@@ -191,32 +202,61 @@ export function ResponseBody({
   const shown = useRef(text);
   /** The matches marked in it. */
   const marked = useRef({ matches, current });
+  /** Records whether the current match is on screen. */
+  const notesShown = useRef<() => void>(() => {});
 
   useEffect(() => {
     const v = new EditorView({ parent: host.current!, state: EditorState.create({ extensions: extensions() }) });
     view.current = v;
     if (viewRef) viewRef.current = v;
     show(v, text);
-    // Laid out in the swap font until the body's web font loads (the bundled JetBrains Mono on first use): long
-    // lines wrap to another height in it, which moves the current match scrolled to out of view. Scroll to it again,
-    // after the editor's next measure: it takes in the new heights there, and in a body past its scaling limit a
-    // scroll handled in the same measure lands short by the change (#457).
+    // Long lines wrap to another height when the body's font or width changes, which moves the current match out of
+    // view. Scroll to it again after the editor's next measure: it takes in the new heights there, and in a body past
+    // its scaling limit a scroll handled in the same measure lands short by the change (#457).
     let alive = true;
-    const { fontFamily, fontSize } = getComputedStyle(v.scrollDOM);
-    void fontsLoaded(fontFamily, parseFloat(fontSize)).then(() => {
-      if (!alive) return;
+    const scrollAgain = () =>
       v.requestMeasure({
         read: () => {},
         // The view cannot be updated while it measures.
         write: () =>
           queueMicrotask(() => {
             const m = marked.current.matches[marked.current.current];
-            if (alive && m) v.dispatch({ effects: scrollTo(docPosition(v.state.field(displayed), m.line, m.start)) });
+            if (alive && m) v.dispatch({ effects: scrollTo(matchRange(v.state.field(displayed), m)) });
+            if (alive) noteShown();
           }),
       });
+    // Whether the current match is on screen, as of the last scroll: a width change brings it back only then,
+    // not when the user has scrolled away from it.
+    let shown = false;
+    const noteShown = () =>
+      v.requestMeasure({
+        key: noteShown,
+        read: () => {
+          const m = marked.current.matches[marked.current.current];
+          const at = m && v.coordsAtPos(matchRange(v.state.field(displayed), m).from, 1);
+          const box = v.scrollDOM.getBoundingClientRect();
+          return !!at && at.bottom >= box.top && at.top <= box.bottom;
+        },
+        write: (value) => {
+          shown = value;
+        },
+      });
+    notesShown.current = noteShown;
+    v.scrollDOM.addEventListener("scroll", noteShown, { passive: true });
+    // Laid out in the swap font until the web font loads (the bundled JetBrains Mono on first use).
+    const { fontFamily, fontSize } = getComputedStyle(v.scrollDOM);
+    void fontsLoaded(fontFamily, parseFloat(fontSize)).then(() => alive && scrollAgain());
+    // A narrower or wider pane; a height change wraps nothing.
+    let width = v.scrollDOM.clientWidth;
+    const resized = new ResizeObserver(() => {
+      if (v.scrollDOM.clientWidth === width) return;
+      width = v.scrollDOM.clientWidth;
+      if (shown && marked.current.matches[marked.current.current]) scrollAgain();
     });
+    resized.observe(v.scrollDOM);
     return () => {
       alive = false;
+      resized.disconnect();
       v.destroy();
       view.current = null;
       if (viewRef) viewRef.current = null;
@@ -237,6 +277,8 @@ export function ResponseBody({
     marked.current = { matches, current };
     const v = view.current;
     if (v) mark(v, matches, current);
+    // A scroll to a match already on screen moves nothing and fires no scroll event.
+    notesShown.current();
   }, [text, matches, current]);
 
   return <div ref={host} className={styles.responseBody} />;
