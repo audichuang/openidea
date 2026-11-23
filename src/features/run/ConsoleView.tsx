@@ -26,6 +26,7 @@ import {
   findOutputLinks,
   horizontalColumnWindow,
   measureMonoCharWidth,
+  canvasTextMeasure,
   revealScrollLeft,
   sliceRangesInWindow,
   visibleCharWindow,
@@ -569,6 +570,7 @@ export function ConsoleView({
     const left = revealScrollLeft(text, match.start, match.end, el, consoleFont.size, {
       charWidthPx: charWidthRef.current,
       paddingLeftPx: LINE_PADDING_LEFT_PX,
+      measure: canvasTextMeasure(el),
     });
     if (left === null) return;
     el.scrollLeft = left;
