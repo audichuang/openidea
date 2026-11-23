@@ -446,9 +446,61 @@ export function columnAt(text: string, index: number, tabSize = 4): number {
   return col;
 }
 
+/** Width in CSS px of a tab-free run of text in the console font. */
+export type TextMeasure = (text: string) => number;
+
+let measureContext: CanvasRenderingContext2D | null | undefined;
+
+/**
+ * Measures text in `el`'s font on a canvas, which draws CJK, emoji and combining marks at the
+ * width the line does (a CJK ideograph is 1em, not 2ch); null where there is no canvas.
+ */
+export function canvasTextMeasure(el: HTMLElement): TextMeasure | null {
+  if (measureContext === undefined) {
+    try {
+      measureContext = el.ownerDocument.createElement("canvas").getContext("2d");
+    } catch {
+      measureContext = null;
+    }
+  }
+  const ctx = measureContext;
+  if (!ctx) return null;
+  const s = getComputedStyle(el);
+  const font = `${s.fontStyle} ${s.fontWeight} ${s.fontSize} ${s.fontFamily}`;
+  const spacing = Number.parseFloat(s.letterSpacing) || 0;
+  return (text) => {
+    ctx.font = font;
+    return ctx.measureText(text).width + spacing * text.length;
+  };
+}
+
+/**
+ * Horizontal offset in px of UTF-16 index `index` in a `white-space: pre` line: measured runs,
+ * with each tab moving to the next multiple of `tabSize` spaces (`tab-size`), a stop closer than
+ * half a space counting as passed, as CSS Text draws it.
+ */
+export function textOffsetPx(text: string, index: number, measure: TextMeasure, tabSize = 4): number {
+  const stop = Math.min(index, text.length);
+  const space = measure(" ");
+  const tabWidth = space * tabSize;
+  let x = 0;
+  for (let from = 0; ;) {
+    const tab = text.indexOf("\t", from);
+    if (tab < 0 || tab >= stop) return x + measure(text.slice(from, stop));
+    x += measure(text.slice(from, tab));
+    if (tabWidth > 0) {
+      let next = (Math.floor(x / tabWidth) + 1) * tabWidth;
+      if (next - x < space / 2) next += tabWidth;
+      x = next;
+    }
+    from = tab + 1;
+  }
+}
+
 /**
  * The `scrollLeft` that brings `[start, end)` of `text` into a non-wrapped console viewport
  * (centred, or from its start when wider than the viewport), or `null` when it is already visible.
+ * With `measure` the offsets are the drawn widths; without it (no canvas) they are columns of 1ch.
  */
 export function revealScrollLeft(
   text: string,
@@ -456,19 +508,27 @@ export function revealScrollLeft(
   end: number,
   viewport: { scrollLeft: number; clientWidth: number },
   fontSizePx: number,
-  options?: HorizontalWindowOptions,
+  options?: HorizontalWindowOptions & { measure?: TextMeasure | null },
 ): number | null {
   const { scrollLeft, clientWidth } = viewport;
   if (clientWidth <= 0) return null;
-  const measured = options?.charWidthPx;
-  const charWidth =
-    typeof measured === "number" && Number.isFinite(measured) && measured > 0
-      ? measured
-      : fontSizePx * ((MIN_MONO_CHAR_EM + MAX_MONO_CHAR_EM) / 2);
   const pad = Math.max(0, options?.paddingLeftPx ?? 0);
-  const startCol = columnAt(text, start);
-  const left = pad + startCol * charWidth;
-  const right = pad + (startCol + columnAt(text.slice(start, end), end - start)) * charWidth;
+  let left: number;
+  let right: number;
+  const measure = options?.measure;
+  if (measure) {
+    left = pad + textOffsetPx(text, start, measure);
+    right = pad + textOffsetPx(text, end, measure);
+  } else {
+    const measured = options?.charWidthPx;
+    const charWidth =
+      typeof measured === "number" && Number.isFinite(measured) && measured > 0
+        ? measured
+        : fontSizePx * ((MIN_MONO_CHAR_EM + MAX_MONO_CHAR_EM) / 2);
+    const startCol = columnAt(text, start);
+    left = pad + startCol * charWidth;
+    right = pad + (startCol + columnAt(text.slice(start, end), end - start)) * charWidth;
+  }
   if (left >= scrollLeft && right <= scrollLeft + clientWidth) return null;
   const width = right - left;
   const target = width >= clientWidth ? left - pad : left - (clientWidth - width) / 2;
