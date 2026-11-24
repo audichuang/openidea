@@ -44,6 +44,7 @@ CLAUDE.local.md
 # Fork-only skills (see FORK.md).
 !.claude/skills/fork-verify
 !.claude/skills/openidea-fork-auto-rebase
+!.claude/skills/openidea-upstream-pr
 # Fork-only hook guarding merges during an auto-rebase lock (see FORK.md).
 !.claude/settings.json
 !.claude/hooks/
