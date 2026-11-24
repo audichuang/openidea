@@ -1,0 +1,535 @@
+import { menuGroupItems } from "@/workbench/contributions";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import clsx from "clsx";
+import { create } from "zustand";
+import { executeAction } from "@/platform/actions";
+import { formatBinding, hostBinding, shortcutLabel } from "@/platform/keymap";
+import {
+  Button,
+  EmptyState,
+  Icon,
+  IconButton,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
+  Spinner,
+  Tabs,
+  Tree,
+  fileIconName,
+  showContextMenu,
+  type TreeHandle,
+  type TreeRowState,
+  T,
+} from "@/ui";
+import { notifications, useOccurrenceNavigator } from "@/workbench/contributions";
+import { openLocation } from "../common/open";
+import { CodePreview, MatchText, type PreviewHighlight } from "./parts";
+import { confirmReplacement } from "./ReplaceAllConfirmation";
+import {
+  NO_MARKS,
+  countUsages,
+  groupState,
+  loadReplacePreview,
+  pendingUsages,
+  replaceTargets,
+  skipTargets,
+  startReplace,
+  summaryText,
+  toggleExcluded,
+  type ReplaceMarks,
+  type ReplaceProgress,
+  type ReplaceRun,
+  type Usage,
+} from "./replaceFlow";
+import {
+  expandableKeys,
+  FindTreeIndex,
+  isNodeExcluded,
+  groupsOfKeys,
+  setNodeCollapsed,
+  type FindTreeNode,
+} from "./forkFindTree";
+import {
+  closeFindTab,
+  pinFindTab,
+  rerunFindTab,
+  stopFindTab,
+  useFindViewOptions,
+  useFindWindow,
+  type FindTab,
+} from "./windowStore";
+import styles from "./FindToolWindow.module.css";
+import { t, tx } from "@/platform/i18n";
+
+type Node = FindTreeNode;
+
+const nodeKey = (n: Node) => n.key;
+const nodeLabel = (n: Node) => (n.kind === "dir" ? n.label : n.kind === "file" ? n.name : n.text);
+const nodeChildren = (n: Node) => (n.kind === "match" ? undefined : n.children);
+const nodeExpandable = (n: Node) => n.kind !== "match";
+
+/** Preview target of a node: a match, or a file's first match. */
+function previewOf(node: Node | null): { path: string; line: number } | null {
+  if (!node || node.kind === "dir") return null;
+  if (node.kind === "match") return { path: node.path, line: node.line };
+  const first = node.children[0];
+  return first?.kind === "match" ? { path: node.path, line: first.line } : null;
+}
+
+/** Excluded (⌫) / replaced usages per Find tab. */
+const useMarks = create<{ byTab: Record<number, ReplaceMarks> }>(() => ({ byTab: {} }));
+const setMarks = (tab: number, marks: ReplaceMarks) =>
+  useMarks.setState((s) => ({ byTab: { ...s.byTab, [tab]: marks } }));
+
+const NOTHING_COLLAPSED: ReadonlySet<string> = new Set();
+const useCollapsed = create<{ byTab: Record<number, ReadonlySet<string>> }>(() => ({ byTab: {} }));
+const setCollapsed = (tab: number, keys: ReadonlySet<string>) =>
+  useCollapsed.setState((s) => ({ byTab: { ...s.byTab, [tab]: keys } }));
+const toggleCollapsed = (tab: number, node: Node, open: boolean) =>
+  useCollapsed.setState((s) => {
+    const prev = s.byTab[tab] ?? NOTHING_COLLAPSED;
+    const next = setNodeCollapsed(prev, node, open);
+    return next === prev ? s : { byTab: { ...s.byTab, [tab]: next } };
+  });
+
+/** Search tabs in the tool window header. */
+export function FindTabs() {
+  const tabs = useFindWindow((s) => s.tabs);
+  const activeId = useFindWindow((s) => s.active);
+  const tab = tabs.find((t) => t.id === activeId) ?? tabs[tabs.length - 1];
+  if (!tab) return null;
+  return (
+    <Tabs
+      variant="compact"
+      className={styles.tabs}
+      aria-label="Searches"
+      items={tabs.map((t) => ({
+        id: String(t.id),
+        label: t.title,
+        closable: true,
+        pinned: t.pinned,
+      }))}
+      activeId={String(tab.id)}
+      onSelect={(id) => useFindWindow.setState({ active: Number(id) })}
+      onClose={(id) => closeFindTab(Number(id))}
+      onTogglePin={(id) => {
+        const t = tabs.find((x) => x.id === Number(id));
+        if (t) pinFindTab(t.id, !t.pinned);
+      }}
+      onContextMenu={(id, e) => {
+        const t = tabs.find((x) => x.id === Number(id));
+        if (!t) return;
+        // IDEA's content tab menu.
+        showContextMenu(e, [
+          { id: "close", label: "Close Tab", run: () => closeFindTab(t.id) },
+          { id: "closeAll", label: "Close All Tabs", run: () => tabs.forEach((o) => closeFindTab(o.id)) },
+          {
+            id: "closeOthers",
+            label: "Close Other Tabs",
+            disabled: tabs.length < 2,
+            run: () => tabs.forEach((o) => o.id !== t.id && closeFindTab(o.id)),
+          },
+          { kind: "separator" },
+          { id: "pin", label: t.pinned ? "Unpin Tab" : "Pin Tab", run: () => pinFindTab(t.id, !t.pinned) },
+        ]);
+      }}
+    />
+  );
+}
+
+export function FindToolWindow() {
+  const tabs = useFindWindow((s) => s.tabs);
+  const activeId = useFindWindow((s) => s.active);
+  const tab = tabs.find((t) => t.id === activeId) ?? tabs[tabs.length - 1];
+  if (!tab) {
+    return (
+      <EmptyState title="No search results" icon="search">
+        {tx`Use Find in Files (${shortcutLabel("find.inPath") ?? formatBinding(hostBinding("Meta+Shift+F"))}) and choose “Open in Find Window”.`}
+      </EmptyState>
+    );
+  }
+  return <FindTabView key={tab.id} tab={tab} />;
+}
+
+function FindTabView({ tab }: { tab: FindTab }) {
+  const groupByDirectory = useFindViewOptions((o) => o.groupByDirectory);
+  const showPreview = useFindViewOptions((o) => o.preview);
+  const body = useRef<HTMLDivElement>(null);
+  const [stacked, setStacked] = useState(false);
+  useLayoutEffect(() => {
+    const frame = body.current;
+    if (!showPreview || !frame) return;
+    const measure = () => setStacked(frame.clientWidth < 580);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(frame);
+    return () => observer.disconnect();
+  }, [showPreview]);
+  const previewLayout = stacked ? "openidea.find.previewSplit.vertical" : "openidea.find.previewSplit";
+  const minPanelSize = stacked ? "30%" : 160;
+  const [index] = useState(() => new FindTreeIndex());
+  const collapsed = useCollapsed((s) => s.byTab[tab.id]) ?? NOTHING_COLLAPSED;
+  const onToggle = useCallback((node: Node, open: boolean) => toggleCollapsed(tab.id, node, open), [tab.id]);
+  const treeModel = useMemo(
+    () => index.sync(tab.state.files, groupByDirectory, collapsed, onToggle),
+    [index, tab.state.files, groupByDirectory, collapsed, onToggle],
+  );
+  const tree = useRef<TreeHandle>(null);
+  const [leadNode, setLeadNode] = useState<Node | null>(null);
+  const st = tab.state;
+  const marks = useMarks((m) => m.byTab[tab.id]) ?? NO_MARKS;
+  const [selection, setSelection] = useState<Set<string>>(new Set());
+  const [running, setRunning] = useState<ReplaceRun | null>(null);
+  const [progress, setProgress] = useState<ReplaceProgress | null>(null);
+  const busy = !!running;
+
+  const groupsForKeys = (keys: Iterable<string>) => groupsOfKeys(keys, (k) => index.getNode(k));
+  const selectedGroups = () => groupsForKeys(selection);
+
+  const exclude = () => {
+    const groups = selectedGroups();
+    if (!groups.length) return;
+    const next = toggleExcluded(marks, groups);
+    setMarks(tab.id, next);
+    // Excluding moves on to the next usage, as in IDEA (including keeps the selection).
+    if (groups.some((g) => groupState(g, next) === "excluded"))
+      tree.current?.selectOccurrence(1, { skipSubtree: true });
+  };
+
+  useOccurrenceNavigator("find", (dir, focus) => {
+    const step = tree.current?.selectOccurrence(dir);
+    const n = step?.node as Node | undefined;
+    if (!step || n?.kind !== "match") return null;
+    void openLocation(n.path, { line: n.line, col: n.col, endLine: n.line, endCol: n.endCol }, { focus });
+    return step;
+  });
+
+  const preview = previewOf(leadNode);
+  const previewFile = preview ? index.getFileMatches(preview.path) : undefined;
+  const highlights = useMemo<PreviewHighlight[]>(() => {
+    return (previewFile?.matches ?? []).map((m) => ({
+      line: m.line,
+      ranges: m.ranges.map(([a, b]) => [a + m.textOffset, b + m.textOffset] as [number, number]),
+    }));
+  }, [previewFile]);
+
+  const replace = async (usages: Usage[], allInScope = false) => {
+    if (tab.replacement === null || !usages.length || running) return;
+    const run = startReplace(
+      {
+        query: tab.query,
+        replacement: tab.replacement,
+        preserveCase: !!tab.preserveCase,
+        targets: allInScope ? skipTargets(index.allGroups(), marks) : replaceTargets(usages),
+        allInScope,
+      },
+      setProgress,
+    );
+    setRunning(run);
+    try {
+      const summary = await run.result;
+      notifications().notify({
+        group: "search",
+        level: summary.failed ? "warning" : "info",
+        title: summaryText(summary),
+        key: "search.replace",
+      });
+      // Replaced usages disappear from the view, as in IDEA; exclusions are kept.
+      rerunFindTab(tab.id);
+    } catch (e) {
+      notifications().notify({
+        group: "search",
+        level: "error",
+        title: "Replace failed",
+        body: String((e as Error)?.message ?? e),
+      });
+    } finally {
+      setRunning(null);
+      setProgress(null);
+    }
+  };
+
+  const previewReplace = async () => {
+    if (tab.replacement === null) return;
+    const groups = selectedGroups();
+    const path = groups[0]?.path;
+    if (!path) return;
+    const usages = pendingUsages(
+      groups.filter((g) => g.path === path),
+      marks,
+    );
+    try {
+      const p = await loadReplacePreview(tab.query, tab.replacement, !!tab.preserveCase, path, usages);
+      await executeAction("diff.compareTexts", {
+        path,
+        title: `Replace Preview`,
+        left: { text: p.before, label: "Original" },
+        right: { text: p.after, label: "After Replace" },
+        line: usages[0]?.line,
+      });
+    } catch (e) {
+      notifications().notify({
+        group: "search",
+        level: "error",
+        title: "Preview failed",
+        body: String((e as Error)?.message ?? e),
+      });
+    }
+  };
+
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if ((e.key === "Backspace" || e.key === "Delete") && !e.metaKey && !e.altKey && !e.ctrlKey) {
+      e.preventDefault();
+      exclude();
+    }
+  };
+
+  const replaceMode = tab.replacement !== null;
+  // Past the search's limit, every match in the scope is replaced, listed or not (as in IDEA).
+  const allInScope = !!st.summary?.limitHit;
+  const hasPendingAll = replaceMode && st.status !== "searching" && index.hasPendingUsage(marks);
+  const confirmReplaceAll = async () => {
+    const allPending = pendingUsages(index.allGroups(), marks);
+    if (!allPending.length) return;
+    const ok = await confirmReplacement({
+      counts: allInScope ? null : countUsages(allPending),
+      pattern: tab.query.pattern,
+      replacement: tab.replacement ?? "",
+      hasExclusions: marks.excluded.size > 0,
+    });
+    if (ok) void replace(allPending, allInScope);
+  };
+  const selectedPending = replaceMode && selection.size > 0 ? pendingUsages(selectedGroups(), marks) : null;
+
+  const isOccurrence = useCallback(
+    (n: Node) => n.kind === "match" && (marks.excluded.size === 0 || groupState(n, marks) !== "excluded"),
+    [marks],
+  );
+
+  return (
+    <div className={styles.root} onKeyDown={onKeyDown}>
+      <FindActions tab={tab} canExclude={selection.size > 0} onExclude={exclude} />
+      <div ref={body} className={styles.body}>
+        <div className={styles.summary}>
+          {(st.status === "searching" || busy) && <Spinner size={16} variant="spokes" />}
+          <span className={styles.count}>
+            {st.status === "invalid" || st.status === "error"
+              ? (st.error ?? tx("Search failed"))
+              : progress
+                ? tx`Replacing… ${progress.done}/${progress.total} files`
+                : t(st.summary?.limitHit ? "search.find.matchesIncomplete" : "search.find.matches", {
+                    matches: st.matchCount,
+                    files: st.files.length,
+                  }) + (marks.excluded.size ? ` · ${tx`${marks.excluded.size} excluded`}` : "")}
+          </span>
+        </div>
+        <SplitGroup
+          orientation={showPreview && stacked ? "vertical" : "horizontal"}
+          className={styles.split}
+          id="find-results-split"
+          storageKey={showPreview ? previewLayout : undefined}
+        >
+          <SplitPanel id="results" minSize={showPreview ? minPanelSize : undefined} className={styles.splitPanel}>
+            <Tree<Node>
+              className={styles.tree}
+              aria-label="Find results"
+              handleRef={tree}
+              model={treeModel}
+              getKey={nodeKey}
+              getLabel={nodeLabel}
+              getChildren={nodeChildren}
+              isExpandable={nodeExpandable}
+              isOccurrence={isOccurrence}
+              selected={selection}
+              onSelectionChange={(next, lead) => {
+                setSelection(next);
+                setLeadNode(lead);
+                if (tab.editorResults && lead?.kind === "match")
+                  void openLocation(
+                    lead.path,
+                    { line: lead.line, col: lead.col, endLine: lead.line, endCol: lead.endCol },
+                    { focus: false },
+                  );
+              }}
+              multiSelect
+              onActivate={(n) => {
+                if (n.kind === "match")
+                  void openLocation(
+                    n.path,
+                    { line: n.line, col: n.col, endLine: n.line, endCol: n.endCol },
+                    { focus: true },
+                  );
+                else if (n.kind === "file")
+                  void openLocation(n.path, previewOf(n) ? { line: previewOf(n)!.line } : null);
+              }}
+              onContextMenu={(_n, sel, e) => {
+                const groups = groupsForKeys(sel);
+                const excludedAll = groups.length > 0 && groups.every((g) => groupState(g, marks) === "excluded");
+                showContextMenu(e, [
+                  ...(_n?.kind === "match"
+                    ? menuGroupItems("searchResults", { paths: [_n.path], line: _n.line, column: _n.col })
+                    : []),
+                  {
+                    id: "exclude",
+                    label: excludedAll ? "Include" : "Exclude",
+                    shortcut: "⌫",
+                    disabled: !groups.length,
+                    run: exclude,
+                  },
+                  ...(replaceMode
+                    ? [
+                        {
+                          id: "replace",
+                          label: "Replace Selected",
+                          disabled: busy || !pendingUsages(groups, marks).length,
+                          run: () => void replace(pendingUsages(groups, marks)),
+                        },
+                        {
+                          id: "preview",
+                          label: "Preview Replacement",
+                          disabled: busy || !groups.length,
+                          run: () => void previewReplace(),
+                        },
+                      ]
+                    : []),
+                ]);
+              }}
+              activateExpandable={false}
+              renderNode={(n, s) => <FindNode node={n} state={s} tab={tab} marks={marks} />}
+              empty={
+                <span className={styles.empty}>
+                  {st.status === "searching" || st.status === "validating" ? "Searching…" : "No matches"}
+                </span>
+              }
+            />
+          </SplitPanel>
+          {showPreview && (
+            <>
+              <SplitHandle aria-label={tx("Resize find preview")} />
+              <SplitPanel id="preview" minSize={minPanelSize} defaultSize="45%" className={styles.splitPanel}>
+                <CodePreview path={preview?.path ?? null} line={preview?.line ?? 0} highlights={highlights} />
+              </SplitPanel>
+            </>
+          )}
+        </SplitGroup>
+        {replaceMode && (
+          <div className={styles.replaceActions}>
+            {running && (
+              <Button size="small" onClick={() => running.cancel()}>
+                <T>Stop</T>
+              </Button>
+            )}
+            <Button
+              size="small"
+              variant="ghost"
+              disabled={!selection.size || busy}
+              onClick={() => void previewReplace()}
+            >
+              <T>Preview</T>
+            </Button>
+            <Button
+              size="small"
+              disabled={!selectedPending?.length || busy}
+              onClick={() => selectedPending && void replace(selectedPending)}
+            >
+              <T>Replace Selected</T>
+            </Button>
+            <Button
+              size="small"
+              disabled={busy || !hasPendingAll || st.status === "searching"}
+              onClick={() => void confirmReplaceAll()}
+            >
+              <T>Replace All</T>
+            </Button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FindNode({ node, state, tab, marks }: { node: Node; state: TreeRowState; tab: FindTab; marks: ReplaceMarks }) {
+  const excluded = isNodeExcluded(node, marks);
+  return (
+    <span className={clsx(styles.nodeWrap, excluded && styles.excluded)}>
+      <FindNodeContent node={node} state={state} tab={tab} />
+    </span>
+  );
+}
+
+function FindNodeContent({ node, state, tab }: { node: Node; state: TreeRowState; tab: FindTab }) {
+  switch (node.kind) {
+    case "dir":
+      return (
+        <span className={styles.node}>
+          <Icon name={state.expanded ? "folder-open" : "folder"} size={16} className={styles.icon} />
+          <span className={styles.label}>{node.label}</span>
+          <span className={styles.meta}>
+            {node.count} {node.count === 1 ? "match" : "matches"}
+          </span>
+        </span>
+      );
+    case "file":
+      return (
+        <span className={styles.node}>
+          <Icon name={fileIconName(node.name)} size={16} className={styles.icon} />
+          <span className={styles.label}>{node.name}</span>
+          <span className={styles.meta}>{node.count}</span>
+          {!state.depth && node.dir && (
+            <span className={styles.directory} title={node.dir}>
+              {node.dir}
+            </span>
+          )}
+        </span>
+      );
+    case "match":
+      return (
+        <span className={styles.node}>
+          <span className={styles.lineNo}>{node.line + 1}</span>
+          <span className={styles.code}>
+            <MatchText
+              text={node.text}
+              ranges={node.ranges}
+              source={{ path: node.path, line: node.line, col: node.textCol }}
+              replacement={tab.replacement}
+              query={tab.query}
+              preserveCase={!!tab.preserveCase}
+            />
+          </span>
+        </span>
+      );
+  }
+}
+
+function FindActions({ tab, canExclude, onExclude }: { tab: FindTab; canExclude: boolean; onExclude: () => void }) {
+  const searching = tab.state.status === "searching";
+  return (
+    <div className={styles.toolbar} role="toolbar" aria-orientation="vertical" aria-label={tx("Find actions")}>
+      <IconButton icon="arrow-up" action="navigate.prevOccurrence" size="small" />
+      <IconButton icon="arrow-down" action="navigate.nextOccurrence" size="small" />
+      {searching ? (
+        <IconButton icon="stop" title="Stop" size="small" onClick={() => stopFindTab(tab.id)} />
+      ) : (
+        <IconButton
+          icon="refresh"
+          title="Rerun"
+          shortcut={shortcutLabel("find.rerun")}
+          size="small"
+          onClick={() => rerunFindTab(tab.id)}
+        />
+      )}
+      <IconButton icon="expand-all" title="Expand All" size="small" onClick={() => setCollapsed(tab.id, new Set())} />
+      <IconButton
+        icon="collapse-all"
+        title="Collapse All"
+        size="small"
+        onClick={() =>
+          setCollapsed(tab.id, expandableKeys(tab.state.files, useFindViewOptions.getState().groupByDirectory))
+        }
+      />
+      <IconButton icon="minus" title="Exclude / include (⌫)" size="small" disabled={!canExclude} onClick={onExclude} />
+      <IconButton icon="close" title="Close Tab" size="small" onClick={() => closeFindTab(tab.id)} />
+    </div>
+  );
+}
