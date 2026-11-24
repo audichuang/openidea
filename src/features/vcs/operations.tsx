@@ -203,7 +203,11 @@ const UNSTAGED_CHANGES_PREVENT_REBASE = "There are unstaged changes in tracked f
  * a rebase held up by unstaged changes, Stage and Retry (stages the tracked files'
  * changes and continues) and Show Files.
  */
-function stoppedActions(repo: string, op: InProgress, message: string): Array<{ label: string; run: () => void }> {
+export function stoppedActions(
+  repo: string,
+  op: InProgress,
+  message: string,
+): Array<{ label: string; run: () => void }> {
   if (operationInRepo(repo) !== op) return [];
   const abort = { label: "Abort", run: () => void controlOperation("abort", op, repo) };
   if (op !== "rebase" || !message.includes(UNSTAGED_CHANGES_PREVENT_REBASE)) return [abort];

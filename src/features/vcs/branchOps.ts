@@ -1610,7 +1610,8 @@ export async function checkoutInRepos(branch: NamedBranch, roots: readonly strin
   const elsewhere = remote ? roots : reposNotOn(name, roots);
   if (!elsewhere.length) return;
   const project = useProject.getState().project;
-  const previous = useVcs.getState().branch?.head;
+  // Each repository's branch before the checkout, for its own recents.
+  const previous = useVcs.getState().heads;
   let label = name;
   if (remote) {
     const check = await remoteCheckoutTargets(name, elsewhere);
@@ -1745,12 +1746,10 @@ export async function renameInRepos(name: string, roots: readonly string[], upst
       },
     },
     false,
-    async (title, complete, done) => {
+    async (title, _complete, done) => {
       if (useProject.getState().project !== project) return;
-      for (const { root } of done) {
-        if (complete) renameRecent(name, to, root);
-        else rememberBranch(to, root);
-      }
+      // Each repository keeps its own recents: the renames that stayed rename them there.
+      for (const { root } of done) renameRecent(name, to, root);
       // Only change tracking after the user has decided which renames to retain.
       if (unsetUpstream) {
         for (const { root } of done) {

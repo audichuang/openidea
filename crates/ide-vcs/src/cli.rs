@@ -662,12 +662,12 @@ pub(crate) fn capture_command(
         let overflow = overflow.clone();
         let closed_tx = closed_tx.clone();
         std::thread::spawn(move || {
-            let _closed_tx = closed_tx;
             let mut bytes = Vec::new();
             (&mut pipe).take(max.saturating_add(1) as u64).read_to_end(&mut bytes)?;
             if bytes.len() > max {
                 overflow.store(true, std::sync::atomic::Ordering::Release);
-                let _ = wake.send(());
+                // Wakes the wait at once; the sender itself goes when the reader ends.
+                let _ = closed_tx.send(());
                 std::io::copy(&mut pipe, &mut std::io::sink())?;
             }
             Ok(bytes)
@@ -1082,7 +1082,7 @@ fn spawn_reader(
 }
 
 #[cfg(test)]
-mod capture_tests {
+mod fork_capture_tests {
     use super::*;
     use ide_core::error::ErrorKind;
 
