@@ -809,6 +809,11 @@ test("Commit and Push uses the checked staging repositories", async ({ workbench
       h.vcs_remotes = () => [];
       h.vcs_branches = () => [];
       h.vcs_log = () => [];
+      // fork: upstream's staged-repository selection (#497) and Push preselection (#498) are behind switches.
+      const switchModule = "/src/features/vcs/forkStagingRepos.ts";
+      (await import(/* @vite-ignore */ switchModule)).forkStagingRepos.upstream = true;
+      const pushModule = "/src/features/vcs/forkPushChecked.ts";
+      (await import(/* @vite-ignore */ pushModule)).forkPushChecked.upstream = true;
       const projectModule = "/src/platform/project.ts";
       const { useProject } = await import(/* @vite-ignore */ projectModule);
       useProject.setState((s: { settings: Record<string, unknown> }) => ({
