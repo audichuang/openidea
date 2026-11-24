@@ -9,8 +9,8 @@ This overrides the upstream guidance below (Issues & PRs, Parallel worktrees) an
 - Cut work branches from `fork/develop`, not `origin/main`, and not with the `rebase/` or `ci-base/` prefix.
   After a rebase moved `develop`, update a branch with `git rebase --onto` as `FORK.md` describes.
 - Pass `-R audichuang/openidea` to every `gh issue` and `gh pr` command. Upstream `l0ng-ai/openidea` is read
-  only: `gh issue view <n> -R l0ng-ai/openidea` is fine, opening issues or PRs there is not (except an upstream
-  PR the user asked for: `openidea-upstream-pr` skill). In fork issues, PRs and comments, write an upstream issue
+  only: `gh issue view <n> -R l0ng-ai/openidea` is fine, opening issues or PRs there is not (except upstream PRs
+  under the `openidea-upstream-pr` skill). In fork issues, PRs and comments, write an upstream issue
   or PR inside backticks (`` `l0ng-ai/openidea#<n>` ``), and in commit messages without `#` (`upstream PR <n>`):
   the fork is public, so a linked reference adds a "referenced" line to the upstream page (#484–#487 on the
   upstream PR they tracked). Never a closing keyword: `Closes #<n>` would close the fork's own #<n>.
