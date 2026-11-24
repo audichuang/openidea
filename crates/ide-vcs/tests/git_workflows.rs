@@ -2343,6 +2343,8 @@ fn fetch_full_history_keeps_head_and_uses_the_clone_remote() {
         ],
     );
     let repo = Repo::discover(&clone).unwrap().unwrap();
+    // fork: restricted Git allows no transport (6f4551b1f); fetching is for a trusted project.
+    repo.set_execution_allowed(true);
     let head = git_in(&clone, &["rev-parse", "HEAD"]);
     assert!(repo.is_shallow().unwrap());
     assert_eq!(git_in(&clone, &["rev-list", "--count", "HEAD"]), "1");
