@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileMatches, SearchQuery, SearchSummary } from "@/platform/ipc";
-import { FindSession, type FindDeps, type FindState } from "../find/session";
+import { ForkFindSession as FindSession } from "../find/forkFindSession";
+import type { FindDeps, FindState } from "../find/session";
 
 const query: SearchQuery = {
   pattern: "needle",
@@ -92,7 +93,7 @@ describe("FindSession streaming", () => {
     expect(last().files.map((f) => f.relPath)).toEqual(Array.from({ length: n }, (_, i) => file(i).relPath));
   });
 
-  it("publishes the first file at once and the rest within one publish interval", async () => {
+  it("publishes the first file at once and the rest by the next frame", async () => {
     const { session, running, last } = setup();
     void session.search(query);
     await started();
@@ -104,7 +105,7 @@ describe("FindSession streaming", () => {
     running[0]!.onFile(file(2));
     await Promise.resolve();
     expect(last().files).toHaveLength(1);
-    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersToNextFrame();
     expect(last().files.map((f) => f.relPath)).toEqual([0, 1, 2].map((i) => file(i).relPath));
   });
 
@@ -134,7 +135,7 @@ describe("FindSession streaming", () => {
     expect(session.current.files).toHaveLength(2);
     expect(session.current.matchCount).toBe(2);
     expect(last().files).toHaveLength(1);
-    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersToNextFrame();
     expect(last().files).toBe(session.current.files);
   });
 

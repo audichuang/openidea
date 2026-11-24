@@ -49,6 +49,7 @@ function mockFormat(hunks: LineHunk[]) {
   vi.spyOn(commands, "docOpen").mockResolvedValue(ok(doc));
   vi.spyOn(commands, "docSnapshot").mockResolvedValue(ok(doc));
   vi.spyOn(commands, "docSave").mockResolvedValue(ok(null));
+  vi.spyOn(commands, "docAutosave").mockResolvedValue(ok(true));
   vi.spyOn(commands, "docClose").mockResolvedValue(ok(null));
   vi.spyOn(commands, "vcsFileAt").mockImplementation(async (_path, rev) =>
     ok(rev === ":0" ? initial : "const a=0;\nconst b=2;\nconst c=0;\n"),
@@ -184,6 +185,17 @@ describe("before-commit formatting", () => {
     expect(opened).not.toHaveBeenCalled();
     expect(applied).not.toHaveBeenCalled();
     expect(commands.docSave).not.toHaveBeenCalled();
+    expect(commands.docAutosave).not.toHaveBeenCalled();
+  });
+
+  it("leaves the index alone when the guarded save refuses a file changed on disk", async () => {
+    mockFormat([hunk(2, "const c=0;\n")]);
+    const autosave = vi.spyOn(commands, "docAutosave").mockResolvedValue(ok(false));
+    const staged = vi.spyOn(commands, "vcsStageFormattedText").mockResolvedValue(ok(null));
+    await runCommitModifications([{ ...file, staged: "modified", unstaged: null }], () => selection());
+    expect(autosave).toHaveBeenCalled();
+    expect(commands.docSave).not.toHaveBeenCalled();
+    expect(staged).not.toHaveBeenCalled();
   });
 
   it("formats the index when an open buffer has already diverged from the selection", async () => {

@@ -828,11 +828,12 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
   const ignored = useIgnoredFiles(root, staging && showIgnored);
   const groupByStaging = useCommit((s) => s.groupByStaging) || staging;
   // The staging area's repository rows carry the repository checkboxes, so it always groups by repository.
-  const groupByRepo = useCommit((s) => s.groupByRepo) || staging;
+  const groupByRepo = useCommit((s) => s.groupByRepo) || (staging && !forkStagingRepos.upstream);
   const excludedRoots = useCommit((s) => s.stagingExcludedRoots);
   // IDEA's staging area: the repositories ticked on their rows are committed; the rows are under
   // Staged Changes, or under Unstaged Changes when nothing is staged (Commit All).
-  const repoCheckGroup = useVcs((s) => (staging && isCommitAll(s.status) ? "unstaged" : "staged"));
+  const allowCommitAll = useWorkflowSettings((s) => s.vcs.commit.commitAllWhenNothingStaged);
+  const repoCheckGroup = useVcs((s) => (staging && allowCommitAll && isCommitAll(s.status) ? "unstaged" : "staged"));
   const showUnversionedSeparately = useCommit((s) => s.showUnversionedSeparately);
   const diffPreview = useCommit((s) => s.diffPreview);
   const commitDiffPreview = useCommit((s) => s.commitDiffPreview);
@@ -1044,8 +1045,8 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
               showContextMenu(bottomLeft(viewRef.current), [
                 { kind: "header", label: "Group By" },
                 { label: "Directory", checked: groupByDir, run: () => setGroupByDir(!groupByDir) },
-                // IDEA offers it once the project has several repositories; the staging area always groups by them.
-                ...(repos.length > 1 && !staging
+                // IDEA offers it once the project has several repositories; the fork's staging area always groups by them.
+                ...(repos.length > 1 && !(staging && !forkStagingRepos.upstream)
                   ? [{ label: "Repository", checked: groupByRepo, run: () => setGroupByRepo(!groupByRepo) }]
                   : []),
                 ...(staging

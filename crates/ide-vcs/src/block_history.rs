@@ -140,10 +140,11 @@ fn walk(
     // Git can emit the list without patches while another process prepares
     // the first few diffs. Neither query depends on the other's output.
     let limit = format!("-n{DIFF_BATCH}");
-    let allowed = crate::execution_allowed();
+    // The spawned git keeps this thread's grant and the repository's git executable.
+    let (allowed, git) = (crate::execution_allowed(), crate::scoped_git_executable());
     let (out, first) = std::thread::scope(|scope| {
         let patches = scope.spawn(|| {
-            let _execution = crate::ExecutionScope::enter(allowed);
+            let _execution = crate::ExecutionScope::enter_with(allowed, git.clone());
             let out = run(r, rel, anchor, &[&limit], cancel)?;
             let diffs = parse_log(&out.stdout, encoding);
             let ids: Vec<_> = diffs.iter().map(|diff| diff.id.clone()).collect();
@@ -369,13 +370,15 @@ pub(crate) fn revisions_at(
             ranges.iter().map(|range| format!("-L{},{}:{}", range.start, range.end, range.path)).collect();
         runs.push((spot.id.as_str(), ranges));
     }
-    let allowed = crate::execution_allowed();
+    // The spawned git keeps this thread's grant and the repository's git executable.
+    let (allowed, git) = (crate::execution_allowed(), crate::scoped_git_executable());
     std::thread::scope(|scope| {
         let runs: Vec<_> = runs
             .iter()
             .map(|(id, ranges)| {
+                let git = git.clone();
                 scope.spawn(move || {
-                    let _execution = crate::ExecutionScope::enter(allowed);
+                    let _execution = crate::ExecutionScope::enter_with(allowed, git);
                     // A commit shown without a diff (a merge) is just its header.
                     let options: &[&str] = if ranges.is_empty() { &["-n1", "--no-patch"] } else { &["-n1"] };
                     let out = cli::run_cancellable(r.root(), &log_args(options, ranges, id), cancel)?;

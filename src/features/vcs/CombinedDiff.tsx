@@ -17,6 +17,7 @@ import { ResolvedDiffEditor } from "./DiffEditor";
 import { diffInput, diffKey, hasGitlink, openDiff, sideFile, withChain, type DiffData } from "./diffInput";
 import { loadDiffOptions, saveDiffOptions } from "./diffOptions";
 import { useGitDiffEntries } from "./gitDiffEntries";
+import { stagedDiffPath, stagedDocumentAtPath } from "./stagedDocument";
 import { KIND_COLOR, KIND_LABEL, baseName, fileCount } from "./model";
 import styles from "./CombinedDiff.module.css";
 
@@ -37,6 +38,9 @@ const HOLD_MS = 1000;
 
 /** Whether a file of `item` has unsaved changes in a document open in a view (its diff panes, an editor). */
 function hasUnsavedEdits(item: DiffData, dirtyDocs: ReadonlySet<number>): boolean {
+  // A staged draft lives outside the editor documents; unmounting its block would save it to the index.
+  const staged = stagedDiffPath(item);
+  if (staged && stagedDocumentAtPath(staged)?.dirty) return true;
   if (!dirtyDocs.size) return false;
   return [sideFile(item.left, item.path), sideFile(item.right, item.path)].some(
     (file) => !!file && editorsFor(file).some((e) => dirtyDocs.has(e.ctx.doc)),
