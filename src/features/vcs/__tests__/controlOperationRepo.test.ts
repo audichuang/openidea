@@ -59,10 +59,25 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
         })),
       }),
       vcsOperation: (...args: unknown[]) => vcsOperation(...args),
+      // Upstream resumes a rebase through Git's editor (v0.1.51): recorded as the operation it runs.
+      vcsRebaseWithEditor: (repo: unknown, operation: { kind: string; stage?: boolean }, request: unknown) =>
+        vcsOperation(
+          repo,
+          request,
+          operation.kind === "continue"
+            ? { op: operation.stage ? "stageAndContinue" : "continue" }
+            : { op: operation.kind },
+        ),
       cancelRequest: async () => ({ status: "ok", data: null }),
     },
   };
 });
+
+// Upstream's Abort Rebase (v0.1.51) confirms first; these tests answer yes.
+vi.mock("../dialogs", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../dialogs")>()),
+  confirmDialog: async () => true,
+}));
 
 import { registerActions } from "@/platform/actions";
 import { provideNotificationService } from "@/workbench/contributions";
@@ -108,7 +123,7 @@ describe("controlOperation with an explicit repository", () => {
     await done;
     expect(vcsOperation).toHaveBeenCalledTimes(1);
     expect(vcsOperation.mock.calls[0]![0]).toBe(APP);
-    expect(vcsOperation.mock.calls[0]![2]).toEqual({ op: "abort" });
+    expect(vcsOperation.mock.calls[0]![2]).toEqual({ op: "abort", expected: "rebase" });
   });
 
   it("reads that repository's operation, not the selected one's", async () => {
@@ -122,9 +137,9 @@ describe("controlOperation with an explicit repository", () => {
   it("keeps the failure balloon's Stage and Retry and Abort links on that repository", async () => {
     useVcs.setState({ repo: LIB });
     const links = stoppedActions(
+      APP,
       "rebase",
       "There are unstaged changes in tracked files preventing rebase from continuing",
-      APP,
     );
     const idle = () => vi.waitFor(() => expect(useVcs.getState().remoteBusy).toBeNull());
     links.find((l) => l.label === "Stage and Retry")!.run();
@@ -135,7 +150,7 @@ describe("controlOperation with an explicit repository", () => {
     links.find((l) => l.label === "Abort")!.run();
     await vi.waitFor(() => expect(vcsOperation).toHaveBeenCalledTimes(2));
     expect(vcsOperation.mock.calls[1]![0]).toBe(APP);
-    expect(vcsOperation.mock.calls[1]![2]).toEqual({ op: "abort" });
+    expect(vcsOperation.mock.calls[1]![2]).toEqual({ op: "abort", expected: "rebase" });
     await idle();
   });
 
@@ -162,7 +177,7 @@ describe("controlOperation with an explicit repository", () => {
     it("reports a failed Stage and Retry the same way", async () => {
       conflicted = [LIB];
       vcsOperation.mockResolvedValueOnce({ status: "error", error: { kind: "other", message: UNSTAGED } });
-      stoppedActions("rebase", UNSTAGED, APP)
+      stoppedActions(APP, "rebase", UNSTAGED)
         .find((l) => l.label === "Stage and Retry")!
         .run();
       await vi.waitFor(() => expect(notes).toContain("Continue Rebase failed"));

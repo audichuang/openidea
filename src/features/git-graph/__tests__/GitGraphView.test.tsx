@@ -478,7 +478,8 @@ describe("Git Graph pseudo rows and panels", () => {
     expect(rows.map((r) => r.textContent).findIndex((t) => t?.includes("On main: wip"))).toBe(1);
     fireEvent.click(rowOf("On main: wip"));
     fireEvent.click(await screen.findByRole("button", { name: "Pop" }));
-    expect(bridge.stashMenu).toHaveBeenCalledWith(0, "On main: wip", REPO);
+    // The bridge takes the stash itself (upstream v0.1.51 acts on the stash, not its index).
+    expect(bridge.stashMenu).toHaveBeenCalledWith(expect.objectContaining({ index: 0, message: "On main: wip" }), REPO);
     expect(popStash).toHaveBeenCalled();
   });
 

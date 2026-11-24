@@ -27,7 +27,9 @@ const file = (repo: string, rel: string, staged: FileStatus["staged"], unstaged:
   ({ path: `${repo}/${rel}`, relPath: rel, staged, unstaged, renamedFrom: null }) satisfies FileStatus;
 
 const included = (status: FileStatus[], excluded: string[], repos = roots) =>
-  planCommit(status, stagingChecks(status, true, { roots: repos, excluded: new Set(excluded) })).included.map((f) => f.path);
+  planCommit(status, stagingChecks(status, true, { roots: repos, excluded: new Set(excluded) })).included.map(
+    (f) => f.path,
+  );
 
 describe("repositories left out of a staging area commit", () => {
   it("keeps an unticked repository's staged changes in its index, uncommitted", () => {
@@ -96,7 +98,7 @@ describe("the repository checkboxes of the staging area", () => {
       selection: [],
       message: "feat: x",
       amend: false,
-      checkProblems: [],
+      checkResult: null,
       tab: "changes",
       commitDiffPreview: false,
     });
