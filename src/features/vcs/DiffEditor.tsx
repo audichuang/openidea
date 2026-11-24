@@ -608,11 +608,14 @@ function TwoPaneDiff({
   });
   const includable =
     !data.readOnly && trackedChange && left.type === "rev" && left.rev === "HEAD" && !left.path && isWorktree(right);
-  const editableA = !data.readOnly && !binary && (indexSide === "a" ? indexReady : attached?.a ? !readOnlyA : isEditableText(left));
-  const editableB = !data.readOnly && !binary && (indexSide === "b" ? indexReady : attached?.b ? !readOnlyB : isEditableText(right));
+  const editableA =
+    !data.readOnly && !binary && (indexSide === "a" ? indexReady : attached?.a ? !readOnlyA : isEditableText(left));
+  const editableB =
+    !data.readOnly && !binary && (indexSide === "b" ? indexReady : attached?.b ? !readOnlyB : isEditableText(right));
   const unifiedOnLeft = viewMode === "unified" && indexSide === "a" && editableA && !editableB;
   const canStageIndex = !data.readOnly && indexReady && !binary && indexSide === "a" && !!attached?.b;
-  const canUnstage = !data.readOnly && indexReady && !binary && indexSide === "b" && left.type === "rev" && left.rev === "HEAD";
+  const canUnstage =
+    !data.readOnly && indexReady && !binary && indexSide === "b" && left.type === "rev" && left.rev === "HEAD";
   const canReplaceA = !indexSide && editableA;
   const canRevert = editableB && (indexSide ? canStageIndex : true);
   const ready = !!attached && !!statics && lang !== null && binary !== null;
@@ -1032,7 +1035,8 @@ function TwoPaneDiff({
     attached,
     staticA,
     staticB,
-    edited,
+    // Not `edited`: it is kept per request object, and a host's rebuilt but equal request (#373)
+    // must keep the views; a request with other sides rebuilds through leftKey / rightKey.
     lang,
     viewMode,
     single,

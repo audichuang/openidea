@@ -672,7 +672,9 @@ function BranchesPanel({ onClose, actions: baseActions, worktreeFor, root, fallb
           aria-label="Branches"
           className={styles.list}
           empty={<span className={styles.empty}>{loaded ? tx("No matching branches") : tx("Loading…")}</span>}
-          renderItem={(r) => (r.type === "group" ? <GroupRowView row={r} /> : <BranchRowView row={r} repo={root} branches={branches} />)}
+          renderItem={(r) =>
+            r.type === "group" ? <GroupRowView row={r} /> : <BranchRowView row={r} repo={root} branches={branches} />
+          }
         />
       </div>
       {menuFor && <SubMenu {...menuFor} onClose={() => setMenuFor(null)} />}

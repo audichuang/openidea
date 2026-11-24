@@ -719,8 +719,8 @@ pub(crate) fn log(r: &Repo, q: &LogQuery, cancel: &CancellationToken) -> IdeResu
         } else {
             // Immutable metadata is reused across roots, filters, merges and ref changes.
             all.request = q.request;
-            // Marks for the HEAD in the key, not the one checked out when the walk ends.
-            let head = refs.get("HEAD").and_then(|id| ObjectId::from_hex(id.as_bytes()).ok());
+            // Marks for the HEAD of the decorations in the key, not the one checked out when the walk ends.
+            let head = decorations.iter().find(|(_, names)| names.iter().any(|n| n == "HEAD")).map(|(id, _)| *id);
             let rows = std::sync::Arc::new(crate::log_index::IndexedView::new(log_indexed_rows(
                 r,
                 &all,

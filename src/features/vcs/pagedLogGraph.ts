@@ -33,6 +33,9 @@ import {
   type GraphSegment,
 } from "./graph";
 import type { LogOptions } from "./logOptions";
+
+/** The options that shape the graph (`GraphOptions` in `logPresentation.ts`). */
+type GraphShape = Pick<LogOptions, "collapseLinear" | "linearizeMerges" | "longEdges">;
 import { graphCommit, type RepoCommit } from "./multiRoot";
 
 // `graph.ts`'s LONG_EDGE and LONG_EDGE_STUB (not exported); the tests compare with `hideLongEdges`.
@@ -1263,7 +1266,7 @@ const sameGraphCommit = (a: GraphCommit, b: GraphCommit) =>
   (!a.refs?.length || sameList(a.remoteNames, b.remoteNames));
 
 /** Whether `createPagedLogGraph` computes the graph for these options (none rewrites the graph). */
-export const pagesLogGraph = (options: LogOptions, fragments: { collapsed: ReadonlySet<string> }) =>
+export const pagesLogGraph = (options: GraphShape, fragments: { collapsed: ReadonlySet<string> }) =>
   !options.collapseLinear && !fragments.collapsed.size && !options.linearizeMerges;
 
 export interface PagedLogGraph {
@@ -1353,7 +1356,7 @@ export function createPagedLogGraph() {
     result = null;
     return null;
   };
-  function* steps(all: readonly RepoCommit[], options: LogOptions): Steps<PagedLogGraph | null> {
+  function* steps(all: readonly RepoCommit[], options: GraphShape): Steps<PagedLogGraph | null> {
     const { longEdges } = options;
     if (paged && result && paged.all === all && paged.longEdges === longEdges) return result;
     const prev = paged && paged.longEdges === longEdges ? paged : emptyPaged(longEdges);
@@ -1423,6 +1426,6 @@ export function createPagedLogGraph() {
       first = Math.min(first, next.changed);
     }
   }
-  const present = (all: readonly RepoCommit[], options: LogOptions) => run(steps(all, options));
+  const present = (all: readonly RepoCommit[], options: GraphShape) => run(steps(all, options));
   return { present, steps, reset };
 }

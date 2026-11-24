@@ -12,10 +12,11 @@ import { tx } from "@/platform/i18n";
 import { relativeDir, useProject } from "@/platform/project";
 import { Icon, IconButton, T, fileIconName } from "@/ui";
 import { editorService, maybeEditorService, type EditorInput } from "@/workbench/contributions";
-import { setAllInOneDiff, type CombinedDiffData } from "./allInOneDiff";
-import { DiffEditor } from "./DiffEditor";
-import { diffInput, diffKey, openDiff, sideFile, withChain, type DiffData } from "./diffInput";
+import { combinedDiffDocumentOwner, setAllInOneDiff, type CombinedDiffData } from "./allInOneDiff";
+import { ResolvedDiffEditor } from "./DiffEditor";
+import { diffInput, diffKey, hasGitlink, openDiff, sideFile, withChain, type DiffData } from "./diffInput";
 import { loadDiffOptions, saveDiffOptions } from "./diffOptions";
+import { useGitDiffEntries } from "./gitDiffEntries";
 import { KIND_COLOR, KIND_LABEL, baseName, fileCount } from "./model";
 import styles from "./CombinedDiff.module.css";
 
@@ -51,6 +52,7 @@ const Block = memo(function Block({
   onToggle,
   mode,
   heights,
+  tabKey,
 }: {
   item: DiffData;
   itemKey: string;
@@ -61,11 +63,16 @@ const Block = memo(function Block({
   mode: "split" | "unified";
   /** Last height of each block's diff, by layout and diff entry, kept while blocks are unmounted. */
   heights: Map<string, number>;
+  /** The all-in-one tab, which owns the blocks' documents. */
+  tabKey: string;
 }) {
   // A block mounted collapsed loads its diff once expanded.
   const [loaded, setLoaded] = useState(!collapsed);
   if (!collapsed && !loaded) setLoaded(true);
-  const input: EditorInput = useMemo(() => diffInput({ ...item, mode }), [item, mode]);
+  const request = useMemo(() => ({ ...item, mode }), [item, mode]);
+  const input = useMemo(() => diffInput(request), [request]);
+  const diff = useGitDiffEntries(request, loaded);
+  const gitlink = hasGitlink(diff.data);
   const kind = blockKind(item);
   const name = baseName(item.path);
   const root = useProject((s) => s.project?.root ?? "");
@@ -116,7 +123,7 @@ const Block = memo(function Block({
           // The file's own diff, still knowing its siblings for Compare Next File.
           onClick={() => void editorService().openInput(diffInput(withChain(items, index)), { focus: true })}
         />
-        {item.right.type === "worktree" && (
+        {loaded && !diff.loading && !gitlink && item.right.type === "worktree" && (
           <IconButton
             icon="edit"
             title="Jump to Source"
@@ -130,6 +137,7 @@ const Block = memo(function Block({
           <span className={styles.name} style={{ color: KIND_COLOR[kind] }}>
             {name}
           </span>
+          {gitlink && <span className={styles.dir}>{tx("Submodule")}</span>}
           {dir && <span className={styles.dir}>{dir}</span>}
         </div>
       </div>
@@ -137,7 +145,12 @@ const Block = memo(function Block({
           working-tree document and, with autosave off, drop its unsaved edits. */}
       {loaded && (
         <div ref={bodyRef} className={styles.body} hidden={collapsed} style={hold ? { minHeight: hold } : undefined}>
-          <DiffEditor input={input} fit />
+          <ResolvedDiffEditor
+            diff={diff}
+            input={input}
+            documentOwner={combinedDiffDocumentOwner(tabKey, input.key)}
+            fit
+          />
         </div>
       )}
     </section>
@@ -337,6 +350,7 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
                     onToggle={toggle}
                     mode={mode}
                     heights={heights}
+                    tabKey={input.key}
                   />
                 </div>
               );
