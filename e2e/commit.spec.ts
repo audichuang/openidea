@@ -340,6 +340,14 @@ test("Commit reviews a paused cherry-pick without collecting unrelated changes o
   const review = page.getByRole("dialog", { name: "Continue Cherry-Pick" });
   const message = review.getByRole("textbox", { name: "Commit message" });
   const author = review.getByRole("textbox", { name: "Author", exact: true });
+  // fork: repository rows with siblings start collapsed, as in IDEA (changesExpansion.ts).
+  for (const repo of ["acme-api", "nested"]) {
+    await panel
+      .getByRole("treeitem", { name: new RegExp(`^Include ${repo} in commit`) })
+      .getByText(repo, { exact: true })
+      .click();
+    await page.keyboard.press("ArrowRight");
+  }
   await expect(nested).toBeChecked();
   await draft.fill("Unrelated and shared draft");
   await commit.click();
