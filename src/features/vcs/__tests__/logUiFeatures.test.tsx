@@ -152,7 +152,17 @@ describe("log controls", () => {
   });
 
   it("lays the graph out again only for the options that shape it", async () => {
-    const present = vi.spyOn(logPresentation, "presentLogGraph");
+    // The fork lays pages out in its own presenter (`createLogGraphPresenter`), past presentLogGraph:
+    // count the presenter's calls.
+    const present = vi.fn();
+    const create = logPresentation.createLogGraphPresenter;
+    vi.spyOn(logPresentation, "createLogGraphPresenter").mockImplementation(() => {
+      const presenter = create();
+      return (...args: Parameters<typeof presenter>) => {
+        present();
+        return presenter(...args);
+      };
+    });
     render(<LogView />);
     const list = await screen.findByRole("listbox", { name: "Commits" });
     await waitFor(() => expect(within(list).getAllByRole("option")).toHaveLength(3));

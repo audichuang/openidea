@@ -64,7 +64,11 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       },
       vcsRemotes: (repo: string) =>
         ok(
-          mocks.unconfigured.has(repo) ? [] : repo === "/p/b" ? [remote("origin"), remote(mocks.secondRemote)] : [remote("origin")],
+          mocks.unconfigured.has(repo)
+            ? []
+            : repo === "/p/b"
+              ? [remote("origin"), remote(mocks.secondRemote)]
+              : [remote("origin")],
         ),
       vcsEditRemote: (repo: string, operation: unknown) => {
         mocks.editRemote(repo, operation);
@@ -116,6 +120,7 @@ import { registerVcsActions } from "../actions";
 import { commonBranchMenu } from "../branchMenu";
 import { VcsDialogHost } from "../dialogs";
 import { showPushDialog } from "../remoteUi";
+import { forkPushChecked } from "../forkPushChecked";
 import { useVcs } from "../store";
 
 type Note = { title: string; body?: string };
@@ -145,6 +150,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  forkPushChecked.upstream = false;
   for (const cancel of screen.queryAllByRole("button", { name: "Cancel" })) fireEvent.click(cancel);
 });
 
@@ -488,6 +494,7 @@ it("does not ask without Force", async () => {
 });
 
 it("preselects the repositories that were committed before opening Push", async () => {
+  forkPushChecked.upstream = true; // upstream preselection (fork default: nothing checked, #224)
   render(<VcsDialogHost />);
   await act(() => showPushDialog({ selected: ["/p/b"] }));
   expect(await screen.findByRole("checkbox", { name: "b" })).toBeChecked();
@@ -498,6 +505,7 @@ it("preselects the repositories that were committed before opening Push", async 
 });
 
 it("publishes a selected detached repository from the multi-repository dialog", async () => {
+  forkPushChecked.upstream = true; // upstream preselection (fork default: nothing checked, #224)
   const revision = "a".repeat(40);
   mocks.detached.set("/p/b", revision);
   render(<VcsDialogHost />);
@@ -523,7 +531,7 @@ it("publishes a selected detached repository from the multi-repository dialog", 
 async function forcePushFrom(repo: string) {
   const view = render(<VcsDialogHost />);
   await act(() => showPushDialog({ repo }));
-  await screen.findByRole("textbox", { name: `Target branch of ${repo.slice(3)}` });
+  await screen.findByRole("combobox", { name: `Target branch of ${repo.slice(3)}` });
   fireEvent.click(screen.getByRole("checkbox", { name: "Force (with lease)" }));
   const before = mocks.ops.length;
   fireEvent.click(screen.getByRole("button", { name: "Force Push" }));
@@ -563,7 +571,7 @@ it("does not take the earlier project-wide silenced targets for any repository",
 async function retargetB(remote: string, target: string) {
   fireEvent.click(screen.getByRole("button", { name: "Remote of b" }));
   fireEvent.click(await screen.findByRole("option", { name: remote }));
-  fireEvent.change(screen.getByRole("textbox", { name: "Target branch of b" }), { target: { value: target } });
+  fireEvent.change(screen.getByRole("combobox", { name: "Target branch of b" }), { target: { value: target } });
 }
 
 it("keeps a silenced target apart from another remote and branch that read the same", async () => {
@@ -572,7 +580,7 @@ it("keeps a silenced target apart from another remote and branch that read the s
   const forcePushB = async (remote: string, target: string) => {
     const view = render(<VcsDialogHost />);
     await act(() => showPushDialog({ repo: "/p/b" }));
-    await screen.findByRole("textbox", { name: "Target branch of b" });
+    await screen.findByRole("combobox", { name: "Target branch of b" });
     await retargetB(remote, target);
     fireEvent.click(screen.getByRole("checkbox", { name: "Force (with lease)" }));
     const before = mocks.ops.length;
@@ -587,14 +595,15 @@ it("keeps a silenced target apart from another remote and branch that read the s
 
   await forcePushB("origin/team", "feature");
   expect(askedTargets()).toEqual(["origin/team/feature", "origin/team/feature"]);
-  expect(mocks.ops.at(-1)?.op).toMatchObject({ remote: "origin/team", target: "feature" });
+  // Upstream sends the push as `pushSelected` with its destination in `selection` (v0.1.51).
+  expect(mocks.ops.at(-1)?.op).toMatchObject({ selection: { remote: "origin/team", target: "feature" } });
 });
 
 it("confirms two repositories' targets one by one when only their joined names are the same", async () => {
   mocks.secondRemote = "origin/team";
   await openPushDialog();
   check("c");
-  fireEvent.change(screen.getByRole("textbox", { name: "Target branch of a" }), { target: { value: "team/feature" } });
+  fireEvent.change(screen.getByRole("combobox", { name: "Target branch of a" }), { target: { value: "team/feature" } });
   await retargetB("origin/team", "feature");
   fireEvent.click(screen.getByRole("checkbox", { name: "Force (with lease)" }));
   fireEvent.click(screen.getByRole("button", { name: "Force Push" }));

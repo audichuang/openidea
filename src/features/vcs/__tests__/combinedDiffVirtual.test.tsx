@@ -10,8 +10,8 @@ const dirtyDocs = new Set<number>();
 const unmountedPaths: string[] = [];
 let nextDocId = 1;
 
-vi.mock("../DiffEditor", () => ({
-  DiffEditor: ({ input }: { input: { data: { path: string } } }) => {
+vi.mock("../DiffEditor", () => {
+  const FakeDiffEditor = ({ input }: { input: { data: { path: string } } }) => {
     const path = input.data.path;
     const [docId] = useState(() => nextDocId++);
     useEffect(() => {
@@ -29,7 +29,13 @@ vi.mock("../DiffEditor", () => ({
         <input aria-label={`Edit ${path}`} onChange={() => dirtyDocs.add(docId)} />
       </div>
     );
-  },
+  };
+  // The all-in-one diff renders upstream's ResolvedDiffEditor (v0.1.51); both are the same fake.
+  return { DiffEditor: FakeDiffEditor, ResolvedDiffEditor: FakeDiffEditor };
+});
+// Upstream's per-block Git metadata (v0.1.51): no IPC in these tests.
+vi.mock("../gitDiffEntries", () => ({
+  useGitDiffEntries: (data: unknown) => ({ data, entries: undefined, loading: false }),
 }));
 
 import { _addEditor, _removeEditor, editorsFor, type TextEditorHandle } from "@/editor/api";

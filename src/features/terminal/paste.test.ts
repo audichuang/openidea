@@ -694,7 +694,8 @@ describe("menu paste with the backend reading the image", () => {
     const store = vi.spyOn(commands, "termStoreImage").mockResolvedValue({ status: "ok", data: "/tmp/image.png" });
     const paste = vi.fn();
     await pasteTerminalClipboard(paste, () => target());
-    expect(store).toHaveBeenCalledWith(42, [1, 2], "image/png");
+    // Upstream sends the stored image as base64 (v0.1.51); [1, 2] is "AQI=".
+    expect(store).toHaveBeenCalledWith(42, "AQI=", "image/png");
     expect(paste).toHaveBeenCalledExactlyOnceWith(expected);
     expect(read).not.toHaveBeenCalled();
     expect(document.execCommand).not.toHaveBeenCalled();

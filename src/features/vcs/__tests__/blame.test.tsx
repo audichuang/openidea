@@ -177,6 +177,8 @@ describe("git blame gutter and commit popup", () => {
       "Show Commit in Git Log",
       "Ignore This Commit",
       "Options",
+      // The fork's Colors submenu follows Options.
+      "Colors",
     ]);
 
     items[1]!.run!();
