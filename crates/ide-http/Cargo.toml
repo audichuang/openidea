@@ -18,6 +18,8 @@ reqwest.workspace = true
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 rustls.workspace = true
 rustls-platform-verifier.workspace = true
+# The fork's system proxy (PAC) lookup logs a lookup that fails.
+tracing.workspace = true
 uuid.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
