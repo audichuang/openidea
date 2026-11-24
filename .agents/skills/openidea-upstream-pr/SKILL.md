@@ -9,7 +9,7 @@ Load the global `pr` skill first: its body rules, evidence rules and `references
 
 ## When an upstream PR is allowed at all
 
-Since 2026-11-25 the user's standing rule is: any fork fix or improvement the maintainer would plausibly accept may go upstream, one problem per PR, meeting the no-regression bar in `pr`'s perf reference. Fork-only features and `FORK.md` standing decisions stay in the fork. Security problems never go into a public PR or issue: upstream `SECURITY.md` asks for a private advisory, and the user decides whether to file one. Before opening: an independent review (advisor or a second model) of the diff, the body and the evidence; then a draft, green CI, and `gh pr ready`.
+Since 2026-11-25 the user's standing rule is: any fork fix or improvement the maintainer would plausibly accept may go upstream, one problem per PR, meeting the no-regression bar in `pr`'s perf reference. Fork-only features and `FORK.md` standing decisions stay in the fork. Security problems never go into a public PR or issue: upstream `SECURITY.md` asks for a private advisory, and the user decides whether to file one. Before opening: an independent review (advisor or a second model) of the diff, the body and the evidence; then a draft, CI, and `gh pr ready`. Reds that upstream's own `main` already has don't block ready (the user's rule): confirm each on the PR's base commit and name them in a PR comment first.
 
 ## The maintainer (researched 2026-11-25 over the last 400 merged/closed PRs)
 
