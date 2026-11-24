@@ -195,8 +195,10 @@ export function computeGraph(
     track ? { ...s, edge: `${lane.source ?? ""}\0${lane.id}`, source: lane.source, kind: lane.kind } : s;
   // A lane keeps its slot until it reaches its target, so the rows it passes share one
   // straight segment (fork a728101be); later passes copy a segment before editing it.
+  // Untracked segments are cheaper to rebuild than to look up.
   const straight = new WeakMap<Lane, GraphSegment>();
   const straightOf = (l: Lane, i: number) => {
+    if (!track) return seg(i, i, l.color, l.dashed);
     let s = straight.get(l);
     if (!s) straight.set(l, (s = describe(seg(i, i, l.color, l.dashed), l)));
     return s;
