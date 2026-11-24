@@ -281,6 +281,8 @@ describe("staging operations of the tree's nodes", () => {
       "Jump to Source",
       "Copy Path",
       "Copy File Name",
+      // The fork's ClipCode copy follows the path copies (cf82a90a8).
+      "clip.copyChanges",
     ]);
     expect(groups).toContainEqual([
       ...(staging ? [] : ["vcs.changelist.new"]),
