@@ -4630,17 +4630,19 @@ mod tests {
         let wrapper = tmp.path().join("git-wrapper");
         std::fs::write(&wrapper, format!("#!/bin/sh\nprintf x >> '{}'\nexec git \"$@\"\n", marker.display())).unwrap();
         std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
-        ide_vcs::set_git_executable(Some(&wrapper));
         let api = api(&root, Arc::default());
         if trust != "none" {
             *api.shared.workspace.write() = Some(Arc::new(Workspace(trust == "true", root.clone())));
         }
-        if method == "status" {
-            assert!(api.vcs_status(&root).unwrap().unwrap().changed_files > 0);
-            assert_eq!(filter_marker.exists(), trust == "true", "clean filter execution");
-        } else {
-            assert_eq!(api.vcs_remotes(&root).unwrap(), [("origin".into(), "https://example.com/repo.git".into())]);
-        }
+        // The repository keeps the git it is opened with (upstream's per-project git, v0.1.51).
+        ide_vcs::with_git_executable(Some(&wrapper), || {
+            if method == "status" {
+                assert!(api.vcs_status(&root).unwrap().unwrap().changed_files > 0);
+                assert_eq!(filter_marker.exists(), trust == "true", "clean filter execution");
+            } else {
+                assert_eq!(api.vcs_remotes(&root).unwrap(), [("origin".into(), "https://example.com/repo.git".into())]);
+            }
+        });
         assert_eq!(marker.exists(), trust == "true", "configured Git executable execution");
     }
 

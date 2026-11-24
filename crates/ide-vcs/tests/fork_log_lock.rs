@@ -58,8 +58,8 @@ fn details_and_one_commit_queries_do_not_wait_for_a_file_history_walk() {
     )
     .unwrap();
     std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
-    ide_vcs::set_git_executable(Some(&wrapper));
-    let repo = Repo::discover(&dir).unwrap().unwrap();
+    // The repository keeps the git it was opened with (upstream's per-project git, v0.1.51).
+    let repo = ide_vcs::with_git_executable(Some(&wrapper), || Repo::discover(&dir)).unwrap().unwrap();
     repo.set_execution_allowed(true);
     std::thread::scope(|scope| {
         let walk = scope.spawn(|| {
@@ -80,7 +80,6 @@ fn details_and_one_commit_queries_do_not_wait_for_a_file_history_walk() {
         assert!(waited < Duration::from_secs(2), "queries waited {waited:?} for the walk");
         assert_eq!(walk.join().unwrap(), 3);
     });
-    ide_vcs::set_git_executable(None);
 }
 
 /// A git that waits at `--grep` until `release` exists, after creating `started`.
@@ -140,8 +139,8 @@ fn a_branch_switch_during_a_search_does_not_change_its_current_branch_marks() {
     let (dir, query, serial) = diverged_repo(tmp.path());
     let started = tmp.path().join("grep-started");
     let release = tmp.path().join("grep-release");
-    ide_vcs::set_git_executable(Some(&paused_git(tmp.path(), &started, &release)));
-    let repo = Repo::discover(&dir).unwrap().unwrap();
+    let paused = paused_git(tmp.path(), &started, &release);
+    let repo = ide_vcs::with_git_executable(Some(&paused), || Repo::discover(&dir)).unwrap().unwrap();
     repo.set_execution_allowed(true);
     let concurrent = std::thread::scope(|scope| {
         let search = scope.spawn(|| repo.log(&query).unwrap());
@@ -158,7 +157,6 @@ fn a_branch_switch_during_a_search_does_not_change_its_current_branch_marks() {
         std::fs::write(&release, "").unwrap();
         search.join().unwrap()
     });
-    ide_vcs::set_git_executable(None);
     assert_eq!(marks(concurrent), serial);
     // The view cached for these refs.
     assert_eq!(marks(repo.log(&query).unwrap()), serial);
@@ -171,8 +169,8 @@ fn a_search_that_ends_on_another_branch_caches_marks_for_the_branch_it_started_o
     let (dir, query, serial) = diverged_repo(tmp.path());
     let started = tmp.path().join("grep-started");
     let release = tmp.path().join("grep-release");
-    ide_vcs::set_git_executable(Some(&paused_git(tmp.path(), &started, &release)));
-    let repo = Repo::discover(&dir).unwrap().unwrap();
+    let paused = paused_git(tmp.path(), &started, &release);
+    let repo = ide_vcs::with_git_executable(Some(&paused), || Repo::discover(&dir)).unwrap().unwrap();
     repo.set_execution_allowed(true);
     let concurrent = std::thread::scope(|scope| {
         let search = scope.spawn(|| repo.log(&query).unwrap());
@@ -186,7 +184,6 @@ fn a_search_that_ends_on_another_branch_caches_marks_for_the_branch_it_started_o
         std::fs::write(&release, "").unwrap();
         search.join().unwrap()
     });
-    ide_vcs::set_git_executable(None);
     // The search started on `main`: its rows carry `main`'s marks.
     assert_eq!(marks(concurrent), serial);
     git(&dir, &["checkout", "-q", "main"]);

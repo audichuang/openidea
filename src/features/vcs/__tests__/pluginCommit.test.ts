@@ -20,6 +20,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 });
 
 import type { CommitSelection, FileStatus } from "@/bindings";
+import { forkStagingRepos } from "../forkStagingRepos";
 import { useProject } from "@/platform/project";
 import { deferred } from "@/test/deferred";
 import { maybeCommitService, registerCommitCheckProvider } from "@/workbench/contributions";
@@ -67,7 +68,10 @@ beforeEach(() => {
   disposers = [installDraftRevision(), provideCommit()];
 });
 
-afterEach(() => disposers.reverse().forEach((d) => d()));
+afterEach(() => {
+  forkStagingRepos.upstream = false;
+  disposers.reverse().forEach((d) => d());
+});
 
 describe("the commit plugins see", () => {
   it("is what Commit would commit, and the message is replaced only at its revision", async () => {
@@ -109,6 +113,7 @@ describe("the commit plugins see", () => {
   });
 
   it("uses the checked staging repositories for commit checks, pending changes and Amend", async () => {
+    forkStagingRepos.upstream = true; // upstream's staged-repository selection
     const roots = ["/w/a", "/w/b"];
     const status = roots.map((root) => ({ ...files[0]!, path: root + "/a.ts", staged: "modified" as const }));
     useVcs.setState({ root: "/w", repo: roots[1], roots, status });
@@ -139,6 +144,7 @@ describe("the commit plugins see", () => {
   });
 
   it("does not commit an unchecked repository when the checked index becomes empty during save", async () => {
+    forkStagingRepos.upstream = true; // upstream's staged-repository selection
     const [a, b] = ["/w/a", "/w/b"] as const;
     const status = [a, b].map((root) => ({ ...files[0]!, path: root + "/a.ts", staged: "modified" as const }));
     useVcs.setState({ root: "/w", repo: b, roots: [a, b], status });

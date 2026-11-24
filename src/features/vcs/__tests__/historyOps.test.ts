@@ -181,6 +181,9 @@ describe("Git Log commit actions", () => {
     const order = (selection: Commit[]) => menuOrder(commitMenu(a, selection));
     const multi = (compare: string[]) => [
       "vcs.log.copyRevision",
+      // The fork's ClipCode copies follow Copy Revision (c3389966e).
+      "clip.copyCommitFiles",
+      "clip.copyCommits",
       "vcs.log.createPatch",
       "vcs.log.cherryPick",
       "-",

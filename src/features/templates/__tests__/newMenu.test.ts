@@ -20,6 +20,8 @@ describe("New menu templates by directory kind", () => {
       "rust",
       "typescript",
       "tsx",
+      // Upstream's Svelte component (v0.1.51) is a web template.
+      "svelte",
       "javascript",
       "python",
       "jupyter",
@@ -52,6 +54,8 @@ describe("New menu templates by directory kind", () => {
       "rust",
       "typescript",
       "tsx",
+      // Upstream's Svelte component (v0.1.51) is a web template.
+      "svelte",
       "javascript",
       "go",
       "go-mod",
