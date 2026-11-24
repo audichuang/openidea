@@ -57,7 +57,7 @@ vi.mock("@/ui", async (importOriginal) => {
   };
 });
 
-import { FindToolWindow } from "./FindToolWindow";
+import { FindToolWindow } from "./ForkFindToolWindow";
 import type { FindDeps } from "./session";
 import { disposeFindWindow, openInFindWindow, useFindViewOptions } from "./windowStore";
 

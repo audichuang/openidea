@@ -155,6 +155,7 @@ import { saveVcsSetting } from "./settingsUi";
 import { TOGGLE_IGNORED_FILES, useIgnoredFiles } from "./ignoredFiles";
 import styles from "./CommitView.module.css";
 import { forkShelveButton } from "./forkShelveButton";
+import { forkStagingRepos } from "./forkStagingRepos";
 
 /** MIME type of files dragged onto a change list (absolute paths, newline-separated). */
 const CHANGES_MIME = "application/x-openidea-changes";
@@ -1314,7 +1315,13 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
             };
             const iconPath = presentationPath(n);
             // IDEA's staging area: the repository's checkbox for the commit.
-            const repoCheck = staging && repos.length > 1 && n.type === "dir" && !!n.repo && n.group === repoCheckGroup;
+            const repoCheck =
+              !forkStagingRepos.upstream &&
+              staging &&
+              repos.length > 1 &&
+              n.type === "dir" &&
+              !!n.repo &&
+              n.group === repoCheckGroup;
             return (
               <span
                 className={clsx(styles.nodeRow, n.type === "group" && dropTarget === n.changelist && styles.dropTarget)}

@@ -3,6 +3,7 @@ import { provideToolWindowService, type ToolWindowService } from "@/workbench/co
 import type { FileMatches, SearchQuery } from "@/platform/ipc";
 import { findOccurrence } from "@/ui/Tree";
 import { buildFindTree } from "../find/findTree";
+import { buildFindTree as forkBuildFindTree } from "../find/forkFindTree";
 import type { FindDeps } from "../find/session";
 import {
   closeFindTab,
@@ -125,17 +126,17 @@ describe("buildFindTree", () => {
       "src/e.ts",
     ];
     const expected = [...paths].sort((a, b) => a.localeCompare(b));
-    expect(buildFindTree(paths.map(file)).map((n) => n.key)).toEqual(expected.map((p) => `f:/p/${p}`));
+    expect(forkBuildFindTree(paths.map(file)).map((n) => n.key)).toEqual(expected.map((p) => `f:/p/${p}`));
   });
 
   const occurrenceModel = {
-    getKey: (n: ReturnType<typeof buildFindTree>[number]) => n.key,
-    getChildren: (n: ReturnType<typeof buildFindTree>[number]) => (n.kind === "match" ? undefined : n.children),
-    isExpandable: (n: ReturnType<typeof buildFindTree>[number]) => n.kind !== "match",
+    getKey: (n: ReturnType<typeof forkBuildFindTree>[number]) => n.key,
+    getChildren: (n: ReturnType<typeof forkBuildFindTree>[number]) => (n.kind === "match" ? undefined : n.children),
+    isExpandable: (n: ReturnType<typeof forkBuildFindTree>[number]) => n.kind !== "match",
   };
 
   it("Next Occurrence walks every match of one file with 10,000 matches", () => {
-    const roots = buildFindTree([
+    const roots = forkBuildFindTree([
       {
         path: "/p/big.ts",
         relPath: "big.ts",
@@ -159,7 +160,7 @@ describe("buildFindTree", () => {
   // Each step walks the whole tree, so 10,000 files are checked at every 50th match.
   it("Next Occurrence steps through 10,000 files in order", () => {
     const files = Array.from({ length: 10_000 }, (_, i) => file(`src/m${i % 50}/F${i}.ts`));
-    const roots = buildFindTree(files);
+    const roots = forkBuildFindTree(files);
     const matches = roots.map((f) => (f.kind === "file" ? f.children[0]!.key : ""));
     expect(findOccurrence(roots, null, 1, occurrenceModel)).toMatchObject({ index: 1, total: 10_000 });
     for (let i = 0; i < 10_000; i += 50) {

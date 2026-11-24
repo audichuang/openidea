@@ -3,45 +3,44 @@ import { commitRepo } from "./multiRoot";
  * Git Log history rewriting: Undo Commit, Edit Commit Message, Drop Commit and
  * Interactively Rebase from Here (IDEA's Git.Log.ContextMenu).
  */
-import { memo, useCallback, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
-import type { BranchInfo, Commit, RebaseAction, RebaseEntry } from "@/bindings";
-import { fontWeightOf } from "@/platform/editorSettings";
-import { resolveMonoFont } from "@/platform/fonts";
+import type { BranchInfo, Commit, RebaseEntry } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
-import { useProject } from "@/platform/project";
-import { Dialog, IconButton, Select, SplitGroup, SplitHandle, SplitPanel, T } from "@/ui";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { ask, showError } from "@/workbench/messages";
 import { chooseTargetChangelist, moveToChangelist } from "./changelistsUi";
-import { useCommit } from "./commitStore";
+import { setChangelistDraft, useCommit } from "./commitStore";
 import { stripSlash } from "./model";
 import { openCommit } from "./commitUi";
 import { rememberSetting } from "./confirmations";
 import { confirmDialog, openDialog } from "./dialogs";
 import { loadLogDetails } from "./logDetails";
-import { conflictsInstead, inProgress } from "./operations";
-import { runGitOperation, runOp, saveAll } from "./ops";
+import { revealCommit, useGitLog } from "./logStore";
+import type { LogChange } from "./logChanges";
+import { conflictsInstead, inProgress, rebaseFeedback } from "./operations";
+import { errorMessage, runGitOperation, runOp } from "./ops";
+import { runRebaseWithEditor } from "./rebaseEditor";
 import {
   headPushed,
+  combinedCommitMessage,
   initialRows,
-  moveRow,
+  isAutosquashSubject,
   planIsNoop,
   planProblem,
-  protectedBranchProblem,
   rebaseRange,
   singleCommitPlan,
   squashPlan,
   toEntries,
   undoCommitProblem,
   type RebaseRange,
-  type RebaseRow,
 } from "./rebasePlan";
+import { stagingAreaOn } from "./staging";
 import { currentRepo, refreshNow, useVcs } from "./store";
-import { isProtectedBranch } from "./remoteUi";
+import { RebasePlanDialog } from "./RebasePlanDialog";
+import { ForkInteractiveRebaseDialog } from "./ForkInteractiveRebaseDialog";
+import { upstreamRebaseDialog } from "./forkRebaseDialog";
+import { isProtectedRemoteBranch } from "./branches";
 import { notifications } from "@/workbench/contributions";
-import styles from "./common.module.css";
-import messageStyles from "./CommitMessageDialog.module.css";
+import { promptCommitMessage } from "./CommitMessageDialog";
 import { tx } from "@/platform/i18n";
 
 const short = (id: string) => id.slice(0, 8);
@@ -51,12 +50,16 @@ function refuse(title: string, body: string) {
   void showError(title, body);
 }
 
-/** Pushed history of a protected branch cannot be rewritten (force push is not allowed there). */
-const protectedProblem = (branch: { head: string | null; upstream: string | null } | null) =>
-  protectedBranchProblem(branch ?? { head: null, upstream: null }, isProtectedBranch);
+async function protectedHistoryProblem(repo: string | null, revision: string) {
+  const branches = (await call(commands.vcsBranches(repo))).filter(isProtectedRemoteBranch);
+  if (!branches.length) return null;
+  const { containingBranches } = await call(commands.vcsLogDetails(repo, revision));
+  const name = branches.find((branch) => containingBranches.includes(branch.name))?.name;
+  return name ? tx`The commit has already been pushed to protected branch '${name}'.` : null;
+}
 
-const pushedWarning = (what: string) =>
-  `The commit is already pushed to ${useVcs.getState().branch?.upstream ?? "the remote"}. ${what} rewrites published history; pushing afterwards needs a force push.`;
+const pushedWarning = (what: string, branch: BranchInfo | null) =>
+  `The commit is already pushed to ${branch?.upstream ?? "the remote"}. ${what} rewrites published history; pushing afterwards needs a force push.`;
 
 /**
  * Whether rewriting `range` (its oldest commit up to HEAD) touches history already
@@ -93,89 +96,145 @@ async function rangeTouchesUpstream(
 
 export async function undoCommit(commit: Commit) {
   const repo = commitRepo(commit) ?? currentRepo();
-  await refreshNow();
-  const branch = useVcs.getState().branch;
-  // Protected branches refuse only rewrites of history that is already pushed.
-  const problem = undoCommitProblem(commit, branch) ?? (headPushed(branch) ? protectedProblem(branch) : null);
-  if (problem) return refuse("Cannot undo commit", problem);
-  if (headPushed(branch)) {
-    const ok = await confirmDialog({
-      title: "Undo Commit",
-      message: pushedWarning("Undoing it"),
-      okLabel: "Undo Commit",
-      danger: true,
-    });
-    if (!ok) return;
+  try {
+    const branch = await call(commands.vcsBranchInfo(repo));
+    const problem = undoCommitProblem(commit, branch);
+    if (problem) return refuse("Cannot undo commit", problem);
+
+    const published = await protectedHistoryProblem(repo, commit.id);
+    if (published) return refuse("Cannot undo commit", published);
+
+    const warnings = [
+      headPushed(branch) && pushedWarning("Undoing it", branch),
+      !commit.parents.length && tx("The initial commit will be undone and its changes will stay staged."),
+    ].filter(Boolean);
+    if (warnings.length) {
+      const ok = await confirmDialog({
+        title: "Undo Commit",
+        message: warnings.join("\n\n"),
+        okLabel: "Undo Commit",
+        danger: true,
+      });
+      if (!ok) return;
+    }
+
+    const staging = stagingAreaOn();
+    const files = staging ? [] : await call(commands.vcsCommitFiles(repo, commit.id));
+    const target = staging ? null : await chooseTargetChangelist(commit.summary);
+    if (!staging && target === null) return;
+    const message = await runOp(
+      tx`Undo commit ${short(commit.id)}`,
+      () => call(commands.vcsUndoCommit(repo, commit.id)),
+      {
+        success: tx`Undid commit ${short(commit.id)} “${commit.summary}”`,
+      },
+    );
+    if (message === undefined) return;
+    if (target !== null) {
+      const root = repo ?? useVcs.getState().root ?? "";
+      const paths = files.flatMap((f) =>
+        [f.path, f.oldPath].filter((path): path is string => !!path).map((path) => `${stripSlash(root)}/${path}`),
+      );
+      moveToChangelist(paths, target);
+      setChangelistDraft(target, message);
+    } else {
+      useCommit.setState({ message });
+    }
+  } catch (error) {
+    refuse("Cannot undo commit", errorMessage(error));
   }
-  // The undone changes go to a change list the user picks (a new one is named after the commit).
-  const target = await chooseTargetChangelist(commit.summary);
-  if (target === null) return;
-  const files = await call(commands.vcsCommitFiles(repo, commit.id)).catch(() => []);
-  const undo = () => call(commands.vcsUndoCommit(repo, commit.id));
-  const message = await runOp(tx`Undo commit ${short(commit.id)}`, undo, {
-    success: tx`Undid commit ${short(commit.id)} “${commit.summary}”`,
-  });
-  if (message === undefined) return;
-  const root = repo ?? useVcs.getState().root ?? "";
-  moveToChangelist(
-    files.flatMap((f) => [f.path, f.oldPath].filter((p): p is string => !!p).map((p) => `${stripSlash(root)}/${p}`)),
-    target,
-  );
-  // The undone commit's message becomes the next commit's.
-  useCommit.setState({ message });
 }
 
 // ---------------------------------------------------------------------------
 // Rebase-based actions
 
+type RewriteRange = RebaseRange & { repo: string | null; branch: string | null; refusal: string };
+
+const rewriteRefusals = {
+  "edit commit message": "Cannot edit commit message",
+  "extract changes": "Cannot extract changes",
+  "drop selected changes": "Cannot drop selected changes",
+  "drop commit": "Cannot drop commit",
+  "drop commits": "Cannot drop commits",
+  "squash commits": "Cannot squash commits",
+  rebase: "Cannot rebase",
+} as const;
+
+function rewriteHistory(repo: string | null, tip: string, base: string | null) {
+  return call(
+    commands.vcsLog(repo, {
+      branch: tip,
+      path: null,
+      author: null,
+      text: null,
+      range: base ? `${base}..${tip}` : null,
+      skip: 0,
+      limit: 0,
+    }),
+  );
+}
+
 /** The commits from `target` to HEAD, or a warning when they cannot be rewritten. */
-async function rangeFrom(target: Commit, verb: string): Promise<(RebaseRange & { repo: string | null }) | null> {
+async function rangeFrom(
+  target: Commit,
+  verb: keyof typeof rewriteRefusals,
+  labels?: { title: string; published: string },
+): Promise<RewriteRange | null> {
   const repo = commitRepo(target) ?? currentRepo();
+  const refusal = tx(rewriteRefusals[verb]);
   await refreshNow();
-  const branch = useVcs.getState().branch;
-  const op = inProgress(branch?.operation);
-  if (op) {
-    refuse(`Cannot ${verb}`, `A ${op} is in progress`);
-    return null;
-  }
-  const parent = target.parents[0];
   try {
-    const history = await call(
-      commands.vcsLog(repo, {
-        branch: "HEAD",
-        path: null,
-        author: null,
-        text: null,
-        range: parent ? `${parent}..HEAD` : null,
-        skip: 0,
-        limit: 0,
-      }),
-    );
+    const branch = await call(commands.vcsBranchInfo(repo));
+    const op = inProgress(branch.operation);
+    if (op) {
+      refuse(refusal, `A ${op} is in progress`);
+      return null;
+    }
+    const history = await rewriteHistory(repo, branch.headCommit ?? "HEAD", target.parents[0] ?? null);
     const range = rebaseRange(target, history);
     if ("error" in range) {
-      refuse(`Cannot ${verb}`, range.error);
+      refuse(refusal, range.error);
+      return null;
+    }
+    // On a linear range, any branch containing a newer commit also contains its oldest commit.
+    const protectedProblem = await protectedHistoryProblem(repo, range.commits[0]!.id);
+    if (protectedProblem) {
+      refuse(refusal, protectedProblem);
       return null;
     }
     if (await rangeTouchesUpstream(branch, range, repo)) {
-      // Protected branches refuse only rewrites of history that is already pushed.
-      const protectedBranch = protectedProblem(branch);
-      if (protectedBranch) {
-        refuse(`Cannot ${verb}`, protectedBranch);
-        return null;
-      }
+      const title = labels?.title ?? verb.replace(/^\w/, (c) => c.toUpperCase());
       const ok = await confirmDialog({
-        title: verb.replace(/^\w/, (c) => c.toUpperCase()),
-        message: pushedWarning(verb.replace(/^\w/, (c) => c.toUpperCase())),
+        title,
+        message: labels?.published ?? pushedWarning(title, branch),
         okLabel: "Continue",
         danger: true,
       });
       if (!ok) return null;
     }
-    return { ...range, repo };
+    return { ...range, repo, branch: branch.head, refusal };
   } catch (e) {
-    refuse(`Cannot ${verb}`, e instanceof Error ? e.message : String(e));
+    refuse(refusal, e instanceof Error ? e.message : String(e));
     return null;
   }
+}
+
+/** Recheck the snapshot and protected refs just before applying a plan or a dialog's edits. */
+async function canApplyRewrite(range: RewriteRange): Promise<boolean> {
+  const { repo, refusal } = range;
+  try {
+    const branch = await call(commands.vcsBranchInfo(repo));
+    if (branch.head !== range.branch || branch.headCommit !== range.commits.at(-1)!.id || branch.operation) {
+      refuse(refusal, tx("The branch changed while this history rewrite was being prepared."));
+      return false;
+    }
+    const problem = await protectedHistoryProblem(repo, range.commits[0]!.id);
+    if (!problem) return true;
+    refuse(refusal, problem);
+  } catch (error) {
+    refuse(refusal, errorMessage(error));
+  }
+  return false;
 }
 
 async function headOf(repo: string | null): Promise<string | null> {
@@ -192,7 +251,16 @@ function undoLink(repo: string | null, before: string | null, after: string | nu
     {
       label: "Undo",
       run: () =>
-        void runOp(tx("Undo"), () => call(commands.vcsRestoreHead(repo, before, after))).then((done) => {
+        void runOp(
+          tx("Undo"),
+          async () => {
+            const firstNew = (await rewriteHistory(repo, after, before)).at(-1);
+            const problem = firstNew && (await protectedHistoryProblem(repo, firstNew.id));
+            if (problem) throw new Error(problem);
+            return call(commands.vcsRestoreHead(repo, before, after, null, null));
+          },
+          { onError: () => conflictsInstead(repo) },
+        ).then((done) => {
           if (done === undefined) return;
           notifications().notify({ group: "vcs", level: "info", key, title: undone });
         }),
@@ -201,25 +269,18 @@ function undoLink(repo: string | null, before: string | null, after: string | nu
 }
 
 /** Rewrites the branch with `entries`; a finished rewrite can be undone from its balloon. */
-async function runRebase(
-  base: string | null,
-  entries: RebaseEntry[],
-  done: string,
-  repo: string | null,
-  undone = tx("Rebase undone"),
-) {
-  await saveAll();
-  const before = await headOf(repo);
+async function runRebase(range: RewriteRange, entries: RebaseEntry[], done: string, undone = tx("Rebase undone")) {
+  if (!(await canApplyRewrite(range))) return;
+  const { repo, base, commits } = range;
+  const before = commits.at(-1)!.id;
   await runGitOperation(
     { op: "interactiveRebase", base, entries },
-    {
+    rebaseFeedback(repo, {
       progress: "Rebasing",
-      success: () => (inProgress() === "rebase" ? "Rebase stopped for editing; continue the rebase when done" : done),
+      success: done,
       failure: tx("Rebase failed"),
-      onError: conflictsInstead,
-      successActions: async () =>
-        inProgress() === "rebase" ? [] : undoLink(repo, before, await headOf(repo), undone, "vcs.operation"),
-    },
+      successActions: async () => undoLink(repo, before, await headOf(repo), undone, "vcs.operation"),
+    }),
     repo,
   );
 }
@@ -234,8 +295,9 @@ export async function editCommitMessage(commit: Commit) {
   const hash = short(commit.id);
   const author = commit.author || commit.email;
   const label = author ? tx`Edit message for commit ${hash} by ${author}` : tx`Edit message for commit ${hash}`;
-  const message = await promptMessage("Edit Commit Message", label, initial);
+  const message = await promptCommitMessage("Edit Commit Message", label, initial);
   if (message === null || message.trim() === initial.trim()) return;
+  if (!(await canApplyRewrite(range))) return;
   // Written without a rebase: the index and the working tree (local changes) stay as they are.
   const change = await runOp(tx`Edit commit message of ${short(commit.id)}`, () =>
     call(commands.vcsReword(range.repo, commit.id, message)),
@@ -250,6 +312,86 @@ export async function editCommitMessage(commit: Commit) {
     title: tx`Commit message of ${short(commit.id)} changed`,
     actions: undoLink(range.repo, change.before, change.after, tx("Commit message change undone"), key),
   });
+}
+
+function selectedCommitPaths(commit: Commit, changes: LogChange[]): string[] | null {
+  if (
+    !changes.length ||
+    commit.parents.length > 1 ||
+    changes.some((change) => change.readOnly || change.statsTo !== commit.id || change.repo !== commitRepo(commit))
+  ) {
+    return null;
+  }
+  return [...new Set(changes.flatMap(({ path, oldPath }) => (oldPath ? [path, oldPath] : [path])))];
+}
+
+export async function extractSelectedChanges(commit: Commit, changes: LogChange[]) {
+  const paths = selectedCommitPaths(commit, changes);
+  if (!paths) return;
+  const tab = useGitLog.getState().shownLog;
+  const root = useVcs.getState().root;
+  const title = tx("Extract Selected Changes");
+  const range = await rangeFrom(commit, "extract changes", {
+    title,
+    published: tx("Extracting these changes rewrites published history. Pushing afterward requires a force push."),
+  });
+  if (!range) return;
+  const initial = commit.messageTruncated ? (await loadLogDetails(commit)).message : commit.message;
+  const message = await promptCommitMessage(title, tx("Edit Commit Message"), initial, "Extract");
+  if (message === null) return;
+  if (!(await canApplyRewrite(range))) return;
+  const expectedHead = { branch: range.branch, commit: range.commits.at(-1)!.id };
+  const result = await runOp(
+    tx("Extracting selected changes"),
+    () => call(commands.vcsExtractCommitChanges(range.repo, commit.id, expectedHead, paths, message)),
+    { refresh: false },
+  );
+  if (!result) return;
+  await refreshNow();
+  const key = `vcs.extract:${result.head.after}`;
+  notifications().notify({
+    group: "vcs",
+    level: "info",
+    key,
+    title: tx("Selected changes extracted to a new commit"),
+    userInitiated: true,
+    actions: undoLink(range.repo, result.head.before, result.head.after, tx("Extraction undone"), key),
+  });
+  if (useVcs.getState().root === root && useGitLog.getState().shownLog === tab) {
+    await revealCommit(result.commit, range.repo, tab);
+  }
+}
+
+export async function dropSelectedChanges(commit: Commit, changes: LogChange[]) {
+  const paths = selectedCommitPaths(commit, changes);
+  if (!paths) return;
+  const tab = useGitLog.getState().shownLog;
+  const root = useVcs.getState().root;
+  const range = await rangeFrom(commit, "drop selected changes", {
+    title: tx("Drop Selected Changes"),
+    published: tx("Dropping these changes rewrites published history. Pushing afterward requires a force push."),
+  });
+  if (!range) return;
+  if (!(await canApplyRewrite(range))) return;
+  const expectedHead = { branch: range.branch, commit: range.commits.at(-1)!.id };
+  await runGitOperation(
+    { op: "dropCommitChanges", commit: commit.id, expectedHead, paths },
+    {
+      progress: "Dropping selected changes",
+      success: () => tx("Selected changes dropped"),
+      failure: tx("Failed to drop selected changes"),
+      onError: () => conflictsInstead(range.repo),
+      successActions: async (rewrite) => {
+        if (!rewrite) return [];
+        if (useVcs.getState().root === root && useGitLog.getState().shownLog === tab) {
+          void revealCommit(rewrite.commit, range.repo, tab);
+        }
+        const { before, after } = rewrite.head;
+        return undoLink(range.repo, before, after, tx("Drop undone"), "vcs.operation");
+      },
+    },
+    range.repo,
+  );
 }
 
 /** Drop Commit(s): removes commits from the current branch. */
@@ -271,7 +413,7 @@ export async function dropCommits(commits: Commit[]) {
     action: ids.has(c.id) ? ("drop" as const) : ("pick" as const),
     message: null,
   }));
-  await runRebase(range.base, plan, `Dropped ${commits.length} commits`, range.repo, tx("Drop undone"));
+  await runRebase(range, plan, `Dropped ${commits.length} commits`, tx("Drop undone"));
 }
 
 async function dropCommit(commit: Commit) {
@@ -285,10 +427,9 @@ async function dropCommit(commit: Commit) {
   );
   if (!ok) return;
   await runRebase(
-    range.base,
+    range,
     singleCommitPlan(range, commit.id, "drop"),
     `Dropped commit ${short(commit.id)}`,
-    range.repo,
     tx("Drop undone"),
   );
 }
@@ -309,14 +450,14 @@ async function confirmDrop(title: string, body: string): Promise<boolean> {
 }
 
 /** The range from the oldest of `commits`, when all of them are on the current branch. */
-async function rangeFor(commits: Commit[], verb: string): Promise<(RebaseRange & { repo: string | null }) | null> {
+async function rangeFor(commits: Commit[], verb: "drop commits" | "squash commits"): Promise<RewriteRange | null> {
   // Log order is newest first: the last selected row is the oldest commit.
   const oldest = commits[commits.length - 1]!;
   const range = await rangeFrom(oldest, verb);
   if (!range) return null;
   const inRange = new Set(range.commits.map((c) => c.id));
   if (!commits.every((c) => inRange.has(c.id))) {
-    refuse(`Cannot ${verb}`, "All selected commits must be on the current branch");
+    refuse(range.refusal, "All selected commits must be on the current branch");
     return null;
   }
   return range;
@@ -329,19 +470,13 @@ export async function squashCommits(commits: Commit[]) {
   if (!range) return;
   const ids = new Set(commits.map((c) => c.id));
   const oldestFirst = range.commits.filter((c) => ids.has(c.id));
-  const message = await promptMessage(
+  const message = await promptCommitMessage(
     "Squashed Commit Message",
     tx("Edit message for squashed commit"),
-    oldestFirst.map((c) => c.message.trim()).join("\n\n"),
+    combinedCommitMessage(oldestFirst.map((c) => c.message)),
   );
   if (message === null || !message.trim()) return;
-  await runRebase(
-    range.base,
-    squashPlan(range, ids, message),
-    `Squashed ${commits.length} commits`,
-    range.repo,
-    tx("Squash undone"),
-  );
+  await runRebase(range, squashPlan(range, ids, message), `Squashed ${commits.length} commits`, tx("Squash undone"));
 }
 
 /**
@@ -358,401 +493,62 @@ export async function rebaseAfterFixup(target: Commit) {
   useCommit.setState({ fixupTarget: null });
   const range = await rangeFrom(target, "rebase");
   if (!range) return;
-  await runRebase(range.base, toEntries(initialRows(range.commits)), tx("Rebased"), range.repo);
+  await runRebase(range, toEntries(initialRows(range.commits)), tx("Rebased"));
 }
 
 /** Interactively Rebase from Here…: IDEA's rebase dialog for `target..HEAD`. */
 export async function interactivelyRebaseFrom(target: Commit) {
   const range = await rangeFrom(target, "rebase");
   if (!range) return;
-  openDialog((close) => <InteractiveRebaseDialog range={range} onClose={close} />);
-}
-
-function promptMessage(title: string, label: string, initial: string): Promise<string | null> {
-  return new Promise((resolve) => {
-    const close = openDialog(() => (
-      <MessageDialog
-        title={title}
-        label={label}
-        initial={initial}
-        onDone={(m) => {
+  if (!upstreamRebaseDialog()) {
+    openDialog((close) => (
+      <ForkInteractiveRebaseDialog
+        range={range}
+        onClose={close}
+        onStart={(rows) => {
           close();
-          resolve(m);
+          void runRebase(range, toEntries(rows), "Rebase finished");
         }}
       />
     ));
-  });
-}
-
-function MessageDialog({
-  title,
-  label,
-  initial,
-  onDone,
-}: {
-  title: string;
-  label: string;
-  initial: string;
-  onDone: (message: string | null) => void;
-}) {
-  const id = useId();
-  const field = useRef<HTMLTextAreaElement>(null);
-  const [message, setMessage] = useState(initial);
-  const editor = useProject((s) => s.settings?.editor);
-  const { family, size } = resolveMonoFont(undefined, editor);
-  useLayoutEffect(() => field.current?.setSelectionRange(0, 0), []);
-
-  return (
-    <Dialog
-      open
-      title={title}
-      onClose={() => onDone(null)}
-      width={620}
-      minWidth={340}
-      resizable="both"
-      className={messageStyles.dialog}
-      buttons={[
-        { label: "OK", role: "default", disabled: !message.trim(), onClick: () => onDone(message) },
-        { label: "Cancel", role: "cancel" },
-      ]}
-    >
-      <div className={messageStyles.form}>
-        <label className={messageStyles.label} htmlFor={id}>
-          {label}
-        </label>
-        <textarea
-          id={id}
-          ref={field}
-          data-autofocus
-          className={`${styles.textarea} ${messageStyles.editor}`}
-          style={{
-            fontFamily: family,
-            fontSize: size,
-            fontWeight: fontWeightOf(editor?.fontWeight, 400),
-            lineHeight: editor?.lineHeight ? `${editor.lineHeight}px` : undefined,
-          }}
-          rows={8}
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-        />
-      </div>
-    </Dialog>
-  );
-}
-
-const ACTIONS: Array<{ value: RebaseAction; label: string }> = [
-  { value: "pick", label: "Pick" },
-  { value: "reword", label: "Reword" },
-  { value: "edit", label: "Stop to Edit" },
-  { value: "squash", label: "Squash" },
-  { value: "fixup", label: "Fixup" },
-  { value: "drop", label: "Drop" },
-];
-
-// Rows show the subject over the short hash (49 px in Chromium); measureElement corrects the estimate after mount.
-const REBASE_ROW_HEIGHT = 49;
-const REBASE_OVERSCAN = 6;
-const REBASE_INITIAL_RECT = { width: 470, height: 420 };
-const estimateRebaseRow = () => REBASE_ROW_HEIGHT;
-
-function rowIndexIn(list: HTMLDivElement | null, el: Element | null, count: number): number {
-  const row = el && list?.contains(el) ? el.closest<HTMLElement>("[data-index]") : null;
-  if (!row) return -1;
-  const idx = Number(row.dataset.index);
-  return Number.isInteger(idx) && idx >= 0 && idx < count ? idx : -1;
-}
-
-const RebaseRowItem = memo(function RebaseRowItem({
-  row,
-  index,
-  total,
-  start,
-  selected,
-  measureRef,
-  onSelect,
-  onAction,
-  onRowFocus,
-  onRowBlur,
-}: {
-  row: RebaseRow;
-  index: number;
-  total: number;
-  start: number;
-  selected: boolean;
-  measureRef: (node: HTMLDivElement | null) => void;
-  onSelect: (commitId: string) => void;
-  onAction: (index: number, commitId: string, action: RebaseAction) => void;
-  onRowFocus: (commitId: string, index: number) => void;
-  onRowBlur: (commitId: string) => void;
-}) {
-  return (
-    <div
-      ref={measureRef}
-      data-index={index}
-      className={styles.rebaseRow}
-      role="listitem"
-      aria-posinset={index + 1}
-      aria-setsize={total}
-      data-selected={selected || undefined}
-      style={{ transform: `translateY(${start}px)` }}
-      onFocus={() => onRowFocus(row.commit.id, index)}
-      onBlur={(e) => {
-        // Tab into a neighbor row blurs this one first; the neighbor's focus moves the pin. Clearing it here would
-        // re-render with focus on body and unmount the row the browser is about to focus.
-        if (!e.currentTarget.parentElement?.contains(e.relatedTarget)) onRowBlur(row.commit.id);
-      }}
-    >
-      <button
-        type="button"
-        className={styles.rebaseCommit}
-        aria-current={selected || undefined}
-        onClick={() => onSelect(row.commit.id)}
-        title={row.commit.summary}
-      >
-        <span className={styles.rebaseSubject} data-dropped={row.action === "drop" || undefined}>
-          {row.commit.summary}
-        </span>
-        <span className={styles.commitHash}>{row.commit.shortId}</span>
-      </button>
-      <Select<RebaseAction>
-        value={row.action}
-        options={ACTIONS}
-        aria-label={tx`Action for ${short(row.commit.id)}`}
-        className={styles.rebaseAction}
-        onChange={(action) => onAction(index, row.commit.id, action)}
-      />
-    </div>
-  );
-});
-
-function InteractiveRebaseDialog({
-  range,
-  onClose,
-}: {
-  range: RebaseRange & { repo: string | null };
-  onClose: () => void;
-}) {
-  const listRef = useRef<HTMLDivElement>(null);
-  const [rows, setRows] = useState<RebaseRow[]>(() => initialRows(range.commits));
-  const [selectedId, setSelectedId] = useState(() => rows[0]?.commit.id);
-  const pageRef = useRef<HTMLDivElement>(null);
-  const [stacked, setStacked] = useState(false);
-  useLayoutEffect(() => {
-    const page = pageRef.current;
-    if (!page) return;
-    const measure = () => setStacked(page.clientWidth < 640);
-    measure();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measure);
-    observer.observe(page);
-    return () => observer.disconnect();
-  }, []);
-
-  const rowCount = rows.length;
-  const selectedIndex = rows.findIndex((r) => r.commit.id === selectedId);
-  const selected = rows[selectedIndex];
-  const problem = useMemo(() => planProblem(rows), [rows]);
-  const noop = useMemo(() => planIsNoop(rows, range.commits), [rows, range.commits]);
-  // The virtualizer rebuilds its whole measurement cache whenever getItemKey changes identity, so keep its
-  // callbacks stable and replace getItemKey only when rows are reordered (the index -> key mapping changes).
-  const rowsRef = useRef(rows);
-  rowsRef.current = rows;
-  const [order, setOrder] = useState(0);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const getItemKey = useCallback((index: number) => rowsRef.current[index]!.commit.id, [order]);
-  const getScrollElement = useCallback(() => listRef.current, []);
-  const [activeCommitId, setActiveCommitId] = useState<string | null>(null);
-  const onRowBlur = useCallback((id: string) => setActiveCommitId((prev) => (prev === id ? null : prev)), []);
-  const pinnedIndex = useMemo(
-    () => (activeCommitId ? rows.findIndex((r) => r.commit.id === activeCommitId) : -1),
-    [activeCommitId, rows],
-  );
-  // Keep the row holding focus or an open Select popup mounted across scrolls so focus never drops to
-  // document.body (where Enter submits the dialog) and active controls keep DOM/caret/IME state.
-  const rangeExtractor = useCallback(
-    (r: Range) => {
-      const visible = defaultRangeExtractor(r);
-      const start = visible[0];
-      const end = visible[visible.length - 1];
-      const list = listRef.current;
-      // A Select popup that unmounts while focused fires no blur, so trust the pin only while focus is in the list.
-      const focusInList = !!list?.contains(document.activeElement);
-      const focusIdx = focusInList && pinnedIndex >= 0 && pinnedIndex < r.count ? pinnedIndex : -1;
-      const activeIdx = rowIndexIn(list, document.activeElement, r.count);
-      // Native Tab/Shift+Tab walk the DOM, so the rows next to the focused one stay mounted to be its neighbors
-      // instead of the far-away rendered window; focus() then scrolls the new row into view.
-      const candidates = [
-        focusIdx,
-        activeIdx,
-        ...[focusIdx, activeIdx].flatMap((i) => (i < 0 ? [] : [i - 1, i + 1])).filter((i) => i >= 0 && i < r.count),
-        rowIndexIn(list, list?.querySelector('[aria-expanded="true"]') ?? null, r.count),
-      ];
-      let merged: number[] | null = null;
-      for (const idx of candidates) {
-        if (idx < 0) continue;
-        if (start !== undefined && end !== undefined && idx >= start && idx <= end) continue;
-        if (!merged) merged = [...visible];
-        if (!merged.includes(idx)) merged.push(idx);
-      }
-      return merged ? merged.sort((a, b) => a - b) : visible;
-    },
-    [pinnedIndex],
-  );
-  // Rows sit below the scroller's top padding, which the virtualizer's offsets leave out, so an end-aligned row
-  // needs that much end padding to land with its bottom inside the viewport.
-  const padTopRef = useRef(0);
-  const virtualizer = useVirtualizer({
-    count: rowCount,
-    getScrollElement,
-    getItemKey,
-    estimateSize: estimateRebaseRow,
-    rangeExtractor,
-    overscan: REBASE_OVERSCAN,
-    initialRect: REBASE_INITIAL_RECT,
-    scrollPaddingEnd: padTopRef.current,
-  });
-  const scrollRowIntoView = useCallback(
-    (index: number) => {
-      const list = listRef.current;
-      const pad = (list && Number.parseFloat(getComputedStyle(list).paddingTop)) || 0;
-      padTopRef.current = pad;
-      virtualizer.options.scrollPaddingEnd = pad;
-      virtualizer.scrollToIndex(index, { align: "auto" });
-    },
-    [virtualizer],
-  );
-  // Tab after a wheel scroll focuses a row outside the viewport; bring it into view instead of relying on the
-  // engine to scroll a transform-positioned row.
-  const onRowFocus = useCallback(
-    (id: string, index: number) => {
-      setActiveCommitId(id);
-      const visible = virtualizer.range;
-      if (visible && (index < visible.startIndex || index > visible.endIndex)) scrollRowIntoView(index);
-    },
-    [virtualizer, scrollRowIntoView],
-  );
-  const update = useCallback(
-    (i: number, patch: Partial<RebaseRow>) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r))),
-    [],
-  );
-  const onSelect = useCallback((id: string) => setSelectedId(id), []);
-  const onAction = useCallback(
-    (i: number, id: string, action: RebaseAction) => {
-      setSelectedId(id);
-      update(i, { action });
-    },
-    [update],
-  );
-  const move = (delta: -1 | 1) => {
-    const to = selectedIndex + delta;
-    if (selectedIndex < 0 || to < 0 || to >= rowCount) return;
-    setRows((rs) => moveRow(rs, selectedIndex, delta));
-    setOrder((n) => n + 1);
-    scrollRowIntoView(to);
-  };
-  const start = () => {
-    if (problem || noop) return;
-    onClose();
-    void runRebase(range.base, toEntries(rows), "Rebase finished", range.repo);
-  };
-  return (
-    <Dialog
-      open
+    return;
+  }
+  let gitPlan = range.commits.some((commit) => isAutosquashSubject(commit.summary));
+  try {
+    gitPlan ||= Boolean(await call(commands.vcsConfigGetBool(range.repo, "rebase.updateRefs")));
+  } catch (e) {
+    refuse(tx("Rebase failed"), errorMessage(e));
+    return;
+  }
+  if (gitPlan) {
+    if (!(await canApplyRewrite(range))) return;
+    // Git owns autosquash matching and ref updates in the rebase todo.
+    await runRebaseWithEditor(
+      range.repo,
+      range.base,
+      {},
+      rebaseFeedback(range.repo, {
+        progress: tx("Rebasing"),
+        success: "Rebase finished",
+        failure: tx("Rebase failed"),
+      }),
+    );
+    return;
+  }
+  openDialog((close) => (
+    <RebasePlanDialog
+      repo={range.repo}
       title={rebaseTitle(range.commits.length, range.base && short(range.base))}
-      onClose={onClose}
-      width={960}
-      minWidth={360}
-      minHeight={360}
-      resizable="both"
-      className={styles.rebaseDialog}
-      buttons={[
-        { label: "Start Rebasing", role: "default", disabled: !!problem || noop, onClick: start },
-        { label: "Cancel", role: "cancel" },
-      ]}
-    >
-      <div className={styles.rebasePage} ref={pageRef}>
-        <SplitGroup id="rebase-panes" className={styles.rebaseSplit} orientation={stacked ? "vertical" : "horizontal"}>
-          <SplitPanel id="rebase-plan" defaultSize="50%" minSize="30%">
-            <div className={styles.rebaseToolbar}>
-              <IconButton
-                icon="arrow-up"
-                size="small"
-                title="Move Up"
-                disabled={selectedIndex <= 0}
-                onClick={() => move(-1)}
-              />
-              <IconButton
-                icon="arrow-down"
-                size="small"
-                title="Move Down"
-                disabled={selectedIndex < 0 || selectedIndex === rowCount - 1}
-                onClick={() => move(1)}
-              />
-              <span className={styles.hint}>
-                <T>Commits are applied from top to bottom.</T>
-              </span>
-            </div>
-            <div ref={listRef} className={styles.rebaseList} role="list" aria-label={tx("Commits to rebase")}>
-              <div
-                className={styles.rebaseListInner}
-                role="presentation"
-                style={{ height: virtualizer.getTotalSize() }}
-              >
-                {virtualizer.getVirtualItems().map((v) => {
-                  const r = rows[v.index]!;
-                  return (
-                    <RebaseRowItem
-                      key={r.commit.id}
-                      row={r}
-                      index={v.index}
-                      total={rowCount}
-                      start={v.start}
-                      selected={r.commit.id === selectedId}
-                      measureRef={virtualizer.measureElement}
-                      onSelect={onSelect}
-                      onAction={onAction}
-                      onRowFocus={onRowFocus}
-                      onRowBlur={onRowBlur}
-                    />
-                  );
-                })}
-              </div>
-            </div>
-          </SplitPanel>
-          <SplitHandle aria-label={tx("Resize rebase panes")} />
-          <SplitPanel id="rebase-details" defaultSize="50%" minSize="30%">
-            {selected && (
-              <section className={styles.rebaseDetails} aria-label={tx("Commit details")}>
-                <div className={styles.rebaseMetadata}>
-                  <span className={styles.commitHash}>{selected.commit.shortId}</span>
-                  <span>{selected.commit.author}</span>
-                </div>
-                {selected.action === "reword" ? (
-                  <textarea
-                    key={selected.commit.id}
-                    className={`${styles.textarea} ${styles.rebaseMessage}`}
-                    aria-label={tx`New message for ${short(selected.commit.id)}`}
-                    rows={5}
-                    value={selected.message}
-                    onChange={(e) => update(selectedIndex, { message: e.target.value })}
-                  />
-                ) : (
-                  <div className={styles.rebasePreview}>
-                    {selected.commit.message.trimEnd() || selected.commit.summary}
-                  </div>
-                )}
-              </section>
-            )}
-          </SplitPanel>
-        </SplitGroup>
-        {problem && (
-          <div className={styles.error} role="alert">
-            {tx(problem)}
-          </div>
-        )}
-      </div>
-    </Dialog>
-  );
+      initial={initialRows(range.commits)}
+      validate={planProblem}
+      disableStart={(rows) => planIsNoop(rows, range.commits)}
+      onClose={close}
+      onStart={(rows) => {
+        close();
+        void runRebase(range, toEntries(rows), "Rebase finished");
+      }}
+    />
+  ));
 }
 
 function rebaseTitle(n: number, onto: string | null): string {
