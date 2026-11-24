@@ -54,6 +54,8 @@ test("the main toolbar compresses long labels before a short branch name", async
   await page.setViewportSize({ width: 1150, height: 620 });
   const expanded = await Promise.all(labels.map(width));
   await page.setViewportSize({ width: 690, height: 620 });
+  // fork: the label limit is measured in a ResizeObserver's animation frame; read after it (racy on both sides).
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   await expect.poll(async () => (await width(branch)).shown).toBe((await width(branch)).preferred);
   const narrowed = await Promise.all([width(project), width(run)]);
   for (const { shown, preferred } of narrowed) {
