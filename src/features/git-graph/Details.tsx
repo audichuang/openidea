@@ -1,7 +1,7 @@
 /** The bottom pane: the selected row's details and the File Tree, Reflog and Statistics tabs. */
 import { useState, type MouseEvent as ReactMouseEvent } from "react";
 import clsx from "clsx";
-import type { ChangedFile } from "@/bindings";
+import type { ChangedFile, GraphStash } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { formatClock, formatDay } from "@/platform/dateFormat";
 import { tx } from "@/platform/i18n";
@@ -59,7 +59,7 @@ export function BottomPane(p: {
           ) : (
             <CommitDetails
               commits={p.entries.flatMap((e) => (e.kind === "working" ? [] : [e.commit]))}
-              stash={one?.kind === "stash" ? one.stash.index : null}
+              stash={one?.kind === "stash" ? one.stash : null}
               onJump={p.onJump}
               remoteBranches={p.remoteBranches}
             />
@@ -139,8 +139,8 @@ export function CommitDetails({
   remoteBranches,
 }: {
   commits: GraphCommit[];
-  /** The selected row is `stash@{stash}`. */
-  stash: number | null;
+  /** The selected row is this stash. */
+  stash: GraphStash | null;
   onJump: (id: string) => void;
   remoteBranches: ReadonlySet<string>;
 }) {
@@ -198,8 +198,8 @@ export function CommitDetails({
         {body ? <pre className={styles.metaBody}>{body}</pre> : null}
         {stash !== null && bridge ? (
           <div className={styles.buttons}>
-            <span className={clsx(styles.ref, styles.refStash)}>{`stash@{${stash}}`}</span>
-            {bridge.stashMenu(stash, one.summary, one.repo).flatMap((item) =>
+            <span className={clsx(styles.ref, styles.refStash)}>{`stash@{${stash.index}}`}</span>
+            {bridge.stashMenu(stash, one.repo).flatMap((item) =>
               item.kind === "separator" || item.kind === "header" || item.kind === "action"
                 ? []
                 : [

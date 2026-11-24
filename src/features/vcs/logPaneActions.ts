@@ -23,7 +23,7 @@ import { logOptions } from "./logOptions";
 import { goToRef, selectedCommits, toggleCherryHighlight, updateLogOptions, useGitLog } from "./logStore";
 import { commitKey, commitRepo } from "./multiRoot";
 import { dropSelectedChanges, extractSelectedChanges } from "./rebase";
-import { currentRepoRoot, focusRepo } from "./store";
+import { currentRepoRoot } from "./store";
 import { showCompareBranches, type BranchComparisonTarget, type BranchComparisonData } from "./CompareBranches";
 import { showCompareRevisions } from "./operations";
 
@@ -207,8 +207,8 @@ export function registerLogPaneActions(): () => void {
       run: async ({ arg }) => {
         const target = branchArg(arg);
         if (!target?.branch) return;
-        if (target.repo) await focusRepo(target.repo);
-        toggleFavoriteBranch(target.branch, target.listed?.repo, target.listed?.branches);
+        // The favorites are the branch's own repository's (#384): no need to select it.
+        toggleFavoriteBranch(target.branch, target.listed?.repo ?? target.repo, target.listed?.branches);
       },
     },
     {
