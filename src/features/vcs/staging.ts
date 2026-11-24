@@ -8,6 +8,7 @@ import { useMemo } from "react";
 import { onWorkflowSettingsChange, useWorkflowSettings, workflowSettings } from "@/platform/workflowSettings";
 import { addedThenDeleted, filesOf, groupOf, renamedFromPath, type ChangeNode, type CheckState } from "./changes";
 import { withListDefaults } from "./changelists";
+import { forkStagingRepos } from "./forkStagingRepos";
 import { rootOf, stripSlash } from "./model";
 import { useCommit } from "./commitStore";
 import { useVcs } from "./store";
@@ -93,7 +94,7 @@ export function stagedRepositories(status: readonly FileStatus[], roots: readonl
 
 /** Repository inclusion is available when the staging tree shows more than one staged repository. */
 export function stagedRepositoryScope(status: readonly FileStatus[], roots: readonly string[], groupByRepo: boolean) {
-  if (!groupByRepo || roots.length < 2) return null;
+  if (!forkStagingRepos.upstream || !groupByRepo || roots.length < 2) return null;
   const staged = stagedRepositories(status, roots);
   return staged.size > 1 ? staged : null;
 }
