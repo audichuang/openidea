@@ -1,7 +1,7 @@
 mod common;
 
-use ide_core::{ChangeSet, RequestId, TextChange};
-use ide_host::{Host, ops};
+use ide_core::{ChangeSet, NullSink, RequestId, TextChange};
+use ide_host::{Host, HostConfig, ops};
 use ide_workspace::workspace::Workspace;
 use std::{
     sync::{Arc, Mutex},

@@ -1,4 +1,4 @@
-import { fireEvent, render } from "@testing-library/react";
+import { act, fireEvent, render } from "@testing-library/react";
 import { useRef } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { Scrollbar } from "./Scrollbar";
@@ -60,13 +60,15 @@ describe("Scrollbar", () => {
     [318, 320, true],
     [100, 1000, true],
   ])("shows the track for clientHeight %i and scrollHeight %i: %s", (clientHeight, scrollHeight, shown) => {
-    const { getByTestId, container } = render(<Harness onScroll={() => {}} />);
+    const { getByTestId, container, rerender } = render(<Harness onScroll={() => {}} contentHeight={0} />);
     const scroller = getByTestId("scroller");
     Object.defineProperties(scroller, {
       clientHeight: { value: clientHeight },
       scrollHeight: { value: scrollHeight },
       scrollTop: { value: 0 },
     });
+    // The fork's scrollbar measures again when the content's height changes, not on every scroll.
+    rerender(<Harness onScroll={() => {}} contentHeight={scrollHeight} />);
     act(() => {
       scroller.dispatchEvent(new Event("scroll"));
     });

@@ -27,6 +27,9 @@ vi.mock("@/editor/api", async (importOriginal) => ({
       text: () => "foo\nqux\nfoo\n",
       lineEnding: () => "lf",
       readOnly: false,
+      // Attachment API of upstream v0.1.51's DiffEditor.
+      subscribeReadOnly: () => () => {},
+      subscribeExternalChanges: () => () => {},
       extension: [],
       context: () => ({ doc: 1, path, language: "plaintext", uiMode: null, readOnly: false }),
       save: () => Promise.resolve(),

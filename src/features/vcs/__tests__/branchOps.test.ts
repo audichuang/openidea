@@ -162,7 +162,7 @@ it("remembers a checkout among the recent branches of its own repository only", 
   localStorage.clear();
   mocks.checkout.mockResolvedValue(ok({ kind: "done" }));
   useVcs.setState({ roots: ["/p/front", "/p/back"] });
-  await checkoutBranch("main");
+  await checkoutBranch({ name: "main", remote: false });
   expect(recentBranches("/p/front")).toEqual(["feature/ui"]);
   expect(recentBranches()).toEqual(["feature/ui"]);
   expect(recentBranches("/p/back")).toEqual([]);
