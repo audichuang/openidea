@@ -8,7 +8,7 @@
  * a rebase conflict across the graph.
  */
 import type { ComponentType } from "react";
-import type { Branch, ChangedFile, Commit } from "@/bindings";
+import type { Branch, ChangedFile, Commit, GraphStash } from "@/bindings";
 import type { MenuItem } from "@/ui";
 import type { EditorInput } from "./contributions";
 
@@ -155,8 +155,8 @@ export interface GitGraphBridge {
   copyRange(repo: string, base: string, tip: string): Promise<boolean>;
   /** `path` (repository-relative) at `rev` compared with the working file. */
   openRevisionFile(repo: string, rev: string, path: string): Promise<void>;
-  /** Unstash Changes entries for `stash@{index}` of `repo` (apply, pop, the dialog, drop). */
-  stashMenu(index: number, message: string, repo: string): MenuItem[];
+  /** Unstash Changes entries for `stash` of `repo` (apply, pop, the dialog, drop). */
+  stashMenu(stash: GraphStash, repo: string): MenuItem[];
   /** Continue / Abort of the merge, rebase, cherry-pick or revert `repo` stopped in. */
   controlOperation(repo: string, control: "continue" | "abort", operation: string): Promise<void>;
   /** The Conflicts dialog, with `repo` selected so it concludes that repository's operation. */

@@ -2,13 +2,13 @@
 import type { ChangeNode } from "./changes";
 
 /**
- * Whether a row starts open: groups do, except Unversioned Files; a repository or
+ * Whether a row starts open: groups do, except Unversioned and Ignored Files; a repository or
  * directory row only when it is the single child of an open row, so a chain of single
  * children opens down to the first branching (the first level of real folders shows).
  */
 export function defaultOpen(node: ChangeNode, parentOpen: boolean, siblings: number): boolean {
   if (node.type === "file") return false;
-  if (node.type === "group") return node.group !== "unversioned";
+  if (node.type === "group") return node.group !== "unversioned" && node.group !== "ignored";
   return parentOpen && siblings === 1;
 }
 

@@ -59,11 +59,13 @@ export function StashesPanel({ orientation = "vertical" }: { orientation?: "vert
   const selectedStash = selection && !isGroup(selection) ? selection : null;
   const selectedIdentity = selectedStash && stashIdentity(selectedStash);
   const matching = selectedIdentity ? stashes.filter((entry) => stashIdentity(entry) === selectedIdentity) : [];
-  const current = selectedGroup
-    ? undefined
-    : (matching.find((entry) => entry.index === selectedStash?.index) ??
-      matching[0] ??
-      stashes.find((entry) => !groups.length || !entry.repo || !collapsed.has(entry.repo)));
+  // Fork (#374): a selected stash that a refresh removed takes no actions until another is selected.
+  const current =
+    selectedGroup || (selectedStash && !matching.length)
+      ? undefined
+      : (matching.find((entry) => entry.index === selectedStash?.index) ??
+        matching[0] ??
+        stashes.find((entry) => !groups.length || !entry.repo || !collapsed.has(entry.repo)));
   const selectedNode = selectedGroup ?? current;
   const selected = useMemo(() => new Set(selectedNode ? [nodeKey(selectedNode)] : []), [selectedNode]);
 
@@ -110,7 +112,12 @@ export function StashesPanel({ orientation = "vertical" }: { orientation?: "vert
         rowHeight={rowHeight}
         aria-label="Stashes"
         className={styles.stashList}
-        empty={<span className={styles.empty}>{loaded ? (result.error ?? tx("No stashes")) : tx("Loading…")}</span>}
+        empty={
+          // Fork (#374): a refresh of the same repositories keeps showing their empty list.
+          <span className={styles.empty}>
+            {loaded || sameProject ? (result!.error ?? tx("No stashes")) : tx("Loading…")}
+          </span>
+        }
         onSelectionChange={(_keys, lead) => setSelection(lead)}
         onContextMenu={(s, _keys, e) => {
           if (!s || isGroup(s) || !loaded) return;

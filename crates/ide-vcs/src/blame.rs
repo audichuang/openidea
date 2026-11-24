@@ -5,8 +5,8 @@ use crate::BlameLine;
 use ide_core::IpcPath;
 use ide_core::{CancellationToken, IdeResult};
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex, OnceLock};
 use std::path::{Component, Path};
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Default, Clone)]
 struct CommitMeta {
@@ -187,7 +187,13 @@ mod tests {
     }
 
     fn line(commit: &str) -> BlameLine {
-        BlameLine { commit: commit.to_owned(), author: commit.to_owned(), time_ms: 0.0, summary: String::new(), origin_path: None }
+        BlameLine {
+            commit: commit.to_owned(),
+            author: commit.to_owned(),
+            time_ms: 0.0,
+            summary: String::new(),
+            origin_path: None,
+        }
     }
 
     /// Blame of `base` where line i was committed as `c<i>`, mapped onto `current`;

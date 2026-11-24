@@ -5,7 +5,7 @@ import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { hasPrimaryModifier } from "@/platform/keymap";
 import { IconButton, SearchField, T, Tree, copyText, showContextMenu, type MenuItem } from "@/ui";
-import { useContext, useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useContext, useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
   branchFolderKeys,
   branchGroupKeys,
@@ -467,11 +467,17 @@ export function BranchesPanel() {
               : n?.kind === "remote" || (n?.kind === "group" && n.key.endsWith("g:remote"))
                 ? REMOTES_MENU
                 : [];
-            // Update Selected and Delete scope each selected target themselves and must preserve the original focus.
+            // Update Selected and Delete scope each selected target themselves and must preserve the original focus;
+            // so do the favorites, which are the branch's own repository's (#384).
             const items =
               repo && repo !== currentRepository
                 ? menu.flatMap((item) =>
-                    n?.branch && "label" in item && (item.label === "Delete" || item.label === "Update Selected")
+                    n?.branch &&
+                    "label" in item &&
+                    (item.label === "Delete" ||
+                      item.label === "Update Selected" ||
+                      item.label === "Add to Favorites" ||
+                      item.label === "Remove from Favorites")
                       ? [item]
                       : inRepo(repo, [item]),
                   )

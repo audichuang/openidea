@@ -177,7 +177,15 @@ export function createGitGraphBridge(): GitGraphBridge {
     async branchMenu(branch, repo) {
       const { branchMenu, inRepo } = await import("./branchMenu");
       const current = useVcs.getState().heads[repo]?.head ?? null;
-      return inRepo(repo, withActionLabels(branchMenu(branch, current, undefined, undefined, repo)));
+      return inRepo(
+        repo,
+        withActionLabels(
+          branchMenu(branch, current, undefined, {
+            repo,
+            headCommit: useVcs.getState().heads[repo]?.headCommit ?? null,
+          }),
+        ),
+      );
     },
     BranchFilterPopup: GraphBranchFilterPopup,
     async tagMenu(tag, repo) {
@@ -227,13 +235,14 @@ export function createGitGraphBridge(): GitGraphBridge {
         right: { type: "worktree" },
       });
     },
-    stashMenu(index, message, repo) {
+    stashMenu(stash, repo) {
+      // Upstream's stash operations check the entry's commit, so an index that moved does not hit another one.
       return [
-        { label: "Apply", run: () => void applyStash(index, false, repo) },
-        { label: "Pop", run: () => void applyStash(index, true, repo) },
-        { label: "Unstash…", run: () => showUnstashDialog(index, repo) },
+        { label: "Apply", run: () => void applyStash(stash, false, repo) },
+        { label: "Pop", run: () => void applyStash(stash, true, repo) },
+        { label: "Unstash…", run: () => showUnstashDialog(stash.index, repo) },
         { kind: "separator" },
-        { label: "Drop", danger: true, icon: "trash", run: () => void dropStash(index, message, repo) },
+        { label: "Drop", danger: true, icon: "trash", run: () => void dropStash(stash, repo) },
       ];
     },
     // `repo` is passed down: the selection may change while the status refreshes. It is selected
