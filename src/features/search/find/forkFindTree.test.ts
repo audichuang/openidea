@@ -8,7 +8,7 @@ import {
   groupsOfKeys,
   setNodeCollapsed,
   type FindTreeNode,
-} from "./findTree";
+} from "./forkFindTree";
 
 const file = (i: number, hits = 1 + (i % 3)): FileMatches => {
   const rel = `src/m${(i * 7) % 23}/F${(i * 7919) % 2_000}.ts`;
