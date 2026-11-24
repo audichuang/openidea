@@ -49,7 +49,8 @@ it("keeps the list up while a Git refresh reloads it", async () => {
   await finish([stash("First")]);
   expect(screen.getByText("First")).toBe(row);
   fireEvent.click(screen.getByRole("button", { name: "Apply Stash" }));
-  expect(apply).toHaveBeenCalledWith(0, false, "/p");
+  // Upstream passes the stash itself (v0.1.51), so a moved index cannot hit another one.
+  expect(apply).toHaveBeenCalledWith(expect.objectContaining({ index: 0 }), false, "/p");
 });
 
 it("shows the refreshed list once it arrives", async () => {
@@ -82,7 +83,15 @@ it("applies the selected stash at the index a refresh moved it to", async () => 
   await finish([stash("Newer", "s2", 0), stash("First", "s1", 1)]);
   list.mockResolvedValue(ok([]));
   fireEvent.click(screen.getByRole("button", { name: "Apply Stash" }));
-  await vi.waitFor(() => expect(applyCommand).toHaveBeenCalledWith("/p", 1, false, false, null));
+  await vi.waitFor(() =>
+    expect(applyCommand).toHaveBeenCalledWith(
+      "/p",
+      expect.objectContaining({ index: 1, id: "s1" }),
+      false,
+      false,
+      null,
+    ),
+  );
 });
 
 it("takes no actions once the selected stash is gone, until another is selected", async () => {
@@ -96,5 +105,6 @@ it("takes no actions once the selected stash is gone, until another is selected"
     expect(screen.getByRole("button", { name })).toBeDisabled();
   select("Newer");
   fireEvent.click(screen.getByRole("button", { name: "Apply Stash" }));
-  expect(apply).toHaveBeenCalledWith(0, false, "/p");
+  // Upstream passes the stash itself (v0.1.51), so a moved index cannot hit another one.
+  expect(apply).toHaveBeenCalledWith(expect.objectContaining({ index: 0 }), false, "/p");
 });

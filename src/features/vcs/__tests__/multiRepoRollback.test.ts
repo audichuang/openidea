@@ -520,7 +520,8 @@ describe("renaming a common branch", () => {
       ["/b", "feature", "feature2", false],
       ["/a", "feature2", "feature2", true],
     ]);
-    expect(recents()).toEqual(["feature2", "feature", "main"]);
+    // Recents are kept per repository in the fork (#384): the kept rename renames them in its own.
+    expect(recents("/a")).toEqual(["feature2", "main"]);
   });
 
   it("offers to unset the upstream only when the branch has one", async () => {

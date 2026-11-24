@@ -347,7 +347,12 @@ describe("git graph bridge", () => {
   });
 
   it("offers apply, pop, unstash and drop for a stash", () => {
-    expect(labels(bridge().stashMenu(0, "wip", REPO))).toEqual(["Apply", "Pop", "Unstash…", "Drop"]);
+    expect(labels(bridge().stashMenu({ index: 0, id: "s0", base: "b0", message: "wip", timeMs: null }, REPO))).toEqual([
+      "Apply",
+      "Pop",
+      "Unstash…",
+      "Drop",
+    ]);
   });
 
   describe("with the graph on another repository than the selected one (#367)", () => {
