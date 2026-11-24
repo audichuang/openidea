@@ -34,6 +34,8 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     commands: {
       ...real.commands,
       vcsLog: () => ok(mocks.history),
+      // Upstream's rewrite checks (v0.1.51) look for protected remote branches first.
+      vcsBranches: () => ok([]),
       vcsBranchInfo: () =>
         ok({
           head: "feature",
