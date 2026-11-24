@@ -123,6 +123,7 @@ async function withCommitMenu(page: Page, summary: string) {
 
 async function openLogRebase(page: Page, scenario: "synthetic" | "updateRefs" | "amend" | "edit") {
   const { first, second } = await showLog(page, scenario);
+  await page.evaluate(() => localStorage.setItem("openidea.fork.upstreamRebaseDialog", "true")); // fork: upstream's dialog
   await withCommitMenu(page, first);
   await page.getByRole("menuitem", { name: /Interactively Rebase from Here/ }).click();
   return { first, second };
