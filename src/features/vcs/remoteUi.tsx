@@ -1,5 +1,6 @@
 /** Update Project and Push dialogs. */
 import { useEffect, useMemo, useState } from "react";
+import { forkPushChecked } from "./forkPushChecked";
 import type {
   Branch,
   BranchInfo,
@@ -519,14 +520,34 @@ function MultiPushDialog({
       setRepos(list);
       // Fork decision (#224): nothing checked up front, Commit and Push included; Push… from one
       // repository's branch menu (`only`) checks it unless it is up to date, and a branch picked in
-      // several repositories checks those.
+      // several repositories checks those. Upstream's preselection stays behind `forkPushChecked`.
+      if (!forkPushChecked.upstream) {
+        setChecked(
+          repositories
+            ? new Set(list.map((r) => r.root))
+            : defaultPushChecked(
+                list.filter((r) => !hasNothingToPush(r)),
+                only,
+              ),
+        );
+        return;
+      }
+      // Push all checks what has outgoing commits, plus a new branch of the current repository;
+      // Push… from one repository checks it unless it is up to date.
+      const current = currentRepo();
       setChecked(
-        repositories
-          ? new Set(list.map((r) => r.root))
-          : defaultPushChecked(
-              list.filter((r) => !hasNothingToPush(r)),
-              only,
-            ),
+        new Set(
+          list
+            .filter((r) => {
+              if (repositories) return true;
+              if (selected) return selected.includes(r.root) || (selected.includes(null) && r.root === current);
+              if (only !== undefined) return !hasNothingToPush(r);
+              const destination = r.choices?.destination?.selection;
+              const other = destination && `${destination.remote}/${destination.target}` !== r.branch.upstream;
+              return r.branch.upstream ? r.commits.length > 0 || other : r.root === current;
+            })
+            .map((r) => r.root),
+        ),
       );
     });
     return () => {
@@ -1228,11 +1249,7 @@ function PushDialog({
   const push = async () => {
     if (!selection || inspection.fetching || useProject.getState().project !== project) return;
     if (inspection.needsFetch) return inspection.fetch();
-    if (
-      force &&
-      forceAvailable &&
-      !(await confirmForcePush({ remote, target: target ?? "" }, [forcePushRepo(repo)]))
-    )
+    if (force && forceAvailable && !(await confirmForcePush({ remote, target: target ?? "" }, [forcePushRepo(repo)])))
       return;
     if (useProject.getState().project !== project) return;
     const options = {

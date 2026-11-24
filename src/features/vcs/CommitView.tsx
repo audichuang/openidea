@@ -143,6 +143,7 @@ import { saveVcsSetting } from "./settingsUi";
 import { TOGGLE_IGNORED_FILES, useIgnoredFiles } from "./ignoredFiles";
 import styles from "./CommitView.module.css";
 import { forkShelveButton } from "./forkShelveButton";
+import { forkStagingRepos } from "./forkStagingRepos";
 
 /** MIME type of files dragged onto a change list (absolute paths, newline-separated). */
 const CHANGES_MIME = "application/x-openidea-changes";
@@ -581,7 +582,16 @@ export function nodeMenu(
     },
     ...(staging ? [] : [{ kind: "separator" as const }, ...fileActions, ...stageActions]),
     { kind: "separator" },
-    ...(canExportPatch ? [{ kind: "action" as const, action: "vcs.createPatch", arg: patchSelection, disabled: files.length > 0 && untracked.length === files.length }] : []),
+    ...(canExportPatch
+      ? [
+          {
+            kind: "action" as const,
+            action: "vcs.createPatch",
+            arg: patchSelection,
+            disabled: files.length > 0 && untracked.length === files.length,
+          },
+        ]
+      : []),
     ...(canExportPatch ? [{ kind: "action" as const, action: "vcs.copyPatch", arg: patchSelection }] : []),
     // IDEA: nothing to shelve or diff while only unversioned files are selected.
     {
@@ -1263,7 +1273,13 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
                 }),
             };
             // IDEA's staging area: the repository's checkbox for the commit.
-            const repoCheck = staging && repos.length > 1 && n.type === "dir" && !!n.repo && n.group === repoCheckGroup;
+            const repoCheck =
+              !forkStagingRepos.upstream &&
+              staging &&
+              repos.length > 1 &&
+              n.type === "dir" &&
+              !!n.repo &&
+              n.group === repoCheckGroup;
             return (
               <span
                 className={clsx(styles.nodeRow, n.type === "group" && dropTarget === n.changelist && styles.dropTarget)}
