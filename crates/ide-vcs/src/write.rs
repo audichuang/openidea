@@ -181,18 +181,7 @@ pub(crate) fn blame(
     let mut lines = if converted {
         // The working text is git's conversion of the blob (filter, ident, encoding): only
         // git can tell which lines it leaves unchanged.
-        contents_blame(
-            r,
-            path,
-            &rel,
-            &disk,
-            current_text,
-            &text,
-            &commit,
-            encoding,
-            &args,
-            options.ignore_whitespace,
-        )?
+        contents_blame(r, path, &rel, &disk, current_text, &text, &commit, encoding, &args, options.ignore_whitespace)?
     } else {
         // The revision's blame is computed once per commit and shared; the editor's text is
         // mapped onto it in-process, so typing never re-runs git.

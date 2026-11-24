@@ -140,8 +140,7 @@ pub(crate) fn looks_binary(head: &[u8]) -> bool {
 
 /// Decodes file bytes: `(text, encoding, has_bom, binary)`. Valid UTF-8 is
 /// taken over without copying.
-#[cfg(test)]
-fn decode_owned(bytes: Vec<u8>) -> (String, &'static Encoding, bool, bool) {
+pub(crate) fn decode_owned(bytes: Vec<u8>) -> (String, &'static Encoding, bool, bool) {
     match plain_utf8(bytes) {
         Ok(text) => (text, UTF_8, false, false),
         Err(bytes) => decode(&bytes),

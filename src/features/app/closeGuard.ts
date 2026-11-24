@@ -291,6 +291,8 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
     const remote = useRemote.getState();
     let stop = false;
     if (remote.session && !remote.lost) {
+      // A background tab asks in a window nobody sees: show it first, as decideClose does.
+      await deps.reveal?.();
       const r = await deps.ask({
         title: tx("Close Remote Development Window"),
         body: createElement(RemoteCloseMessage, { session: remote.session }),

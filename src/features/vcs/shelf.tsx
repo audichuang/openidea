@@ -26,7 +26,6 @@ import type {
 } from "@/bindings";
 import { setContext } from "@/platform/context";
 import { shortcutLabel } from "@/platform/keymap";
-import clsx from "clsx";
 import { diffInput, openDiff, openVcsDiff, withChain, workingDiffData, type DiffData } from "./diffInput";
 import { DiffEditor } from "./DiffEditor";
 import { buildShelveTree, firstFile, nodeCheck, toggleNode, type ShelveNode } from "./shelveTree";
