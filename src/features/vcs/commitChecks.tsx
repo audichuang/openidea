@@ -357,7 +357,7 @@ async function modifyFile(
         }),
       );
       if (staged === undefined) return;
-      await saveOpenedDocument(info.id, path);
+      await call(commands.docSave(info.id));
       await call(commands.vcsStageFormattedText(path, staged, result.formatted));
       staged = result.formatted;
     };

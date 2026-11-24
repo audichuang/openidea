@@ -151,8 +151,14 @@ export function createLogGraphPresenter(onReady?: () => void, slices: LayoutSlic
       }
       return index;
     };
+    // `unpruned` serves Go to Parent (`displayedLogGraph`), not the list.
+    const { commits, graph, rows, linear, collapsed } = full;
     return {
-      ...full,
+      commits,
+      graph,
+      rows,
+      linear,
+      collapsed,
       pending: false,
       row: (index: number): GraphRow | undefined => full.rows[index],
       rowsOf: (id: string) => indexed().rows.get(id) ?? [],

@@ -1132,7 +1132,8 @@ function TwoPaneDiff({
     attached,
     staticA,
     staticB,
-    edited,
+    // Not `edited`: it is kept per request object, and a host's rebuilt but equal request (#373)
+    // must keep the views; a request with other sides rebuilds through leftKey / rightKey.
     lang,
     viewMode,
     single,
