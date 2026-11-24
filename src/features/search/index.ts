@@ -5,6 +5,7 @@
  */
 import { lazyComponent, lazyWhen } from "@/ui";
 import { activeEditor, focusedCellEditor, registerEditorContribution } from "@/editor/api";
+import { findToolWindowModule } from "./find/forkFind";
 import { executeAction, registerActions } from "@/platform/actions";
 import { onFilesMoved, pendingFileMoves } from "@/platform/fileOps";
 import { call, commands, IpcError, isTauri, onIdeEvent } from "@/platform/ipc";
@@ -234,8 +235,8 @@ export function activate(): void | (() => void) {
       stripe: "onUse",
       sessionContent: true,
       order: 5,
-      component: lazyComponent(() => import("./find/FindToolWindow").then((m) => m.FindToolWindow)),
-      headerContent: lazyComponent(() => import("./find/FindToolWindow").then((m) => m.FindTabs)),
+      component: lazyComponent(() => findToolWindowModule().then((m) => m.FindToolWindow)),
+      headerContent: lazyComponent(() => findToolWindowModule().then((m) => m.FindTabs)),
       headerMenu: useFindHeaderMenu,
     }),
 
