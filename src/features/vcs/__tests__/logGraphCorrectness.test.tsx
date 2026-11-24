@@ -129,6 +129,21 @@ describe("graph projections", () => {
     expect(navigate).toHaveBeenLastCalledWith(0, "base");
   });
 
+  it("shares a passing lane's straight segment between rows", () => {
+    // Fork a728101be: a rebase onto upstream's LaneSlots once dropped this sharing.
+    const rows = computeGraph([
+      commit("tip", ["main", "side"]),
+      commit("side", ["base"]),
+      commit("side2", ["base"]),
+      commit("main", ["base"]),
+      commit("base"),
+    ]).rows;
+    const passing = (row: number) => rows[row]!.down.find((s) => s.from === 0 && s.to === 0);
+    expect(passing(1)).toBeDefined();
+    expect(passing(2)).toBe(passing(1));
+    expect(rows[2]!.up.find((s) => s.from === 0 && s.to === 0)).toBe(passing(1));
+  });
+
   it("keeps each arrow and target when multiple long edges cross the same rows", () => {
     const chain = (prefix: string) =>
       Array.from({ length: 40 }, (_, i) => commit(`${prefix}${i}`, i < 39 ? [`${prefix}${i + 1}`] : []));
