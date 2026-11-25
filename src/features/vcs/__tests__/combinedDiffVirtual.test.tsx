@@ -244,6 +244,26 @@ describe("the all-in-one diff with many files", () => {
     expect(editorsFor(edited)).toHaveLength(0);
   });
 
+  it("keeps a block with unsaved edits mounted when files are added before it", () => {
+    const items = files(120);
+    const edited = items[2]!.path;
+    const { rerender } = render(<CombinedDiffTab input={combinedDiffInput({ items })} />);
+    const field = screen.getByLabelText(`Edit ${edited}`) as HTMLInputElement;
+    act(() => {
+      fireEvent.change(field, { target: { value: "typed, not saved" } });
+    });
+    field.blur();
+    scroll(scroller(), 60 * BLOCK);
+    expect(mounted()).toContain(edited);
+    // An agent's change list grows at the front: the block moves to another index.
+    const grown = [diff("/r/src/a-new.ts"), diff("/r/src/b-new.ts"), ...items];
+    rerender(<CombinedDiffTab input={combinedDiffInput({ items: grown })} />);
+    scroll(scroller(), 61 * BLOCK);
+    expect(mounted()).toContain(edited);
+    expect(unmountedPaths).not.toContain(edited);
+    expect(screen.getByLabelText(`Edit ${edited}`)).toBe(field);
+  });
+
   it("does not mount a block it never showed for a file with unsaved edits in another editor", () => {
     const items = files(120);
     const elsewhere = items[100]!.path;
