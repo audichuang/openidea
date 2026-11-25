@@ -209,6 +209,41 @@ describe("the all-in-one diff with many files", () => {
     expect(seen.size).toBe(items.length);
   });
 
+  it("keeps a block with unsaved edits mounted however far it is scrolled, until they are saved", () => {
+    const items = files(120);
+    const edited = items[2]!.path;
+    render(<CombinedDiffTab input={combinedDiffInput({ items })} />);
+    const field = screen.getByLabelText(`Edit ${edited}`) as HTMLInputElement;
+    act(() => {
+      fireEvent.change(field, { target: { value: "typed, not saved" } });
+    });
+    // Ensure focus is outside the scroller so only the unsaved-edits guard keeps the block mounted.
+    field.blur();
+    expect(scroller().contains(document.activeElement)).toBe(false);
+    const docId = editorsFor(edited)[0]!.ctx.doc;
+    expect(dirtyDocs.has(docId)).toBe(true);
+
+    scroll(scroller(), items.length * BLOCK);
+    // Far away, it is still mounted, never unmounted, with its edit and dirty doc intact.
+    expect(mounted()).toContain(edited);
+    expect(unmountedPaths).not.toContain(edited);
+    expect(dirtyDocs.has(docId)).toBe(true);
+    expect(editorsFor(edited)).toHaveLength(1);
+    expect(mounted().length).toBeLessThanOrEqual(13);
+
+    scroll(scroller(), 0);
+    expect(screen.getByLabelText(`Edit ${edited}`)).toBe(field);
+    expect(field.value).toBe("typed, not saved");
+    expect(dirtyDocs.has(docId)).toBe(true);
+
+    // Saved: it unmounts and releases its document once scrolled out of view.
+    dirtyDocs.delete(docId);
+    scroll(scroller(), items.length * BLOCK);
+    expect(mounted()).not.toContain(edited);
+    expect(unmountedPaths).toContain(edited);
+    expect(editorsFor(edited)).toHaveLength(0);
+  });
+
   it("keeps the focused block mounted while it is scrolled away", () => {
     const items = files(120);
     const focused = items[1]!.path;
@@ -391,6 +426,177 @@ describe("the all-in-one diff with many files", () => {
     }
   });
 
+  it("keeps dirty and focused blocks mounted when the scroller height collapses to 0 and restores", () => {
+    const observers: Array<{ cb: ResizeObserverCallback; targets: Set<Element> }> = [];
+    const origRO = window.ResizeObserver;
+    const origClientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight")!;
+    const origRAF = window.requestAnimationFrame;
+    const origCAF = window.cancelAnimationFrame;
+    let viewHeight = VIEW;
+    const rafs = new Map<number, FrameRequestCallback>();
+    let rafId = 1;
+    class ControlledResizeObserver {
+      private readonly targets = new Set<Element>();
+      constructor(cb: ResizeObserverCallback) {
+        observers.push({ cb, targets: this.targets });
+      }
+      observe(el: Element) {
+        this.targets.add(el);
+      }
+      unobserve(el: Element) {
+        this.targets.delete(el);
+      }
+      disconnect() {
+        this.targets.clear();
+      }
+    }
+    vi.stubGlobal("ResizeObserver", ControlledResizeObserver);
+    window.ResizeObserver = ControlledResizeObserver as unknown as typeof ResizeObserver;
+    window.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+      const id = rafId++;
+      rafs.set(id, cb);
+      return id;
+    }) as typeof window.requestAnimationFrame;
+    window.cancelAnimationFrame = ((id: number) => {
+      rafs.delete(id);
+    }) as typeof window.cancelAnimationFrame;
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get() {
+        return viewHeight;
+      },
+    });
+    const fireResize = (el: Element) => {
+      const matching = observers.filter((o) => o.targets.has(el));
+      expect(matching.length).toBeGreaterThan(0);
+      act(() => {
+        for (const o of matching) o.cb([{ target: el } as never], {} as never);
+        const pending = [...rafs.entries()];
+        rafs.clear();
+        for (const [, cb] of pending) cb(0);
+      });
+    };
+
+    const items = files(120);
+    const edited = items[2]!.path;
+    const focusedPath = items[1]!.path;
+    try {
+      render(<CombinedDiffTab input={combinedDiffInput({ items })} />);
+      const editedField = screen.getByLabelText(`Edit ${edited}`) as HTMLInputElement;
+      act(() => {
+        fireEvent.change(editedField, { target: { value: "unsaved across zero height" } });
+      });
+      const editedDocId = editorsFor(edited)[0]!.ctx.doc;
+      expect(dirtyDocs.has(editedDocId)).toBe(true);
+      const focusedField = screen.getByLabelText(`Edit ${focusedPath}`) as HTMLInputElement;
+      focusedField.focus();
+
+      scroll(scroller(), 60 * 200);
+      const mid = items[60]!.path;
+      expect(mounted()).toContain(edited);
+      expect(mounted()).toContain(focusedPath);
+      expect(mounted()).toContain(mid);
+
+      // Collapse viewport height to 0 (as when maximizing a tool window hides the editor area).
+      viewHeight = 0;
+      fireResize(scroller());
+      // A hidden scroller keeps the range it had while shown (virtual-core skips `rangeExtractor` at 0).
+      expect(mounted()).toContain(mid);
+      // Both the dirty block and the focused block stay mounted in place.
+      expect(mounted()).toContain(edited);
+      expect(mounted()).toContain(focusedPath);
+      expect(unmountedPaths).not.toContain(edited);
+      expect(dirtyDocs.has(editedDocId)).toBe(true);
+      expect(screen.getByLabelText(`Edit ${edited}`)).toBe(editedField);
+      expect(editedField.value).toBe("unsaved across zero height");
+      expect(document.activeElement).toBe(focusedField);
+
+      // Restore viewport height: the same editors remain mounted with edits and focus intact.
+      viewHeight = VIEW;
+      fireResize(scroller());
+      expect(mounted()).toContain(mid);
+      expect(screen.getByLabelText(`Edit ${edited}`)).toBe(editedField);
+      expect(editedField.value).toBe("unsaved across zero height");
+      expect(dirtyDocs.has(editedDocId)).toBe(true);
+      expect(screen.getByLabelText(`Edit ${focusedPath}`)).toBe(focusedField);
+      expect(document.activeElement).toBe(focusedField);
+    } finally {
+      window.ResizeObserver = origRO;
+      window.requestAnimationFrame = origRAF;
+      window.cancelAnimationFrame = origCAF;
+      Object.defineProperty(HTMLElement.prototype, "clientHeight", origClientHeight);
+    }
+  });
+
+  describe("as blocks above the view grow once their diffs load", () => {
+    // Slots report their size through the virtualizer's ResizeObserver, the way a loaded diff does.
+    const observers = new Map<ResizeObserverCallback, Set<Element>>();
+    beforeEach(() => {
+      vi.stubGlobal(
+        "ResizeObserver",
+        class {
+          targets = new Set<Element>();
+          constructor(callback: ResizeObserverCallback) {
+            observers.set(callback, this.targets);
+          }
+          observe(target: Element) {
+            this.targets.add(target);
+          }
+          unobserve(target: Element) {
+            this.targets.delete(target);
+          }
+          disconnect() {
+            this.targets.clear();
+          }
+        },
+      );
+    });
+    afterEach(() => observers.clear());
+    const grow = (index: number, height: number) => {
+      const slot = document.querySelector(`[data-index="${index}"]`)!;
+      const [callback] = [...observers].find(([, targets]) => targets.has(slot))!;
+      act(() =>
+        callback([{ target: slot, borderBoxSize: [{ blockSize: height, inlineSize: 400 }] }] as never, {} as never),
+      );
+    };
+    /** How far below the top of the view a file's block starts. */
+    const below = (path: string) => {
+      const slot = document.querySelector(`[data-combined-block="${path}"]`)!.closest<HTMLElement>("[data-index]")!;
+      return parseFloat(slot.style.top) - scroller().scrollTop;
+    };
+    const items = files(60);
+    const target = items[40]!.path;
+
+    it("stays on the file it opened at", async () => {
+      // Still loading, the blocks are shorter than the estimate.
+      Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, get: () => 40 });
+      render(<CombinedDiffTab input={combinedDiffInput({ items, reveal: target })} />);
+      await act(() => new Promise((r) => setTimeout(r, 50)));
+      expect(below(target)).toBe(0);
+      grow(38, 3000);
+      grow(39, 5000);
+      expect(below(target)).toBe(0);
+    });
+
+    it("keeps what is shown in place while scrolling up", async () => {
+      render(<CombinedDiffTab input={combinedDiffInput({ items, reveal: target })} />);
+      await act(() => new Promise((r) => setTimeout(r, 50)));
+      scroll(scroller(), scroller().scrollTop - 100);
+      expect(below(target)).toBe(100);
+      grow(38, 130_000);
+      expect(below(target)).toBe(100);
+    });
+
+    it("moves the view by a correction relative to where it is, so wheel scrolling in flight is kept", async () => {
+      render(<CombinedDiffTab input={combinedDiffInput({ items, reveal: target })} />);
+      await act(() => new Promise((r) => setTimeout(r, 50)));
+      const scrollTo = vi.spyOn(scroller(), "scrollTo");
+      grow(38, 1000);
+      expect(Element.prototype.scrollBy).toHaveBeenCalledWith({ top: 700, behavior: undefined });
+      expect(scrollTo).not.toHaveBeenCalled();
+    });
+  });
+
   it("reaches, expands, edits, and reads back every one of 5,000 editable files without skipping ranges", () => {
     const items = files(5_000);
     render(<CombinedDiffTab input={combinedDiffInput({ items })} />);
@@ -526,5 +732,21 @@ describe("the all-in-one diff with many files", () => {
       fireEvent.click(lastBlock.querySelector<HTMLButtonElement>('button[aria-label="Expand File"]')!);
     });
     expect(mounted()).toContain(last);
+    const field = screen.getByLabelText(`Edit ${last}`) as HTMLInputElement;
+    act(() => {
+      fireEvent.change(field, { target: { value: "edited 5000th file" } });
+    });
+    field.blur();
+    const lastDocId = editorsFor(last)[0]!.ctx.doc;
+    expect(dirtyDocs.has(lastDocId)).toBe(true);
+    scroll(scroller(), 0);
+    // Still mounted with unsaved edit while scrolled 5,000 files away, and total editors stay bounded.
+    expect(mounted()).toContain(last);
+    expect(dirtyDocs.has(lastDocId)).toBe(true);
+    expect(mounted().length).toBeLessThanOrEqual(initialCount + 1);
+    scroll(scroller(), scroller().scrollHeight);
+    expect(screen.getByLabelText(`Edit ${last}`)).toBe(field);
+    expect(field.value).toBe("edited 5000th file");
+    expect(dirtyDocs.has(lastDocId)).toBe(true);
   }, 120_000);
 });
