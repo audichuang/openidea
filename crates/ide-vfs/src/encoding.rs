@@ -92,14 +92,16 @@ pub fn encode_properties_ascii(text: &str) -> String {
 
 /// Preserve an ASCII file's exact escape spelling when edits were undone or
 /// replaced with identical displayed text. Otherwise serialize the new buffer.
-pub fn save_properties_text(path: &Path, text: &str) -> IdeResult<f64> {
+/// Returns the mtime and the hash of the bytes the file holds for `text`.
+pub fn save_properties_text(path: &Path, text: &str) -> IdeResult<(f64, blake3::Hash)> {
     if let Ok(bytes) = fs::read(path)
         && bytes.is_ascii()
         && decode_properties_escapes(std::str::from_utf8(&bytes).expect("ASCII")) == text
     {
-        return Ok(mtime_ms(&fs::metadata(path)?));
+        return Ok((mtime_ms(&fs::metadata(path)?), blake3::hash(&bytes)));
     }
-    write_atomic(path, encode_properties_ascii(text).as_bytes())
+    let bytes = encode_properties_ascii(text);
+    Ok((write_atomic(path, bytes.as_bytes())?, blake3::hash(bytes.as_bytes())))
 }
 
 /// Detects BOM-less UTF-16 from the distribution of NUL bytes in mostly-ASCII text.
@@ -138,14 +140,21 @@ pub(crate) fn looks_binary(head: &[u8]) -> bool {
 
 /// Decodes file bytes: `(text, encoding, has_bom, binary)`. Valid UTF-8 is
 /// taken over without copying.
-pub(crate) fn decode_owned(bytes: Vec<u8>) -> (String, &'static Encoding, bool, bool) {
-    if Encoding::for_bom(&bytes).is_none() && !bytes[..bytes.len().min(SNIFF_LEN)].contains(&0) {
-        match String::from_utf8(bytes) {
-            Ok(text) => return (text, UTF_8, false, false),
-            Err(e) => return decode(e.as_bytes()),
-        }
+#[cfg(test)]
+fn decode_owned(bytes: Vec<u8>) -> (String, &'static Encoding, bool, bool) {
+    match plain_utf8(bytes) {
+        Ok(text) => (text, UTF_8, false, false),
+        Err(bytes) => decode(&bytes),
     }
-    decode(&bytes)
+}
+
+/// BOM-less, NUL-free UTF-8 becomes the text without a copy; anything else is handed back.
+fn plain_utf8(bytes: Vec<u8>) -> Result<String, Vec<u8>> {
+    if Encoding::for_bom(&bytes).is_none() && !bytes[..bytes.len().min(SNIFF_LEN)].contains(&0) {
+        String::from_utf8(bytes).map_err(|e| e.into_bytes())
+    } else {
+        Err(bytes)
+    }
 }
 
 /// Decodes file bytes: `(text, encoding, has_bom, binary)`.
@@ -227,19 +236,10 @@ fn archive_bytes(path: &Path) -> IdeResult<Option<(Vec<u8>, f64)>> {
     crate::read_archive_entry(&archive, &entry).map(Some)
 }
 
-pub(crate) fn load_text(path: &Path) -> IdeResult<LoadedText> {
-    if let Some((bytes, mtime_ms)) = archive_bytes(path)? {
-        let len = bytes.len() as u64;
-        let (text, enc, has_bom, binary) = decode_owned(bytes);
-        return Ok(LoadedText {
-            text,
-            encoding: encoding_label(enc),
-            has_bom,
-            binary,
-            large: len > LARGE_FILE_THRESHOLD,
-            too_large: len > READ_ONLY_THRESHOLD,
-            mtime_ms,
-        });
+/// Bytes of a file to open (size-checked) and its mtime, read once.
+fn read_to_open(path: &Path) -> IdeResult<(Vec<u8>, f64)> {
+    if let Some(found) = archive_bytes(path)? {
+        return Ok(found);
     }
     let meta = fs::metadata(path)?;
     if meta.is_dir() {
@@ -252,18 +252,70 @@ pub(crate) fn load_text(path: &Path) -> IdeResult<LoadedText> {
             meta.len() / (1024 * 1024)
         )));
     }
-    let bytes = fs::read(path)?;
-    let len = bytes.len() as u64;
-    let (text, enc, has_bom, binary) = decode_owned(bytes);
-    Ok(LoadedText {
+    Ok((fs::read(path)?, mtime_ms(&meta)))
+}
+
+/// Decoded text of `bytes`, carrying their hash so the text and its disk baseline are one read.
+fn loaded(
+    bytes: &[u8],
+    text: String,
+    enc: &'static Encoding,
+    has_bom: bool,
+    binary: bool,
+    mtime_ms: f64,
+) -> LoadedText {
+    loaded_from(blake3::hash(bytes), bytes.len() as u64, text, enc, has_bom, binary, mtime_ms)
+}
+
+fn loaded_from(
+    hash: blake3::Hash,
+    len: u64,
+    text: String,
+    enc: &'static Encoding,
+    has_bom: bool,
+    binary: bool,
+    mtime_ms: f64,
+) -> LoadedText {
+    LoadedText {
         text,
         encoding: encoding_label(enc),
         has_bom,
         binary,
         large: len > LARGE_FILE_THRESHOLD,
         too_large: len > READ_ONLY_THRESHOLD,
-        mtime_ms: mtime_ms(&meta),
-    })
+        mtime_ms,
+        content_hash: Some(hash),
+    }
+}
+
+pub(crate) fn load_text(path: &Path) -> IdeResult<LoadedText> {
+    load_text_with_fallback(path, None)
+}
+
+/// [`load_text`] resolved against the configured encoding; see [`Fallback`].
+pub(crate) fn load_text_with_fallback(path: &Path, fallback: Option<Fallback<'_>>) -> IdeResult<LoadedText> {
+    let (bytes, mtime_ms) = read_to_open(path)?;
+    let (hash, len) = (blake3::hash(&bytes), bytes.len() as u64);
+    let bytes = match plain_utf8(bytes) {
+        Ok(text) => {
+            let enc = match resolve(&text, UTF_8, false, false, fallback) {
+                Resolution::Relabel(fallback) => fallback,
+                _ => UTF_8,
+            };
+            return Ok(loaded_from(hash, len, text, enc, false, false, mtime_ms));
+        }
+        Err(bytes) => bytes,
+    };
+    let (mut text, mut enc, has_bom, binary) = decode(&bytes);
+    match resolve(&text, enc, has_bom, binary, fallback) {
+        Resolution::Keep => {}
+        Resolution::Relabel(fallback) => enc = fallback,
+        Resolution::Redecode(fallback) => {
+            text = fallback.decode_without_bom_handling(&bytes).0.into_owned();
+            enc = fallback;
+        }
+    }
+    Ok(loaded_from(hash, len, text, enc, has_bom, binary, mtime_ms))
 }
 
 /// Bounded disk snapshots for background consumers that share editor decoding.
@@ -287,7 +339,6 @@ pub(crate) fn load_text_bounded(
     if bytes.len() > max_bytes {
         return Err(IdeError::invalid("document is too large"));
     }
-    let len = bytes.len() as u64;
     let (mut text, mut enc, has_bom, binary) = decode(&bytes);
     match resolve(&text, enc, has_bom, binary, fallback) {
         Resolution::Keep => {}
@@ -300,15 +351,7 @@ pub(crate) fn load_text_bounded(
     if text.len() > max_bytes {
         return Err(IdeError::invalid("decoded document is too large"));
     }
-    Ok(LoadedText {
-        text,
-        encoding: encoding_label(enc),
-        has_bom,
-        binary,
-        large: len > LARGE_FILE_THRESHOLD,
-        too_large: len > READ_ONLY_THRESHOLD,
-        mtime_ms: mtime_ms(&meta),
-    })
+    Ok(loaded(&bytes, text, enc, has_bom, binary, mtime_ms(&meta)))
 }
 
 /// Loads `path` decoded as `encoding` (a WHATWG label) instead of detecting it
@@ -316,21 +359,13 @@ pub(crate) fn load_text_bounded(
 pub(crate) fn load_text_as(path: &Path, encoding: &str) -> IdeResult<LoadedText> {
     let enc = Encoding::for_label(encoding.trim().as_bytes())
         .ok_or_else(|| IdeError::invalid(format!("unknown encoding {encoding:?}")))?;
-    let mut loaded = load_text(path)?;
-    let bytes = match archive_bytes(path)? {
-        Some((bytes, _)) => bytes,
-        None => fs::read(path)?,
-    };
+    let (bytes, mtime_ms) = read_to_open(path)?;
     let (body, has_bom) = match Encoding::for_bom(&bytes) {
         Some((bom_enc, len)) if bom_enc == enc => (&bytes[len..], true),
         _ => (&bytes[..], false),
     };
     let (text, _) = enc.decode_without_bom_handling(body);
-    loaded.text = text.into_owned();
-    loaded.encoding = encoding_label(enc);
-    loaded.has_bom = has_bom;
-    loaded.binary = false;
-    Ok(loaded)
+    Ok(loaded(&bytes, text.into_owned(), enc, has_bom, false, mtime_ms))
 }
 
 /// Encodes `text` to bytes in `encoding` (a WHATWG label). Fails rather than
