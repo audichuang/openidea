@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it } from "vitest";
 import { EditorState, type Extension } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
+import { drawSelection, EditorView } from "@codemirror/view";
 import type { EditorDocContext } from "@/editor/api";
 import { breakpointGutter } from "@/features/debugger/editor/breakpointGutter";
 import { indexedMarkers } from "@/features/plugins/indexedMarkers";
 import { inlineBlame } from "@/features/vcs/inlineBlame";
+import { movedCodeHighlights } from "@/features/vcs/movedCode";
 import { iconAreaExtension } from "./iconArea";
+import { seamlessSelection } from "./selectionLayer";
 
 const ctx: EditorDocContext = { doc: 1, path: "/p/A.java", language: "java", uiMode: null, readOnly: false };
 const views: EditorView[] = [];
@@ -30,6 +32,8 @@ it.each([
   ["breakpointGutter", () => breakpointGutter(ctx)],
   ["inlineBlame", () => inlineBlame(ctx)],
   ["indexedMarkers", () => [iconAreaExtension, indexedMarkers(ctx.path)]],
+  ["seamlessSelection", () => [drawSelection(), seamlessSelection()]],
+  ["movedCodeHighlights", () => movedCodeHighlights(true)],
 ])("%s mounts its theme once, however many editors use it", (_name, extensions) => {
   mount(extensions());
   const after = cssRules();
