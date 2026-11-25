@@ -15,15 +15,22 @@ import {
   type ReactNode,
   type Ref,
 } from "react";
-import { defaultRangeExtractor, elementScroll, useVirtualizer, type Range } from "@tanstack/react-virtual";
+import {
+  defaultRangeExtractor,
+  elementScroll,
+  observeElementRect,
+  useVirtualizer,
+  type Range,
+} from "@tanstack/react-virtual";
 import clsx from "clsx";
+import { editorsFor } from "@/editor/api";
 import { tx } from "@/platform/i18n";
 import { relativeDir, useProject } from "@/platform/project";
 import { Icon, IconButton, SplitGroup, SplitHandle, SplitPanel, T, fileIconName } from "@/ui";
-import { editorService, type EditorInput } from "@/workbench/contributions";
+import { editorService, maybeEditorService, type EditorInput } from "@/workbench/contributions";
 import { combinedDiffDocumentOwner, setAllInOneDiff, type CombinedDiffData } from "./allInOneDiff";
 import { ResolvedDiffEditor, type DiffViewState } from "./DiffEditor";
-import { diffInput, hasGitlink, openDiff, withChain, type DiffData } from "./diffInput";
+import { diffInput, hasGitlink, openDiff, sideFile, withChain, type DiffData } from "./diffInput";
 import { loadDiffOptions, saveDiffOptions } from "./diffOptions";
 import { useGitDiffEntries, type DiffEntriesCache } from "./gitDiffEntries";
 import { KIND_COLOR, KIND_LABEL, baseName, fileCount } from "./model";
@@ -179,6 +186,16 @@ const Block = memo(function Block({
   );
 });
 
+/**
+ * fork: a hidden scroller (a maximized tool window) measures 0 high, and the virtualizer then mounts
+ * nothing without asking `rangeExtractor`, unmounting blocks it must keep (unmounting saves staged
+ * edits to the index). Keep the last size it had while shown.
+ */
+const observeShownRect: typeof observeElementRect = (instance, cb) =>
+  observeElementRect(instance, (rect) => {
+    if (rect.height > 0) cb(rect);
+  });
+
 export function CombinedDiffTab({ input }: { input: EditorInput }) {
   const data = input.data as CombinedDiffData;
   // A partially staged file is listed twice (staged and unstaged), so blocks go by diff, not path.
@@ -241,6 +258,7 @@ export function CombinedDiffView({
 
   // Blocks that stay mounted when scrolled away: the one holding the keyboard focus, so typing still
   // reaches it, and with autosave off those with unsaved staged edits, which unmounting would save.
+  // fork: also those with unsaved working-tree edits, whose undo history goes with the editor.
   const rangeExtractor = useCallback(
     (range: Range) => {
       const shown = new Set(defaultRangeExtractor(range));
@@ -250,6 +268,12 @@ export function CombinedDiffView({
       if (useProject.getState().settings?.files?.autoSave === false)
         items.forEach((item, index) => {
           if (ownedStagedDocument(combinedDiffDocumentOwner(tabKey, diffInput(item).key))?.dirty) shown.add(index);
+        });
+      const dirtyDocs = new Set(maybeEditorService()?.dirtyDocumentIds?.() ?? []);
+      if (dirtyDocs.size)
+        items.forEach((item, index) => {
+          const files = [sideFile(item.left, item.path), sideFile(item.right, item.path)];
+          if (files.some((file) => !!file && editorsFor(file).some((e) => dirtyDocs.has(e.ctx.doc)))) shown.add(index);
         });
       return [...shown].sort((a, b) => a - b);
     },
@@ -262,6 +286,7 @@ export function CombinedDiffView({
     estimateSize: () => ESTIMATE,
     overscan: 4,
     rangeExtractor,
+    observeElementRect: observeShownRect,
     // A correction for a block above moves the view by its delta from wherever it is now: a `scrollTo`
     // (the library's offset plus the delta) can drop wheel scrolling still in flight in WebKit.
     scrollToFn: (offset, options, instance) => {
