@@ -151,7 +151,7 @@ function HeadPopup(props: { anchor: HTMLElement; initialRepo: GHRemote; onClose:
             options={remotes.map((r) => ({
               value: nameWithOwner(r),
               label: `${nameWithOwner(r)} (${r.remote})`,
-              literal: true,
+              verbatim: true,
             }))}
             onChange={(v) => {
               const next = remotes.find((r) => nameWithOwner(r) === v);
