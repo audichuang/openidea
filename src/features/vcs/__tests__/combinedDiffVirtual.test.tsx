@@ -244,6 +244,22 @@ describe("the all-in-one diff with many files", () => {
     expect(editorsFor(edited)).toHaveLength(0);
   });
 
+  it("does not mount a block it never showed for a file with unsaved edits in another editor", () => {
+    const items = files(120);
+    const elsewhere = items[100]!.path;
+    const handle = { view: {}, ctx: { doc: 9_999, path: elsewhere } } as unknown as TextEditorHandle;
+    _addEditor(handle);
+    dirtyDocs.add(9_999);
+    try {
+      render(<CombinedDiffTab input={combinedDiffInput({ items })} />);
+      scroll(scroller(), 10 * BLOCK);
+      expect(mounted()).not.toContain(elsewhere);
+    } finally {
+      _removeEditor(handle);
+      dirtyDocs.delete(9_999);
+    }
+  });
+
   it("keeps the focused block mounted while it is scrolled away", () => {
     const items = files(120);
     const focused = items[1]!.path;
@@ -500,8 +516,8 @@ describe("the all-in-one diff with many files", () => {
       // Collapse viewport height to 0 (as when maximizing a tool window hides the editor area).
       viewHeight = 0;
       fireResize(scroller());
-      // A hidden scroller keeps the range it had while shown (virtual-core skips `rangeExtractor` at 0).
-      expect(mounted()).toContain(mid);
+      // Non-pinned viewport blocks unmount at height 0, confirming virtual-core saw outerSize === 0.
+      expect(mounted()).not.toContain(mid);
       // Both the dirty block and the focused block stay mounted in place.
       expect(mounted()).toContain(edited);
       expect(mounted()).toContain(focusedPath);
