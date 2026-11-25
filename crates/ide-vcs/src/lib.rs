@@ -1367,7 +1367,7 @@ impl Repo {
         encoding: impl Into<TextEncoding>,
         cancel: &CancellationToken,
     ) -> IdeResult<BlockHistorySummary> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         block_history::summary(self, path, current_text, lines, encoding.into(), cancel)
     }
 
@@ -1382,7 +1382,7 @@ impl Repo {
         cancel: &CancellationToken,
         on_first: impl FnOnce(BlockHistorySummary) + Send,
     ) -> IdeResult<Vec<BlockRevisionSummary>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         block_history::summary_streamed(self, path, current_text, lines, encoding.into(), cancel, on_first)
     }
 
@@ -1395,7 +1395,7 @@ impl Repo {
         encoding: impl Into<TextEncoding>,
         cancel: &CancellationToken,
     ) -> IdeResult<Vec<BlockRevision>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         block_history::revisions(self, path, anchor, index, commits, encoding.into(), cancel)
     }
 
@@ -1408,7 +1408,7 @@ impl Repo {
         cancel: &CancellationToken,
         on_spots: impl FnMut(Vec<BlockRevisionSpot>) + Send,
     ) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         block_history::spots(self, path, anchor, cancel, on_spots)
     }
 
@@ -1420,7 +1420,7 @@ impl Repo {
         encoding: impl Into<TextEncoding>,
         cancel: &CancellationToken,
     ) -> IdeResult<Vec<BlockRevision>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         block_history::revisions_at(self, spots, encoding.into(), cancel)
     }
 
