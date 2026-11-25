@@ -335,6 +335,40 @@ describe("Find in Files popup", () => {
     expect(useFindPopup.getState().open).toBe(false);
     expect(findHistory("find")[0]).toBe("order");
   });
+
+  it("shows workspace member folder names untranslated in zh", async () => {
+    const { _resetI18nForTests, setLocale, tx } = await import("@/platform/i18n");
+    const { useProject } = await import("@/platform/project");
+    await setLocale("zh");
+    // The zh catalog translates the words dev/test; folder names must stay literal.
+    expect(tx("dev")).not.toBe("dev");
+    useProject.setState({
+      project: {
+        root: "/ws",
+        name: "Workspace",
+        trusted: true,
+        isGit: false,
+        workspace: { version: 1, name: "Workspace", projects: ["/ws/dev", "/ws/test"] },
+      } as ProjectInfo,
+    });
+    useFindPopup.setState({ scopeTab: "module", module: "/ws/dev" });
+    try {
+      render(<FindInFilesOverlay />);
+      act(() => showFindPopup(false, { query: "order" }));
+      await settle();
+      const picker = screen.getByRole("button", { name: tx("Module") });
+      expect(picker).toHaveTextContent(/^dev$/);
+      fireEvent.click(picker);
+      expect(
+        within(screen.getByRole("listbox", { name: tx("Module") }))
+          .getAllByRole("option")
+          .map((o) => o.textContent),
+      ).toEqual(["dev/ws/dev", "test/ws/test"]);
+    } finally {
+      useProject.setState({ project: null });
+      _resetI18nForTests();
+    }
+  });
 });
 
 describe("outdated popup results", () => {
