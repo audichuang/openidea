@@ -9416,7 +9416,6 @@
   "Replay Commits": "重放提交",
   "Overwrite {existing} existing files": "覆盖 {existing} 个已存在的文件",
   "Restore under {suggestion}": "还原到 {suggestion} 下",
-  "Destination:": "目标位置：",
   "Select a file to preview it": "选择文件以预览",
   "File content": "文件内容",
   "Restore {path}": "还原 {path}",
