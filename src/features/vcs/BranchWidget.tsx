@@ -67,6 +67,7 @@ import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { branchWidgetAnchor, useBranchesPopup, type BranchWidgetPlace } from "./branchesPopupState";
 
 export { showBranchesPopup, STATUS_BRANCH_WIDGET, useBranchesPopup } from "./branchesPopupState";
+import { isImeKey } from "@/platform/ime";
 
 /** `active` until the user moves: a new filter selects the row IDEA prefers for it. */
 const PREFERRED = -1;
@@ -592,6 +593,8 @@ function BranchesPanel({ onClose, actions: baseActions, worktreeFor, root, fallb
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
+    // Keys that drive an IME candidate window (including the Enter that confirms one) are not list commands.
+    if (isImeKey(e.nativeEvent)) return;
     if (isNewBranchStroke(strokeOf(e))) {
       e.preventDefault();
       run("vcs.newBranch");
@@ -924,6 +927,8 @@ function MultiRepoPanel({
   useEffect(() => () => clearTimeout(aim.current.timer), []);
 
   const onKeyDown = (e: KeyboardEvent) => {
+    // Keys that drive an IME candidate window (including the Enter that confirms one) are not list commands.
+    if (isImeKey(e.nativeEvent)) return;
     if (isNewBranchStroke(strokeOf(e))) {
       e.preventDefault();
       onClose();
