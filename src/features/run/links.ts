@@ -40,6 +40,11 @@ export type OutputLink =
   | { kind: "url"; start: number; end: number; url: string }
   | { kind: "file"; start: number; end: number; target: FileTarget };
 
+export interface TextWindow {
+  start: number;
+  end: number;
+}
+
 const num = (s: string | undefined) => (s ? Number(s) : undefined);
 
 // All link matchers anchor on a fixed delimiter or bounded suffix so scanning
@@ -309,6 +314,115 @@ export function findOutputLinks(text: string): OutputLink[] {
   }
 
   return links;
+}
+
+/** Approximate monospace column width for converting horizontal scroll offsets to columns. */
+const HORIZONTAL_BUCKET_COLS = 64;
+const HORIZONTAL_OVERSCAN_COLS = 64;
+
+/**
+ * Quantized visible column range `[start, end)` for a non-wrapped console viewport,
+ * or `null` when the viewport has not been measured yet. Quantization avoids re-rendering
+ * rows on small horizontal scrolls while keeping inline decorations bounded on wide lines.
+ */
+export function horizontalColumnWindow(scrollLeft: number, clientWidth: number, fontSizePx: number): TextWindow | null {
+  if (clientWidth <= 0) return null;
+  const charWidth = Math.max(1, fontSizePx * 0.55);
+  const firstCol = Math.floor(Math.max(0, scrollLeft) / charWidth / HORIZONTAL_BUCKET_COLS) * HORIZONTAL_BUCKET_COLS;
+  const visibleCols = Math.ceil(clientWidth / charWidth);
+  return {
+    start: Math.max(0, firstCol - HORIZONTAL_OVERSCAN_COLS),
+    end: firstCol + visibleCols + HORIZONTAL_BUCKET_COLS + HORIZONTAL_OVERSCAN_COLS,
+  };
+}
+
+function isWideCodePoint(c: number): boolean {
+  return (
+    (c >= 0x1100 && c <= 0x115f) ||
+    (c >= 0x2e80 && c <= 0xa4cf) ||
+    (c >= 0xac00 && c <= 0xd7a3) ||
+    (c >= 0xf900 && c <= 0xfaff) ||
+    (c >= 0xfe30 && c <= 0xfe4f) ||
+    (c >= 0xff00 && c <= 0xff60) ||
+    (c >= 0xffe0 && c <= 0xffe6) ||
+    (c >= 0x1f300 && c <= 0x1faff) ||
+    (c >= 0x20000 && c <= 0x3fffd)
+  );
+}
+
+/** Converts a visual column window `[startCol, endCol)` into UTF-16 indices in `text`. */
+export function visibleCharWindow(text: string, startCol: number, endCol: number, tabSize = 4): TextWindow {
+  if (startCol <= 0 && text.length <= endCol) return { start: 0, end: text.length };
+  let col = 0;
+  let start = startCol <= 0 ? 0 : text.length;
+  let foundStart = startCol <= 0;
+  let i = 0;
+  while (i < text.length) {
+    if (!foundStart && col >= startCol) {
+      start = i;
+      foundStart = true;
+    }
+    if (col >= endCol) return { start, end: i };
+    const code = text.charCodeAt(i);
+    if (code >= 32 && code < 127) {
+      col++;
+      i++;
+      continue;
+    }
+    if (code === 9) {
+      col += tabSize - (col % tabSize);
+      i++;
+      continue;
+    }
+    const cp = text.codePointAt(i)!;
+    const step = cp > 0xffff ? 2 : 1;
+    if (cp >= 32) col += isWideCodePoint(cp) ? 2 : 1;
+    i += step;
+  }
+  return { start, end: text.length };
+}
+
+/**
+ * Slices sorted, non-overlapping `[start, end)` ranges to those intersecting
+ * `[winStart, winEnd)`, always keeping any entry matched by `alwaysKeep` (such as
+ * the active find match).
+ */
+export function sliceRangesInWindow<T extends { start: number; end: number }>(
+  items: readonly T[],
+  winStart: number,
+  winEnd: number,
+  alwaysKeep?: (item: T) => boolean,
+): readonly T[] {
+  if (items.length === 0) return items;
+  if (items[0]!.start >= winStart && items[items.length - 1]!.end <= winEnd) return items;
+
+  // Binary search for the first item with `item.end > winStart`.
+  let lo = 0;
+  let hi = items.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (items[mid]!.end <= winStart) lo = mid + 1;
+    else hi = mid;
+  }
+
+  let endIdx = lo;
+  while (endIdx < items.length && items[endIdx]!.start < winEnd) endIdx++;
+
+  if (!alwaysKeep) return lo === 0 && endIdx === items.length ? items : items.slice(lo, endIdx);
+
+  let before: T[] | null = null;
+  for (let i = 0; i < lo; i++) {
+    const item = items[i]!;
+    if (alwaysKeep(item)) (before ??= []).push(item);
+  }
+  let after: T[] | null = null;
+  for (let i = endIdx; i < items.length; i++) {
+    const item = items[i]!;
+    if (alwaysKeep(item)) (after ??= []).push(item);
+  }
+  if (!before && !after) return lo === 0 && endIdx === items.length ? items : items.slice(lo, endIdx);
+  const middle = lo < endIdx ? items.slice(lo, endIdx) : [];
+  return [...(before ?? []), ...middle, ...(after ?? [])];
 }
 
 /** Joins `path` onto `base` (POSIX), normalising `.`/`..`. Absolute paths are kept. */
