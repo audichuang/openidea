@@ -66,7 +66,8 @@ import {
   type Usage,
 } from "./replaceFlow";
 import { SINGLE_FIRST, isRowSelected, selectRow, selectedRows, type RowSelection } from "./rowSelection";
-import { FindSession, IDLE, matchRows, type FindState, type MatchRow } from "./session";
+import { newFindSession } from "./forkFind";
+import { IDLE, matchRows, type FindState, type MatchRow } from "./session";
 import {
   FIND_POPUP_SPLIT_KEY,
   SEARCH_CONTEXTS,
@@ -145,7 +146,7 @@ function FindInFilesDialog() {
   const modules = useProjectModules();
   const customScopes = useCustomScopeList();
   const [state, setState] = useState<FindState>(IDLE);
-  const [session] = useState(() => new FindSession(ipcFindDeps(), setState));
+  const [session] = useState(() => newFindSession(ipcFindDeps(), setState));
   const [sel, setSel] = useState<RowSelection>(SINGLE_FIRST);
   const setIndex = (i: number) => setSel({ lead: i, anchor: i, keys: null });
   const [recentPaths, setRecentPaths] = useState<string[] | null>(null);

@@ -4613,7 +4613,7 @@ mod tests {
     #[ignore = "isolated process for the Git executable override"]
     fn plugin_vcs_trust_child() {
         use std::os::unix::fs::PermissionsExt;
-        struct Workspace(bool, PathBuf);
+        struct Workspace(bool, PathBuf, PathBuf);
         impl PluginWorkspace for Workspace {
             fn projects(&self) -> Vec<PathBuf> {
                 Vec::new()
@@ -4630,6 +4630,10 @@ mod tests {
             fn trusted(&self, root: &Path) -> bool {
                 assert_eq!(root, self.1);
                 self.0
+            }
+            // The project's git (upstream's per-project git, v0.1.51).
+            fn git_executable(&self, _root: &Path) -> Option<PathBuf> {
+                Some(self.2.clone())
             }
             fn project_of(&self, _: &str) -> Option<PathBuf> {
                 None
@@ -4676,17 +4680,14 @@ mod tests {
         std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
         let api = api(&root, Arc::default());
         if trust != "none" {
-            *api.shared.workspace.write() = Some(Arc::new(Workspace(trust == "true", root.clone())));
+            *api.shared.workspace.write() = Some(Arc::new(Workspace(trust == "true", root.clone(), wrapper.clone())));
         }
-        // The repository keeps the git it is opened with (upstream's per-project git, v0.1.51).
-        ide_vcs::with_git_executable(Some(&wrapper), || {
-            if method == "status" {
-                assert!(api.vcs_status(&root).unwrap().unwrap().changed_files > 0);
-                assert_eq!(filter_marker.exists(), trust == "true", "clean filter execution");
-            } else {
-                assert_eq!(api.vcs_remotes(&root).unwrap(), [("origin".into(), "https://example.com/repo.git".into())]);
-            }
-        });
+        if method == "status" {
+            assert!(api.vcs_status(&root).unwrap().unwrap().changed_files > 0);
+            assert_eq!(filter_marker.exists(), trust == "true", "clean filter execution");
+        } else {
+            assert_eq!(api.vcs_remotes(&root).unwrap(), [("origin".into(), "https://example.com/repo.git".into())]);
+        }
         assert_eq!(marker.exists(), trust == "true", "configured Git executable execution");
     }
 

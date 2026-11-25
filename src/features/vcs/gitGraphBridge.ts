@@ -190,7 +190,8 @@ export function createGitGraphBridge(): GitGraphBridge {
     BranchFilterPopup: GraphBranchFilterPopup,
     async tagMenu(tag, repo) {
       const { tagMenu, inRepo } = await import("./branchMenu");
-      return inRepo(repo, withActionLabels(tagMenu(tag)));
+      // Built for the graph's repository: upstream's tag actions capture the repository when the menu is made.
+      return inRepo(repo, withActionLabels(tagMenu(tag, undefined, { repo })));
     },
     async filesMenu(commit, files) {
       const { changesMenu } = await import("./log/CommitDetails");
