@@ -1,8 +1,6 @@
 //! macOS: keeps each window's last frame outside fullscreen and writes it over the size and
 //! position tauri-plugin-window-state saved. The plugin records every resize, fullscreen included,
 //! so a window that quit in fullscreen reopened screen-sized and stayed so after leaving fullscreen.
-use crate::windows::WorkbenchWindows;
-
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -128,6 +126,7 @@ pub fn patch(state: &mut Value, frames: &HashMap<String, Frame>) {
 #[cfg(target_os = "macos")]
 mod runtime {
     use super::*;
+    use crate::windows::WorkbenchWindows;
     use parking_lot::Mutex;
     use std::path::PathBuf;
     use tauri::{AppHandle, Manager, RunEvent, WindowEvent, plugin::TauriPlugin};
