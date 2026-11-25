@@ -14,7 +14,8 @@ const ROLE_KIND: Record<FolderRole, FolderKind> = {
 };
 
 // `Gradle` marks the source sets a Gradle sync reported (ide-host `with_gradle_roots`).
-const JVM_BUILD = /^Gradle$|(^|\/)(pom\.xml|build\.gradle(\.kts)?|\.classpath)$/;
+// The fork stamps Gradle sync roots `<module dir>/Gradle` (ide-host `with_gradle_roots`).
+const JVM_BUILD = /(^|\/)(Gradle|pom\.xml|build\.gradle(\.kts)?|\.classpath)$/;
 const JVM_DIR = /(^|\/)(java|kotlin|scala|groovy)$/;
 
 const isAbsolute = (path: string) => path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path);
