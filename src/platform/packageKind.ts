@@ -24,10 +24,18 @@ export function packageKindAt(
 ): PackageKind | null {
   if (rootFor(roots, rel)?.kind === "excluded") return null;
   if (isJvmSourcePackage(rel, roots)) return "jvm";
-  const python = [...roots, ...detected].some(
-    (r) => r.detectedFrom && PY_BUILD.test(r.detectedFrom) && within(rel, moduleDir(r.detectedFrom)),
-  );
-  return python ? "python" : null;
+  // The innermost module wins: a Python file at the repo root must not claim
+  // `frontend/` when `frontend/package.json` is the deeper recognised module.
+  let python = -1;
+  let other = -1;
+  for (const r of [...roots, ...detected]) {
+    if (!r.detectedFrom) continue;
+    const dir = moduleDir(r.detectedFrom);
+    if (!within(rel, dir)) continue;
+    if (PY_BUILD.test(r.detectedFrom)) python = Math.max(python, dir.length);
+    else other = Math.max(other, dir.length);
+  }
+  return python >= 0 && python >= other ? "python" : null;
 }
 
 /** `packageKindAt` for an absolute directory of the open project, from the current roots. */
