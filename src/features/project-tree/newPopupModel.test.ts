@@ -96,6 +96,47 @@ describe("New popup", () => {
     expect(executeAction).toHaveBeenCalledWith("templates.new.file", { directory: `${ROOT}/src` });
   });
 
+  it("lists the directory's own kinds before File and Directory", () => {
+    const dispose = registerMenuGroup({
+      id: "test.primary",
+      menus: ["newPrimary"],
+      items: (_menu, { paths: [directory] }) =>
+        directory === `${ROOT}/pkg`
+          ? [{ kind: "action", action: "templates.new.python", arg: { directory }, label: "Python File" }]
+          : [],
+    });
+    try {
+      expect(labels(newMenuItems(`${ROOT}/pkg`)).slice(0, 4)).toEqual(["Python File", "-", "File", "Directory"]);
+      expect(labels(newMenuItems(`${ROOT}/src`)).slice(0, 2)).toEqual(["File", "Directory"]);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("shows a submenu as one row until expanded, and searches inside it", () => {
+    const rust = vi.fn();
+    const items: MenuItem[] = [
+      { id: "file", label: "File", run: () => undefined },
+      { kind: "separator" },
+      { id: "other", label: "Other File Types", submenu: [{ id: "rs", label: "Rust File", run: rust }] },
+      { kind: "separator" },
+      { id: "scratch", label: "Scratch File", run: () => undefined },
+    ];
+    expect(labels(items)).toEqual(["File", "-", "Other File Types", "-", "Scratch File"]);
+    expect(newPopupRows(items, "")[2]).toMatchObject({ expand: true });
+    expect(newPopupRows(items, "", true).map((r) => (r.separator ? "-" : r.label))).toEqual([
+      "File",
+      "-",
+      "Rust File",
+      "-",
+      "Scratch File",
+    ]);
+    const found = newPopupRows(items, "rust");
+    expect(found.map((r) => r.label)).toEqual(["Rust File"]);
+    found[0]!.run!();
+    expect(rust).toHaveBeenCalledOnce();
+  });
+
   it("opens with a fresh request each time", () => {
     openNewPopup({ x: 1, y: 2 }, []);
     const first = useNewPopup.getState().request!.seq;
