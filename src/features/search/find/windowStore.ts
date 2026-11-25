@@ -9,7 +9,8 @@ import type { MenuItem } from "@/ui";
 import { loadJson, saveJson } from "../common/open";
 import { maybeToolWindowService } from "../common/services";
 import { cancelRequest, streamSearch } from "@/platform/textSearch";
-import { FindSession, IDLE, countFileMatches, type FindDeps, type FindState } from "./session";
+import { newFindSession, type AnyFindSession } from "./forkFind";
+import { IDLE, countFileMatches, type FindDeps, type FindState } from "./session";
 
 export interface FindTab {
   id: number;
@@ -41,7 +42,7 @@ export function ipcFindDeps(): FindDeps {
   };
 }
 
-const sessions = new Map<number, FindSession>();
+const sessions = new Map<number, AnyFindSession>();
 let nextTab = 1;
 const MAX_TABS = 8;
 
@@ -63,7 +64,7 @@ export function openInFindWindow(
   { replacement = null, preserveCase = false, newTab = false, deps = ipcFindDeps() }: OpenInFindWindowOptions = {},
 ) {
   const id = nextTab++;
-  const session = new FindSession(deps, (state) => patchTab(id, { state }));
+  const session = newFindSession(deps, (state) => patchTab(id, { state }));
   sessions.set(id, session);
   useFindWindow.setState((s) => {
     const tab: FindTab = { id, title, query, replacement, preserveCase, state: IDLE };

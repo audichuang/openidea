@@ -305,7 +305,8 @@ async function modifyFile(
           }),
         );
         if (staged === undefined) return;
-        await call(commands.docSave(info.id));
+        // The guarded save (#291): a file changed on disk is not overwritten, and its index stays as it was.
+        await saveOpenedDocument(info.id, path);
         await call(commands.vcsStageFormattedText(path, staged, result.formatted));
       });
     if (!index) await step("Save", () => saveOpenedDocument(info.id, path));
