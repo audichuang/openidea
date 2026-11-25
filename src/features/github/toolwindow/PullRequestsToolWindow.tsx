@@ -116,7 +116,7 @@ function RepositorySelector() {
           options={remotes.map((r) => ({
             value: nameWithOwner(r),
             label: repositoryDisplayName(remotes, r, true),
-            literal: true,
+            verbatim: true,
           }))}
           onChange={setChosen}
           aria-label="Repository"

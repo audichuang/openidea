@@ -341,131 +341,6 @@ const consoleLongLines: Scenario = {
  * lines with Find closed, so it never reaches long-line regex scanning on
  * multi-KiB lines or dense inline link / find-mark DOM on 8,000-char rows.
  */
-const consoleLongLines: Scenario = {
-  id: "consoleLongLines",
-  title: "Stream 10 KiB long lines and no-newline output in the Run console",
-  async run(h) {
-    const scale = Math.max(1, Number(process.env.OPENIDEA_PERF_SCALE ?? "10"));
-    const longCount = Math.round(100 * scale);
-    const longPerFrame = Math.max(2, Math.ceil(longCount / 50));
-    const noLfCount = Math.round(1_000 * scale);
-    const noLfPerFrame = Math.max(20, Math.ceil(noLfCount / 60));
-
-    type ConsolePerfWindow = {
-      __openideaPerf: {
-        openConsoleSession(mode: "long" | "no-lf"): Promise<string>;
-        streamConsoleOutput(o: {
-          mode: "long" | "no-lf";
-          count: number;
-          perFrame: number;
-          sessionId?: string;
-        }): Promise<{
-          lines: number;
-          dropped: number;
-        }>;
-      };
-    };
-
-    await h.openFile(SAMPLE);
-    const refresh = await h.refreshMs();
-
-    // Phase 1: 10 KiB unique long lines streaming (each splits at 8,000 + 2,239 chars in ConsoleModel).
-    const longSessionId = await h.page.evaluate(() =>
-      (window as never as ConsolePerfWindow).__openideaPerf.openConsoleSession("long"),
-    );
-    const longLog = h.page.locator('section[aria-label="Run"] [role="log"][aria-label="Sample long output"]').first();
-    await longLog.waitFor({ timeout: 10_000 });
-    const tLong = await h.now();
-    await h.inPage((p) => p.startFrames());
-    const longStream = h.page.evaluate(
-      async ({ sessionId, count, perFrame }) => {
-        const started = performance.now();
-        await (window as never as ConsolePerfWindow).__openideaPerf.streamConsoleOutput({
-          mode: "long",
-          sessionId,
-          count,
-          perFrame,
-        });
-        return performance.now() - started;
-      },
-      { sessionId: longSessionId, count: longCount, perFrame: longPerFrame },
-    );
-    const longBox = await longLog.boundingBox();
-    if (longBox) {
-      await h.page.mouse.move(longBox.x + longBox.width / 2, longBox.y + longBox.height / 2);
-      for (let i = 0; i < 6; i++) {
-        await h.page.mouse.wheel(0, -180);
-        await h.page.waitForTimeout(40);
-      }
-    }
-    const longStreamMs = await longStream;
-    const longFrames = await h.inPage((p) => p.stopFrames());
-    const longSummary = frameSummary(longFrames, refresh);
-    const longTbtMs = totalBlockingTime(await h.longTasksSince(tLong));
-    const longDomNodes = await h.page.evaluate(() => document.querySelectorAll("*").length);
-
-    // Phase 2: mount the no-newline session and open Find ("t") before measurement or streaming starts,
-    // so the entire stream is measured, then scroll horizontally across the 8,000-char rows.
-    const noLfSessionId = await h.page.evaluate(() =>
-      (window as never as ConsolePerfWindow).__openideaPerf.openConsoleSession("no-lf"),
-    );
-    const noLfLog = h.page.locator('section[aria-label="Run"] [role="log"][aria-label="Sample no-lf output"]').first();
-    await noLfLog.waitFor({ timeout: 10_000 });
-    const findBtn = h.page.locator('section[aria-label="Run"] button[aria-label="Find…"]').first();
-    await findBtn.waitFor({ timeout: 10_000 });
-    await findBtn.click();
-    const findInput = h.page.locator("[data-console-find] input").first();
-    await findInput.waitFor({ timeout: 10_000 });
-    await findInput.fill("t");
-
-    const tNoLf = await h.now();
-    await h.inPage((p) => p.startFrames());
-    const noLfStreamMs = await h.page.evaluate(
-      async ({ sessionId, count, perFrame }) => {
-        const started = performance.now();
-        await (window as never as ConsolePerfWindow).__openideaPerf.streamConsoleOutput({
-          mode: "no-lf",
-          sessionId,
-          count,
-          perFrame,
-        });
-        return performance.now() - started;
-      },
-      { sessionId: noLfSessionId, count: noLfCount, perFrame: noLfPerFrame },
-    );
-    // Sweep scrollLeft across the wide 8,000-char rows with Find open to exercise horizontal windowing.
-    await noLfLog.evaluate(async (el) => {
-      const maxLeft = Math.max(0, el.scrollWidth - el.clientWidth);
-      const steps = 12;
-      for (let i = 1; i <= steps; i++) {
-        el.scrollLeft = Math.round((maxLeft * i) / steps);
-        await new Promise(requestAnimationFrame);
-      }
-      el.scrollLeft = 0;
-      await new Promise(requestAnimationFrame);
-    });
-    const noLfFrames = await h.inPage((p) => p.stopFrames());
-    const noLfSummary = frameSummary(noLfFrames, refresh);
-    const noLfTbtMs = totalBlockingTime(await h.longTasksSince(tNoLf));
-    const noLfDomNodes = await h.page.evaluate(() => document.querySelectorAll("*").length);
-
-    return {
-      longStreamMs,
-      longFrameP95Ms: longSummary.frameP95Ms,
-      longFrameMaxMs: longSummary.frameMaxMs,
-      longDroppedFramesPct: longSummary.droppedFramesPct,
-      longTbtMs,
-      longDomNodes,
-      noLfStreamMs,
-      noLfFrameP95Ms: noLfSummary.frameP95Ms,
-      noLfFrameMaxMs: noLfSummary.frameMaxMs,
-      noLfDroppedFramesPct: noLfSummary.droppedFramesPct,
-      noLfTbtMs,
-      noLfDomNodes,
-    };
-  },
-};
-
 /**
  * A full-screen agent TUI (Claude Code, Grok) repainting the terminal 10 times a second
  * for 6 s — every row rewritten, only the spinner row changed — while the user types in
@@ -778,6 +653,7 @@ async function streamFind(h: Harness, files: number, hits: number, lineLength: n
       const delivered = (window as never as FindProbe).__openideaPerf.fakeFindStream(files, hits, lineLength);
       await Promise.race([delivered, new Promise((r) => setTimeout(r, 120_000))]);
       const deliveredMs = performance.now() - started;
+      // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
       while (!shown() && performance.now() < deadline) await new Promise(requestAnimationFrame);
       const streamMs = performance.now() - started;
       finished = true;
@@ -820,8 +696,10 @@ const findStream: Scenario = {
     ];
     const out: Metrics = {};
     for (const [name, files, hits, lineLength] of shapes) {
+      // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
       const m = await streamFind(h, files, hits, lineLength, refresh);
       for (const [k, v] of Object.entries(m)) out[`${name}${k[0]!.toUpperCase()}${k.slice(1)}`] = v;
+      // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
       await h.page.waitForTimeout(300);
     }
     return out;
@@ -865,6 +743,7 @@ const gitLogDeep: Scenario = {
       while (el.scrollHeight < target * 26) {
         if (performance.now() - started > 20 * 60_000) throw new Error("Deep Git Log did not load");
         el.scrollTop = el.scrollHeight;
+        // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
         await new Promise(requestAnimationFrame);
       }
       return performance.now() - started;
@@ -881,7 +760,9 @@ const gitLogDeep: Scenario = {
     const hoverStarted = await h.now();
     await h.inPage((p) => p.startFrames());
     for (let i = 0; i < 40; i++) {
+      // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
       await h.page.mouse.move(box.x + 8 + (i % 8) * 12, box.y + 40 + ((i * 7) % 20) * 13);
+      // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
       await h.page.waitForTimeout(16);
     }
     const hover = frameSummary(await h.inPage((p) => p.stopFrames()), refresh);
@@ -891,6 +772,7 @@ const gitLogDeep: Scenario = {
     await list.evaluate(async (el) => {
       el.scrollTop = 0;
       for (let i = 0; i < 600 && el.querySelector('[role="status"], [class*="Spinner"]'); i++)
+        // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
         await new Promise((r) => setTimeout(r, 50));
     });
     await h.page.waitForTimeout(500);
@@ -952,11 +834,13 @@ const gitLogDeepCommit: Scenario = {
       while (el.scrollHeight < target * 26) {
         if (performance.now() - started > 20 * 60_000) throw new Error("Deep Git Log did not load");
         el.scrollTop = el.scrollHeight;
+        // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
         await new Promise(requestAnimationFrame);
       }
       // Refresh with no page request in flight: the perf backend has no request cancellation.
       el.scrollTop = 0;
       for (let i = 0; i < 600 && el.querySelector('[role="status"], [class*="Spinner"]'); i++)
+        // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
         await new Promise((r) => setTimeout(r, 50));
     }, target);
     await h.page.waitForTimeout(500);
@@ -1024,6 +908,7 @@ const gitLogBranchesMerge: Scenario = {
       const started = performance.now();
       while (el.scrollHeight < loaded * 20) {
         if (performance.now() - started > 4 * 60_000) throw new Error("Git Log did not show the loaded commits");
+        // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
         await new Promise((r) => setTimeout(r, 50));
       }
     }, loaded);
@@ -1592,7 +1477,7 @@ const combinedDiffStress: Scenario = {
 };
 
 interface CombinedProbe {
-  openCombinedDiff(
+  openCombinedDiffFixture(
     files: number,
     bigLines: number,
     options?: { allEditable?: boolean; lines?: number; tag?: string },
@@ -1604,7 +1489,6 @@ interface CombinedProbe {
 }
 
 /** Files in the `combinedDiff` / `combinedDiffAcceptance` scenarios (`OPENIDEA_PERF_COMBINED_FILES`, default 500). */
-const COMBINED_FILES = Number(process.env.OPENIDEA_PERF_COMBINED_FILES ?? 500);
 
 /**
  * Brings a file's block to the top of `[data-combined-scroll]` and waits for its content (unless
@@ -1620,6 +1504,7 @@ function revealCombinedBlock(
   return scroller.evaluate(
     async (el, { sel, target, expectContent, expectText }) => {
       const frames = async (n: number) => {
+        // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
         for (let k = 0; k < n; k++) await new Promise(requestAnimationFrame);
       };
       const loaded = () => {
@@ -1650,6 +1535,7 @@ function revealCombinedBlock(
               still = 0;
               block.scrollIntoView({ block: "start" });
             }
+            // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
             await frames(1);
           }
           if (still >= 10) return true;
@@ -1661,6 +1547,7 @@ function revealCombinedBlock(
         }
         const slots = [...el.querySelectorAll<HTMLElement>("[data-index]")];
         if (!slots.length) {
+          // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
           await frames(1);
           continue;
         }
@@ -1684,6 +1571,7 @@ function revealCombinedBlock(
           hi - lo < el.clientHeight
             ? el.scrollTop + (below ? 1 : -1) * (el.clientHeight / 2)
             : Math.round((lo + hi) / 2);
+        // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
         await frames(2);
       }
       return false;
@@ -1707,8 +1595,8 @@ function revealCombinedBlock(
  * Full per-file reachability, expansion, editing, and read-back across all files live in
  * `combinedDiffAcceptance`.
  */
-const combinedDiff: Scenario = {
-  id: "combinedDiff",
+const combinedDiffEdit: Scenario = {
+  id: "combinedDiffEdit",
   title: `Scroll an all-in-one diff of ${COMBINED_FILES} files and edit one`,
   async run(h) {
     const files = COMBINED_FILES;
@@ -1720,7 +1608,8 @@ const combinedDiff: Scenario = {
     const openMs = await h.measure(
       async () => {
         ({ first, editable, big, last } = await h.page.evaluate(
-          ([f, b]) => (window as never as { __openideaPerf: CombinedProbe }).__openideaPerf.openCombinedDiff(f!, b!),
+          ([f, b]) =>
+            (window as never as { __openideaPerf: CombinedProbe }).__openideaPerf.openCombinedDiffFixture(f!, b!),
           [files, bigLines],
         ));
       },
@@ -1754,6 +1643,7 @@ const combinedDiff: Scenario = {
             break;
           }
           el.scrollTop += step();
+          // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
           await frame();
           peak = Math.max(peak, editors());
         }
@@ -1764,6 +1654,7 @@ const combinedDiff: Scenario = {
             break;
           }
           el.scrollTop = Math.max(0, el.scrollTop - step());
+          // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
           await frame();
           peak = Math.max(peak, editors());
         }
@@ -1818,6 +1709,7 @@ const combinedDiff: Scenario = {
     await scroller.evaluate(async (el) => {
       for (let i = 0; i < 300 && el.scrollTop + el.clientHeight < el.scrollHeight - 1; i++) {
         el.scrollTop += Math.max(el.clientHeight, Math.ceil((el.scrollHeight - el.clientHeight) / 300));
+        // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
         await new Promise(requestAnimationFrame);
       }
     });
@@ -1887,7 +1779,7 @@ const combinedDiffAcceptance: Scenario = {
     // Pass 1: all `files` editable worktree text files — reach, expand, write, read back, clean up every one.
     const editableData = await h.page.evaluate(
       (f) =>
-        (window as never as { __openideaPerf: CombinedProbe }).__openideaPerf.openCombinedDiff(f, 0, {
+        (window as never as { __openideaPerf: CombinedProbe }).__openideaPerf.openCombinedDiffFixture(f, 0, {
           allEditable: true,
           lines: 4,
           tag: "acceptance-editable",
@@ -1904,6 +1796,7 @@ const combinedDiffAcceptance: Scenario = {
       async (el, { expectedPaths }) => {
         const probe = (window as never as { __openideaPerf: CombinedProbe }).__openideaPerf;
         const frames = async (n = 1) => {
+          // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
           for (let k = 0; k < n; k++) await new Promise(requestAnimationFrame);
         };
         const total = expectedPaths.length;
@@ -1923,6 +1816,7 @@ const combinedDiffAcceptance: Scenario = {
 
           const slots = [...el.querySelectorAll<HTMLElement>("[data-index]")];
           if (!slots.length) {
+            // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
             await frames(1);
             continue;
           }
@@ -1958,9 +1852,11 @@ const combinedDiffAcceptance: Scenario = {
           if (!batch.length) {
             const before = el.scrollTop;
             el.scrollTop = Math.min(el.scrollHeight, el.scrollTop + maxStep());
+            // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
             await frames(2);
             if (el.scrollTop === before && el.scrollTop + el.clientHeight >= el.scrollHeight - 1) {
               // At bottom but nextExpected still not mounted: let layout settle once more.
+              // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
               await frames(2);
             }
             continue;
@@ -1983,6 +1879,7 @@ const combinedDiffAcceptance: Scenario = {
             if (ready) break;
             if (performance.now() - waitStart > 15_000)
               throw new Error(`batch starting at ${batch[0]!.idx} (${batch[0]!.path}) never loaded`);
+            // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
             await frames(1);
           }
           peakEditors = Math.max(peakEditors, el.querySelectorAll(".cm-editor").length);
@@ -1990,6 +1887,7 @@ const combinedDiffAcceptance: Scenario = {
           // Write a unique marker to each file, read back from editor + dirty state + saved backend, then collapse.
           for (const { idx, path } of batch) {
             const marker = ` // ACC_${idx}`;
+            // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
             const res = await probe.editAndSaveDiff(path, marker);
             if (!res.text.includes(marker)) throw new Error(`editor read-back failed for ${idx} (${path})`);
             if (!res.unsaved) throw new Error(`expected dirty state after write for ${idx} (${path})`);
@@ -2001,6 +1899,7 @@ const combinedDiffAcceptance: Scenario = {
             verified++;
             nextExpected = idx + 1;
           }
+          // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
           await frames(1);
 
           // Gently scroll verified blocks off the top (always <= 0.75 viewport) so virtualizer unmounts them promptly.
@@ -2010,6 +1909,7 @@ const combinedDiffAcceptance: Scenario = {
               const delta = nextSlot.getBoundingClientRect().top - el.getBoundingClientRect().top;
               if (delta > 0) {
                 el.scrollTop += Math.min(maxStep(), delta);
+                // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
                 await frames(1);
               }
             }
@@ -2046,7 +1946,7 @@ const combinedDiffAcceptance: Scenario = {
     const bigLines = Math.min(50_000, files * 10);
     const mixedData = await h.page.evaluate(
       ([f, b]) =>
-        (window as never as { __openideaPerf: CombinedProbe }).__openideaPerf.openCombinedDiff(f!, b!, {
+        (window as never as { __openideaPerf: CombinedProbe }).__openideaPerf.openCombinedDiffFixture(f!, b!, {
           tag: "acceptance-mixed",
         }),
       [files, bigLines],
@@ -2060,6 +1960,7 @@ const combinedDiffAcceptance: Scenario = {
     const mixedSweep = await scroller.evaluate(
       async (el, { expectedPaths }) => {
         const frames = async (n = 1) => {
+          // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
           for (let k = 0; k < n; k++) await new Promise(requestAnimationFrame);
         };
         const total = expectedPaths.length;
@@ -2075,6 +1976,7 @@ const combinedDiffAcceptance: Scenario = {
         for (let iter = 0; iter < total * 4 && performance.now() - started < 120_000; iter++) {
           const slots = [...el.querySelectorAll<HTMLElement>("[data-index]")];
           if (!slots.length) {
+            // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
             await frames(1);
             continue;
           }
@@ -2100,6 +2002,7 @@ const combinedDiffAcceptance: Scenario = {
           const lastSlot = slots[slots.length - 1]!;
           if (idxs[idxs.length - 1]! < total - 1 && lastSlot.getBoundingClientRect().bottom < elRect.bottom) {
             // Virtualizer is still filling the viewport as newly mounted collapsed headers shrink from ESTIMATE.
+            // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
             await frames(1);
             continue;
           }
@@ -2113,6 +2016,7 @@ const combinedDiffAcceptance: Scenario = {
             }
           }
           el.scrollTop = Math.min(el.scrollHeight, el.scrollTop + Math.max(1, targetDelta));
+          // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
           await frames(2);
         }
         return {
@@ -2330,8 +2234,10 @@ const prCommits: Scenario = {
           for (let i = 0; i <= 120; i++) {
             const frac = i <= 60 ? i / 60 : (120 - i) / 60;
             el.scrollTop = frac * max;
+            // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
             await new Promise(requestAnimationFrame);
             if (i === 60) {
+              // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
               await new Promise(requestAnimationFrame);
               sawLast = (el.textContent ?? "").includes(lastText);
             }
@@ -2408,6 +2314,7 @@ const prRefresh: Scenario = {
       await h.inPage((p) => p.startFrames());
       const latencies: number[] = [];
       for (let i = 0; i < rounds; i++) {
+        // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
         const ms = await h.page.evaluate(async () => {
           const probe = (
             window as never as {
@@ -2421,6 +2328,7 @@ const prRefresh: Scenario = {
           const start = performance.now();
           probe.triggerPrRefresh();
           while (probe.prRefreshStats().diffCalls === prevDiffs) {
+            // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
             await new Promise((r) => setTimeout(r, 0));
           }
           await new Promise(requestAnimationFrame);
@@ -2447,6 +2355,7 @@ const prRefresh: Scenario = {
         async (el, lastText) => {
           el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
           for (let i = 0; i < 30; i++) {
+            // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
             await new Promise(requestAnimationFrame);
             if ((el.textContent ?? "").includes(lastText)) return true;
           }
@@ -2651,6 +2560,7 @@ const httpLargeResponse: Scenario = {
       [10, HTTP_MAX_BODY / 10],
       [100, HTTP_MAX_BODY],
     ] as const) {
+      // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
       Object.assign(m, await httpResponseRun(h, "json", bytes, `s${pct}`));
     }
     return m;
@@ -2664,6 +2574,7 @@ const httpLargeResponseShapes: Scenario = {
   async run(h) {
     const m: Metrics = {};
     for (const shape of ["nested", "xml", "text"] as const)
+      // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
       Object.assign(m, await httpResponseRun(h, shape, HTTP_MAX_BODY, shape));
     return m;
   },
@@ -2745,6 +2656,7 @@ const gitLogMultiSelect: Scenario = {
         const max = Math.max(0, box.scrollHeight - box.clientHeight);
         for (let i = 1; i <= 60; i++) {
           box.scrollTop = Math.min(max, i * 480);
+          // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
           await new Promise(requestAnimationFrame);
         }
       });
@@ -2761,6 +2673,7 @@ const gitLogMultiSelect: Scenario = {
         const started = performance.now();
         box.scrollTop = box.scrollHeight;
         for (let i = 0; i < 120; i++) {
+          // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
           await new Promise(requestAnimationFrame);
           if ((box.textContent ?? "").includes(expected)) return performance.now() - started;
           box.scrollTop = box.scrollHeight;
@@ -2850,13 +2763,17 @@ const interactiveRebase: Scenario = {
       await h.gc();
 
       for (const count of [50, 500, 5_000]) {
+        // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
         const target = await h.page.evaluate((n) => {
           const probe = (window as never as { __openideaPerf: { fakeInteractiveRebase(c: number): unknown } })
             .__openideaPerf;
           return probe.fakeInteractiveRebase(n);
         }, count);
+        // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
         const t0 = await h.now();
+        // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
         const beforeOpen = await h.counters();
+        // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
         const openMs = await h.measure(
           () =>
             h.page.evaluate(
@@ -2870,9 +2787,13 @@ const interactiveRebase: Scenario = {
           "Commit 0:",
           30_000,
         );
+        // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
         await h.inPage((p) => p.afterNextPaint());
+        // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
         const openWork = Harness.delta(beforeOpen, await h.counters());
+        // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
         const openLongTasks = await h.longTasksSince(t0);
+        // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
         const { selects, domNodes } = await h.page.evaluate(() => {
           const list = document.querySelector('[role="list"][aria-label="Commits to rebase"]')!;
           const dialog = list.closest('[role="dialog"]')!;
@@ -2883,20 +2804,26 @@ const interactiveRebase: Scenario = {
         });
 
         const list = h.page.getByRole("list", { name: "Commits to rebase" });
+        // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
         const t1 = await h.now();
+        // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
         const beforeScroll = await h.counters();
+        // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
         await h.inPage((p) => p.startFrames());
+        // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
         const reachedLast = await list.evaluate(
           async (el, lastLabel) => {
             const max = Math.max(0, el.scrollHeight - el.clientHeight);
             for (let i = 0; i <= 60; i++) {
               el.scrollTop = (i / 60) * max;
+              // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
               await new Promise(requestAnimationFrame);
             }
             await new Promise(requestAnimationFrame);
             const found = (el.textContent ?? "").includes(lastLabel);
             for (let i = 60; i >= 0; i--) {
               el.scrollTop = (i / 60) * max;
+              // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
               await new Promise(requestAnimationFrame);
             }
             return found;
@@ -2904,8 +2831,11 @@ const interactiveRebase: Scenario = {
           `Commit ${count - 1}:`,
         );
         if (!reachedLast) throw new Error(`Interactive Rebase (${count}) did not render last commit`);
+        // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
         const scrollFrames = await h.inPage((p) => p.stopFrames());
+        // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
         const scrollWork = Harness.delta(beforeScroll, await h.counters());
+        // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
         const scrollLongTasks = await h.longTasksSince(t1);
         const scrollSummary = frameSummary(scrollFrames, refresh);
         const p = `n${count}`;
@@ -2922,8 +2852,11 @@ const interactiveRebase: Scenario = {
         out[`${p}ScrollLongTasks`] = scrollLongTasks.length;
         out[`${p}ScrollTbtMs`] = totalBlockingTime(scrollLongTasks);
 
+        // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
         await h.page.keyboard.press("Escape");
+        // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
         await h.page.locator('[role="dialog"]').waitFor({ state: "detached" });
+        // oxlint-disable-next-line no-await-in-loop -- perf steps run in order, each on the state the previous one left
         await h.gc();
       }
     } finally {
@@ -2968,7 +2901,7 @@ export const SCENARIOS: Scenario[] = [
   projectTreeSelection,
   combinedDiff,
   combinedDiffStress,
-  combinedDiff,
+  combinedDiffEdit,
   combinedDiffAcceptance,
   leaks,
   httpLargeResponse,
