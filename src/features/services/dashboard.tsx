@@ -550,7 +550,7 @@ export function parseNetworkInspect(raw: string | null): ParsedNetworkInspect | 
 // ---------------------------------------------------------------------------
 // Shared UI primitives (adapted from openidea-kubernetes ResourceDetails.tsx)
 
-const copyText = (text: string) => void writeClipboardText(text);
+const copyText = (text: string) => void writeClipboardText(text).catch(() => {});
 
 const SAFE_SHELL_TOKEN = /^[A-Za-z0-9_./:@%+=,-]+$/;
 
