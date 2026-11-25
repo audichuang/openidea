@@ -21,11 +21,7 @@ Since 2026-11-25 the user's standing rule is: any fork fix or improvement the ma
 
 ## Finding what to send
 
-Upstream's own asks get merged fastest. Before mining the fork, read:
-
-- The maintainer's comments on our merged PRs: he names follow-ups ("The `in_window` capacity reservation you noted is worth a separate PR" on #5698 became #5754, merged within hours).
-- Comments on PRs he closed: "happy to take a PR scoped to that" on #3994 became #5718 (Repository column width, #5291). Keep the scope he states.
-- Open issues labelled `planned` (accepted, `CONTRIBUTING.md`) or `bug` without a linked PR; skip `needs-info`, `needs-decision`, `needs-acceptance`. Triage notes: `.agent-work/upstream-prs/issue-triage.md`.
+`pr`'s "外部貢獻" section applies. Here: #5698's merge comment led to #5754, #3994's close comment to #5718. Accepted label is `planned`; skip `needs-info`, `needs-decision`, `needs-acceptance`. Triage notes: `.agent-work/upstream-prs/issue-triage.md`.
 
 ## Checklist before the draft
 
@@ -35,15 +31,15 @@ Upstream's own asks get merged fastest. Before mining the fork, read:
 - Follow the UI rules in `AGENTS.md`: tokens, no hex, and every new string in `en.json` and `zh.json`.
 - Rebase onto the latest `origin/main` before opening; once the PR is open, merge `origin/main` instead (the maintainer may have pushed onto the branch) and re-run the checks before every push. Run the frontend checks locally. Run the Rust checks through `rust-remote`, as the machine rules require.
 - For a red upstream CI, rerun the failing tests on the PR's base commit before you call them pre-existing. Name them and the base sha in the PR (#5649: five E2E tests failed on `6cca609d5` without the change).
-- After the last edit, tests included, re-run `pnpm typecheck`, `pnpm lint` and `pnpm format:check`. #5718's CI went red on a test-only follow-up commit that passed vitest but not tsc (an extra `repo` field on a `Commit` literal; assign it to a variable first, as the file's other multi-root tests do).
+- Test fixtures with multi-root commits: put the `repo` field on a variable, not a `Commit` literal, or tsc rejects it (#5718's red CI).
 - Commit with `PATH="$HOME/.cargo/bin:$PATH"`: the pre-commit hook runs `rustfmt` and fails with `EACCES` without it.
 - Keep upstream's deliberate UI rules even when they limit the fix (#5718: Commit's left divider stays header-only, so Repository is resizable from rows only when a fixed column leads). Say so in the body and offer the alternative.
-- Visible UI: screenshots in English (`commands.settingsSet("global", "appearance.locale", JSON.stringify("en"))` in the dev app; its settings live in the worktree's own dev data dir, not the user's). Make "before" and "after" the same real action on the same screen points, swapping the changed files by hot reload (drag with `.agents/skills/fork-verify/scripts/drag.swift`). Images go on the fork's `pr-assets` branch (`pr` skill's `references/screenshots.md`).
+- English UI for screenshots: `commands.settingsSet("global", "appearance.locale", JSON.stringify("en"))` in the dev app (its settings are in the worktree's own dev data dir, not the user's). Real drags: `.agents/skills/fork-verify/scripts/drag.swift`. Images: the fork's `pr-assets` branch.
 - Examples of merged external UI fixes: #5645 #5620 #5578 #5662 #5484 #5428 #5458 #5505 #5473 #5440.
 
 ## A red job unrelated to the change
 
-Not a red that `main` already has, but a flaky test elsewhere (#5754: `ide-host::mcp agent_commands_run_in_named_tabs_and_report_what_the_user_did` timed out at 11 s). Run that test alone on the PR branch through `rust-remote` (3 of 3 passed in 0.33 s), find another recent run that failed in the same test file, say both in a PR comment, then mark ready. The maintainer accepted it and named it himself on merge.
+Per `pr`'s `after-open.md`. Known flaky here: `ide-host::mcp` timing tests (~10 s timeouts on the Linux runner; #5754, where the maintainer named it himself on merge). Run the test alone with `rust-remote nextest run -p ide-host --test mcp -E 'test(<name>)'`.
 
 ## Branch, push, open
 
@@ -75,7 +71,7 @@ gh pr create --draft -R l0ng-ai/openidea --base main --head audichuang:up/<name>
 
 ## Security problems
 
-Private advisory only (`SECURITY.md`). Plan the smallest verification that shows the flaw without a working exploit (for example that a restricted Git call contacts a configured remote, not that it runs a command): an agent writing a code-execution PoC for the Git restricted-mode issue was stopped by the model's safeguards. Drafts go to the user before anything is filed.
+Per `pr`'s hard rule: upstream `SECURITY.md` asks for a private advisory. The fork is public, so a fix branch is never pushed there. Open items and drafts: `.agent-work/security-advisories/`.
 
 ## Evidence
 
