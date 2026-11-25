@@ -151,7 +151,8 @@ describe("Debug console links", () => {
     Object.defineProperty(log, "scrollLeft", { configurable: true, writable: true, value: 39_200 });
     fireEvent.scroll(log);
     expect(screen.getByRole("link", { name: "src/mid.go:2:2" })).toBeInTheDocument();
-    Object.defineProperty(log, "scrollLeft", { configurable: true, writable: true, value: 78_400 });
+    // Upstream #5847 breaks lines over 8,000 characters: the last link starts the second line's column 2,038.
+    Object.defineProperty(log, "scrollLeft", { configurable: true, writable: true, value: 15_600 });
     fireEvent.scroll(log);
     expect(screen.getByRole("link", { name: "src/end.go:3:3" })).toBeInTheDocument();
   });
