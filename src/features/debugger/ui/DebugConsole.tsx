@@ -36,7 +36,14 @@ import {
 } from "../state";
 import { pushHistory, readHistory, setConsoleHistoryBrowser } from "./expressionHistory";
 import { useExpressionCompletion } from "./ExpressionCompletion";
-import { findOutputLinks, type OutputLink } from "@/features/run/links";
+import {
+  findOutputLinks,
+  horizontalColumnWindow,
+  sliceRangesInWindow,
+  visibleCharWindow,
+  type OutputLink,
+  type TextWindow,
+} from "@/features/run/links";
 import { debugConsoleUrl, openTarget, openUrl, runDirectory } from "@/features/run/navigate";
 import { segmentLine, type SegmentMark } from "@/features/run/segments";
 import styles from "./DebugToolWindow.module.css";
@@ -48,6 +55,18 @@ const cut = (line: ConsoleLine) => line.text.length >= MAX_LINE_LENGTH && !line.
 
 const MARK_COLOR = "var(--bg-search-match)";
 const CURRENT_MARK_COLOR = "var(--bg-search-match-current)";
+const isCurrentMark = (m: SegmentMark) => !!m.current;
+
+function sameMarks(a: readonly SegmentMark[] | undefined, b: readonly SegmentMark[] | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]!;
+    const y = b[i]!;
+    if (x.start !== y.start || x.end !== y.end || !!x.current !== !!y.current) return false;
+  }
+  return true;
+}
 
 const DebugLine = memo(
   function DebugLine({
@@ -56,6 +75,8 @@ const DebugLine = memo(
     rules,
     cwd,
     module,
+    colStart,
+    colEnd,
   }: {
     line: ConsoleLine;
     marks?: readonly SegmentMark[];
@@ -64,9 +85,19 @@ const DebugLine = memo(
     cwd: string;
     /** The run's owning module, which picks between same-named files of a multi-module build. */
     module?: string | null;
+    colStart?: number;
+    colEnd?: number;
   }) {
     const spans = rules ? styleSpans(line.spans, rules) : line.spans;
-    const segments = segmentLine(spans, line.category === "system" ? [] : findOutputLinks(line.text), marks);
+    const rawLinks = line.category === "system" ? [] : findOutputLinks(line.text);
+    let links: readonly OutputLink[] = rawLinks;
+    let visibleMarks: readonly SegmentMark[] | undefined = marks;
+    if (colStart !== undefined && colEnd !== undefined && (colStart > 0 || line.text.length > colEnd)) {
+      const win = visibleCharWindow(line.text, colStart, colEnd);
+      links = sliceRangesInWindow(rawLinks, win.start, win.end);
+      if (marks) visibleMarks = sliceRangesInWindow(marks, win.start, win.end, isCurrentMark);
+    }
+    const segments = segmentLine(spans, links, visibleMarks);
     const activate = (e: MouseEvent, link: OutputLink) => {
       e.preventDefault();
       if (window.getSelection()?.toString()) return;
@@ -119,8 +150,10 @@ const DebugLine = memo(
     a.length === b.length &&
     a.cwd === b.cwd &&
     a.module === b.module &&
-    a.marks === b.marks &&
-    a.rules === b.rules,
+    a.rules === b.rules &&
+    a.colStart === b.colStart &&
+    a.colEnd === b.colEnd &&
+    sameMarks(a.marks, b.marks),
 );
 
 export function DebugServiceConsole({ sessionId }: { sessionId: number }) {
@@ -158,6 +191,20 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   const [widest] = useState(() => new WidestColumns());
   const columns = useMemo(() => widest.measure(lines ?? []), [widest, lines]);
   const programmatic = useRef(false);
+  const [colWindow, setColWindow] = useState<TextWindow | null>(null);
+  const syncHorizontalWindow = (el: HTMLDivElement | null) => {
+    const next = softWrap || !el ? null : horizontalColumnWindow(el.scrollLeft, el.clientWidth, consoleFont.size);
+    setColWindow((prev) => (prev?.start === next?.start && prev?.end === next?.end ? prev : next));
+  };
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    syncHorizontalWindow(el);
+    if (softWrap || !el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => syncHorizontalWindow(el));
+    ro.observe(el);
+    return () => ro.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- consoleFont.size and softWrap govern window width
+  }, [softWrap, consoleFont.size]);
   const [input, setInput] = useState("");
   const history = useRef<string[]>(readHistory("console"));
   const historyPos = useRef(-1);
@@ -469,8 +516,9 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
           className={clsx(styles.consoleOutput, !softWrap && styles.noWrap)}
           style={{ ...fontStyle, lineHeight: `${rowHeight}px` }}
           onScroll={(e) => {
-            if (programmatic.current) return;
             const el = e.currentTarget;
+            if (!softWrap) syncHorizontalWindow(el);
+            if (programmatic.current) return;
             const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
             if (atEnd !== stick.current) setFollow(atEnd);
           }}
@@ -509,6 +557,8 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
                     length={l.text.length}
                     cwd={cwd}
                     module={module}
+                    colStart={colWindow?.start}
+                    colEnd={colWindow?.end}
                   />
                 </span>
               );

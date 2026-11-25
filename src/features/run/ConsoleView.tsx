@@ -21,7 +21,14 @@ import { logLineColor } from "@/ui/logColors";
 import { compileConsoleRules, matchConsoleRules, styleSpans, type ConsoleRuleMatch } from "@/ui/consoleRules";
 import { useConsoleRules, useOccurrenceNavigator } from "@/workbench/contributions";
 import type { ConsoleLine, ConsoleModel } from "./console";
-import { findOutputLinks, type OutputLink } from "./links";
+import {
+  findOutputLinks,
+  horizontalColumnWindow,
+  sliceRangesInWindow,
+  visibleCharWindow,
+  type OutputLink,
+  type TextWindow,
+} from "./links";
 import { debugConsoleUrl, openTarget, openUrl } from "./navigate";
 import { segmentLine, type SegmentMark } from "./segments";
 import styles from "./Run.module.css";
@@ -31,12 +38,34 @@ import { WidestColumns } from "@/platform/consoleColumns";
 import { tx } from "@/platform/i18n";
 import { executeAction } from "@/platform/actions";
 import { ConsoleFindBar } from "@/ui/ConsoleFindBar";
-import { DEFAULT_FIND_OPTIONS, findInCutLines, marksByRow, type FindOptions } from "@/ui/consoleFind";
+import {
+  DEFAULT_FIND_OPTIONS,
+  MAX_MATCHES,
+  findInLines,
+  marksByRow,
+  type ConsoleMatch,
+  type FindOptions,
+  type FindResult,
+} from "@/ui/consoleFind";
 
 /** A row cut at MAX_LINE_LENGTH: the next row continues its line. */
 const cut = (line: ConsoleLine) => !!line.continues;
 const MARK_COLOR = "var(--bg-search-match)";
 const CURRENT_MARK_COLOR = "var(--bg-search-match-current)";
+const EMPTY_FIND: FindResult = { matches: [], overflow: false, invalid: false };
+const EMPTY_ROW_MAP = new Map<number, number>();
+const isCurrentMark = (m: SegmentMark) => !!m.current;
+
+function sameMarks(a: readonly SegmentMark[] | undefined, b: readonly SegmentMark[] | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]!;
+    const y = b[i]!;
+    if (x.start !== y.start || x.end !== y.end || !!x.current !== !!y.current) return false;
+  }
+  return true;
+}
 
 const Line = memo(
   function Line({
@@ -46,6 +75,8 @@ const Line = memo(
     cwd,
     module,
     currentLink,
+    colStart,
+    colEnd,
   }: {
     line: ConsoleLine;
     marks?: readonly SegmentMark[];
@@ -56,10 +87,20 @@ const Line = memo(
     module?: string | null;
     /** Start of the link Previous / Next Occurrence stepped to on this line. */
     currentLink?: number;
+    colStart?: number;
+    colEnd?: number;
   }) {
     // Not memoised: the open (last) line mutates in place; `memo` below re-renders on length changes only.
     const spans = rules ? styleSpans(line.spans, rules) : line.spans;
-    const segments = segmentLine(spans, line.kind === "system" ? [] : findOutputLinks(line.text), marks);
+    const rawLinks = line.kind === "system" ? [] : findOutputLinks(line.text);
+    let links: readonly OutputLink[] = rawLinks;
+    let visibleMarks: readonly SegmentMark[] | undefined = marks;
+    if (colStart !== undefined && colEnd !== undefined && (colStart > 0 || line.text.length > colEnd)) {
+      const win = visibleCharWindow(line.text, colStart, colEnd);
+      links = sliceRangesInWindow(rawLinks, win.start, win.end);
+      if (marks) visibleMarks = sliceRangesInWindow(marks, win.start, win.end, isCurrentMark);
+    }
+    const segments = segmentLine(spans, links, visibleMarks);
     const activate = (e: MouseEvent, link: OutputLink) => {
       e.preventDefault();
       if (window.getSelection()?.toString()) return;
@@ -114,9 +155,11 @@ const Line = memo(
     a.length === b.length &&
     a.cwd === b.cwd &&
     a.module === b.module &&
-    a.marks === b.marks &&
     a.rules === b.rules &&
-    a.currentLink === b.currentLink,
+    a.currentLink === b.currentLink &&
+    a.colStart === b.colStart &&
+    a.colEnd === b.colEnd &&
+    sameMarks(a.marks, b.marks),
 );
 
 /** A file link in the output, by its line's id (stable across trimming). */
@@ -131,12 +174,12 @@ export interface FileLink extends LinkPosition {
   link: OutputLink & { kind: "file" };
 }
 
-/** The file links on the `shown` lines (a collapsed fold hides its links), in output order. */
 /** A copy of a line the model may still append to (the open last line). */
 function copyLine(line: ConsoleLine): ConsoleLine {
   return { ...line, spans: line.spans.map((span) => ({ ...span })) };
 }
 
+/** The file links on the `shown` lines (a collapsed fold hides its links), in output order. */
 export function fileLinks(lines: readonly ConsoleLine[], shown: (index: number) => boolean): FileLink[] {
   const links: FileLink[] = [];
   lines.forEach((line, i) => {
@@ -179,6 +222,23 @@ export interface Fold {
  */
 export type DisplayRow = { kind: "line"; index: number; fold?: Fold } | { kind: "fold"; fold: Fold };
 
+const foldMatchCache = new WeakMap<readonly string[], WeakMap<ConsoleLine, { length: number; matched: boolean }>>();
+
+function lineMatchesFold(line: ConsoleLine, patterns: readonly string[]): boolean {
+  if (line.kind === "system" || patterns.length === 0) return false;
+  let perPattern = foldMatchCache.get(patterns);
+  if (!perPattern) {
+    perPattern = new WeakMap();
+    foldMatchCache.set(patterns, perPattern);
+  }
+  const len = line.text.length;
+  const cached = perPattern.get(line);
+  if (cached && cached.length === len) return cached.matched;
+  const matched = patterns.some((p) => line.text.includes(p));
+  perPattern.set(line, { length: len, matched });
+  return matched;
+}
+
 /**
  * IDEA's Fold Lines Like This: the selection when it stays on one line, else the clicked line;
  * trimmed, and `null` when that leaves nothing to fold on.
@@ -198,11 +258,14 @@ export function foldRows(
   expanded: ReadonlySet<number>,
 ): DisplayRow[] {
   const rows: DisplayRow[] = [];
-  const matches = (l: ConsoleLine) => l.kind !== "system" && patterns.some((p) => l.text.includes(p));
+  if (patterns.length === 0) {
+    for (let i = 0; i < lines.length; i++) rows.push({ kind: "line", index: i });
+    return rows;
+  }
   for (let i = 0; i < lines.length;) {
-    if (patterns.length && matches(lines[i]!)) {
+    if (lineMatchesFold(lines[i]!, patterns)) {
       let j = i + 1;
-      while (j < lines.length && matches(lines[j]!)) j++;
+      while (j < lines.length && lineMatchesFold(lines[j]!, patterns)) j++;
       const fold: Fold = { start: i, count: j - i, id: lines[i]!.id, expanded: expanded.has(lines[i]!.id) };
       const prev = rows[rows.length - 1];
       if (prev?.kind === "line") prev.fold = fold;
@@ -321,6 +384,21 @@ export function ConsoleView({
       return next;
     });
   const programmatic = useRef(false);
+  const [colWindow, setColWindow] = useState<TextWindow | null>(null);
+  const syncHorizontalWindow = (el: HTMLDivElement | null) => {
+    const next = softWrap || !el ? null : horizontalColumnWindow(el.scrollLeft, el.clientWidth, consoleFont.size);
+    setColWindow((prev) => (prev?.start === next?.start && prev?.end === next?.end ? prev : next));
+  };
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    syncHorizontalWindow(el);
+    if (softWrap || !el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => syncHorizontalWindow(el));
+    ro.observe(el);
+    return () => ro.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- consoleFont.size and softWrap govern window width
+  }, [softWrap, consoleFont.size]);
 
   const { rangeExtractor, selecting } = useConsoleSelection(scrollRef, () => onFollowChange(false));
   const virtualizer = useVirtualizer({
@@ -328,7 +406,7 @@ export function ConsoleView({
     count,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => rowHeight,
-    overscan: 30,
+    overscan: 15,
     getItemKey: (i) => {
       const r = rows[i];
       if (!r) return "input";
@@ -352,29 +430,98 @@ export function ConsoleView({
 
   const onScroll = () => {
     const el = scrollRef.current;
-    if (!el || programmatic.current) return;
+    if (!el) return;
+    if (!softWrap) syncHorizontalWindow(el);
+    if (programmatic.current) return;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < rowHeight;
     if (atBottom && selecting) return;
     if (atBottom !== follow) onFollowChange(atBottom);
   };
 
-  // Find (⌘F): search the whole buffer, not just the rendered rows.
-  const found = useMemo(
-    () =>
-      findOpen ? findInCutLines(lines, cut, query, findOptions) : { matches: [], overflow: false, invalid: false },
+  // Find (⌘F): search the whole buffer, not just the rendered rows, caching completed lines across flushes.
+  // A row cut at MAX_LINE_LENGTH is searched joined with the rows continuing it (as `findInCutLines`).
+  const findCache = useRef<{
+    query: string;
+    options: FindOptions;
+    invalid: boolean;
+    byId: Map<number, { length: number; spans: Array<{ start: number; end: number }> }>;
+  } | null>(null);
+  const found = useMemo((): FindResult => {
+    if (!findOpen || !query) {
+      findCache.current = null;
+      return EMPTY_FIND;
+    }
+    let cache = findCache.current;
+    if (
+      !cache ||
+      cache.query !== query ||
+      cache.options.caseSensitive !== findOptions.caseSensitive ||
+      cache.options.wholeWord !== findOptions.wholeWord ||
+      cache.options.regex !== findOptions.regex
+    ) {
+      const probe = findInLines([], query, findOptions, 1);
+      cache = { query, options: findOptions, invalid: probe.invalid, byId: new Map() };
+      findCache.current = cache;
+    }
+    if (cache.invalid) return { matches: [], overflow: false, invalid: true };
+    const joined: { id: number; text: string; row: number }[] = [];
+    lines.forEach((row, i) => {
+      const prev = joined[joined.length - 1];
+      if (prev && cut(lines[i - 1]!)) prev.text += row.text;
+      else joined.push({ id: row.id, text: row.text, row: i });
+    });
+    const firstId = lines[0]?.id ?? 0;
+    if (cache.byId.size > joined.length + 512) {
+      for (const id of cache.byId.keys()) {
+        if (id < firstId) cache.byId.delete(id);
+      }
+    }
+    // A match is reported on the row where it starts; its `end` runs past that row across a cut.
+    const toRow = (first: number, start: number, end: number): ConsoleMatch => {
+      let row = first;
+      let offset = 0;
+      while (cut(lines[row]!) && start >= offset + lines[row]!.text.length) offset += lines[row++]!.text.length;
+      return { line: row, lineId: lines[row]!.id, start: start - offset, end: end - offset };
+    };
+    const matches: ConsoleMatch[] = [];
+    for (const line of joined) {
+      const hit = cache.byId.get(line.id);
+      if (hit && hit.length === line.text.length) {
+        for (const s of hit.spans) {
+          if (matches.length >= MAX_MATCHES) return { matches, overflow: true, invalid: false };
+          matches.push(toRow(line.row, s.start, s.end));
+        }
+        continue;
+      }
+      const remaining = MAX_MATCHES - matches.length;
+      const res = findInLines([line], query, findOptions, remaining);
+      if (res.invalid) {
+        cache.invalid = true;
+        return { matches: [], overflow: false, invalid: true };
+      }
+      if (!res.overflow) {
+        cache.byId.set(line.id, {
+          length: line.text.length,
+          spans: res.matches.map((m) => ({ start: m.start, end: m.end })),
+        });
+      }
+      for (const m of res.matches) matches.push(toRow(line.row, m.start, m.end));
+      if (res.overflow) return { matches, overflow: true, invalid: false };
+    }
+    return { matches, overflow: false, invalid: false };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `version` marks in-place appends to `lines`
-    [findOpen, lines, version, query, findOptions],
-  );
+  }, [findOpen, lines, version, query, findOptions]);
   const activeIndex = found.matches.length ? Math.min(Math.max(active, 0), found.matches.length - 1) : -1;
   const activeMatch = activeIndex >= 0 ? found.matches[activeIndex] : undefined;
   const marksByLine = useMemo(() => marksByRow(found.matches, activeIndex, lines, cut), [found, activeIndex, lines]);
   const rowOfLine = useMemo(() => {
+    if (!findOpen) return EMPTY_ROW_MAP;
     const rowsByLine = new Map<number, number>();
     rows.forEach((row, i) => {
       if (row.kind === "line") rowsByLine.set(row.index, i);
     });
     return rowsByLine;
-  }, [rows]);
+  }, [findOpen, rows]);
 
   /** The line at the top of the viewport: typing searches from there, as IDEA does. */
   const topLine = () => {
@@ -769,6 +916,8 @@ export function ConsoleView({
                   cwd={cwd}
                   module={module}
                   currentLink={currentLink?.lineId === line.id ? currentLink.start : undefined}
+                  colStart={colWindow?.start}
+                  colEnd={colWindow?.end}
                 />
                 {row.fold && !row.fold.expanded && foldButton(row.fold, true)}
                 {inputInline && item.index === rows.length - 1 && pendingInput}
