@@ -1,7 +1,11 @@
 /** Which "New › Package" flavour a folder offers, from the project's roots. */
-import { rootFor, type RootFolder } from "@/platform/languageSettings";
+import { rootFor, type RootFolder } from "./languageSettings";
 import { isJvmSourcePackage } from "@/ui/folderPresentation";
-import type { PackageKind } from "./paths";
+import { relativePath, useProject } from "./project";
+import { currentDetectedRoots, currentRoots } from "./projectRoots";
+
+/** Package flavour of New › Package (JVM, dotted) / New › Python Package (`__init__.py`). */
+export type PackageKind = "jvm" | "python";
 
 const PY_BUILD = /(^|\/)(pyproject\.toml|setup\.py|setup\.cfg|Pipfile|requirements\.txt)$/;
 
@@ -32,4 +36,12 @@ export function packageKindAt(
     } else if (within(rel, r.path)) other = Math.max(other, r.path.length);
   }
   return python >= 0 && python >= other ? "python" : null;
+}
+
+/** `packageKindAt` for an absolute directory of the open project, from the current roots. */
+export function packageKindOf(directory: string | null | undefined): PackageKind | null {
+  const root = useProject.getState().project?.root;
+  if (!directory || !root) return null;
+  const rel = directory === root ? "" : relativePath(root, directory);
+  return packageKindAt(rel, currentRoots(), currentDetectedRoots());
 }
