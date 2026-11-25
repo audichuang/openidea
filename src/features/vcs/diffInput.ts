@@ -150,7 +150,7 @@ export function sideLabel(s: DiffSide): string {
   }
 }
 
-const diffKey = (data: DiffData) => {
+export const diffKey = (data: DiffData) => {
   const key = (side: DiffSide) => sideKey(diffSideSource(side));
   const ends = `diff:${data.path}:${key(data.left)}:${key(data.right)}`;
   return data.middle ? `${ends}:middle:${key(data.middle)}` : ends;
