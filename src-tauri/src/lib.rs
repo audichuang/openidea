@@ -194,6 +194,8 @@ pub fn run() {
 
     // Paths macOS asked to open (Finder's Open With, the Dock) before setup ran: the first window takes them.
     let early_opens: Arc<Mutex<Option<Vec<PathBuf>>>> = Arc::default();
+    #[cfg(target_os = "macos")]
+    let pending_opens: Arc<Mutex<Vec<PathBuf>>> = Arc::default();
     let setup_opens = early_opens.clone();
     let typed_invoke = builder.invoke_handler();
     // Raw Response is not a JSON/Specta type; keep the binary command out of generated bindings.
@@ -389,10 +391,20 @@ pub fn run() {
             let paths = windows::opened_paths(urls);
             if app.try_state::<AppState>().is_some() {
                 // tao delivers Opened without marking its event handler busy, so a redraw while
-                // it runs (showing the project's tab) locks the handler again (#508). Its queued
-                // main-thread tasks run with that guard set.
-                let handle = app.clone();
-                let _ = app.run_on_main_thread(move || windows::open_paths(&handle, paths));
+                // it runs (showing the project's tab) locks the handler again (#508). Open from a
+                // task tao queues instead: posted from another thread, since on the main thread
+                // `run_on_main_thread` runs at once. The task opens everything pending, in order.
+                pending_opens.lock().extend(paths);
+                let (handle, pending) = (app.clone(), pending_opens.clone());
+                std::thread::spawn(move || {
+                    let app = handle.clone();
+                    let _ = handle.run_on_main_thread(move || {
+                        let paths = std::mem::take(&mut *pending.lock());
+                        if !paths.is_empty() {
+                            windows::open_paths(&app, paths);
+                        }
+                    });
+                });
             } else {
                 early_opens.lock().get_or_insert_default().extend(paths);
             }
