@@ -38,16 +38,16 @@ export function RepositoryFilterPopup({
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
-  const [active, setActive] = useState(0);
+  const [active, setActive] = useState(() => Math.max(0, repositories.indexOf(selected[0] ?? "")));
   const rows = useMemo(() => buildRows(repositories, query), [repositories, query]);
   const activeIndex = rows[active] ? active : firstSelectable(rows, never);
   const activate = (row: Row | undefined) => {
     if (row) onSelect(row.root);
   };
   const onKeyDown = (e: KeyboardEvent) => {
+    // Keys that drive an IME candidate window (including the Enter that confirms one) are not list commands.
+    if (isImeKey(e.nativeEvent)) return;
     if (e.key === "Enter") {
-      // The Enter that confirms an IME candidate must not pick a repository.
-      if (isImeKey(e.nativeEvent)) return;
       e.preventDefault();
       activate(rows[activeIndex]);
       return;
