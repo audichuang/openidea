@@ -4,7 +4,7 @@ import { useProject } from "@/platform/project";
 import { provideEditorService, type EditorInput } from "./contributions";
 import { installPerfProbe, type PerfProbe } from "./perfProbe";
 
-describe("perfProbe openCombinedDiff", () => {
+describe("perfProbe openCombinedDiffFixture", () => {
   let backend: MemoryBackend;
   let uninstall: (() => void) | null = null;
   let opened: EditorInput[] = [];
@@ -32,7 +32,7 @@ describe("perfProbe openCombinedDiff", () => {
 
   it("creates 5,000 editable worktree text files when allEditable is requested", async () => {
     const probe = (window as unknown as { __openideaPerf: PerfProbe }).__openideaPerf;
-    const res = await probe.openCombinedDiff(5_000, 0, { allEditable: true, lines: 4, tag: "test-editable" });
+    const res = await probe.openCombinedDiffFixture(5_000, 0, { allEditable: true, lines: 4, tag: "test-editable" });
 
     expect(opened).toHaveLength(1);
     const items = (opened[0]!.data as { items: Array<{ path: string; right: { type: string } }> }).items;
@@ -49,7 +49,7 @@ describe("perfProbe openCombinedDiff", () => {
 
   it("creates mixed binary, large, and editable files by default", async () => {
     const probe = (window as unknown as { __openideaPerf: PerfProbe }).__openideaPerf;
-    const res = await probe.openCombinedDiff(100, 500);
+    const res = await probe.openCombinedDiffFixture(100, 500);
 
     const items = (opened[0]!.data as { items: Array<{ path: string; right: { type: string } }> }).items;
     expect(items).toHaveLength(100);
