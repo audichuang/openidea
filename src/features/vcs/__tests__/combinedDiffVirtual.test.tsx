@@ -7,6 +7,8 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const dirtyDocs = new Set<number>();
+/** Paths whose staged draft (an index-side edit, outside the editor documents) is unsaved. */
+const dirtyStaged = new Set<string>();
 const unmountedPaths: string[] = [];
 let nextDocId = 1;
 
@@ -33,6 +35,10 @@ vi.mock("../DiffEditor", () => {
   // The all-in-one diff renders upstream's ResolvedDiffEditor (v0.1.51); both are the same fake.
   return { DiffEditor: FakeDiffEditor, ResolvedDiffEditor: FakeDiffEditor };
 });
+vi.mock("../stagedDocument", async (original) => ({
+  ...(await original<typeof import("../stagedDocument")>()),
+  stagedDocumentAtPath: (path: string) => (dirtyStaged.has(path) ? { dirty: true } : undefined),
+}));
 // Upstream's per-block Git metadata (v0.1.51): no IPC in these tests.
 vi.mock("../gitDiffEntries", () => ({
   useGitDiffEntries: (data: unknown) => ({ data, entries: undefined, loading: false }),
@@ -109,6 +115,7 @@ const scrollBy = Element.prototype.scrollBy;
 beforeEach(() => {
   localStorage.clear();
   dirtyDocs.clear();
+  dirtyStaged.clear();
   unmountedPaths.length = 0;
   nextDocId = 1;
   openInput.mockClear();
@@ -235,6 +242,23 @@ describe("the all-in-one diff with many files", () => {
     expect(mounted()).not.toContain(edited);
     expect(unmountedPaths).toContain(edited);
     expect(editorsFor(edited)).toHaveLength(0);
+  });
+
+  it("keeps a block with an unsaved staged draft mounted while it is scrolled away", () => {
+    const items = files(120).map((item, i): DiffData =>
+      i === 2 ? { ...item, left: { type: "rev", rev: ":0" } } : item,
+    );
+    const staged = items[2]!.path;
+    render(<CombinedDiffTab input={combinedDiffInput({ items })} />);
+    dirtyStaged.add(staged);
+    scroll(scroller(), items.length * BLOCK);
+    // Unmounting it would save the draft into the index.
+    expect(mounted()).toContain(staged);
+    expect(unmountedPaths).not.toContain(staged);
+
+    dirtyStaged.delete(staged);
+    scroll(scroller(), 30 * BLOCK);
+    expect(mounted()).not.toContain(staged);
   });
 
   it("keeps the focused block mounted while it is scrolled away", () => {

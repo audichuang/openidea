@@ -10,7 +10,6 @@ use crate::cli::{run, run_raw};
 use ide_core::{IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::sync::atomic::Ordering;
 
 /// A stash entry with the commit it records and the commit it was made on.
 #[derive(Clone, Debug, Serialize, Deserialize, Type, PartialEq)]
@@ -129,28 +128,21 @@ fn rev_arg<'a>(what: &str, s: &'a str) -> IdeResult<&'a str> {
 }
 
 impl Repo {
+    // With the project's git executable, like upstream's `execution_scope`.
     fn fork_scope(&self) -> crate::ExecutionScope {
-        crate::ExecutionScope::enter(self.execution_allowed.load(Ordering::Acquire))
+        self.execution_scope()
     }
 
     pub fn graph_stashes(&self) -> IdeResult<Vec<GraphStash>> {
-        let _scope = self.fork_scope();
-        let out = run_raw(self.root(), &["stash", "list", "-z", "--format=%H%x00%P%x00%ct%x00%gs"], None)?;
-        if out.code != Some(0) {
-            return Ok(Vec::new());
-        }
-        let text = out.stdout_str();
-        let fields: Vec<&str> = text.split(NUL).collect();
-        Ok(fields
-            .chunks(4)
-            .filter(|c| c.len() == 4 && !c[0].trim().is_empty())
-            .enumerate()
-            .map(|(index, c)| GraphStash {
-                index: index as u32,
-                id: c[0].trim().to_string(),
-                base: c[1].split_whitespace().next().unwrap_or_default().to_string(),
-                time_ms: ms(c[2]),
-                message: c[3].to_string(),
+        // The list upstream's stash operations check entries against (reflog time, not commit time).
+        Ok(crate::refs::stashes(self)?
+            .into_iter()
+            .map(|s| GraphStash {
+                index: s.index,
+                id: s.id,
+                base: s.base.unwrap_or_default(),
+                time_ms: s.time_ms,
+                message: s.message,
             })
             .collect())
     }

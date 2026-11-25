@@ -209,3 +209,25 @@ fn rev_counts_report_ahead_and_behind() {
     assert!(repo.graph_rev_counts("--all", "feature").is_err());
     assert!(repo.graph_rev_counts("main..feature", "feature").is_err());
 }
+
+#[test]
+fn stashes_match_the_entries_stash_operations_check() {
+    let (tmp, repo) = repo();
+    let dir = tmp.path();
+    commit(dir, "a.txt", "one");
+    std::fs::write(dir.join("a.txt"), "changed").unwrap();
+    // `stash create` + `store` (as Magit does) logs the entry at another time than the commit's.
+    let created = Command::new("git")
+        .current_dir(dir)
+        .args(["-c", "user.name=Ann", "-c", "user.email=ann@example.com", "stash", "create"])
+        .env("GIT_COMMITTER_DATE", "1700000000 +0000")
+        .output()
+        .unwrap();
+    let id = String::from_utf8_lossy(&created.stdout).trim().to_string();
+    git(dir, &["stash", "store", "-m", "stored", &id]);
+    let listed = repo.stashes().unwrap();
+    let graph = repo.graph_stashes().unwrap();
+    assert_eq!(graph.len(), 1);
+    assert_eq!((graph[0].id.as_str(), graph[0].time_ms), (listed[0].id.as_str(), listed[0].time_ms));
+    assert_eq!(graph[0].message, listed[0].message);
+}

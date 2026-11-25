@@ -522,12 +522,15 @@
   position: relative;
   width: 100%;
 }
-.rebaseRow {
+/* Only the fork dialog's virtual list positions rows itself. */
+.rebaseListInner > .rebaseRow {
   position: absolute;
   top: 0;
   left: 0;
   width: 100%;
   box-sizing: border-box;
+}
+.rebaseRow {
   display: flex;
   align-items: center;
   gap: var(--space-1);
