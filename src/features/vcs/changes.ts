@@ -59,6 +59,8 @@ export interface ChangeNode {
   changelist?: string;
   /** The active change list's group. */
   active?: boolean;
+  /** Repository root (repository nodes, with several repositories). */
+  repo?: string;
 }
 
 export function groupOf(fs: FileStatus): GroupId | null {
@@ -327,6 +329,7 @@ function repoNodes(
       files: own,
       path: repo,
       repository: repo,
+      repo,
       ...headHint(heads[repo]),
     }));
 }
