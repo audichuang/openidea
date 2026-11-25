@@ -193,12 +193,11 @@ export function computeGraph(
   };
   const describe = (s: GraphSegment, lane: Lane) =>
     track ? { ...s, edge: `${lane.source ?? ""}\0${lane.id}`, source: lane.source, kind: lane.kind } : s;
-  // A lane keeps its slot until it reaches its target, so the rows it passes share one
-  // straight segment (fork a728101be); later passes copy a segment before editing it.
-  // Untracked segments are cheaper to rebuild than to look up.
+  // A lane keeps its slot until it reaches its target, so the rows it passes can share one
+  // straight segment (later passes copy a segment before editing it). Only tracked segments
+  // are shared: an untracked one is cheaper to rebuild than to look up.
   const straight = new WeakMap<Lane, GraphSegment>();
   const straightOf = (l: Lane, i: number) => {
-    if (!track) return seg(i, i, l.color, l.dashed);
     let s = straight.get(l);
     if (!s) straight.set(l, (s = describe(seg(i, i, l.color, l.dashed), l)));
     return s;
@@ -224,7 +223,11 @@ export function computeGraph(
     const up: GraphSegment[] = [];
     const upTargets: string[] = [];
     lanes.forEachLane((l, i) => {
-      up.push(l.id === c.id && lane !== i ? describe(seg(i, lane, l.color, l.dashed), l) : straightOf(l, i));
+      up.push(
+        track && (l.id !== c.id || lane === i)
+          ? straightOf(l, i)
+          : describe(seg(i, l.id === c.id ? lane : i, l.color, l.dashed), l),
+      );
       upTargets.push(l.id);
     });
     for (const m of matching) lanes.vacate(m);
@@ -233,7 +236,7 @@ export function computeGraph(
     const down: GraphSegment[] = [];
     const downTargets: string[] = [];
     lanes.forEachLane((l, i) => {
-      down.push(straightOf(l, i));
+      down.push(track ? straightOf(l, i) : seg(i, i, l.color, l.dashed));
       downTargets.push(l.id);
     });
 
