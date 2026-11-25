@@ -12,6 +12,8 @@ export interface CombinedDiffData {
   items: DiffData[];
   /** Path of the file to scroll to when the tab opens. */
   reveal?: string;
+  /** Diff key to scroll to when several entries share `reveal` (e.g. staged and unstaged). */
+  revealKey?: string;
   title?: string;
 }
 

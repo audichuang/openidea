@@ -17,7 +17,7 @@ import { _addEditor, _removeEditor, type TextEditorHandle } from "@/editor/api";
 import { useProject } from "@/platform/project";
 import { provideEditorService } from "@/workbench/contributions";
 import { CombinedDiffTab } from "../CombinedDiff";
-import { combinedDiffInput, type DiffData } from "../diffInput";
+import { combinedDiffInput, diffKey, type DiffData } from "../diffInput";
 
 /** Height of every block (header + diff) and of the scroller, in px. */
 const BLOCK = 300;
@@ -235,6 +235,71 @@ describe("the all-in-one diff with many files", () => {
     expect(scroller().scrollTop).toBe(top(80));
     expect(mounted()).toContain(items[80]!.path);
     expect(mounted().length).toBeLessThanOrEqual(12);
+  });
+
+  it("keys partially staged files separately so Next File advances past duplicate paths without key errors", () => {
+    const staged = (path: string): DiffData => ({
+      path,
+      left: { type: "rev", rev: "HEAD" },
+      right: { type: "rev", rev: ":0", label: "Index" },
+    });
+    const unstaged = (path: string): DiffData => ({
+      path,
+      left: { type: "rev", rev: ":0", label: "Index" },
+      right: { type: "worktree" },
+    });
+    const items = [
+      staged("/r/src/a.ts"),
+      staged("/r/src/b.ts"),
+      unstaged("/r/src/a.ts"),
+      unstaged("/r/src/c.ts"),
+      unstaged("/r/src/d.ts"),
+      unstaged("/r/src/e.ts"),
+      unstaged("/r/src/f.ts"),
+      unstaged("/r/src/g.ts"),
+    ];
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { unmount } = render(<CombinedDiffTab input={combinedDiffInput({ items })} />);
+      const top = (i: number) => {
+        const slot = document.querySelector<HTMLElement>(`[data-index="${i}"]`)!;
+        return parseFloat(slot.style.top);
+      };
+      const tops: number[] = [];
+      const expectedTops: number[] = [];
+      for (let k = 0; k < 6; k++) {
+        fireEvent.click(screen.getByRole("button", { name: "Next File" }));
+        tops.push(scroller().scrollTop);
+        if (k < 4) expectedTops.push(top(k + 1));
+      }
+      // Must advance past unstaged a.ts (index 2) to c.ts (index 3) and d.ts (index 4), never looping back to 0.
+      expect(tops.slice(0, 4)).toEqual(expectedTops);
+      expect(expectedTops[1]).toBeGreaterThan(expectedTops[0]!);
+      expect(expectedTops[2]).toBeGreaterThan(expectedTops[1]!);
+      expect(expectedTops[3]).toBeGreaterThan(expectedTops[2]!);
+      const keyWarnings = consoleError.mock.calls.filter((args) =>
+        args.some((a) => typeof a === "string" && a.includes("same key")),
+      );
+      expect(keyWarnings).toEqual([]);
+
+      // Collapsing staged a.ts must not collapse unstaged a.ts.
+      scroll(scroller(), 0);
+      const collapseButtons = screen.getAllByRole("button", { name: "Collapse File" });
+      act(() => {
+        fireEvent.click(collapseButtons[0]!);
+      });
+      const unstagedSlot = document.querySelector<HTMLElement>('[data-index="2"]')!;
+      expect(unstagedSlot.querySelector('[data-testid="block-diff"]')?.closest("[hidden]")).toBeNull();
+      unmount();
+
+      // Opening with revealKey targets the unstaged entry rather than the earlier staged entry.
+      render(
+        <CombinedDiffTab input={combinedDiffInput({ items, reveal: "/r/src/a.ts", revealKey: diffKey(items[2]!) })} />,
+      );
+      expect(scroller().scrollTop).toBe(top(2));
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it("goes back to one tab per file at the file in view", async () => {
