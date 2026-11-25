@@ -388,7 +388,11 @@ pub fn run() {
         if let tauri::RunEvent::Opened { urls } = &event {
             let paths = windows::opened_paths(urls);
             if app.try_state::<AppState>().is_some() {
-                windows::open_paths(app, paths);
+                // tao delivers Opened without marking its event handler busy, so a redraw while
+                // it runs (showing the project's tab) locks the handler again (#508). Its queued
+                // main-thread tasks run with that guard set.
+                let handle = app.clone();
+                let _ = app.run_on_main_thread(move || windows::open_paths(&handle, paths));
             } else {
                 early_opens.lock().get_or_insert_default().extend(paths);
             }
