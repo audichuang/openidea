@@ -9,15 +9,9 @@
 import type { FileMatches } from "@/platform/ipc";
 import type { TreeModel, TreeModelRow } from "@/ui";
 import { basename, relDir } from "../common/open";
+import { isStreamExtension } from "./forkFindSession";
 import { countFileMatches } from "./session";
 import { groupState, usageKey, type ReplaceMarks, type UsageGroup } from "./replaceFlow";
-
-/** Whether `files` grew from `prefix` by appending (a streamed search publishes a longer copy). */
-function isStreamExtension(files: readonly FileMatches[], prefix: readonly FileMatches[]): boolean {
-  if (prefix.length > files.length) return false;
-  for (let i = 0; i < prefix.length; i++) if (files[i] !== prefix[i]) return false;
-  return true;
-}
 
 export type FindTreeNode =
   | { kind: "dir"; key: string; label: string; count: number; children: FindTreeNode[] }

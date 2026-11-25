@@ -3,3 +3,10 @@
   height: 30px;
   border-radius: 6px;
 }
+
+/* Upstream's smallest toolbar spacing (TitleBar.module.css) leaves no room for this extra button at 30px. */
+@media (max-width: 480px) {
+  .titleButton {
+    width: var(--h-control-small);
+  }
+}
