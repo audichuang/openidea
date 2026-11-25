@@ -5025,6 +5025,7 @@ dependencies = [
 name = "ide-vfs"
 version = "0.1.51"
 dependencies = [
+ "blake3",
  "chardetng",
  "dunce",
  "encoding_rs",
