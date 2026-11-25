@@ -599,3 +599,9 @@
 .inspectionFix:hover {
   text-decoration: underline;
 }
+/* In a narrow tree the colour square gives way before the repository icon and the count. */
+.nodeRow > .treeSwatch {
+  flex: 0 1 10px;
+  min-width: 0;
+  margin-inline: 2px;
+}
