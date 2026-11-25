@@ -128,8 +128,10 @@ describe("response body scroll to the current find match", () => {
       scroller.dispatchEvent(new Event("scroll"));
       for (const o of observed())
         o.callback([{ target: scroller } as unknown as ResizeObserverEntry], {} as ResizeObserver);
+      // oxlint-disable-next-line no-await-in-loop -- one drag step after another, as a pane drag resizes
       await new Promise((r) => setTimeout(r, 5));
       scroller.dispatchEvent(new Event("scroll"));
+      // oxlint-disable-next-line no-await-in-loop -- one drag step after another, as a pane drag resizes
       await new Promise((r) => setTimeout(r, 5));
     }
     const during = scroll.mock.calls.length;

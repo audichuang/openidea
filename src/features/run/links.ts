@@ -190,15 +190,31 @@ function makeOverlapFilter(existing: readonly OutputLink[]): (s: number, e: numb
   };
 }
 
-/** Finds non-overlapping links in `text`; earlier (more specific) patterns win. */
-export function findOutputLinks(text: string): OutputLink[] {
-  // Lifting this limit made streaming wide rows full of links drop frames in WebKit.
-  if (text.length > 4000) return [];
+const EMPTY_LINKS: OutputLink[] = [];
+const MAX_CACHE_ENTRIES = 1_024;
+const MAX_CACHE_CHARS = 2 * 1024 * 1024;
+const linkCache = new Map<string, OutputLink[]>();
+let cachedChars = 0;
+
+function cacheLinks(text: string, links: OutputLink[]): OutputLink[] {
+  if (text.length > MAX_CACHE_CHARS) return links;
+  while (linkCache.size >= MAX_CACHE_ENTRIES || cachedChars + text.length > MAX_CACHE_CHARS) {
+    const oldest = linkCache.keys().next().value;
+    if (oldest === undefined) break;
+    linkCache.delete(oldest);
+    cachedChars -= oldest.length;
+  }
+  linkCache.set(text, links);
+  cachedChars += text.length;
+  return links;
+}
+
+function scanOutputLinks(text: string): OutputLink[] {
   const hasColon = text.includes(":");
   const hasParen = text.includes("(");
   const hasDot = text.includes(".");
   const hasPython = text.includes('File "');
-  if (!hasColon && !hasParen && !hasPython) return [];
+  if (!hasColon && !hasParen && !hasPython) return EMPTY_LINKS;
 
   let links: OutputLink[] = [];
 
@@ -313,7 +329,20 @@ export function findOutputLinks(text: string): OutputLink[] {
     links = mergeLinks(links, added);
   }
 
-  return links;
+  return links.length === 0 ? EMPTY_LINKS : links;
+}
+
+/** Finds non-overlapping links in `text`; earlier (more specific) patterns win. */
+export function findOutputLinks(text: string): OutputLink[] {
+  if (!text) return EMPTY_LINKS;
+  const cached = linkCache.get(text);
+  if (cached) {
+    // Refresh recency for LRU eviction.
+    linkCache.delete(text);
+    linkCache.set(text, cached);
+    return cached;
+  }
+  return cacheLinks(text, scanOutputLinks(text));
 }
 
 /** Monospace column quantization and overscan for horizontal windowing. */

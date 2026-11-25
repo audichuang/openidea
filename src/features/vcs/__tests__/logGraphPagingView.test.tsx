@@ -110,6 +110,7 @@ describe("Git Log paging", () => {
     const list = await screen.findByRole("listbox", { name: "Commits" });
     // The list asks for a second page while the first one fills the view.
     await waitFor(() => expect(useGitLog.getState()).toMatchObject({ commits: { length: 2 * PAGE }, loading: false }));
+    // oxlint-disable-next-line no-await-in-loop -- pages load one after another, as scrolling asks for them
     while (useGitLog.getState().commits.length < 2_400) await act(() => loadMore());
     const loaded = useGitLog.getState().commits.length;
     const compactLanes = vi.mocked(graph.compactLanes);
@@ -129,6 +130,7 @@ describe("Git Log paging", () => {
     render(<LogView />);
     await screen.findByRole("listbox", { name: "Commits" });
     await waitFor(() => expect(useGitLog.getState()).toMatchObject({ commits: { length: 2 * PAGE }, loading: false }));
+    // oxlint-disable-next-line no-await-in-loop -- pages load one after another, as scrolling asks for them
     while (useGitLog.getState().commits.length < 2_400) await act(() => loadMore());
     const graphCommit = vi.mocked(multiRoot.graphCommit);
     const commitKey = vi.mocked(multiRoot.commitKey);
@@ -145,6 +147,7 @@ describe("Git Log paging", () => {
     render(<CommitList fileHistory />);
     const list = await screen.findByRole("listbox", { name: "Commits" });
     await act(() => reloadLog());
+    // oxlint-disable-next-line no-await-in-loop -- pages load one after another, as scrolling asks for them
     while (useGitLog.getState().commits.length < 2_400) await act(() => loadMore());
     const compactLanes = vi.mocked(graph.compactLanes);
     compactLanes.mockClear();

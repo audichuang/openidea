@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use super::coverage::blocking;
+use super::blocking;
 
 /// Version Control › ClipCode as the payload engine reads it (the plugins' keys).
 pub fn clip_settings(s: &ide_core::settings::ClipCodeSettings) -> Settings {

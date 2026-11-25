@@ -257,7 +257,9 @@ describe("log controls", () => {
     fireEvent.pointerMove(handle, { pointerId: 7, clientX: 140 });
     fireEvent.pointerUp(handle, { pointerId: 7, clientX: 140 });
     expect(useLogOptions.getState().columnWidths.repository).toBe(140); // 100 + 40
-    expect(screen.getByText("Repository").style.width).toBe("140px");
+    // fork: the filter bar has a Repository button too.
+    const header = screen.getAllByText("Repository").find((el) => !el.closest("button"))!;
+    expect(header.style.width).toBe("140px");
   });
 
   it("hides column dividers by default and shows them via the option", async () => {

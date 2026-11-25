@@ -191,7 +191,8 @@ export function createGitGraphBridge(): GitGraphBridge {
     async tagMenu(tag, repo) {
       const { tagMenu, inRepo } = await import("./branchMenu");
       // Built for the graph's repository: upstream's tag actions capture the repository when the menu is made.
-      return inRepo(repo, withActionLabels(tagMenu(tag, undefined, { repo })));
+      // No remotes: the graph adds its own Push Tag items (`tagExtras`), so none stays "Loading…".
+      return inRepo(repo, withActionLabels(tagMenu(tag, undefined, { repo, remotes: [] })));
     },
     async filesMenu(commit, files) {
       const { changesMenu } = await import("./log/CommitDetails");

@@ -4678,6 +4678,8 @@ mod tests {
         let wrapper = tmp.path().join("git-wrapper");
         std::fs::write(&wrapper, format!("#!/bin/sh\nprintf x >> '{}'\nexec git \"$@\"\n", marker.display())).unwrap();
         std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // The global setting's Git too, so an untrusted read can't reach the wrapper by falling back to it.
+        ide_vcs::set_default_git_executable(Some(&wrapper));
         let api = api(&root, Arc::default());
         if trust != "none" {
             *api.shared.workspace.write() = Some(Arc::new(Workspace(trust == "true", root.clone(), wrapper.clone())));
