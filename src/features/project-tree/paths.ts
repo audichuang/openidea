@@ -1,5 +1,6 @@
 /** POSIX path helpers for backend paths (the backend always reports `/`-separated absolute paths). */
 import { tx } from "@/platform/i18n";
+import type { PackageKind } from "@/platform/packageKind";
 import { ipcPath, isSameOrInside } from "@/platform/paths";
 export { isSameOrInside } from "@/platform/paths";
 
@@ -179,8 +180,7 @@ export function validateName(raw: string, opts: ValidateOptions): NameCheck {
   return { error: null, warning };
 }
 
-/** Package flavour of New › Package (JVM, dotted) / New › Python Package (`__init__.py`). */
-export type PackageKind = "jvm" | "python";
+export type { PackageKind };
 
 const JAVA_KEYWORDS = new Set(
   (
