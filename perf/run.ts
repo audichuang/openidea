@@ -6,6 +6,7 @@
  *
  *   pnpm perf                     all scenarios, 3 measured runs each
  *   pnpm perf -- --only typing,scroll --runs 5
+ *   pnpm perf -- --only gitLogWide --skip-bundle  measure just the Git interaction
  *   pnpm perf -- --cpu 4          4× CPU slowdown (reported, budgets not enforced)
  *   pnpm perf -- --save-baseline  store this run as target/perf/baseline-<cpu>x.json
  *   pnpm perf -- --only typing --trace   Chrome trace of the last run → target/perf/traces/
@@ -39,6 +40,7 @@ const { values: args } = parseArgs({
     channel: { type: "string", default: process.env.OPENIDEA_PERF_CHANNEL ?? "chromium" },
     headed: { type: "boolean", default: false },
     "no-build": { type: "boolean", default: false },
+    "skip-bundle": { type: "boolean", default: false },
     "save-baseline": { type: "boolean", default: false },
     "fail-on-regression": { type: "boolean", default: false },
     list: { type: "boolean", default: false },
@@ -177,7 +179,8 @@ async function main() {
     baseline = existsSync(baselineFile) ? (JSON.parse(readFileSync(baselineFile, "utf8")) as ScenarioResult[]) : null;
     if (!args["no-build"]) await build();
     if (!existsSync(join(DIST, "index.html"))) throw new Error(`no build in ${DIST}; run without --no-build`);
-    if (!args.unminified) results.push({ id: "bundle", title: "Initial bundle (gzip)", metrics: bundleMetrics() });
+    if (!args.unminified && !args["skip-bundle"])
+      results.push({ id: "bundle", title: "Initial bundle (gzip)", metrics: bundleMetrics() });
     const serving = await serveBundle(DIST);
     server = serving.server;
     runtime = await launchBrowser({

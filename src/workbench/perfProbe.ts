@@ -68,7 +68,7 @@ export interface PerfProbe {
    * feature branches merging into it), paged like the backend, each page after
    * `latencyMs` (a `git log` call). `0` commits removes it.
    */
-  fakeGitLog(commits: number, latencyMs?: number): void;
+  fakeGitLog(commits: number, latencyMs?: number, longBranches?: number): void;
   /**
    * Opens an all-in-one diff of `files` generated files changed between two revisions, answering
    * the Git reads its blocks make: 40 lines each, every 50th file 1,000 lines.
@@ -261,8 +261,15 @@ export function installPerfProbe(): () => void {
           : null,
       );
     },
-    fakeGitLog(count, latencyMs = 0) {
+    fakeGitLog(count, latencyMs = 0, longBranches = 0) {
       const commits = Array.from({ length: count }, (_, i) => commit(i, count));
+      // Short merges alone miss the cost of several long-lived lanes crossing the same rows.
+      for (let i = 0; i < longBranches; i++) {
+        const tip = commits[i]!;
+        const base = commits[count - longBranches + i]!;
+        tip.parents = [base.id];
+        tip.refs = [`branch-${i}`];
+      }
       setRoute(
         "gitLog",
         count
