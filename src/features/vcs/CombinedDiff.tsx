@@ -239,8 +239,8 @@ export function CombinedDiffView({
   const [viewStates] = useState(() => new Map<string, DiffViewState>());
   const [entriesCache] = useState<DiffEntriesCache>(() => new Map());
   const keys = useMemo(() => entries.map((e) => e.key), [entries]);
-  /** Blocks mounted at the last render (fork: see `pinned`). */
-  const mountedRef = useRef<readonly number[]>([]);
+  /** Keys of the blocks mounted at the last render (fork: see `pinned`); keys survive list updates. */
+  const mountedRef = useRef<readonly string[]>([]);
 
   // Blocks that stay mounted when scrolled away: the one holding the keyboard focus, so typing still
   // reaches it, and with autosave off those with unsaved staged edits, which unmounting would save.
@@ -326,15 +326,21 @@ export function CombinedDiffView({
   const autoSaveOff = useProject.getState().settings?.files?.autoSave === false;
   const active = document.activeElement;
   const focusedSlot = scrollRef.current?.contains(active) ? active?.closest<HTMLElement>("[data-index]") : null;
-  const pinned = mountedRef.current.filter((index) => {
-    const item = items[index];
-    if (!item || inView.has(index)) return false;
-    if (focusedSlot && Number(focusedSlot.dataset.index) === index) return true;
-    if (autoSaveOff && ownedStagedDocument(combinedDiffDocumentOwner(tabKey, keys[index]!))?.dirty) return true;
-    return [sideFile(item.left, item.path), sideFile(item.right, item.path)].some(
-      (file) => !!file && editorsFor(file).some((e) => dirtyDocs.has(e.ctx.doc)),
-    );
-  });
+  const indexOf = new Map(keys.map((key, index) => [key, index]));
+  const pinned = mountedRef.current
+    .flatMap((key) => {
+      const index = indexOf.get(key);
+      return index === undefined ? [] : [index];
+    })
+    .filter((index) => {
+      const item = items[index]!;
+      if (inView.has(index)) return false;
+      if (focusedSlot && Number(focusedSlot.dataset.index) === index) return true;
+      if (autoSaveOff && ownedStagedDocument(combinedDiffDocumentOwner(tabKey, keys[index]!))?.dirty) return true;
+      return [sideFile(item.left, item.path), sideFile(item.right, item.path)].some(
+        (file) => !!file && editorsFor(file).some((e) => dirtyDocs.has(e.ctx.doc)),
+      );
+    });
   const rows = pinned.length
     ? [
         ...virtualItems,
@@ -346,7 +352,7 @@ export function CombinedDiffView({
       ].sort((a, b) => a.index - b.index)
     : virtualItems;
   useLayoutEffect(() => {
-    mountedRef.current = rows.map((row) => row.index);
+    mountedRef.current = rows.map((row) => keys[row.index]!);
   });
 
   const scroller = (
