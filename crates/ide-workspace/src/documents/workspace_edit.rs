@@ -785,7 +785,10 @@ impl Documents {
                     state.conflict = before.conflict;
                     state.clean_text = before.clean_text.clone();
                 } else {
-                    state.synced(meta.as_ref().map(ide_vfs::mtime_ms).unwrap_or(0.0));
+                    // Compared equal to the disk: those bytes. Otherwise the buffer is the clean
+                    // text it was, on the baseline it had then.
+                    let hash = if before.dirty { Some(blake3::hash(&saved_bytes(state)?)) } else { before.disk_hash };
+                    state.synced(meta.as_ref().map(ide_vfs::mtime_ms).unwrap_or(0.0), hash);
                 }
                 self.set_dirty(*id, state, dirty);
                 Ok(())
@@ -827,11 +830,15 @@ impl Documents {
                 } else {
                     Self::load_with_defaults(path, &defaults, state.editorconfig.as_ref())?
                 };
+                // Not text (binary): keep the buffer on its baseline rather than adopt the file.
+                if loaded.binary && !state.binary {
+                    return Ok(());
+                }
                 state.native_to_ascii = native_to_ascii;
                 self.replace_locked(id, state, &loaded.text)?;
                 state.encoding = loaded.encoding;
                 state.has_bom = loaded.has_bom;
-                state.synced(loaded.mtime_ms);
+                state.synced(loaded.mtime_ms, loaded.content_hash);
                 Ok(())
             })?;
         }

@@ -206,6 +206,10 @@ pub struct LoadedText {
     /// File exceeds [`READ_ONLY_THRESHOLD`]: opened read-only.
     pub too_large: bool,
     pub mtime_ms: f64,
+    /// Hash of the bytes `text` was decoded from (not sent over IPC). A document's disk
+    /// baseline comes from here: a second read could see a later external write.
+    #[serde(skip)]
+    pub content_hash: Option<blake3::Hash>,
 }
 
 /// Loads a text file, detecting BOM / encoding (chardetng) and binary content.
@@ -226,18 +230,7 @@ pub fn load_text_bounded(path: &Path, fallback: Option<Fallback<'_>>, max_bytes:
 /// is decoded as `fallback` (the configured encoding) instead of guessed, and
 /// plain ASCII text is labelled with it when `fallback.ascii` is set.
 pub fn load_text_with_fallback(path: &Path, fallback: Option<Fallback<'_>>) -> IdeResult<LoadedText> {
-    let mut loaded = encoding::load_text(path)?;
-    let detected = encoding_rs::Encoding::for_label(loaded.encoding.as_bytes()).unwrap_or(encoding_rs::UTF_8);
-    match encoding::resolve(&loaded.text, detected, loaded.has_bom, loaded.binary, fallback) {
-        encoding::Resolution::Keep => Ok(loaded),
-        encoding::Resolution::Relabel(enc) => {
-            loaded.encoding = encoding::encoding_label(enc);
-            Ok(loaded)
-        }
-        encoding::Resolution::Redecode(enc) => {
-            encoding::load_text_as(path, &encoding::encoding_label(enc)).or(Ok(loaded))
-        }
-    }
+    encoding::load_text_with_fallback(path, fallback)
 }
 
 /// Like [`load_text`] but decodes with the given encoding instead of detecting it.
