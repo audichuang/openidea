@@ -26,6 +26,7 @@ import styles from "../GitLog.module.css";
 import { LogIdContext } from "../logContext";
 import { canUpdateBranch, useBranchesPane, type BranchTarget } from "../logPaneActions";
 import { reloadLog, scopedLogRepositories, setLogBranches, setLogFilters, useGitLog } from "../logStore";
+import { repoColor } from "../model";
 import { branchesByRepo } from "../multiRoot";
 import { branchRepositoryRoots, commonBranches } from "../repoBranches";
 import { currentRepo, loadBranches, repoName, useVcs } from "../store";
@@ -366,6 +367,7 @@ export function BranchesPanel() {
             return branchDetail(n, availableRepositories.length, sync);
           }}
           getTooltip={(n) => mergedRefTooltip(n, (r) => repoName(branchRoots[r] ?? r))}
+          getSwatch={(n) => (n.kind === "repository" && n.repo ? repoColor(n.repo, availableRepositories) : null)}
           selected={selected}
           onSelectionChange={(sel) => setSelected(sel)}
           onActivate={(n) => {
