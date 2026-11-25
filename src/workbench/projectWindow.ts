@@ -23,10 +23,11 @@ export function projectWindowOverride(e: ModifierKeys): ProjectWindowOverride | 
   return e.altKey ? "same" : null;
 }
 
-export type OpenMode = "new" | "tab" | "same";
+/** Where a project opens; Attach is offered for one open and never remembered. */
+export type OpenMode = "new" | "tab" | "same" | "attach";
 
 /** "Open project in": `new` | `tab` | `same` | `ask`. */
-export function openPolicy(): "ask" | OpenMode {
+export function openPolicy(): "ask" | Exclude<OpenMode, "attach"> {
   const v = useProject.getState().settings?.general?.openProjectIn;
   return v === "new" || v === "tab" || v === "same" ? v : "ask";
 }
