@@ -136,7 +136,7 @@ export interface PerfProbe {
    * lines, and editable working files half-way down and at the end. With `options.allEditable`,
    * every file is an editable working-tree `.ts` file seeded in the in-memory backend.
    */
-  openCombinedDiff(
+  openCombinedDiffFixture(
     files: number,
     bigLines: number,
     options?: { allEditable?: boolean; lines?: number; tag?: string },
@@ -173,16 +173,6 @@ export interface PerfProbe {
   fakeGitLogBranches(total: number, lanes: number, loaded: number): Promise<void>;
   /** Makes the merge `fakeGitLogBranches` held back; its summary is `merge on top`. */
   fakeGitLogMergeOnTop(): void;
-  /** Opens an empty Run console session before streaming starts so UI (e.g. Find) can mount first. */
-  openConsoleSession(mode: "long" | "no-lf"): Promise<string>;
-  /** Streams long-line or no-newline output into a Run console session. */
-  streamConsoleOutput(options: {
-    mode: "long" | "no-lf";
-    count: number;
-    perFrame: number;
-    lineLength?: number;
-    sessionId?: string;
-  }): Promise<{ lines: number; dropped: number }>;
 }
 
 export type HttpBodyShape = "json" | "nested" | "xml" | "text";
@@ -761,14 +751,6 @@ export function installPerfProbe(): () => void {
       fakeLog[0] = { ...top, refs: [] };
       fakeLog.unshift(...added);
     },
-    async openConsoleSession(mode) {
-      const { openSampleConsoleSession } = await import("@/features/run/store");
-      return openSampleConsoleSession(mode);
-    },
-    async streamConsoleOutput(options) {
-      const { startSampleConsoleOutput } = await import("@/features/run/store");
-      return startSampleConsoleOutput(options);
-    },
     editorText: (from = 0, to) => activeEditor()?.view.state.doc.sliceString(from, to) ?? null,
     fakePrCommits(count) {
       restorePrBridge?.();
@@ -994,7 +976,7 @@ export function installPerfProbe(): () => void {
         return null;
       });
     },
-    async openCombinedDiff(files, bigLines, options) {
+    async openCombinedDiffFixture(files, bigLines, options) {
       const allEditable = !!options?.allEditable;
       const dir = (i: number) => `${PERF_ROOT}/src/gen/pkg${Math.floor(i / 50)}`;
       const bigAt = Math.floor(files / 3);
@@ -1026,7 +1008,7 @@ export function installPerfProbe(): () => void {
         };
       });
       const backend = docBackend() as Partial<MemoryBackend>;
-      if (!backend.files) throw new Error("openCombinedDiff() needs the in-memory backend");
+      if (!backend.files) throw new Error("openCombinedDiffFixture() needs the in-memory backend");
       // Disable blur-autosave so the scenario exercises the unsaved-edits keep-mounted guard after blurring.
       useProject.setState((s) => ({
         settings: { ...(s.settings ?? ({} as never)), files: { ...s.settings?.files, autoSave: false } } as never,
