@@ -7,6 +7,7 @@ import { useRowHeight } from "@/ui/density";
 import { applyStash, dropStash, stashChanges } from "./changeOps";
 import { formatTime, stashLabel } from "./model";
 import { StashChanges, type StashEntry } from "./StashChanges";
+import { RepoSwatch } from "./RepoSwatch";
 import { repoName, selectRepo, useVcs } from "./store";
 import styles from "./CommitView.module.css";
 
@@ -128,6 +129,7 @@ export function StashesPanel({ orientation = "vertical" }: { orientation?: "vert
             return (
               <span className={styles.stashRow} title={node.repo}>
                 <Icon name="toolwindow-git" size={16} />
+                <RepoSwatch root={node.repo} />
                 <span className={styles.stashGroupName}>{repoName(node.repo)}</span>
                 <span className={styles.nodeCount}>{node.entries.length}</span>
               </span>

@@ -13,6 +13,7 @@ import {
 } from "@/workbench/gitGraphBridge";
 import { computeGraph, emptyGraphState, laneColor, type GraphState } from "./graph";
 import { openDiff, withChain } from "./diffInput";
+import { repoColor } from "./model";
 import { repositoryPath } from "./repositoryPaths";
 import { toLogChanges } from "./logChanges";
 import { refLabels } from "./logOptions";
@@ -133,6 +134,7 @@ export function createGitGraphBridge(): GitGraphBridge {
       return { rows, state: { _layout: next } satisfies GraphLayoutState };
     },
     laneColor,
+    repoColor,
     refLabels(refs, remoteBranches) {
       // An empty set makes `refLabels` guess remotes from a `/` in the name (`feature/x`);
       // the graph always knows the repository's remote branches, so never let it guess.
