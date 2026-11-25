@@ -212,6 +212,8 @@ describe("Group By › Module in ChangesTree", () => {
     expect(useCommit.getState().groupByModule).toBe(true);
     expect(localStorage.getItem("openidea.vcs.groupByModule")).toBe("true");
     expect(groupByItems().Module).toBe(true);
+    // fork: as in IDEA, a repository row with siblings starts closed.
+    fireEvent.click(screen.getByRole("button", { name: "Expand All" }));
 
     const mdmModuleLabel = await screen.findByText("BASEMDM");
     const mdmModuleRow = mdmModuleLabel.closest('[role="treeitem"]') as HTMLElement;
