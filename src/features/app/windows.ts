@@ -187,6 +187,14 @@ export async function openProjectWithPolicy(
   const mode = override ?? (await chooseProjectWindow(basename(path)));
   if (!mode) return;
   if (mode === "new") return openProjectInWindow(path, true, files);
+  if (mode === "tab") {
+    try {
+      await call(commands.windowOpenProjectTab(path, [...files]));
+    } catch (e) {
+      openFailed(path, e);
+    }
+    return;
+  }
   if (mode === "attach") {
     await attachProject(path, files);
     return;
