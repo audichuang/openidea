@@ -4678,8 +4678,13 @@ mod tests {
         let wrapper = tmp.path().join("git-wrapper");
         std::fs::write(&wrapper, format!("#!/bin/sh\nprintf x >> '{}'\nexec git \"$@\"\n", marker.display())).unwrap();
         std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
-        // The global setting's Git too, so an untrusted read can't reach the wrapper by falling back to it.
-        ide_vcs::set_default_git_executable(Some(&wrapper));
+        // The global setting's Git is a second wrapper: no read may fall back to it, trusted or not.
+        let global_marker = tmp.path().join("global-git-marker");
+        let global = tmp.path().join("global-git-wrapper");
+        std::fs::write(&global, format!("#!/bin/sh\nprintf x >> '{}'\nexec git \"$@\"\n", global_marker.display()))
+            .unwrap();
+        std::fs::set_permissions(&global, std::fs::Permissions::from_mode(0o755)).unwrap();
+        ide_vcs::set_default_git_executable(Some(&global));
         let api = api(&root, Arc::default());
         if trust != "none" {
             *api.shared.workspace.write() = Some(Arc::new(Workspace(trust == "true", root.clone(), wrapper.clone())));
@@ -4691,6 +4696,7 @@ mod tests {
             assert_eq!(api.vcs_remotes(&root).unwrap(), [("origin".into(), "https://example.com/repo.git".into())]);
         }
         assert_eq!(marker.exists(), trust == "true", "configured Git executable execution");
+        assert!(!global_marker.exists(), "the global Git ran instead of the project's");
     }
 
     #[test]
