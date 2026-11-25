@@ -18,25 +18,15 @@ use tauri::{AppHandle, Manager, WebviewWindow};
 // `WindowGroups` model mirrors it through `native_groups`.
 
 /// Runs `f` on the AppKit main thread and returns its result.
-///
-/// Not through `run_on_main_thread`: tao runs that closure while holding its event handler lock,
-/// and with tauri's `unstable` feature the webview is a child of tao's view, so a tab switch
-/// (`setSelectedWindow:`) redraws that view synchronously, re-enters the handler and deadlocks.
-fn on_main<R: Send + 'static>(
-    _app: &AppHandle,
-    f: impl FnOnce(MainThreadMarker) -> R + Send + 'static,
-) -> IdeResult<R> {
+fn on_main<R: Send + 'static>(app: &AppHandle, f: impl FnOnce(MainThreadMarker) -> R + Send + 'static) -> IdeResult<R> {
     if let Some(mtm) = MainThreadMarker::new() {
         return Ok(f(mtm));
     }
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
-    let job = std::sync::Mutex::new(Some(f));
-    let block = block2::RcBlock::new(move || {
-        if let Some(f) = job.lock().ok().and_then(|mut job| job.take()) {
-            let _ = tx.send(f(MainThreadMarker::new().expect("AppKit main thread")));
-        }
-    });
-    unsafe { objc2_foundation::NSOperationQueue::mainQueue().addOperationWithBlock(&block) };
+    app.run_on_main_thread(move || {
+        let _ = tx.send(f(MainThreadMarker::new().expect("AppKit main thread")));
+    })
+    .map_err(|e| IdeError::internal(e.to_string()))?;
     rx.recv().map_err(|e| IdeError::internal(e.to_string()))
 }
 
