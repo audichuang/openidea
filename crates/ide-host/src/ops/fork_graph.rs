@@ -10,7 +10,7 @@ use ide_vcs::fork_graph::{
 };
 use std::path::PathBuf;
 
-use super::coverage::blocking;
+use super::blocking;
 
 /// Stash entries with the commit each records and the commit it was made on.
 #[command(trust = trusted)]

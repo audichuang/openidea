@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { Commit, FileStatus } from "@/bindings";
 
 const mocks = vi.hoisted(() => ({
@@ -296,6 +296,8 @@ describe("Commit changes tree file icons", () => {
 
     render(<ChangesTree mode="commit" />);
     expect(await screen.findByTestId("icon-maven-module")).toBeInTheDocument();
+    // fork: as in IDEA, only a single child row starts open.
+    fireEvent.click(screen.getByRole("button", { name: "Expand All" }));
     expect(iconOf("app")).toBe("icon-maven-module");
     expect(iconOf("java")).toBe("icon-folder-source");
     expect(iconOf("com")).toBe("icon-package");

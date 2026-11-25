@@ -223,6 +223,7 @@ describe("remote channel lifetime", () => {
       relay(call, 1, end(id));
       closeRelay(call, 2);
       call.resolve("null");
+      // oxlint-disable-next-line no-await-in-loop -- each call ends before the next one checks the relay count
       await pending;
       expect(received).toEqual([{ match: i }]);
     }
