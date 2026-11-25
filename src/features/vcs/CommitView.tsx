@@ -1397,7 +1397,7 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
                 ) : (
                   <Icon name={fileIconName(n.label, n.path ?? null)} size={16} className={styles.icon} />
                 )}
-                {n.repo && <RepoSwatch root={n.repo} />}
+                {n.repo && <RepoSwatch root={n.repo} className={styles.treeSwatch} />}
                 {label}
                 {n.type !== "file" && (n.group !== "amend" || n.historicalFileCount !== undefined) && (
                   <span className={styles.count}>
