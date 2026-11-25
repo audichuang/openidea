@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::ipc::Channel;
-use tauri::{AppHandle, State, WebviewWindow, Window};
+use tauri::{AppHandle, State, Window};
 
 /// Opens `path` in a new window (`new_window`) or tells the caller to open it
 /// itself (`current`). A project already open in some window is focused instead.
@@ -38,7 +38,7 @@ pub async fn window_open_project(
 #[specta::specta]
 pub async fn window_open_project_tab(
     app: AppHandle,
-    window: WebviewWindow,
+    window: Window,
     path: PathBuf,
     files: Vec<PathBuf>,
 ) -> IdeResult<OpenOutcome> {
@@ -302,7 +302,7 @@ pub fn window_complete_launch(window: WorkbenchWindow, windows: State<'_, Window
 #[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_owns_session(window: WebviewWindow, windows: State<'_, WindowsState>) -> bool {
+pub fn window_owns_session(window: Window, windows: State<'_, WindowsState>) -> bool {
     windows.owns_session(window.label())
 }
 
@@ -310,7 +310,7 @@ pub fn window_owns_session(window: WebviewWindow, windows: State<'_, WindowsStat
 #[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_launch_settled(window: WebviewWindow, windows: State<'_, WindowsState>, state: State<'_, AppState>) {
+pub fn window_launch_settled(window: Window, windows: State<'_, WindowsState>, state: State<'_, AppState>) {
     windows.launch_settled(window.label(), state.opened_project(window.label()).is_some());
 }
 

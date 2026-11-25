@@ -1,6 +1,8 @@
 //! macOS: keeps each window's last frame outside fullscreen and writes it over the size and
 //! position tauri-plugin-window-state saved. The plugin records every resize, fullscreen included,
 //! so a window that quit in fullscreen reopened screen-sized and stayed so after leaving fullscreen.
+use crate::windows::WorkbenchWindows;
+
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -153,7 +155,7 @@ mod runtime {
     /// Main thread (window and run events). `last`: the window is closing or the app quitting, so
     /// a window without a normal frame yet takes a [`fallback`] one.
     fn sample(app: &AppHandle, label: &str, last: bool) {
-        let Some(window) = app.get_webview_window(label) else { return };
+        let Some(window) = app.workbench_window(label) else { return };
         let (Ok(size), Ok(position)) = (window.inner_size(), window.outer_position()) else { return };
         let live = Frame { x: position.x, y: position.y, width: size.width, height: size.height };
         let mode = Mode {
@@ -243,7 +245,7 @@ mod runtime {
             })
             .on_event(|app, event| {
                 if let RunEvent::Exit = event {
-                    for label in app.webview_windows().keys() {
+                    for label in app.workbench_windows().keys() {
                         sample(app, label, true);
                     }
                     persist(app);

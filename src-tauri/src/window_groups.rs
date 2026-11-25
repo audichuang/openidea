@@ -4,6 +4,8 @@
 //! macOS uses AppKit window tabs with the system tab bar hidden (see `macos.rs`): one shared frame
 //! and fullscreen Space, and AppKit's own tab state, which [`sync`] mirrors into
 //! [`WindowsState::groups`].
+use crate::windows::WorkbenchWindows;
+
 use crate::{
     state::AppState,
     windows::{self, WindowsState},
@@ -50,7 +52,7 @@ pub fn current(app: &AppHandle, caller: &str) -> Vec<WindowTab> {
         .members
         .iter()
         .filter_map(|label| {
-            let window = app.get_webview_window(label)?;
+            let window = app.workbench_window(label)?;
             let project = host.project(label).ok();
             let name = project.as_ref().map(|p| ide_host::ops::project::info(p).display_name).unwrap_or_else(|| {
                 // Taken its launch but not finished opening: name the tab after that project.
@@ -80,7 +82,7 @@ fn changed(app: &AppHandle) {
 pub fn sync(app: &AppHandle) {
     let (Some(state), Some(host)) = (app.try_state::<WindowsState>(), app.try_state::<AppState>()) else { return };
     let windows: Vec<_> =
-        windows::project_window_labels(app).into_iter().filter_map(|label| app.get_webview_window(&label)).collect();
+        windows::project_window_labels(app).into_iter().filter_map(|label| app.workbench_window(&label)).collect();
     let labels = windows
         .iter()
         .filter_map(|w| {
@@ -138,7 +140,7 @@ pub fn resized(app: &AppHandle, label: &str) {
         FULLSCREEN.lock().remove(label);
         return;
     };
-    let Some(window) = app.get_webview_window(label) else { return };
+    let Some(window) = app.workbench_window(label) else { return };
     // Live resizing and fullscreen animations send many events: act after the last one.
     let resize = RESIZES.fetch_add(1, Ordering::SeqCst) + 1;
     let settled = window.clone();
@@ -243,12 +245,12 @@ fn sync_member_frames(app: &AppHandle, selected: &str) {
     if group.selected != selected {
         return;
     }
-    let Some(from) = app.get_webview_window(selected) else { return };
+    let Some(from) = app.workbench_window(selected) else { return };
     if from.is_fullscreen().unwrap_or(false) || from.is_minimized().unwrap_or(false) {
         return;
     }
     for member in group.members.iter().filter(|member| member.as_str() != selected) {
-        let Some(to) = app.get_webview_window(member) else { continue };
+        let Some(to) = app.workbench_window(member) else { continue };
         // A visible peer is the one being presented; never move it behind the user's back.
         if to.is_visible().unwrap_or(false) {
             continue;
@@ -286,7 +288,7 @@ pub fn reorder(app: &AppHandle, caller: &str, labels: Vec<String>) -> IdeResult<
     app.state::<WindowsState>().groups.lock().reorder(caller, labels.clone())?;
     #[cfg(target_os = "macos")]
     {
-        let order: Vec<_> = labels.iter().filter_map(|label| app.get_webview_window(label)).collect();
+        let order: Vec<_> = labels.iter().filter_map(|label| app.workbench_window(label)).collect();
         crate::macos::reorder_tabs(app, &order)?;
     }
     changed(app);
@@ -294,7 +296,7 @@ pub fn reorder(app: &AppHandle, caller: &str, labels: Vec<String>) -> IdeResult<
 }
 
 pub fn select(app: &AppHandle, caller: &str, target: &str) -> IdeResult<()> {
-    let to = app.get_webview_window(target).ok_or_else(|| IdeError::not_found("Window closed"))?;
+    let to = app.workbench_window(target).ok_or_else(|| IdeError::not_found("Window closed"))?;
     let state = app.state::<WindowsState>();
     #[cfg(target_os = "macos")]
     {
@@ -321,7 +323,7 @@ fn select_shown(
     let previous = state.groups.lock().select(caller, target)?;
     let result = (|| {
         if previous.selected != target
-            && let Some(from) = app.get_webview_window(&previous.selected)
+            && let Some(from) = app.workbench_window(&previous.selected)
         {
             copy_frame(&from, to)?;
         }
@@ -330,7 +332,7 @@ fn select_shown(
         to.set_focus().map_err(|e| IdeError::internal(e.to_string()))?;
         for member in &previous.members {
             if member != target
-                && let Some(window) = app.get_webview_window(member)
+                && let Some(window) = app.workbench_window(member)
             {
                 window.hide().map_err(|e| IdeError::internal(e.to_string()))?;
             }
@@ -340,7 +342,7 @@ fn select_shown(
     if result.is_err() {
         let _ = state.groups.lock().select(caller, &previous.selected);
         for member in &previous.members {
-            if let Some(window) = app.get_webview_window(member) {
+            if let Some(window) = app.workbench_window(member) {
                 if member == &previous.selected {
                     let _ = window.show();
                     let _ = window.set_focus();
@@ -370,7 +372,7 @@ fn select_shown(
 pub fn join(app: &AppHandle, anchor: &str, new_window: &str) -> IdeResult<()> {
     #[cfg(target_os = "macos")]
     {
-        let window = |label: &str| app.get_webview_window(label).ok_or_else(|| IdeError::not_found("Window closed"));
+        let window = |label: &str| app.workbench_window(label).ok_or_else(|| IdeError::not_found("Window closed"));
         let (anchor, new_window) = (window(anchor)?, window(new_window)?);
         crate::macos::add_tabs(app, &anchor, &[anchor.clone(), new_window.clone()], &new_window)?;
         sync(app);
@@ -407,8 +409,8 @@ pub fn merge(app: &AppHandle, caller: &str) -> IdeResult<()> {
 fn group_windows(app: &AppHandle, members: Vec<String>, caller: &str, selected: &str) -> IdeResult<()> {
     #[cfg(target_os = "macos")]
     {
-        let window = |label: &str| app.get_webview_window(label).ok_or_else(|| IdeError::not_found("Window closed"));
-        let order: Vec<_> = members.iter().filter_map(|l| app.get_webview_window(l)).collect();
+        let window = |label: &str| app.workbench_window(label).ok_or_else(|| IdeError::not_found("Window closed"));
+        let order: Vec<_> = members.iter().filter_map(|l| app.workbench_window(l)).collect();
         crate::macos::add_tabs(app, &window(caller)?, &order, &window(selected)?)?;
         sync(app);
         Ok(())
@@ -417,7 +419,7 @@ fn group_windows(app: &AppHandle, members: Vec<String>, caller: &str, selected: 
     {
         // Fullscreen puts each window in a separate Space; leave it before grouping.
         for label in &members {
-            if let Some(window) = app.get_webview_window(label) {
+            if let Some(window) = app.workbench_window(label) {
                 window.set_fullscreen(false).map_err(|e| IdeError::internal(e.to_string()))?;
             }
         }
@@ -429,7 +431,7 @@ fn group_windows(app: &AppHandle, members: Vec<String>, caller: &str, selected: 
 pub fn detach(app: &AppHandle, caller: &str) -> IdeResult<()> {
     #[cfg(target_os = "macos")]
     {
-        let window = app.get_webview_window(caller).ok_or_else(|| IdeError::not_found("Window closed"))?;
+        let window = app.workbench_window(caller).ok_or_else(|| IdeError::not_found("Window closed"))?;
         crate::macos::move_tab_to_new_window(app, &window)?;
         // The group it left can take the key window back after the moved tab's Space opens.
         app.state::<WindowsState>().focused(caller);
@@ -445,10 +447,10 @@ fn detach_shown(app: &AppHandle, caller: &str) -> IdeResult<()> {
     let state = app.state::<WindowsState>();
     let next = state.groups.lock().detach(caller);
     if let Some(next) = next {
-        if let Some(window) = app.get_webview_window(&next) {
+        if let Some(window) = app.workbench_window(&next) {
             window.show().map_err(|e| IdeError::internal(e.to_string()))?;
         }
-        if let Some(window) = app.get_webview_window(caller) {
+        if let Some(window) = app.workbench_window(caller) {
             if let Ok(position) = window.outer_position() {
                 let _ = window.set_position(tauri::PhysicalPosition::new(position.x + 32, position.y + 32));
             }
@@ -463,7 +465,7 @@ pub fn destroyed(app: &AppHandle, caller: &str) {
     let Some(state) = app.try_state::<WindowsState>() else { return };
     let next = state.groups.lock().detach(caller);
     if !state.quitting() {
-        if let Some(window) = next.and_then(|label| app.get_webview_window(&label)) {
+        if let Some(window) = next.and_then(|label| app.workbench_window(&label)) {
             windows::focus(&window);
         }
         let app = app.clone();
@@ -522,7 +524,7 @@ pub fn cancel_close(app: &AppHandle, caller: &str) {
     // out of the group and ordered front, over a member still asking about its unsaved changes.
     let all = windows::project_window_labels(app);
     if let Some(window) =
-        windows::still_closing(&all, &state.pending_closes(), caller).and_then(|l| app.get_webview_window(&l))
+        windows::still_closing(&all, &state.pending_closes(), caller).and_then(|l| app.workbench_window(&l))
     {
         windows::focus(&window);
     }
@@ -541,7 +543,7 @@ fn close_next(app: &AppHandle) {
         };
         match next {
             Ok(label) => {
-                if let Some(window) = app.get_webview_window(&label) {
+                if let Some(window) = app.workbench_window(&label) {
                     windows::focus(&window);
                     if window.close().is_ok() {
                         return;
@@ -552,7 +554,7 @@ fn close_next(app: &AppHandle) {
                 }
             }
             Err(keep) => {
-                if let Some(window) = app.get_webview_window(&keep) {
+                if let Some(window) = app.workbench_window(&keep) {
                     windows::focus(&window);
                 }
                 return;
@@ -575,7 +577,7 @@ fn read_saved(path: &Path) -> IdeResult<Vec<SavedGroup>> {
 /// this asks the main thread, which `save_before_quit` blocks while it saves.
 fn fullscreen_members(app: &AppHandle, groups: &[WindowGroup]) -> HashSet<String> {
     let windows: Vec<_> =
-        groups.iter().flat_map(|g| &g.members).filter_map(|label| app.get_webview_window(label)).collect();
+        groups.iter().flat_map(|g| &g.members).filter_map(|label| app.workbench_window(label)).collect();
     #[cfg(target_os = "macos")]
     let fullscreen = crate::macos::in_fullscreen_any_thread(app, windows.clone());
     #[cfg(not(target_os = "macos"))]
@@ -733,7 +735,7 @@ async fn restore_groups(app: &AppHandle, caller: &str, root: Option<&Path>) -> I
     }
     // `create_main_window` may have just started this window's fullscreen animation; tabs moved
     // into a window during one are lost.
-    let main_fullscreen = match app.get_webview_window(caller) {
+    let main_fullscreen = match app.workbench_window(caller) {
         Some(window) => {
             wait_fullscreen_transition(app, &window).await;
             // `main`'s group takes its saved fullscreen state (`SavedGroup::fullscreen`), not the
@@ -768,7 +770,7 @@ async fn restore_groups(app: &AppHandle, caller: &str, root: Option<&Path>) -> I
         }
     }
     for label in fullscreen {
-        let Some(window) = app.get_webview_window(&label) else { continue };
+        let Some(window) = app.workbench_window(&label) else { continue };
         wait_fullscreen_transition(app, &window).await;
         if let Err(e) = window.set_fullscreen(true) {
             tracing::warn!("cannot reopen a window group in full screen: {e}");
@@ -824,7 +826,7 @@ async fn restore_group(
 
 async fn wait_transitions(app: &AppHandle, labels: &[String]) {
     for label in labels {
-        if let Some(window) = app.get_webview_window(label) {
+        if let Some(window) = app.workbench_window(label) {
             wait_fullscreen_transition(app, &window).await;
         }
     }
@@ -834,7 +836,7 @@ fn any_in_transition(_app: &AppHandle, _labels: &[String]) -> bool {
     #[cfg(target_os = "macos")]
     return _labels
         .iter()
-        .filter_map(|label| _app.get_webview_window(label))
+        .filter_map(|label| _app.workbench_window(label))
         .any(|window| crate::macos::fullscreen_transition(_app, &window));
     #[cfg(not(target_os = "macos"))]
     false

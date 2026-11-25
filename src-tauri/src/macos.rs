@@ -1,4 +1,6 @@
 //! macOS window tabs: project window groups as AppKit tab groups.
+use crate::windows::WorkbenchWindows;
+
 use crate::windows::WindowsState;
 use ide_core::{IdeError, IdeResult};
 use ide_workspace::window_groups::WindowGroup;
@@ -395,7 +397,7 @@ pub fn tab_mates(app: &AppHandle, window: &WebviewWindow) -> Vec<String> {
     let Some(native) = ns_window(window) else { return Vec::new() };
     let Some(group) = (unsafe { &*native }).tabGroup() else { return Vec::new() };
     let tabs = group.windows();
-    app.webview_windows()
+    app.workbench_windows()
         .into_values()
         .filter(|w| w.label() != window.label())
         .filter(|w| ns_window(w).is_some_and(|n| tabs.iter().any(|t| std::ptr::eq(&*t, n))))

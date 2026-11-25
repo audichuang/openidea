@@ -322,7 +322,7 @@ const MAIN_FULLSCREEN: &str = "main-window-fullscreen.json";
 /// Records whether `main` is in fullscreen (main thread; when Quit starts, or `main` closes).
 #[cfg(target_os = "macos")]
 pub fn save_main_fullscreen(app: &AppHandle) {
-    let Some(window) = app.get_webview_window(MAIN) else { return };
+    let Some(window) = app.workbench_window(MAIN) else { return };
     let fullscreen = crate::macos::in_fullscreen(&window);
     let Ok(dir) = ide_host::data_dirs::config_dir(&app.config().identifier) else { return };
     let bytes = serde_json::to_vec(&fullscreen).unwrap_or_default();
@@ -1187,7 +1187,7 @@ pub fn create_restored_window(app: &AppHandle, project: PathBuf) -> IdeResult<We
 /// opens in a plain window.
 fn tab_anchor(app: &AppHandle, caller: &str) -> Option<WebviewWindow> {
     let label = auxiliary_parent(caller).unwrap_or(caller);
-    app.state::<AppState>().opened_project(label).is_some().then(|| app.get_webview_window(label)).flatten()
+    app.state::<AppState>().opened_project(label).is_some().then(|| app.workbench_window(label)).flatten()
 }
 
 fn create_window_for(
