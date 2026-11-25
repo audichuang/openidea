@@ -84,7 +84,13 @@ test("the Center group is centred in the main toolbar", async ({ workbench: page
         ...settings,
         appearance: {
           ...settings?.appearance,
-          mainToolbar: { left: [], center: ["project"], right: ["action:navigate.searchEverywhere"], hidden: [] },
+          // fork: the Git Graph title item would widen the right group; hidden, the bar is upstream's.
+          mainToolbar: {
+            left: [],
+            center: ["project"],
+            right: ["action:navigate.searchEverywhere"],
+            hidden: ["gitGraph.open"],
+          },
         },
       },
     });
