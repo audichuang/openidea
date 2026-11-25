@@ -4,6 +4,7 @@
  * connected repository's remote; the head lists the local branches and the branches of
  * the chosen repository (the project's GitHub remotes and forks).
  */
+import { isImeKey } from "@/platform/ime";
 import { useMemo, useState, type KeyboardEvent } from "react";
 import { HighlightedText, Icon, List, Popup, SearchField, Select, T, fuzzyMatch, listNavigate } from "@/ui";
 import { useTx } from "@/platform/i18n";
@@ -118,6 +119,8 @@ function HeadPopup(props: { anchor: HTMLElement; initialRepo: GHRemote; onClose:
     props.onClose();
   };
   const onKeyDown = (e: KeyboardEvent) => {
+    // Keys that drive an IME candidate window (including the Enter that confirms one) are not list commands.
+    if (isImeKey(e.nativeEvent)) return;
     const next = listNavigate(e.key, { items: rows, active: index, wrap: true, pageSize: 7, isSection });
     if (next !== null && e.key !== "Home" && e.key !== "End") {
       e.preventDefault();
@@ -145,7 +148,11 @@ function HeadPopup(props: { anchor: HTMLElement; initialRepo: GHRemote; onClose:
           </span>
           <Select
             value={nameWithOwner(repo)}
-            options={remotes.map((r) => ({ value: nameWithOwner(r), label: `${nameWithOwner(r)} (${r.remote})` }))}
+            options={remotes.map((r) => ({
+              value: nameWithOwner(r),
+              label: `${nameWithOwner(r)} (${r.remote})`,
+              literal: true,
+            }))}
             onChange={(v) => {
               const next = remotes.find((r) => nameWithOwner(r) === v);
               if (next && !sameRepository(next, repo)) setRepo(next);
