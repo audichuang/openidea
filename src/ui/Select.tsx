@@ -27,8 +27,6 @@ export interface SelectOption<V extends string = string> {
   emphasized?: boolean;
   /** User values are displayed as written. */
   verbatim?: boolean;
-  /** The fork's older name for `verbatim`: fork call sites still set it. */
-  literal?: boolean;
   icon?: IconName | (string & {});
   detail?: string;
   /** User-provided detail is displayed as written. */
@@ -122,7 +120,7 @@ export function SelectListbox<V extends string = string>({
   ...aria
 }: SelectListboxProps<V>) {
   const given = useGivenTx();
-  const labelOf = (o: SelectOption<V>) => (o.verbatim || o.literal ? o.label : given(o.label));
+  const labelOf = (o: SelectOption<V>) => (o.verbatim ? o.label : given(o.label));
   const detailOf = (o: SelectOption<V>) => (o.verbatimDetail ? o.detail : given(o.detail));
   const [active, setActive] = useState<number | null>(null);
   const [query, setQuery] = useState(initialQuery);
@@ -440,7 +438,7 @@ export function Select<V extends string = string>({
           <>
             {current?.icon && <Icon name={current.icon} size={14} />}
             <span className={clsx(styles.value, !current && styles.placeholder)}>
-              {current && (current.verbatim || current.literal) ? current.label : given(current?.label ?? placeholder)}
+              {current?.verbatim ? current.label : given(current?.label ?? placeholder)}
             </span>
           </>
         )}
