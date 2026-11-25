@@ -15,13 +15,7 @@ import {
   type ReactNode,
   type Ref,
 } from "react";
-import {
-  defaultRangeExtractor,
-  elementScroll,
-  observeElementRect,
-  useVirtualizer,
-  type Range,
-} from "@tanstack/react-virtual";
+import { defaultRangeExtractor, elementScroll, useVirtualizer, type Range } from "@tanstack/react-virtual";
 import clsx from "clsx";
 import { editorsFor } from "@/editor/api";
 import { tx } from "@/platform/i18n";
@@ -186,16 +180,6 @@ const Block = memo(function Block({
   );
 });
 
-/**
- * fork: a hidden scroller (a maximized tool window) measures 0 high, and the virtualizer then mounts
- * nothing without asking `rangeExtractor`, unmounting blocks it must keep (unmounting saves staged
- * edits to the index). Keep the last size it had while shown.
- */
-const observeShownRect: typeof observeElementRect = (instance, cb) =>
-  observeElementRect(instance, (rect) => {
-    if (rect.height > 0) cb(rect);
-  });
-
 export function CombinedDiffTab({ input }: { input: EditorInput }) {
   const data = input.data as CombinedDiffData;
   // A partially staged file is listed twice (staged and unstaged), so blocks go by diff, not path.
@@ -255,10 +239,11 @@ export function CombinedDiffView({
   const [viewStates] = useState(() => new Map<string, DiffViewState>());
   const [entriesCache] = useState<DiffEntriesCache>(() => new Map());
   const keys = useMemo(() => entries.map((e) => e.key), [entries]);
+  /** Blocks mounted at the last render (fork: see `pinned`). */
+  const mountedRef = useRef<readonly number[]>([]);
 
   // Blocks that stay mounted when scrolled away: the one holding the keyboard focus, so typing still
   // reaches it, and with autosave off those with unsaved staged edits, which unmounting would save.
-  // fork: also those with unsaved working-tree edits, whose undo history goes with the editor.
   const rangeExtractor = useCallback(
     (range: Range) => {
       const shown = new Set(defaultRangeExtractor(range));
@@ -268,12 +253,6 @@ export function CombinedDiffView({
       if (useProject.getState().settings?.files?.autoSave === false)
         items.forEach((item, index) => {
           if (ownedStagedDocument(combinedDiffDocumentOwner(tabKey, diffInput(item).key))?.dirty) shown.add(index);
-        });
-      const dirtyDocs = new Set(maybeEditorService()?.dirtyDocumentIds?.() ?? []);
-      if (dirtyDocs.size)
-        items.forEach((item, index) => {
-          const files = [sideFile(item.left, item.path), sideFile(item.right, item.path)];
-          if (files.some((file) => !!file && editorsFor(file).some((e) => dirtyDocs.has(e.ctx.doc)))) shown.add(index);
         });
       return [...shown].sort((a, b) => a - b);
     },
@@ -286,7 +265,6 @@ export function CombinedDiffView({
     estimateSize: () => ESTIMATE,
     overscan: 4,
     rangeExtractor,
-    observeElementRect: observeShownRect,
     // A correction for a block above moves the view by its delta from wherever it is now: a `scrollTo`
     // (the library's offset plus the delta) can drop wheel scrolling still in flight in WebKit.
     scrollToFn: (offset, options, instance) => {
@@ -338,11 +316,44 @@ export function CombinedDiffView({
   );
   const allCollapsed = items.length > 0 && keys.every((key) => collapsed.has(key));
 
+  // fork: a block this view has mounted stays mounted while it holds unsaved working-tree edits (its
+  // editor carries their undo history) or what `rangeExtractor` keeps. A hidden scroller (a maximized
+  // tool window) measures 0 high, and virtual-core then mounts nothing without asking
+  // `rangeExtractor`: unmounting would save staged edits to the index.
+  const virtualItems = virtualizer.getVirtualItems();
+  const inView = new Set(virtualItems.map((row) => row.index));
+  const dirtyDocs = new Set(maybeEditorService()?.dirtyDocumentIds?.() ?? []);
+  const autoSaveOff = useProject.getState().settings?.files?.autoSave === false;
+  const active = document.activeElement;
+  const focusedSlot = scrollRef.current?.contains(active) ? active?.closest<HTMLElement>("[data-index]") : null;
+  const pinned = mountedRef.current.filter((index) => {
+    const item = items[index];
+    if (!item || inView.has(index)) return false;
+    if (focusedSlot && Number(focusedSlot.dataset.index) === index) return true;
+    if (autoSaveOff && ownedStagedDocument(combinedDiffDocumentOwner(tabKey, keys[index]!))?.dirty) return true;
+    return [sideFile(item.left, item.path), sideFile(item.right, item.path)].some(
+      (file) => !!file && editorsFor(file).some((e) => dirtyDocs.has(e.ctx.doc)),
+    );
+  });
+  const rows = pinned.length
+    ? [
+        ...virtualItems,
+        ...pinned.map((index) => ({
+          index,
+          key: keys[index]!,
+          start: virtualizer.measurementsCache[index]?.start ?? index * ESTIMATE,
+        })),
+      ].sort((a, b) => a.index - b.index)
+    : virtualItems;
+  useLayoutEffect(() => {
+    mountedRef.current = rows.map((row) => row.index);
+  });
+
   const scroller = (
     <div ref={scrollRef} className={styles.scroll} data-combined-scroll>
       {items.length ? (
         <div className={styles.blocks} style={{ height: virtualizer.getTotalSize() }}>
-          {virtualizer.getVirtualItems().map(({ index, key, start }) => (
+          {rows.map(({ index, key, start }) => (
             <div
               // Keyed by diff alone: switching the layout keeps each block's diff and its documents.
               key={key}
