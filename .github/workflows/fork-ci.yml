@@ -275,6 +275,11 @@ jobs:
         run: cargo clippy --workspace --all-targets --message-format=json -- -D warnings | node .github/actions/target-cache/artifacts.mjs record "$RUNNER_TEMP/target-artifacts.jsonl"
       # Test fixtures write LF files; keep Git from converting them on checkout.
       - run: git config --global core.autocrlf false
+      # ubuntu-22.04 defaults to Java 11, which its Gradle 9 cannot run on (the jbuild Gradle tests then
+      # fail with "Gradle could not prepare the build"); upstream's ubuntu-latest defaults to 17.
+      - name: Java 17 (Linux)
+        if: runner.os == 'Linux'
+        run: echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
       # --timings: per-crate build times in target/cargo-timings, uploaded below.
       - run: cargo nextest run --workspace --no-fail-fast --timings ${{ matrix.partition && format('--partition slice:{0}', matrix.partition) || '' }} ${{ matrix.threads && format('--test-threads {0}', matrix.threads) || '' }} ${{ matrix.filter && format('-E ''{0}''', matrix.filter) || '' }}
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
