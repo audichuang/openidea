@@ -100,6 +100,8 @@ struct Record {
     paths: Vec<SavedPath>,
     documents: Vec<(DocId, DocState)>,
     after: Vec<WorkspaceEditPrecondition>,
+    /// Files under unsaved buffers, which `after` doesn't cover, as they were on disk.
+    after_disk: Vec<WorkspaceEditPrecondition>,
 }
 
 fn stale(path: &Path) -> IdeError {
@@ -374,6 +376,37 @@ impl Documents {
             .collect()
     }
 
+    /// The disk contents [`Self::fingerprints`] replaces with unsaved buffers.
+    fn unsaved_disk(&self, paths: &[PathBuf]) -> IdeResult<Vec<WorkspaceEditPrecondition>> {
+        let mut out = Vec::new();
+        for id in self.open_documents() {
+            self.with_doc(id, |state| {
+                let file = text_path(&state.path)?;
+                if state.dirty && paths.iter().any(|path| file.starts_with(path)) && differs_from_disk(state)? {
+                    let mut hash = blake3::Hasher::new();
+                    hash_disk(&mut hash, &file, &HashMap::new())?;
+                    out.push(WorkspaceEditPrecondition {
+                        path: file.into(),
+                        hash: hash.finalize().to_hex().to_string(),
+                    });
+                }
+                Ok(())
+            })?;
+        }
+        Ok(out)
+    }
+
+    /// An external write under a buffer that is still unsaved would be lost to the restore.
+    fn validate_unsaved_disk(&self, expected: &[WorkspaceEditPrecondition]) -> IdeResult<()> {
+        let current = self.unsaved_disk(&expected.iter().map(|p| p.path.to_path_buf()).collect::<Vec<_>>())?;
+        for before in expected {
+            if current.iter().any(|now| now.path == before.path && now.hash != before.hash) {
+                return Err(stale(&before.path));
+            }
+        }
+        Ok(())
+    }
+
     fn validate_preconditions(&self, expected: &[WorkspaceEditPrecondition]) -> IdeResult<()> {
         let current = self.fingerprints(&expected.iter().map(|p| p.path.to_path_buf()).collect::<Vec<_>>())?;
         for (before, after) in expected.iter().zip(current) {
@@ -471,6 +504,10 @@ impl Documents {
             return Err(self.recover(record, error));
         }
         record.after = match self.fingerprints(&roots) {
+            Ok(after) => after,
+            Err(error) => return Err(self.recover(record, error)),
+        };
+        record.after_disk = match self.unsaved_disk(&roots) {
             Ok(after) => after,
             Err(error) => return Err(self.recover(record, error)),
         };
@@ -573,6 +610,7 @@ impl Documents {
             paths,
             documents,
             after: Vec::new(),
+            after_disk: Vec::new(),
         })
     }
 
@@ -875,6 +913,7 @@ impl Documents {
             return Err(IdeError::invalid("the refactoring is already in the requested history state"));
         }
         self.validate_preconditions(&record.after)?;
+        self.validate_unsaved_disk(&record.after_disk)?;
         let roots = record.paths.iter().map(|p| p.path.clone()).collect::<Vec<_>>();
         let mut current = self.backup(&roots)?;
         fs::write(current.directory.path().join("recovery"), b"history restore in progress")?;
@@ -883,6 +922,10 @@ impl Documents {
             return Err(self.recover(current, error));
         }
         current.after = match self.fingerprints(&roots) {
+            Ok(after) => after,
+            Err(error) => return Err(self.recover(current, error)),
+        };
+        current.after_disk = match self.unsaved_disk(&roots) {
             Ok(after) => after,
             Err(error) => return Err(self.recover(current, error)),
         };

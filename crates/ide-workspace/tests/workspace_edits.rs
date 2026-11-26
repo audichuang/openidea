@@ -152,6 +152,34 @@ fn rollback_keeps_a_disk_conflict_of_an_unsaved_buffer() {
 }
 
 #[test]
+fn undo_refuses_an_external_write_under_an_unsaved_buffer() {
+    let tmp = tempfile::tempdir().unwrap();
+    let first = tmp.path().join("first.txt");
+    std::fs::write(&first, "old\n").unwrap();
+    let (docs, events) = recorded_documents();
+    let info = docs.open(&first).unwrap();
+    docs.edit(info.id, info.version, ChangeSet { changes: vec![TextChange { from: 0, to: 3, insert: "own".into() }] })
+        .unwrap();
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&first, "new")], ..Default::default() }).unwrap();
+    let id = undo_id(&events);
+    std::fs::write(&first, "ext\n").unwrap();
+    let undone = docs.undo_workspace_edit(id);
+    assert_eq!(std::fs::read_to_string(&first).unwrap(), "ext\n");
+    assert_eq!(undone.unwrap_err().kind, ErrorKind::OutOfSync);
+    // Saving the buffer is not an external change: undo still works afterwards.
+    docs.save(info.id).unwrap();
+    docs.undo_workspace_edit(id).unwrap();
+    let snap = docs.snapshot(info.id).unwrap();
+    assert_eq!(snap.text, "own\n");
+    assert!(snap.dirty);
+    // Redo checks the disk under the restored unsaved buffer the same way.
+    std::fs::write(&first, "ext\n").unwrap();
+    let redone = docs.redo_workspace_edit(id);
+    assert_eq!(std::fs::read_to_string(&first).unwrap(), "ext\n");
+    assert_eq!(redone.unwrap_err().kind, ErrorKind::OutOfSync);
+}
+
+#[test]
 fn create_conflict_does_not_modify_earlier_files() {
     let tmp = tempfile::tempdir().unwrap();
     let first = tmp.path().join("first.txt");
