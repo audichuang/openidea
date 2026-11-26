@@ -284,6 +284,34 @@ fn undo_accepts_autosave_same_byte_writes_and_changes_outside_the_edit() {
     assert_eq!(std::fs::read_to_string(&other).unwrap(), "ext\n");
 }
 
+/// Typing after an autosave and deleting it again leaves a buffer marked unsaved that would save
+/// exactly the file's bytes: nothing on disk can be lost, so undo goes ahead.
+#[test]
+fn undo_accepts_an_unsaved_buffer_that_matches_the_file_again() {
+    for (large, external_same_bytes) in [(true, false), (false, true)] {
+        let tmp = tempfile::tempdir().unwrap();
+        let first = tmp.path().join("first.txt");
+        // Large files keep no clean text, so returning to it doesn't clear the dirty flag.
+        let tail = if large { "x".repeat(6 << 20) } else { String::new() };
+        std::fs::write(&first, format!("old\n{tail}")).unwrap();
+        let (docs, events) = recorded_documents();
+        let info = docs.open(&first).unwrap();
+        type_text(&docs, info.id, 0, 3, "own");
+        docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&first, "new")], ..Default::default() }).unwrap();
+        assert!(docs.autosave(info.id).unwrap());
+        type_text(&docs, info.id, 3, 3, "x");
+        if external_same_bytes {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::fs::write(&first, format!("new\n{tail}")).unwrap();
+            docs.on_disk_changed(std::slice::from_ref(&first));
+        }
+        type_text(&docs, info.id, 3, 4, "");
+        assert!(docs.snapshot(info.id).unwrap().dirty);
+        docs.undo_workspace_edit(undo_id(&events)).unwrap();
+        assert!(std::fs::read_to_string(&first).unwrap().starts_with("old\n"));
+    }
+}
+
 #[test]
 fn create_conflict_does_not_modify_earlier_files() {
     let tmp = tempfile::tempdir().unwrap();

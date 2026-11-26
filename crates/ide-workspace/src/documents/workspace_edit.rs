@@ -376,12 +376,13 @@ impl Documents {
             .collect()
     }
 
-    /// An external write under a buffer that is unsaved now would be lost to the restore.
+    /// An external write under a buffer that is unsaved now would be lost to the restore. A buffer
+    /// that would save the bytes on disk hides nothing: `after` already matched it.
     fn validate_unsaved_disk(&self, roots: &[PathBuf], expected: &HashMap<PathBuf, String>) -> IdeResult<()> {
         for id in self.open_documents() {
             self.with_doc(id, |state| {
                 let file = text_path(&state.path)?;
-                if state.dirty && roots.iter().any(|root| file.starts_with(root)) {
+                if state.dirty && roots.iter().any(|root| file.starts_with(root)) && differs_from_disk(state)? {
                     let now = match fs::symlink_metadata(&file) {
                         Ok(_) => Some(disk_hash(&file)?),
                         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -501,6 +502,8 @@ impl Documents {
             Ok(after) => after,
             Err(error) => return Err(self.recover(record, error)),
         };
+        record.bytes +=
+            record.after_disk.iter().map(|(path, hash)| (path.as_os_str().len() + hash.len()) as u64).sum::<u64>();
         if let Err(error) = fs::remove_file(record.directory.path().join("recovery")) {
             return Err(self.recover(record, error.into()));
         }
@@ -919,6 +922,8 @@ impl Documents {
             Ok(after) => after,
             Err(error) => return Err(self.recover(current, error)),
         };
+        current.bytes +=
+            current.after_disk.iter().map(|(path, hash)| (path.as_os_str().len() + hash.len()) as u64).sum::<u64>();
         current.undone = !redo;
         current.created = record.created;
         if let Err(error) = fs::remove_file(current.directory.path().join("recovery")) {
