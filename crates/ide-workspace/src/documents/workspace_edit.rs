@@ -100,8 +100,8 @@ struct Record {
     paths: Vec<SavedPath>,
     documents: Vec<(DocId, DocState)>,
     after: Vec<WorkspaceEditPrecondition>,
-    /// Files under unsaved buffers, which `after` doesn't cover, as they were on disk.
-    after_disk: Vec<WorkspaceEditPrecondition>,
+    /// Each file's disk contents with `after`: a buffer unsaved at undo time hides its file from `after`.
+    after_disk: HashMap<PathBuf, String>,
 }
 
 fn stale(path: &Path) -> IdeError {
@@ -376,33 +376,23 @@ impl Documents {
             .collect()
     }
 
-    /// The disk contents [`Self::fingerprints`] replaces with unsaved buffers.
-    fn unsaved_disk(&self, paths: &[PathBuf]) -> IdeResult<Vec<WorkspaceEditPrecondition>> {
-        let mut out = Vec::new();
+    /// An external write under a buffer that is unsaved now would be lost to the restore.
+    fn validate_unsaved_disk(&self, roots: &[PathBuf], expected: &HashMap<PathBuf, String>) -> IdeResult<()> {
         for id in self.open_documents() {
             self.with_doc(id, |state| {
                 let file = text_path(&state.path)?;
-                if state.dirty && paths.iter().any(|path| file.starts_with(path)) && differs_from_disk(state)? {
-                    let mut hash = blake3::Hasher::new();
-                    hash_disk(&mut hash, &file, &HashMap::new())?;
-                    out.push(WorkspaceEditPrecondition {
-                        path: file.into(),
-                        hash: hash.finalize().to_hex().to_string(),
-                    });
+                if state.dirty && roots.iter().any(|root| file.starts_with(root)) {
+                    let now = match fs::symlink_metadata(&file) {
+                        Ok(_) => Some(disk_hash(&file)?),
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                        Err(e) => return Err(e.into()),
+                    };
+                    if now.as_ref() != expected.get(&file) {
+                        return Err(stale(&file));
+                    }
                 }
                 Ok(())
             })?;
-        }
-        Ok(out)
-    }
-
-    /// An external write under a buffer that is still unsaved would be lost to the restore.
-    fn validate_unsaved_disk(&self, expected: &[WorkspaceEditPrecondition]) -> IdeResult<()> {
-        let current = self.unsaved_disk(&expected.iter().map(|p| p.path.to_path_buf()).collect::<Vec<_>>())?;
-        for before in expected {
-            if current.iter().any(|now| now.path == before.path && now.hash != before.hash) {
-                return Err(stale(&before.path));
-            }
         }
         Ok(())
     }
@@ -507,7 +497,7 @@ impl Documents {
             Ok(after) => after,
             Err(error) => return Err(self.recover(record, error)),
         };
-        record.after_disk = match self.unsaved_disk(&roots) {
+        record.after_disk = match disk_hashes(&roots) {
             Ok(after) => after,
             Err(error) => return Err(self.recover(record, error)),
         };
@@ -610,7 +600,7 @@ impl Documents {
             paths,
             documents,
             after: Vec::new(),
-            after_disk: Vec::new(),
+            after_disk: HashMap::new(),
         })
     }
 
@@ -913,8 +903,8 @@ impl Documents {
             return Err(IdeError::invalid("the refactoring is already in the requested history state"));
         }
         self.validate_preconditions(&record.after)?;
-        self.validate_unsaved_disk(&record.after_disk)?;
         let roots = record.paths.iter().map(|p| p.path.clone()).collect::<Vec<_>>();
+        self.validate_unsaved_disk(&roots, &record.after_disk)?;
         let mut current = self.backup(&roots)?;
         fs::write(current.directory.path().join("recovery"), b"history restore in progress")?;
         let _active = ActiveEdit::new(&self.workspace_edit_active);
@@ -925,7 +915,7 @@ impl Documents {
             Ok(after) => after,
             Err(error) => return Err(self.recover(current, error)),
         };
-        current.after_disk = match self.unsaved_disk(&roots) {
+        current.after_disk = match disk_hashes(&roots) {
             Ok(after) => after,
             Err(error) => return Err(self.recover(current, error)),
         };
@@ -938,6 +928,36 @@ impl Documents {
         history.prune(SystemTime::now(), MAX_HISTORY_BYTES, MAX_HISTORY_AGE);
         Ok(())
     }
+}
+
+fn disk_hash(path: &Path) -> IdeResult<String> {
+    let mut hash = blake3::Hasher::new();
+    hash_disk(&mut hash, path, &HashMap::new())?;
+    Ok(hash.finalize().to_hex().to_string())
+}
+
+/// [`disk_hash`] of every file under `roots`, without following links.
+fn disk_hashes(roots: &[PathBuf]) -> IdeResult<HashMap<PathBuf, String>> {
+    fn walk(path: &Path, out: &mut HashMap<PathBuf, String>) -> IdeResult<()> {
+        match fs::symlink_metadata(path) {
+            Ok(meta) if meta.is_dir() => {
+                for entry in fs::read_dir(path)? {
+                    walk(&entry?.path(), out)?;
+                }
+            }
+            Ok(_) => {
+                out.insert(path.to_path_buf(), disk_hash(path)?);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        Ok(())
+    }
+    let mut out = HashMap::new();
+    for root in roots {
+        walk(root, &mut out)?;
+    }
+    Ok(out)
 }
 
 fn check_link_parents(path: &Path) -> IdeResult<()> {
