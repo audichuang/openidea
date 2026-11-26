@@ -49,6 +49,7 @@ pub async fn window_group_detach(window: WebviewWindow, label: String) -> IdeRes
 #[tauri::command]
 #[specta::specta]
 pub fn window_group_close(window: WebviewWindow, label: String) -> IdeResult<()> {
+    groups::select(window.app_handle(), window.label(), &label)?;
     window
         .app_handle()
         .get_webview_window(&label)
