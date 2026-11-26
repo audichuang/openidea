@@ -95,6 +95,9 @@ COMMENTS="{\"comments\":[$NH,$AP,$NH]}" \
   check "real filter: approval rejected, lock current"  1 0 v0.1.35 v0.1.34 v0.1.35 ""
 COMMENTS="{\"comments\":[$NH,$AP,$NH,$AP]}" \
   check "real filter: re-approved after rejection"      0 0 v0.1.35 v0.1.34 v0.1.35 ""
+# Why: the skill posts corrections after a handback without the marker (PR #511), so they keep a later approval.
+COMMENTS="{\"comments\":[$NH,$AP,{\"body\":\"更正上一則\"}]}" \
+  check "real filter: plain correction after approval"  0 0 v0.1.35 v0.1.34 v0.1.35 ""
 COMMENTS="{\"comments\":[$NH,$AP,$NH]}" \
   check "real filter: approval rejected, upstream newer" 0 0 v0.1.36 v0.1.34 v0.1.35 ""
 FORKTAG= check "same release, never released, CI green" 0 0 v0.1.46 v0.1.46 "" ""
