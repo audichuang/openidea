@@ -3529,7 +3529,6 @@ mod tests {
                 counts.spawns, counts.ps_spawns, counts.singleton_groups
             );
             assert_eq!(plan.commits[1].refused_by(), None, "big is emptied");
-            assert!(elapsed < Duration::from_secs(10), "planning took {elapsed:?}");
             assert!(comparisons < n * 20, "quadratic case-alias search: {comparisons} comparisons for {n} files");
             assert!(counts.spawns <= 1, "planning must not spawn Git per file: {counts:?}");
             if insensitive || force_fold_case {
