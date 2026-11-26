@@ -1357,7 +1357,7 @@ impl Project {
     /// Effective source / test / resource / excluded roots (detected + Project Structure marks).
     pub fn roots(&self) -> ProjectRoots {
         let settings = self.settings.effective();
-        let detected = with_gradle_roots(
+        let detected = fork_with_gradle_roots(
             &self.root,
             &self.build_cache_dir(),
             &settings.languages.java.gradle,
@@ -2035,11 +2035,34 @@ fn independent_eclipse_projects(root: &Path) -> Vec<PathBuf> {
 /// The detected roots with the last Gradle sync's source sets first: Gradle evaluated what
 /// static detection guesses. Folders outside the project keep their absolute path, which
 /// `normalize` turns into the same form the UI compares (`Users/me/svc/src/main/java`).
+#[cfg(test)]
 fn with_gradle_roots(
     root: &Path,
     build_cache: &Path,
     settings: &ide_core::settings::GradleSettings,
     detected: &[SourceFolder],
+) -> Vec<SourceFolder> {
+    gradle_roots(root, build_cache, settings, detected, false)
+}
+
+/// fork: [`with_gradle_roots`], except that a project outside the root keeps its absolute owner
+/// (`/abs/svc/Gradle`), so the module lists (`projectModules`, the Find in Files Module scope, change
+/// modules) still list an included build outside the project, as before upstream #5977 (#512).
+fn fork_with_gradle_roots(
+    root: &Path,
+    build_cache: &Path,
+    settings: &ide_core::settings::GradleSettings,
+    detected: &[SourceFolder],
+) -> Vec<SourceFolder> {
+    gradle_roots(root, build_cache, settings, detected, true)
+}
+
+fn gradle_roots(
+    root: &Path,
+    build_cache: &Path,
+    settings: &ide_core::settings::GradleSettings,
+    detected: &[SourceFolder],
+    absolute_external_owner: bool,
 ) -> Vec<SourceFolder> {
     use ide_build::gradle::ReportedRoot;
     use ide_workspace::roots::RootKind;
@@ -2064,6 +2087,7 @@ fn with_gradle_roots(
                 Ok(rel) if !rel.as_os_str().is_empty() => {
                     format!("{}/Gradle", ide_workspace::roots::normalize(&rel.to_string_lossy()))
                 }
+                Err(_) if absolute_external_owner => format!("{}/Gradle", project.to_string_lossy().replace('\\', "/")),
                 _ => "Gradle".into(),
             };
             out.push(SourceFolder { path, kind, detected_from: Some(detected_from) });
@@ -2520,6 +2544,66 @@ mod gradle_roots_tests {
                 (abs(svc.join("src/main/java")), RootKind::Source, Some("Gradle")),
                 (abs(svc.join("build")), RootKind::Excluded, Some("Gradle")),
                 ("web".into(), RootKind::Source, None),
+            ]
+        );
+    }
+
+    #[test]
+    fn gradle_sync_keeps_the_model_owner_of_custom_and_shared_roots() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let cache = root.join("cache");
+        let app = root.join("app");
+        let shared = root.join("custom/code");
+        for dir in [&cache, &app, &shared, &app.join("build")] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(root.join("build.gradle"), "").unwrap();
+        let json = serde_json::json!({ "hash": "", "at_ms": 1.0, "error": null, "tasks": [], "projects": [
+            { "path": ":app", "dir": app, "buildDir": app.join("build"), "sourceSets": [
+                { "name": "main", "test": false, "src": [shared], "res": [] } ] },
+            { "path": ":", "dir": root, "sourceSets": [
+                { "name": "main", "test": false, "src": [shared], "res": [] } ] }
+        ]});
+        std::fs::write(cache.join("gradle.json"), json.to_string()).unwrap();
+        let out = fork_with_gradle_roots(&root, &cache, &Default::default(), &[]);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].path, "custom/code");
+        assert_eq!(out[0].detected_from.as_deref(), Some("app/Gradle"));
+        assert_eq!(out[1].path, "app/build");
+        assert_eq!(out[1].detected_from.as_deref(), Some("app/Gradle"));
+    }
+
+    /// fork: the roots a project uses go through `fork_with_gradle_roots`, which keeps the absolute
+    /// owner of a project outside the root (upstream's `with_gradle_roots` reports `Gradle`).
+    #[test]
+    fn fork_gradle_sync_keeps_the_absolute_owner_of_a_project_outside_the_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = dunce::canonicalize(tmp.path()).unwrap();
+        let (root, svc, cache) = (ws.join("p"), ws.join("svc"), ws.join("cache"));
+        for d in [root.join("src/it/java"), svc.join("src/main/java"), svc.join("build")] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let s = |p: PathBuf| p.to_string_lossy().into_owned();
+        let json = serde_json::json!({ "hash": "", "at_ms": 1.0, "error": null, "tasks": [], "projects": [
+            { "path": ":", "dir": s(root.clone()), "sourceSets": [
+                { "name": "integrationTest", "test": true, "src": [s(root.join("src/it/java"))], "res": [] } ] },
+            { "path": ":svc", "dir": s(svc.clone()), "buildDir": s(svc.join("build")), "sourceSets": [
+                { "name": "main", "test": false, "src": [s(svc.join("src/main/java"))], "res": [] } ] },
+        ]});
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("gradle.json"), json.to_string()).unwrap();
+        std::fs::write(root.join("build.gradle"), "").unwrap();
+        let out = fork_with_gradle_roots(&root, &cache, &Default::default(), &[]);
+        let abs = |p: PathBuf| ide_workspace::roots::normalize(&s(p));
+        let owner = format!("{}/Gradle", svc.to_string_lossy().replace('\\', "/"));
+        let got: Vec<_> = out.iter().map(|f| (f.path.clone(), f.kind, f.detected_from.clone())).collect();
+        assert_eq!(
+            got,
+            [
+                ("src/it/java".into(), RootKind::Test, Some("Gradle".into())),
+                (abs(svc.join("src/main/java")), RootKind::Source, Some(owner.clone())),
+                (abs(svc.join("build")), RootKind::Excluded, Some(owner)),
             ]
         );
     }
