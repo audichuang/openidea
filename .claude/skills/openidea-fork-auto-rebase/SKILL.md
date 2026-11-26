@@ -146,7 +146,7 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
 
 ## 3c. 視窗 chrome 實機檢查（任何模式）
 
-時機：第 3b 步第 1 點的保留路徑檢查（CLEAN、MECHANICAL 在第 4 步也做這一點）命中保留清單第一項（macOS 視窗 chrome），而且命中的全是它、MANUAL 的 3b 其餘各點都已通過，或這一輪要交人（第 4 步「不符合條件」，不論是不是也命中其他保留項：這時做完照樣交人，不接第 4 步的移動）。從第 0 步 approved 進來的不做：交人前已經做過。這是整個 skill 唯一在本機編 app、開 app 的地方。量測綁定這一輪的 NT：之後 HEAD 有任何變動（修正 commit）就重做這一步。
+時機：第 3b 步第 1 點的保留路徑檢查（CLEAN、MECHANICAL 在第 4 步也做這一點）命中保留清單第一項（macOS 視窗 chrome），而且命中的全是它、MANUAL 的 3b 其餘各點都已通過，或這一輪要交人（第 4 步「不符合條件」，不論是不是也命中其他保留項：這時做完照樣交人，不接第 4 步的移動）。從第 0 步 approved 進來的不做：核可涵蓋了它，3c 的結果（或沒做成的原因）已寫在交人的 needs-human 裡。這是整個 skill 唯一在本機編 app、開 app 的地方。量測綁定這一輪的 NT：之後 HEAD 有任何變動（修正 commit）就重做這一步。
 
 先讀 fork-verify（`.agents/skills/fork-verify/SKILL.md` 的 Launch、Native AppKit、Cleanup，以及 `features/window-tabs.md`）。和它不同的地方以這裡為準：
 
@@ -232,7 +232,7 @@ osascript -e "tell application \"System Events\" to tell (first process whose un
 
 ## 4. 移動 develop
 
-CLEAN、MECHANICAL 先做第 3b 步第 1 點的保留路徑檢查：命中的全是視窗 chrome，就先做第 3c 步再回來；還命中其他保留項就交人（下面「不符合條件」那段，它會先做第 3c 步）。
+CLEAN、MECHANICAL 先做第 3b 步第 1 點的保留路徑檢查：命中的全是視窗 chrome，就先做第 3c 步再回來；命中其他保留項（不論有沒有 chrome）就交人（下面「不符合條件」那段；有 chrome 命中時它會先做第 3c 步）。
 
 條件全部成立才移動：模式是 CLEAN 或 MECHANICAL（或 MANUAL 而第 3b 步通過）、第 3b 步第 1 點的保留路徑檢查沒有命中，或命中的全是視窗 chrome 而第 3c 步留了這一輪 NT（＝HEAD）的 chrome-verified（CLEAN、MECHANICAL 也要做這一點：上游改了視窗 chrome，沒衝突也要實機看；從第 0 步 approved 進來的不用）、第 2 步沒有 fork 造成的紅、第 3 步 `Fork CI passed` 綠。上游也紅的 job 不算綠：上游已修就搬它的修正，否則修測試或照 #252 加 filter 並開 issue，都是修正 commit（模式變 MANUAL）。推上去後回第 2、3 步，再進第 3b 步（加 filter 屬於削弱閘門，只有符合第 3b 步第 1 點「上游也紅的測試」例外時不交人）。從第 0 步 approved 進來的不做這段修正：第 0 步已確認這個 sha 的 `Fork CI passed` 成功，推修正 commit 會讓核可作廢。從第 0 步 approved 進來的，使用者的核可取代模式與自審條件，不取代 CI 條件。
 
@@ -278,7 +278,7 @@ develop 一移動（含已在 HEAD 不重推的情況）就列出這次 rebase �
 
 保留鎖給人的結局（第 1 步放棄、第 2、3 步修不過、第 4 步不移動），還沒有 PR 就照第 1 步第 6 點開（放棄 rebase 的不要把 HEAD 推上去蓋掉鎖，PR 說明寫卡在哪個檔），再留言 `<!-- auto-rebase:needs-human -->`。沒有這個留言，precheck 六小時後會判定鎖過期，把分支刪掉重跑，使用者接手的東西就沒了。
 
-一次交人只留一則 needs-human。留完之後要補充或更正（多驗了一項、上一則寫錯），先重讀 PR 留言，用 `gh api -X PATCH repos/audichuang/openidea/issues/comments/<id> -F body=@<檔>` 改那一則，或另留一則第一行不是標記的留言。不要再留第一行是 `<!-- auto-rebase:needs-human -->` 的留言：precheck 只認排在最後一則 needs-human 之後的 approved，所以使用者在這之間留的核可會作廢（v0.1.53 的 PR #511：run 在 06:59Z 交人後 07:03Z 補了一則 needs-human 的更正，蓋掉 07:01Z 的核可，晚一小時發版）。更正改變了要使用者決定的事、而他已經核可時，在補充留言裡寫明，撤回由他自己留 needs-human。排程只有第 0 步拒絕核可（CI 不綠）時，才在核可之後留 needs-human。
+一次交人只留一則 needs-human。留完之後要補充或更正（多驗了一項、上一則寫錯），先重讀 PR 留言，用 `gh api -X PATCH repos/audichuang/openidea/issues/comments/<id> -F body=@<檔>` 改那一則，或另留一則第一行不是標記的留言。不要再留第一行是 `<!-- auto-rebase:needs-human -->` 的留言：precheck 只認排在最後一則 needs-human 之後的 approved，所以使用者在這之間留的核可會作廢（v0.1.53 的 PR #511：run 在 06:59Z 交人後 07:03Z 補了一則 needs-human 的更正，蓋掉 07:01Z 的核可，晚一小時發版）。更正改變了要使用者決定的事、而他已經核可時，在補充留言裡寫明，撤回由他自己留 needs-human。排程只有兩處會在核可之後留 needs-human：第 0 步拒絕核可（sha 的 Fork CI 不綠），以及第 6 步第 3 點推 tag 前重查 Fork CI 不綠。
 
 組內容與送出在同一個 Bash 指令裡：
 
