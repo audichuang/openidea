@@ -129,6 +129,11 @@ fn later_failure_preserves_disk_and_unsaved_buffer() {
 
 /// Undoing a workspace edit keeps the warning about a file changed on disk under unsaved
 /// edits: autosave still leaves the external change alone.
+///
+/// fork (#291): disk changes are compared by bytes, so an external write of the same bytes is no
+/// change: it raises no warning, and with the file back on the buffer's baseline after the undo,
+/// autosave writes the buffer (upstream's mtime check refuses). A write of other bytes keeps
+/// autosave off: `undo_keeps_the_conflict_of_a_file_that_changed_on_disk`.
 #[test]
 fn rollback_keeps_a_disk_conflict_of_an_unsaved_buffer() {
     let tmp = tempfile::tempdir().unwrap();
@@ -147,8 +152,8 @@ fn rollback_keeps_a_disk_conflict_of_an_unsaved_buffer() {
     let snap = docs.snapshot(info.id).unwrap();
     assert_eq!(snap.text, "own\n");
     assert!(snap.dirty);
-    assert!(!docs.autosave(info.id).unwrap(), "autosave must not overwrite the external change");
-    assert_eq!(std::fs::read_to_string(&first).unwrap(), "old\n");
+    assert!(docs.autosave(info.id).unwrap(), "fork: the same bytes are no external change");
+    assert_eq!(std::fs::read_to_string(&first).unwrap(), "own\n");
 }
 
 #[test]
