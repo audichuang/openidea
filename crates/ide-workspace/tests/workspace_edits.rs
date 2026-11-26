@@ -152,6 +152,251 @@ fn rollback_keeps_a_disk_conflict_of_an_unsaved_buffer() {
 }
 
 #[test]
+fn undo_refuses_an_external_write_under_an_unsaved_buffer() {
+    let tmp = tempfile::tempdir().unwrap();
+    let first = tmp.path().join("first.txt");
+    std::fs::write(&first, "old\n").unwrap();
+    let (docs, events) = recorded_documents();
+    let info = docs.open(&first).unwrap();
+    docs.edit(info.id, info.version, ChangeSet { changes: vec![TextChange { from: 0, to: 3, insert: "own".into() }] })
+        .unwrap();
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&first, "new")], ..Default::default() }).unwrap();
+    let id = undo_id(&events);
+    std::fs::write(&first, "ext\n").unwrap();
+    let undone = docs.undo_workspace_edit(id);
+    assert_eq!(std::fs::read_to_string(&first).unwrap(), "ext\n");
+    assert_eq!(undone.unwrap_err().kind, ErrorKind::OutOfSync);
+    // Saving the buffer is not an external change: undo still works afterwards.
+    docs.save(info.id).unwrap();
+    docs.undo_workspace_edit(id).unwrap();
+    let snap = docs.snapshot(info.id).unwrap();
+    assert_eq!(snap.text, "own\n");
+    assert!(snap.dirty);
+    // Redo checks the disk under the restored unsaved buffer the same way.
+    std::fs::write(&first, "ext\n").unwrap();
+    let redone = docs.redo_workspace_edit(id);
+    assert_eq!(std::fs::read_to_string(&first).unwrap(), "ext\n");
+    assert_eq!(redone.unwrap_err().kind, ErrorKind::OutOfSync);
+}
+
+fn type_text(docs: &Documents, doc: ide_core::DocId, from: u32, to: u32, insert: &str) {
+    let version = docs.snapshot(doc).unwrap().version;
+    docs.edit(doc, version, ChangeSet { changes: vec![TextChange { from, to, insert: insert.into() }] }).unwrap();
+}
+
+#[test]
+fn undo_refuses_an_external_write_under_a_buffer_the_edit_made_equal_to_disk() {
+    for external in [true, false] {
+        let tmp = tempfile::tempdir().unwrap();
+        let first = tmp.path().join("first.txt");
+        std::fs::write(&first, "old\n").unwrap();
+        let (docs, events) = recorded_documents();
+        let info = docs.open(&first).unwrap();
+        type_text(&docs, info.id, 0, 3, "own");
+        docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&first, "old")], ..Default::default() }).unwrap();
+        if external {
+            std::fs::write(&first, "ext\n").unwrap();
+        }
+        let undone = docs.undo_workspace_edit(undo_id(&events));
+        if external {
+            assert_eq!(std::fs::read_to_string(&first).unwrap(), "ext\n");
+            assert_eq!(undone.unwrap_err().kind, ErrorKind::OutOfSync);
+        } else {
+            undone.unwrap();
+            assert_eq!(docs.snapshot(info.id).unwrap().text, "own\n");
+        }
+    }
+}
+
+#[test]
+fn undo_refuses_an_external_write_under_typing_made_after_the_edit() {
+    for external in [true, false] {
+        let tmp = tempfile::tempdir().unwrap();
+        let first = tmp.path().join("first.txt");
+        std::fs::write(&first, "old\n").unwrap();
+        let (docs, events) = recorded_documents();
+        let info = docs.open(&first).unwrap();
+        docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&first, "new")], ..Default::default() }).unwrap();
+        type_text(&docs, info.id, 3, 3, "x");
+        if external {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::fs::write(&first, "ext\n").unwrap();
+            docs.on_disk_changed(std::slice::from_ref(&first));
+        }
+        // Undoing the typing brings back the refactored text.
+        type_text(&docs, info.id, 3, 4, "");
+        let undone = docs.undo_workspace_edit(undo_id(&events));
+        if external {
+            assert_eq!(std::fs::read_to_string(&first).unwrap(), "ext\n");
+            assert_eq!(undone.unwrap_err().kind, ErrorKind::OutOfSync);
+        } else {
+            undone.unwrap();
+            assert_eq!(std::fs::read_to_string(&first).unwrap(), "old\n");
+        }
+    }
+}
+
+#[test]
+fn undo_refuses_when_one_of_several_unsaved_files_changed_on_disk() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (a, b) = (tmp.path().join("a.txt"), tmp.path().join("b.txt"));
+    std::fs::write(&a, "old\n").unwrap();
+    std::fs::write(&b, "old\n").unwrap();
+    let (docs, events) = recorded_documents();
+    for path in [&a, &b] {
+        let info = docs.open(path).unwrap();
+        type_text(&docs, info.id, 3, 3, " own");
+    }
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&a, "new"), edit(&b, "new")], ..Default::default() })
+        .unwrap();
+    std::fs::write(&b, "ext\n").unwrap();
+    assert_eq!(docs.undo_workspace_edit(undo_id(&events)).unwrap_err().kind, ErrorKind::OutOfSync);
+    assert_eq!(std::fs::read_to_string(&a).unwrap(), "old\n");
+    assert_eq!(std::fs::read_to_string(&b).unwrap(), "ext\n");
+}
+
+#[test]
+fn undo_accepts_autosave_same_byte_writes_and_changes_outside_the_edit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (a, b, other) = (tmp.path().join("a.txt"), tmp.path().join("b.txt"), tmp.path().join("other.txt"));
+    for path in [&a, &b, &other] {
+        std::fs::write(path, "old\n").unwrap();
+    }
+    let (docs, events) = recorded_documents();
+    let mut ids = Vec::new();
+    for path in [&a, &b, &other] {
+        let info = docs.open(path).unwrap();
+        type_text(&docs, info.id, 3, 3, " own");
+        ids.push(info.id);
+    }
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&a, "new"), edit(&b, "new")], ..Default::default() })
+        .unwrap();
+    // Autosave writes the refactored buffer; the same bytes written again and a file the edit
+    // didn't touch changing on disk are not changes under the edit's unsaved buffers.
+    assert!(docs.autosave(ids[0]).unwrap());
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    std::fs::write(&b, "old\n").unwrap();
+    std::fs::write(&other, "ext\n").unwrap();
+    docs.undo_workspace_edit(undo_id(&events)).unwrap();
+    assert_eq!(std::fs::read_to_string(&a).unwrap(), "old\n");
+    assert_eq!(docs.snapshot(ids[0]).unwrap().text, "old own\n");
+    assert_eq!(docs.snapshot(ids[1]).unwrap().text, "old own\n");
+    assert_eq!(std::fs::read_to_string(&other).unwrap(), "ext\n");
+}
+
+/// Typing after an autosave and deleting it again leaves a buffer marked unsaved that would save
+/// exactly the file's bytes: nothing on disk can be lost, so undo goes ahead.
+#[test]
+fn undo_accepts_an_unsaved_buffer_that_matches_the_file_again() {
+    for (large, external_same_bytes) in [(true, false), (false, true)] {
+        let tmp = tempfile::tempdir().unwrap();
+        let first = tmp.path().join("first.txt");
+        // Large files keep no clean text, so returning to it doesn't clear the dirty flag.
+        let tail = if large { "x".repeat(6 << 20) } else { String::new() };
+        std::fs::write(&first, format!("old\n{tail}")).unwrap();
+        let (docs, events) = recorded_documents();
+        let info = docs.open(&first).unwrap();
+        type_text(&docs, info.id, 0, 3, "own");
+        docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&first, "new")], ..Default::default() }).unwrap();
+        assert!(docs.autosave(info.id).unwrap());
+        type_text(&docs, info.id, 3, 3, "x");
+        if external_same_bytes {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::fs::write(&first, format!("new\n{tail}")).unwrap();
+            docs.on_disk_changed(std::slice::from_ref(&first));
+        }
+        type_text(&docs, info.id, 3, 4, "");
+        assert!(docs.snapshot(info.id).unwrap().dirty);
+        docs.undo_workspace_edit(undo_id(&events)).unwrap();
+        assert!(std::fs::read_to_string(&first).unwrap().starts_with("old\n"));
+    }
+}
+
+/// Typing after the refactoring, saving it (explicitly or by autosave) and undoing the typing
+/// leaves a buffer marked unsaved that holds the refactored text over the IDE's own save.
+#[test]
+fn undo_accepts_typing_saved_by_the_ide_then_undone() {
+    for (unsaved_before, autosave, large) in
+        [(false, false, false), (true, false, false), (false, true, false), (true, true, false), (false, true, true)]
+    {
+        let tmp = tempfile::tempdir().unwrap();
+        let first = tmp.path().join("first.txt");
+        let tail = if large { "x".repeat(6 << 20) } else { String::new() };
+        std::fs::write(&first, format!("old\n{tail}")).unwrap();
+        let (docs, events) = recorded_documents();
+        let info = docs.open(&first).unwrap();
+        if unsaved_before {
+            type_text(&docs, info.id, 4, 4, "own");
+        }
+        docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&first, "new")], ..Default::default() }).unwrap();
+        type_text(&docs, info.id, 3, 3, "!");
+        if autosave {
+            assert!(docs.autosave(info.id).unwrap());
+        } else {
+            docs.save(info.id).unwrap();
+        }
+        type_text(&docs, info.id, 3, 4, "");
+        assert!(docs.snapshot(info.id).unwrap().dirty);
+        let undone = docs.undo_workspace_edit(undo_id(&events));
+        assert!(undone.is_ok(), "{unsaved_before} {autosave} {large}: {undone:?}");
+    }
+}
+
+/// The file changed under unsaved work before the refactoring and not since: the undo snapshot
+/// already holds that change. Choosing "Keep Editor Changes" on the warning changes no state.
+#[test]
+fn undo_accepts_a_disk_conflict_from_before_the_edit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let first = tmp.path().join("first.txt");
+    std::fs::write(&first, "old\n").unwrap();
+    let (docs, events) = recorded_documents();
+    let info = docs.open(&first).unwrap();
+    type_text(&docs, info.id, 0, 3, "own");
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    std::fs::write(&first, "ext\n").unwrap();
+    docs.on_disk_changed(std::slice::from_ref(&first));
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&first, "new")], ..Default::default() }).unwrap();
+    let undone = docs.undo_workspace_edit(undo_id(&events));
+    assert!(undone.is_ok(), "{undone:?}");
+    assert_eq!(std::fs::read_to_string(&first).unwrap(), "ext\n");
+    assert_eq!(docs.snapshot(info.id).unwrap().text, "own\n");
+}
+
+/// Recorded only: an external write that lands while undo patches the buffer.
+#[test]
+fn record_redo_after_a_write_during_undo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let first = tmp.path().join("first.txt");
+    std::fs::write(&first, "old\n").unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (sink, trap, target) = (events.clone(), armed.clone(), first.clone());
+    let docs = Documents::new(
+        Arc::new(move |event| {
+            if matches!(event, IdeEvent::DocPatched { .. }) && trap.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                std::fs::write(&target, "ext\n").unwrap();
+            }
+            sink.lock().push(event);
+        }),
+        Box::new(|_, _| LanguageId::plain_text()),
+    );
+    let info = docs.open(&first).unwrap();
+    type_text(&docs, info.id, 0, 3, "own");
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&first, "new")], ..Default::default() }).unwrap();
+    let id = undo_id(&events);
+    armed.store(true, std::sync::atomic::Ordering::SeqCst);
+    let undone = docs.undo_workspace_edit(id);
+    let disk_after_undo = std::fs::read_to_string(&first).unwrap();
+    let redone = docs.redo_workspace_edit(id);
+    eprintln!(
+        "REDO-INJECT undo={:?} disk_after_undo={disk_after_undo:?} redo={:?} disk_after_redo={:?}",
+        undone.map_err(|e| e.kind),
+        redone.map_err(|e| e.kind),
+        std::fs::read_to_string(&first).unwrap()
+    );
+}
+
+#[test]
 fn create_conflict_does_not_modify_earlier_files() {
     let tmp = tempfile::tempdir().unwrap();
     let first = tmp.path().join("first.txt");

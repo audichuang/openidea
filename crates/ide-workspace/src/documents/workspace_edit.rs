@@ -374,6 +374,25 @@ impl Documents {
             .collect()
     }
 
+    /// `fingerprints` sees an unsaved buffer, not its file. A file autosave wouldn't overwrite
+    /// (changed since the IDE last read or wrote it) that the buffer doesn't match would be lost.
+    fn validate_unsaved_disk(&self, roots: &[PathBuf]) -> IdeResult<()> {
+        for id in self.open_documents() {
+            self.with_doc(id, |state| {
+                let file = text_path(&state.path)?;
+                if !state.dirty || !roots.iter().any(|root| file.starts_with(root)) {
+                    return Ok(());
+                }
+                let changed = state.disk_conflict
+                    || fs::metadata(&file).map_or(true, |meta| {
+                        ide_vfs::mtime_ms(&meta) != state.disk_mtime || meta.len() != state.disk_len
+                    });
+                if changed && differs_from_disk(state)? { Err(stale(&file)) } else { Ok(()) }
+            })?;
+        }
+        Ok(())
+    }
+
     fn validate_preconditions(&self, expected: &[WorkspaceEditPrecondition]) -> IdeResult<()> {
         let current = self.fingerprints(&expected.iter().map(|p| p.path.to_path_buf()).collect::<Vec<_>>())?;
         for (before, after) in expected.iter().zip(current) {
@@ -876,6 +895,7 @@ impl Documents {
         }
         self.validate_preconditions(&record.after)?;
         let roots = record.paths.iter().map(|p| p.path.clone()).collect::<Vec<_>>();
+        self.validate_unsaved_disk(&roots)?;
         let mut current = self.backup(&roots)?;
         fs::write(current.directory.path().join("recovery"), b"history restore in progress")?;
         let _active = ActiveEdit::new(&self.workspace_edit_active);
