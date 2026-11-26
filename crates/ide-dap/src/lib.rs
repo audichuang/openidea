@@ -2305,9 +2305,13 @@ impl DebugManager {
     /// Stops every debug session started from `root` or below — closing a project stops the
     /// programs it launched even when the session's owner key does not name the window doing
     /// the closing (window groups, auxiliary windows).
+    /// Sessions whose working directory lies under `root`.
+    pub fn session_ids_under(&self, root: &Path) -> Vec<DebugSessionId> {
+        self.live_sessions().into_iter().filter(|s| s.spec.cwd.starts_with(root)).map(|s| s.id).collect()
+    }
+
     pub async fn stop_under(&self, root: &Path) {
-        let ids: Vec<DebugSessionId> =
-            self.live_sessions().into_iter().filter(|s| s.spec.cwd.starts_with(root)).map(|s| s.id).collect();
+        let ids = self.session_ids_under(root);
         tracing::info!(root = %root.display(), sessions = ids.len(), "closing project: stopping debug sessions");
         for id in ids {
             if let Err(e) = self.stop(id).await {
