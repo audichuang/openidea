@@ -166,9 +166,10 @@ struct ShutdownWork {
     notebooks: Vec<Arc<notebook::NotebookService>>,
     bridges: Vec<Arc<kotlin_bridge::KotlinBridge>>,
     lsp: Option<Arc<ide_lsp::LspManager>>,
-    /// The window's debug sessions, taken when the close starts: by the time the background
-    /// shutdown runs, the window may already debug the next project it opened.
-    debug: Option<(Arc<ide_dap::DebugManager>, Vec<ide_core::DebugSessionId>, Option<std::path::PathBuf>)>,
+    /// The window's debug sessions and those under the project root, taken when the close
+    /// starts: by the time the background shutdown runs, the window may already debug the
+    /// next project it opened, even with a working directory under this root.
+    debug: Option<(Arc<ide_dap::DebugManager>, Vec<ide_core::DebugSessionId>)>,
     agents: Vec<Arc<ide_agent::AgentManager>>,
     terminals: Option<ide_terminal::DetachedTerminals>,
     processes: Option<ide_run::DetachedProcessKills>,
@@ -458,11 +459,15 @@ impl Host {
             bridges: project.kotlin_bridge.iter().cloned().collect(),
             lsp: Some(project.lsp.clone()),
             // Debug sessions under the root belong to windows: a project served without one starts none.
-            debug: Some((
-                self.debugger.clone(),
-                self.debugger.sessions(Some(window)).into_iter().map(|s| s.id).collect(),
-                (!background).then(|| project.root.clone()),
-            )),
+            debug: Some((self.debugger.clone(), {
+                let mut ids: Vec<_> = self.debugger.sessions(Some(window)).into_iter().map(|s| s.id).collect();
+                if !background {
+                    ids.extend(self.debugger.session_ids_under(&project.root));
+                }
+                ids.sort_unstable();
+                ids.dedup();
+                ids
+            })),
             agents: vec![project.agents.clone()],
             terminals: Some(terminals),
             processes: Some(processes),
@@ -511,14 +516,11 @@ impl Host {
                 if let Some(lsp) = work.lsp {
                     lsp.shutdown_all().await;
                 }
-                if let Some((debug, sessions, root)) = work.debug {
+                if let Some((debug, sessions)) = work.debug {
                     for id in sessions {
                         if let Err(e) = debug.stop(id).await {
                             tracing::debug!("debug session {id:?} did not stop: {e}");
                         }
-                    }
-                    if let Some(root) = root {
-                        debug.stop_under(&root).await;
                     }
                 }
             });
