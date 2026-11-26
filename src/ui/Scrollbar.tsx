@@ -14,7 +14,8 @@ export const hideNativeScrollbar = styles.hideNative;
  * native one scrolls asynchronously in WebKit and shows blank rows until the
  * page catches up.
  *
- * `contentHeight` re-measures when the scroller's content grows.
+ * `contentHeight` re-measures when the scroller's content grows; content that grows without it is
+ * caught by observing the scroller's children.
  * While the thumb is shown, `target` carries `data-scrollbar-shown`.
  */
 export function Scrollbar({
@@ -49,13 +50,23 @@ export function Scrollbar({
     const observer = new ResizeObserver(() => {
       geometry.current = layout(el, track.current, thumb.current);
     });
-    observer.observe(el);
+    // The scroller's size does not change when its content grows (a Markdown preview reflowing),
+    // so observe its children too, and again when they are replaced.
+    const observe = () => {
+      observer.disconnect();
+      observer.observe(el);
+      for (const child of el.children) observer.observe(child);
+    };
+    observe();
+    const replaced = new MutationObserver(observe);
+    replaced.observe(el, { childList: true });
     window.addEventListener("blur", endDrag);
     return () => {
       endDrag();
       window.removeEventListener("blur", endDrag);
       el.removeEventListener("scroll", sync);
       observer.disconnect();
+      replaced.disconnect();
     };
   }, [target, endDrag]);
 
