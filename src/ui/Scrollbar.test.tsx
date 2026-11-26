@@ -162,7 +162,7 @@ describe("Scrollbar", () => {
     expect(thumb.style.height).toBe("32px");
   });
 
-  it("measures again when the scroller or its content resizes without a scroll", () => {
+  it("measures again when the scroller or its content resizes without a scroll", async () => {
     const resize = fakeResizeObserver();
     const { getByTestId, container } = render(<Harness onScroll={() => {}} contentHeight={100} />);
     const scroller = getByTestId("scroller");
@@ -178,6 +178,18 @@ describe("Scrollbar", () => {
     resize(getByTestId("content"));
     expect(track.style.display).toBe("");
     expect(thumb.style.height).toBe("50px");
+
+    // Content replaced (a Markdown preview re-rendered), then growing.
+    const replaced = document.createElement("div");
+    act(() => {
+      scroller.replaceChildren(replaced);
+    });
+    await Promise.resolve();
+    size.content = 400;
+    resize(replaced);
+    expect(thumb.style.height).toBe("32px");
+    expect(thumb.style.transform).toBe("translateY(0px)");
+    size.content = 200;
 
     // The scroller itself shrinking (a splitter drag).
     size.client = 50;
