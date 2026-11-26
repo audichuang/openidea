@@ -498,10 +498,13 @@ describe("Git Graph pseudo rows and panels", () => {
       });
     render(<GitGraphEditor />);
     await screen.findByText("subject a");
-    for (const [tab, load, shown] of [
+    const tabs = [
       ["Statistics", graphAuthorStats, "Commits: 3, authors: 1"],
       ["Reflog", graphReflog, "commit: subject a"],
-    ] as const) {
+    ] as const;
+    // One tab after the other: each tab's reload must settle before the next tab opens.
+    await tabs.reduce(async (previous, [tab, load, shown]) => {
+      await previous;
       fireEvent.click(screen.getByRole("tab", { name: tab }));
       const row = await screen.findByText(shown);
       // The reload is still running: the list stays instead of a spinner.
@@ -513,7 +516,7 @@ describe("Git Graph pseudo rows and panels", () => {
       expect(screen.getByText(shown)).toBe(row);
       await act(async () => finish(await result));
       expect(screen.getByText(shown)).toBe(row);
-    }
+    }, Promise.resolve());
     // A refresh that changed the result still updates the panel.
     graphReflog.mockImplementation(() =>
       ok([{ selector: "HEAD@{0}", id: "d".padEnd(40, "0"), action: "reset", timeMs: 2 }]),
