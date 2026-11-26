@@ -153,7 +153,6 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
   };
   // WebKit does not focus a clicked button, so the toggle's click leaves the focus on an outer
   // container (the tool window) where ⌘F misses this view: give it to the body.
-  const root = useRef<HTMLDivElement>(null);
   const refocus = useRef(false);
   useEffect(() => {
     if (!refocus.current) return;
