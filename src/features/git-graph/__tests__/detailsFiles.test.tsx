@@ -385,10 +385,15 @@ describe("Git Graph changed files", () => {
     const view = render(details(commit("a")));
     await flush();
     expect(vcsCommitFiles).toHaveBeenCalledTimes(1);
-    for (const id of ["b", "c", "d", "e"]) {
+    // One after another: each selection lands before the next, inside the selection delay.
+    const select = async (id: string) => {
       view.rerender(details(commit(id)));
       await flush(SELECTION_DELAY / 4);
-    }
+    };
+    await select("b");
+    await select("c");
+    await select("d");
+    await select("e");
     expect(vcsCommitFiles).toHaveBeenCalledTimes(1);
     await flush(SELECTION_DELAY);
     expect(vcsCommitFiles).toHaveBeenCalledTimes(2);
