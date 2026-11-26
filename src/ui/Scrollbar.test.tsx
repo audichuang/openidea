@@ -1,6 +1,6 @@
 import { act, fireEvent, render } from "@testing-library/react";
 import { useRef } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Scrollbar } from "./Scrollbar";
 
 function Harness({ onScroll, contentHeight }: { onScroll: (top: number) => void; contentHeight: number }) {
@@ -8,12 +8,46 @@ function Harness({ onScroll, contentHeight }: { onScroll: (top: number) => void;
   return (
     <div style={{ position: "relative" }}>
       <Scrollbar target={ref} contentHeight={contentHeight} />
-      <div ref={ref} data-testid="scroller" onScroll={(e) => onScroll(e.currentTarget.scrollTop)} />
+      <div ref={ref} data-testid="scroller" onScroll={(e) => onScroll(e.currentTarget.scrollTop)}>
+        <div data-testid="content" />
+      </div>
     </div>
   );
 }
 
+/** A ResizeObserver the test fires by hand, for the elements it was told to observe. */
+function fakeResizeObserver() {
+  const observers = new Set<{ callback: () => void; targets: Set<Element> }>();
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      entry: { callback: () => void; targets: Set<Element> };
+      constructor(callback: () => void) {
+        this.entry = { callback, targets: new Set() };
+        observers.add(this.entry);
+      }
+      observe(target: Element) {
+        this.entry.targets.add(target);
+      }
+      unobserve(target: Element) {
+        this.entry.targets.delete(target);
+      }
+      disconnect() {
+        this.entry.targets.clear();
+      }
+    },
+  );
+  return (target: Element) => {
+    act(() => {
+      for (const o of observers) if (o.targets.has(target)) o.callback();
+    });
+  };
+}
+
 describe("Scrollbar", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
   it("notifies scroll listeners synchronously while the thumb is dragged", () => {
     const onScroll = vi.fn();
     const { getByTestId, container, rerender } = render(<Harness onScroll={onScroll} contentHeight={0} />);
@@ -102,5 +136,37 @@ describe("Scrollbar", () => {
     expect(height).not.toHaveBeenCalled();
     expect(content).not.toHaveBeenCalled();
     expect(offset).not.toHaveBeenCalled();
+  });
+
+  it("measures again when the scroller or its content resizes without a scroll", async () => {
+    const resize = fakeResizeObserver();
+    const { getByTestId, container } = render(<Harness onScroll={() => {}} contentHeight={100} />);
+    const scroller = getByTestId("scroller");
+    const size = { client: 100, content: 100 };
+    Object.defineProperties(scroller, {
+      clientHeight: { configurable: true, get: () => size.client },
+      scrollHeight: { configurable: true, get: () => size.content },
+      scrollTop: { configurable: true, value: 0 },
+    });
+    resize(scroller);
+    const track = container.querySelector<HTMLElement>("[aria-hidden]")!;
+    const thumb = track.firstElementChild as HTMLElement;
+    expect(track.style.display).toBe("none");
+
+    // Content that grows with the same `contentHeight` and the same scroller size.
+    size.content = 200;
+    resize(getByTestId("content"));
+    expect(track.style.display).toBe("");
+    expect(thumb.style.height).toBe("50px");
+
+    // Content replaced (a Markdown preview re-rendered), then growing.
+    const replaced = document.createElement("div");
+    act(() => {
+      scroller.replaceChildren(replaced);
+    });
+    await Promise.resolve();
+    size.content = 400;
+    resize(replaced);
+    expect(thumb.style.height).toBe("32px");
   });
 });
