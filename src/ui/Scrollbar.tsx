@@ -43,18 +43,29 @@ export function Scrollbar({
   useEffect(() => {
     const el = target.current;
     if (!el) return;
-    const sync = () => {
-      geometry.current = layout(el, track.current, thumb.current);
-    };
+    // A scroll only moves the thumb: measuring here forced a layout on every scroll event.
+    const sync = () => moveThumb(thumb.current, geometry.current, el.scrollTop);
     el.addEventListener("scroll", sync, { passive: true });
-    const observer = new ResizeObserver(sync);
-    observer.observe(el);
+    // The scroll range changes when the scroller or its content resizes, including content that
+    // grows without a new `contentHeight` (a Markdown preview's images loading).
+    const observer = new ResizeObserver(() => {
+      geometry.current = layout(el, track.current, thumb.current);
+    });
+    const observe = () => {
+      observer.disconnect();
+      observer.observe(el);
+      for (const child of el.children) observer.observe(child);
+    };
+    observe();
+    const replaced = new MutationObserver(observe);
+    replaced.observe(el, { childList: true });
     window.addEventListener("blur", endDrag);
     return () => {
       endDrag();
       window.removeEventListener("blur", endDrag);
       el.removeEventListener("scroll", sync);
       observer.disconnect();
+      replaced.disconnect();
     };
   }, [target, endDrag]);
 
@@ -110,8 +121,12 @@ function layout(el: HTMLElement | null, t: HTMLElement | null, th: HTMLElement |
   const size = Math.max(MIN_THUMB, (height * height) / el.scrollHeight);
   const range = height - size;
   th.style.height = `${size}px`;
-  th.style.transform = `translateY(${(Math.min(max, el.scrollTop) / max) * range}px)`;
+  moveThumb(th, { range, max }, el.scrollTop);
   return range > 0 ? { range, max } : null;
+}
+
+function moveThumb(th: HTMLElement | null, g: Geometry | null, top: number) {
+  if (th && g) th.style.transform = `translateY(${(Math.min(g.max, top) / g.max) * g.range}px)`;
 }
 
 /**
