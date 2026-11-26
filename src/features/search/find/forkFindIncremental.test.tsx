@@ -106,12 +106,15 @@ async function streamBatches(total: number, batchSize: number, groupByDirectory:
     await vi.advanceTimersByTimeAsync(0);
   });
 
-  for (let i = 0; i < total; i += batchSize) {
+  // Batches arrive one frame after another, as files stream in.
+  const batchStarts = Array.from({ length: Math.ceil(total / batchSize) }, (_, b) => b * batchSize);
+  await batchStarts.reduce(async (previous, i) => {
+    await previous;
     await act(async () => {
       for (let j = i; j < i + batchSize; j++) onFile(makeFile(j));
       await vi.advanceTimersToNextFrame();
     });
-  }
+  }, Promise.resolve());
   await act(async () => {
     finish({ files: total, matches: total, limitHit: false, cancelled: false, elapsedMs: 10 });
     await vi.advanceTimersByTimeAsync(0);

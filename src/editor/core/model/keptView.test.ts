@@ -28,8 +28,11 @@ const host: SlotHost = {
   onContextMenu: () => {},
 };
 
-const settle = async () => {
-  for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
+/** Ten macrotask ticks, one after another: each flushes work scheduled during the previous one. */
+const settle = async (ticks = 10): Promise<void> => {
+  if (ticks === 0) return;
+  await new Promise((r) => setTimeout(r, 0));
+  return settle(ticks - 1);
 };
 const frame = () => new Promise((r) => requestAnimationFrame(r));
 
