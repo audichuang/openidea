@@ -383,12 +383,7 @@ impl Documents {
             self.with_doc(id, |state| {
                 let file = text_path(&state.path)?;
                 if state.dirty && paths.iter().any(|path| file.starts_with(path)) && differs_from_disk(state)? {
-                    let mut hash = blake3::Hasher::new();
-                    hash_disk(&mut hash, &file, &HashMap::new())?;
-                    out.push(WorkspaceEditPrecondition {
-                        path: file.into(),
-                        hash: hash.finalize().to_hex().to_string(),
-                    });
+                    out.push(WorkspaceEditPrecondition { hash: disk_hash(&file)?, path: file.into() });
                 }
                 Ok(())
             })?;
@@ -396,13 +391,21 @@ impl Documents {
         Ok(out)
     }
 
-    /// An external write under a buffer that is still unsaved would be lost to the restore.
-    fn validate_unsaved_disk(&self, expected: &[WorkspaceEditPrecondition]) -> IdeResult<()> {
-        let current = self.unsaved_disk(&expected.iter().map(|p| p.path.to_path_buf()).collect::<Vec<_>>())?;
-        for before in expected {
-            if current.iter().any(|now| now.path == before.path && now.hash != before.hash) {
-                return Err(stale(&before.path));
-            }
+    /// An external write under a buffer that is unsaved now would be lost to the restore. `after`
+    /// already showed each such buffer holds the refactored text, so only its file can have changed.
+    fn validate_unsaved_disk(&self, roots: &[PathBuf], expected: &[WorkspaceEditPrecondition]) -> IdeResult<()> {
+        for id in self.open_documents() {
+            self.with_doc(id, |state| {
+                let file = text_path(&state.path)?;
+                if !state.dirty || !roots.iter().any(|root| file.starts_with(root)) || !differs_from_disk(state)? {
+                    return Ok(());
+                }
+                // Without a record the file held the refactored text, as the buffer still does.
+                match expected.iter().find(|recorded| recorded.path.to_path_buf() == file) {
+                    Some(recorded) if disk_hash(&file)? == recorded.hash => Ok(()),
+                    _ => Err(stale(&file)),
+                }
+            })?;
         }
         Ok(())
     }
@@ -913,8 +916,8 @@ impl Documents {
             return Err(IdeError::invalid("the refactoring is already in the requested history state"));
         }
         self.validate_preconditions(&record.after)?;
-        self.validate_unsaved_disk(&record.after_disk)?;
         let roots = record.paths.iter().map(|p| p.path.clone()).collect::<Vec<_>>();
+        self.validate_unsaved_disk(&roots, &record.after_disk)?;
         let mut current = self.backup(&roots)?;
         fs::write(current.directory.path().join("recovery"), b"history restore in progress")?;
         let _active = ActiveEdit::new(&self.workspace_edit_active);
@@ -938,6 +941,12 @@ impl Documents {
         history.prune(SystemTime::now(), MAX_HISTORY_BYTES, MAX_HISTORY_AGE);
         Ok(())
     }
+}
+
+fn disk_hash(path: &Path) -> IdeResult<String> {
+    let mut hash = blake3::Hasher::new();
+    hash_disk(&mut hash, path, &HashMap::new())?;
+    Ok(hash.finalize().to_hex().to_string())
 }
 
 fn check_link_parents(path: &Path) -> IdeResult<()> {
