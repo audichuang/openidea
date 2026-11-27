@@ -4237,7 +4237,7 @@ dependencies = [
 
 [[package]]
 name = "ide-clip"
-version = "0.1.53"
+version = "0.1.54"
 dependencies = [
  "base64 0.22.1",
  "dunce",
