@@ -5,6 +5,8 @@
   { "query": "幫我準備一個 OpenIDEA 上游 PR：diff 虛擬化，數字要在 WebKit 也量", "should_trigger": true },
   { "query": "l0ng-ai/openidea 的維護者都怎麼驗收效能 PR？我要送一個 perf PR", "should_trigger": true },
   { "query": "send this OpenIDEA fix upstream to l0ng-ai/openidea as a draft PR", "should_trigger": true },
+  { "query": "上游 l0ng-ai/openidea 的 PR 6503 合併了，幫我把 worktree 和分支收掉", "should_trigger": true },
+  { "query": "再從 OpenIDEA 上游 issue 挑兩個好送的，派 worker 各做一個 PR", "should_trigger": true },
   { "query": "openidea fork 的 Git Graph 修好了，開 PR 進 develop", "should_trigger": false },
   { "query": "OpenIDEA 的 ⌘V 貼上修好了，在 app 裡實際驗證一下", "should_trigger": false },
   { "query": "幫我修 openidea fork 的 issue #480 然後提 PR", "should_trigger": false },
