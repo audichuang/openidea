@@ -29,7 +29,7 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
   - PR 開著、有 `<!-- auto-rebase:develop-moved <sha> -->` 留言（前一次 run 移動 develop 後、發版途中死了，或發版失敗）→ vNEW=vX、PR=那個 PR，直接做第 6 步，發的是最後一則 develop-moved 留言裡的 sha；vOLD 與 OLD_DEVELOP 取 PR 說明。
     - 例外：那個 sha 已有 `vX-fork.N` tag，但這個 tag 沒有已發布的 Release（`gh release view <tag> -R audichuang/openidea` 失敗），它最近一次 fork-release run 是 completed failure，而 `fork/develop` 已經越過它（`git merge-base --is-ancestor <sha> fork/develop` 成功、兩者不同），`fork/develop` 的 develop push Fork CI `Fork CI passed` 成功。tag 的 run 永遠用 tag 那個 commit 的 workflow，所以 workflow 本身的問題重跑修不好，只能發新的 commit（v0.1.48-fork.1：macOS 的 tsc 超過 Node heap，#354、#355）。
     - 這時改發 `fork/develop`：先在 PR 留一則第一行是 `<!-- auto-rebase:develop-moved <fork/develop 完整 sha> -->` 的留言，寫明舊 tag 為什麼失敗、`<舊 sha>..fork/develop` 帶進哪些 commit，再做第 6 步。第 6 步第 1 點會照常算下一個 N；舊 tag 不刪也不移。precheck 看到這個狀態就起 run，不等鎖過期。
-  - PR 開著、沒有 develop-moved、**最後一則** `<!-- auto-rebase:approved <sha> -->` 留言排在最後一則 needs-human 之後、sha 等於 `git rev-parse fork/rebase/vX`（使用者看過 needs-human 的 PR 後核可；和 precheck 同一個定義。sha 不等代表核可後又推過；排在 needs-human 之前代表之前的 run 已拒絕它。兩者都是核可作廢，照下一條處理）→ vNEW=vX、PR=那個 PR，vOLD 與 OLD_DEVELOP 取 PR 說明。先確認 Fork CI 在這個 sha 上 `Fork CI passed` 成功。核可只解除需要人決定的事（保留路徑、自審沒過的取捨），不放行紅燈：上游也紅的 job 要在交人前照第 3b 步第 1 點的 #252 filter 例外修綠，PR 說明列為上游也紅不算綠。不成功就 PR 留言 `<!-- auto-rebase:needs-human -->` 說明 CI 哪裡不綠、核可不能放行，跳第 7 步。都符合就 `git checkout --detach <sha>`，從第 4 步「移動」做起（不重跑 rebase 與閘門），接著第 5、6 步。
+  - PR 開著、沒有 develop-moved、**最後一則** `<!-- auto-rebase:approved <sha> -->` 留言排在最後一則 needs-human 之後、sha 等於 `git rev-parse fork/rebase/vX`（使用者看過 needs-human 的 PR 後核可；和 precheck 同一個定義。sha 不等代表核可後又推過；排在 needs-human 之前代表之前的 run 已拒絕它。兩者都是核可作廢，照下一條處理）→ vNEW=vX、PR=那個 PR，vOLD 與 OLD_DEVELOP 取 PR 說明。先確認 Fork CI 在這個 sha 上 `Fork CI passed` 成功。核可只解除需要人決定的事（保留路徑、自審沒過的取捨），不放行紅燈：上游也紅的 job 要在交人前照第 3b 步第 1 點的 #252 filter 例外修綠，PR 說明列為上游也紅不算綠。不成功就 PR 留言 `<!-- auto-rebase:needs-human -->` 說明 CI 哪裡不綠、核可不能放行，跳第 7 步。再確認 vX 仍是上游已發布的 Release：`gh release view vX -R l0ng-ai/openidea --json isDraft` 回 404 或 `isDraft` 為 true 代表上游撤回了，不移動、不發版，PR 留 needs-human 寫明撤回與鎖上不會被 rerere 重放的修正 commit（下一輪從頭 rebase 時要搬），跳第 7 步；precheck 等上游發下一版再收鎖（v0.1.52 核可後上游撤下 Release，#509）。查詢本身失敗（網路、`gh`）不算撤回：不留言，跳第 7 步，下一次排程再查（核可之後的 needs-human 會讓核可作廢）。都符合就 `git checkout --detach <sha>`，從第 4 步「移動」做起（不重跑 rebase 與閘門），接著第 5、6 步。
   - PR 開著、有 `<!-- auto-rebase:needs-human -->` 留言、沒有符合上一條的 approved（precheck 只在它過時才讓你跑到這：上游出了更新的 release，或 develop 已經在 vX）→ **收鎖**：`rebase/vX` 的 tip 不在 `fork/develop` 或 `fork/backup/*` 上就先 `git push fork "fork/rebase/vX:refs/heads/backup/rebase-vX-$RUN"`；PR 留言說明原因後 `gh pr close`，刪 fork 的 `rebase/vX` 與 `ci-base/vX`。然後重新判斷：vNEW == vOLD 就結束、不推通知；否則 NEW。
   - 其他（precheck 判定鎖過期：前一次 run 死了）→ 同樣先備份不在 develop／backup 上的 tip、關 PR（有的話）、刪兩條分支，當 NEW 從頭來。不續跑半途的 rebase：從頭重來比較可靠。
 - 沒有 `rebase/*` 且 vNEW == vOLD：
@@ -63,7 +63,12 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
 
    腳本已經 `git checkout --conflict=diff3`（rerere 重放過的也會被重建後重解）；解完 `git add <檔>`、`GIT_EDITOR=true git rebase --continue`。停下來卻沒有衝突檔、index 有東西（rerere 重放了先前的解法，`--continue` 報 staged changes）：檢查 diff 後 `git commit -F "$(git rev-parse --git-path rebase-merge/message)"` 再 continue，記成 rerere 重放。把每個衝突檔、它的類別與 commit 記進 `$MAIN/.rebase-review/conflicts.txt`，PR 說明要用。
 
-4. rebase 完重新產生生成檔（在 Mac mini 上 Rust 一律走 `rust-remote`）：`pnpm install --lockfile-only`；`rust-remote --pull Cargo.lock metadata --format-version 1 > /dev/null`。`src/bindings.ts` 也在這裡重新產生：`rust-remote --pull src/bindings.ts test -p openidea --test export_bindings`（衝突時取上游那邊會丟掉該 commit 帶的 fork 指令，v0.1.40 就是這樣）。有差異就一個 commit `chore(fork): 重新產生 lockfile 與 bindings`（MECHANICAL）。編不過就是 rebase 結果有問題，照第 2 步的規則修。
+4. rebase 完重新產生生成檔（在 Mac mini 上 Rust 一律走 `rust-remote`）：`pnpm install --lockfile-only`；`rust-remote --pull Cargo.lock metadata --format-version 1 > /dev/null`。`src/bindings.ts` 也在這裡重新產生：`rust-remote --pull src/bindings.ts test -p openidea --test export_bindings`（衝突時取上游那邊會丟掉該 commit 帶的 fork 指令，v0.1.40 就是這樣）。重產後列出 `Cargo.lock` 裡既不在 OLD_DEVELOP 也不在 vNEW 的外部套件版本，有就用 `rust-remote --pull Cargo.lock update -p <名>@<新版> --precise <OLD_DEVELOP 的版本>` 退回，或在 PR 說明寫為什麼要新版（v0.1.53 重產時把 fork 專用的 process-wrap 升到 10.0.2，Windows 的 git_runner 因此逾時，#530）：
+   ```sh
+   pairs() { awk '/^\[\[package\]\]/{if(s)print n" "v; n=v=s=""} /^name = /{n=$3} /^version = /{v=$3} /^source = /{s=1} END{if(s)print n" "v}' | sort -u; }
+   comm -23 <(pairs < Cargo.lock) <(sort -u <(git show OLD_DEVELOP:Cargo.lock | pairs) <(git show vNEW:Cargo.lock | pairs))
+   ```
+   有差異就一個 commit `chore(fork): 重新產生 lockfile 與 bindings`（MECHANICAL）。編不過就是 rebase 結果有問題，照第 2 步的規則修。
 5. 模式：沒有衝突、第 4 點沒產生 commit → CLEAN；衝突全是第 3 點的機械類（locale、append、imports、生成檔，由腳本解或取上游後重新產生）加上第 4 點的 commit → MECHANICAL；其餘（自己解的衝突、任何修正 commit）→ MANUAL。
 6. `git push --force fork HEAD:refs/heads/rebase/vNEW`，`git push fork "vNEW^{commit}:refs/heads/ci-base/vNEW"`，開 PR：`gh pr create -R audichuang/openidea --base ci-base/vNEW --head rebase/vNEW --title "[不合併] develop rebase 到 vNEW 的驗證"`，記下 `PR`。body 第一行 `<!-- auto-rebase:old-develop OLD_DEVELOP 的完整 sha -->`，第二行 `<!-- auto-rebase:upstream-base UPSTREAM_BASE 的完整 sha -->`（第 3b 步與續跑要用），其餘寫：為什麼不合併（develop 由 lease 推送移動）、`develop = vOLD(+上游 commit) + N 個 fork commit → vNEW + …`、模式、每個衝突檔的類別與解法、額外 commit。不加任何 attribution 行。
 
@@ -81,7 +86,7 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
 
 `fork-ci.yml` 裡註解標 #252 的 filter（上游也紅而加的），對照上游 NB 的同一個 job：上游已經綠的，在 #252 留言列出可以拿掉的條目和上游 run，寫進第 7 步細節。這一輪不拿掉：拿掉後 fork 紅了，要放回去又是削弱閘門。之後由一般 PR 拿掉。
 
-結果看 `Fork CI passed` 這個 job。Linux Rust job 停在 `Bindings are up to date`，代表第 1 步第 4 點產生的 bindings 和 CI 不一致：重新產生、推上 `rebase/vNEW`（修正 commit，模式變 MANUAL）。`Upstream ci.yml unchanged` 紅了代表上游改了 `ci.yml`：照 FORK.md 把改動移植進 `fork-ci.yml` 並更新 pin（修正 commit，模式變 MANUAL）。其他紅的 job 先 `gh run rerun <id> --failed` 一次；再紅就看上游同一個 job 在 vNEW 是否也紅：`gh run list -R l0ng-ai/openidea --workflow ci.yml --commit $(git rev-parse 'vNEW^{commit}')`。上游也紅 → 不擋（PR 說明附兩邊的 run 連結）；上游綠或沒有可比的 run → fork 造成的，照第 2 步的規則修，修完回到第 3 步。
+結果看 `Fork CI passed` 這個 job。Linux Rust job 停在 `Bindings are up to date`，代表第 1 步第 4 點產生的 bindings 和 CI 不一致：重新產生、推上 `rebase/vNEW`（修正 commit，模式變 MANUAL）。`Upstream ci.yml unchanged` 紅了代表上游改了 `ci.yml`：照 FORK.md 把改動移植進 `fork-ci.yml` 並更新 pin（修正 commit，模式變 MANUAL）。其他紅的 job 先 `gh run rerun <id> --failed` 一次；再紅就看上游同一個 job 在 vNEW 是否也紅：`gh run list -R l0ng-ai/openidea --workflow ci.yml --commit $(git rev-parse 'vNEW^{commit}') --json databaseId,headSha,conclusion`，只認 `headSha` 等於 vNEW 而且沒被取消的 run：vNEW 自己的 run 被取消時，之後 commit 的 run（只改無關檔案也一樣）不算（v0.1.53 引用了下一個 commit 的 run，#530）。上游也紅 → 不擋（PR 說明附兩邊的 run 連結）；上游綠或沒有可比的 run → fork 造成的，照第 2 步的規則修，修完回到第 3 步。
 
 ## 3b. 自審（只有 MANUAL）
 
@@ -94,13 +99,16 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
    - 上游這次改到的視窗 chrome：`git diff --name-status OB NB` 落在保留清單第一項（macOS 視窗 chrome）的檔，rename 的來源與目的路徑都算（上游把保留檔搬走也要人看，FORK.md 的清單跟著更新）。上游自己改了它，沒有衝突也要實機看（第 3c 步）；上游改其他保留路徑不算。
    - 會削弱閘門的修正：修正 commit 改了 `.config/nextest.toml`、`fork-ci.yml` 裡的測試 filter 或 skip，或刪掉、`#[ignore]`、`.skip` 了測試；加了行內抑制（Rust `#[allow(clippy::…)]`／`#[allow(…)]`、`#[cfg_attr(…, allow(…))]`、`// eslint-disable`、`oxlint-disable`、`biome-ignore`、`@ts-ignore`／`@ts-expect-error`、`as any`）；在 lint 或其他檢查的 baseline／允許清單新增條目；或放寬了既有斷言（改期望值遷就新輸出、`assert` 改成較寬的比較、拉長逾時讓失敗變通過）。同樣交人。第 3 點的獨立審查者逐一核對每個修正 commit 有沒有這幾類，結果寫進 self-reviewed 留言。純資源設定（磁碟、逾時、runner）不在此列，由審查者看。
      - 例外：**上游也紅的測試**。上游沒有修正可搬時，照 #252 加 filter 不交人，但下面每一條都要成立。證據只能來自上游自己在 NB 的 CI，不能來自這次的修正：
-       - 上游 `ci.yml` 在 NB 的 run（第 3 步那條 `gh run list -R l0ng-ai/openidea --workflow ci.yml --commit <NB>`）裡，同一個 job 也是紅的。
+       - 上游 `ci.yml` 在 NB 的 run（第 3 步那條 `gh run list -R l0ng-ai/openidea --workflow ci.yml --commit <NB>`，`headSha` 等於 NB）裡，同一個 job 也是紅的。
        - fork 的 job 重跑一次（第 3 步）後仍紅。
        - fork 失敗的測試全都在上游那個 job 的失敗清單裡，而且失敗位置或訊息主體相同，只有名字相同不算。fork 多紅一個，就照「其餘 finding」修或交人：fork 自己弄壞的不能躲在上游的紅後面。
        - 是測試失敗。編不過、job 沒跑起來、逾時被取消都不算。
        - filter 只寫完整測試名（nextest `test(=…)`、Playwright 的 spec 與標題），只套在紅的那個平台的 job。註解寫上游 run 的連結，並開 issue 或在 #252 留言（測試名、兩邊 run、失敗訊息）。
 
        第 3 點的獨立審查者另外核對這項：只給它 fork 與上游的兩個 run id，以及 filter 的 diff，不給你整理的清單；請它確認上面每一條。不成立就交人。PR 留言、release notes 與 Bark 寫「N 個上游也紅的測試已加 filter（#…）」。
+
+     - 例外：**上游從沒跑到的新測試**。OB..NB 新增的測試，上游在 NB 那個平台的 job 停在編譯錯誤、沒跑到測試，第一次在 fork CI 跑到就紅：修正只改測試怎麼組路徑、其他平台的期望值逐位元組不變、紅的平台的期望值有程式依據時，算修測試，不算放寬斷言（v0.1.53 上游 Windows job 全停在編譯錯誤，#530）。第 3 點的獨立審查者與第 4 點的 Codex 只拿上游 run id 與修正 commit，逐條核對。
+     - 例外：**standing decision 的 `revert(macos)` 連帶刪掉的測試**。被刪的測試只涵蓋同一個 commit 刪掉的程式、NT 上線的程式沒有失去覆蓋時，不算刪測試（v0.1.52 的 `bc9862696` 刪了上游平行關閉的 3 個測試而整輪交人，#504）。第 3 點的獨立審查者只拿那個 commit 逐項核對。
 2. **對帳腳本**：同一個 Bash 呼叫裡取出並執行，取不到或是空檔就交人：
    ```sh
    AUDIT=$MAIN/.rebase-review/rebase-audit.py
@@ -140,8 +148,9 @@ git fetch fork --tags && git fetch origin --no-tags '+refs/tags/v*:refs/tags/v*'
      動作：開關是修正 commit（回第 2、3 步，再從第 1 點重審；開關若落在保留路徑就照第 1 點交人）。開 fork issue（現象、為什麼關、上游修好後怎麼打開），編號寫進 self-reviewed 留言、release notes（寫「上游 #… 的〇〇維持 fork 原本的行為」）與第 7 步的細節。這是替使用者做的預設選擇：通知寫一句說明，使用者要上游行為再打開開關。v0.1.49 沒有這個出口，整輪交人只為了問「要不要用上游的輕量視窗」（#394）。
 
    - **其餘 finding**：能用證據證明不成立的，寫進留言駁回；成立的就修（修正 commit），修完回第 2、3 步重跑閘門與 CI，再從本步**第 1 點**重審一次。修正 commit 也可能碰到保留路徑，所以要從第 1 點開始。
+   - **輪數上限**：每次修正後從第 1 點重審都算新的一輪。第二輪是最後一輪；第二輪的修正含上游功能的開關時，可再開第三輪，第三輪是上限，不開第四輪（v0.1.50 的 #440）。最後一輪的 finding 不再修，照上面的分類出口處理：符合已知問題其餘各條、只差「根治要動結構」（幾行修得掉）的，也照已知問題開 issue，不為它交人（v0.1.53、v0.1.54 的 #530：同一機制每輪找到新路徑，不擋使用的 finding 讓整輪交人）。
    - **通過**：三者都沒有剩下的 finding（列為已知問題、或以 fork 開關處理的上游功能 finding 不算），對帳項目也都解釋了。
-   - **交人**：第二輪還有成立、又不符合已知問題或上游功能條件的 finding，或你判斷不了、問過 advisor 也判斷不了。needs-human 留言列出 finding 與你的看法。交人前，最後一輪審查之後才加的修正 commit 也要審完：第 3 點的獨立審查者與第 4 點的 Codex 各看那幾個 commit 一次（不另算一輪，也不因此再修：審出的新問題連同證據列進 needs-human 的細節，跟剩下的 finding 一起交人）。使用者核可的是整個 NT，不該由他當最後一個審查者（v0.1.49 的 needs-human 要使用者「看 4 個修正 commit」，其中 `9a38ecea7` 沒經過任何審查）。第 1 點有視窗 chrome 命中時，交人前的第 3c 步照第 4 步「不符合條件」那段。
+   - **交人**：最後一輪還有成立、又不符合既有問題、已知問題或上游功能條件的 finding，或你判斷不了、問過 advisor 也判斷不了。needs-human 留言列出 finding 與你的看法。交人前，最後一輪審查之後才加的修正 commit 也要審完：第 3 點的獨立審查者與第 4 點的 Codex 各看那幾個 commit 一次（不另算一輪，也不因此再修：審出的新問題連同證據列進 needs-human 的細節，跟剩下的 finding 一起交人）。使用者核可的是整個 NT，不該由他當最後一個審查者（v0.1.49 的 needs-human 要使用者「看 4 個修正 commit」，其中 `9a38ecea7` 沒經過任何審查）。第 1 點有視窗 chrome 命中時，交人前的第 3c 步照第 4 步「不符合條件」那段。
 6. 通過 → 確認 `git rev-parse HEAD` 等於這一輪審過的 NT（不等就回第 1 點），PR 留言第一行 `<!-- auto-rebase:self-reviewed <NT> -->`，下面寫三者的結果摘要，接第 3c 步（第 1 點有視窗 chrome 命中時）或第 4 步。這個標記只是稽核紀錄，precheck 不讀。run 在這之後、推 develop 之前死掉的話，鎖過期後會從頭重來。
 
 ## 3c. 視窗 chrome 實機檢查（任何模式）
@@ -246,7 +255,7 @@ lease 失敗（develop 在這期間合進了別的 PR）→ HEAD 不在 `fork/de
 
 develop 一移動（含已在 HEAD 不重推的情況）就列出這次 rebase 帶進 develop 的 workflow：`git diff --diff-filter=A --name-only OLD_DEVELOP <develop sha> -- .github/workflows/`，`<develop sha>` 在這裡是 HEAD。兩端都用 sha、不用 vOLD／vNEW：tag 可變（上游改過 v0.1.37 的 tag，第 0 步會強制更新 tags），恢復時重新解析會漏列。`gh workflow list -R audichuang/openidea --all --json path,state,name` 裡 path 在這份清單、state 是 active 的，照 FORK.md 馬上 `gh workflow disable`，寫進通知。只比對這份路徑清單：fork 自己的 workflow（包括已刪分支留下的 `zz-*` 註冊）也是 active、名稱也不是 Fork CI，用名稱篩會誤停。`pull_request_target` 從 PR 的 base 分支讀 workflow，develop 一動，下一個對 develop 開的 PR 就會觸發它（v0.1.35 的 `PR check` 幾秒內就在 PR 上貼了 needs-info）。清單裡還沒出現的，第 6 步移動 main 後再查一次。接第 5 步。
 
-不符合條件（MANUAL 而自審沒通過、碰到必交人路徑、第 3c 步沒過或做不了，或有修不掉的紅）→ 不移動。第 3b 步第 1 點命中視窗 chrome（同時命中其他保留項也一樣）、第 2 步沒有 fork 造成的紅、第 3 步 `Fork CI passed` 綠，而這一輪的 NT（＝HEAD）還沒做過第 3c 步，就先做第 3c 步：核可後走 approved 路徑不再實機檢查，chrome 不該留給使用者在實機看（v0.1.53 的 PR #511 同時命中削弱閘門，3c 沒跑，全螢幕切 tab 沒人實測）。3c 的結果（chrome-verified 或失敗的那一項）寫進留言。PR 留言 `<!-- auto-rebase:needs-human -->` 加上要使用者看什麼（自審做到哪、卡在哪），只寫使用者才能決定或才做得到的事：要他看的每一項都說明為什麼排程自己做不了（保留路徑、權限、判斷不了的產品取捨）。不在保留路徑上的技術複核（「請看這幾個修正 commit」「這個解法對不對」）不列，交人前照第 3b 步第 5 點「交人」審完。這份 skill 或流程本身的缺口（規則沒有出口、字面和實際對不上）不拿來問使用者：照比較保守的判讀做完這一輪，`gh issue create -R audichuang/openidea` 開 issue 記下缺口與這次採用的判讀，編號寫進細節。最後一段固定寫交回方法：看完沒問題就另留一則第一行是 `<!-- auto-rebase:approved <HEAD 完整 sha> -->` 的留言，下一次排程（每小時 :37）會移動 develop 並發版。不要給使用者手動 lease 推送或發版的指令。跳第 7 步。
+不符合條件（MANUAL 而自審沒通過、碰到必交人路徑、第 3c 步沒過或做不了，或有修不掉的紅）→ 不移動。第 3b 步第 1 點命中視窗 chrome（同時命中其他保留項也一樣）、第 2 步沒有 fork 造成的紅、第 3 步 `Fork CI passed` 綠，而這一輪的 NT（＝HEAD）還沒做過第 3c 步，就先做第 3c 步：核可後走 approved 路徑不再實機檢查，chrome 不該留給使用者在實機看（v0.1.53 的 PR #511 同時命中削弱閘門，3c 沒跑，全螢幕切 tab 沒人實測）。3c 的結果（chrome-verified 或失敗的那一項）寫進留言。PR 留言 `<!-- auto-rebase:needs-human -->` 加上要使用者看什麼（自審做到哪、卡在哪），只寫使用者才能決定或才做得到的事：要他看的每一項都說明為什麼排程自己做不了（保留路徑、權限、判斷不了的產品取捨）。不在保留路徑上的技術複核（「請看這幾個修正 commit」「這個解法對不對」）不列，交人前照第 3b 步第 5 點「交人」審完。這份 skill 或流程本身的缺口（規則沒有出口、字面和實際對不上）不拿來問使用者：照比較保守的判讀做完這一輪，`gh issue create -R audichuang/openidea` 開 issue 記下缺口與這次採用的判讀，編號寫進細節。最後一段固定寫交回方法：看完沒問題就另留一則第一行是 `<!-- auto-rebase:approved <HEAD 完整 sha> -->` 的留言，下一次排程（每小時 :37）會移動 develop 並發版。這是唯一會啟動下一輪的回覆，不要請使用者「回覆選擇」：選項要在鎖上再改的，寫明改法是在 `rebase/vX` 補 commit、等 Fork CI 綠後核可新的 tip（v0.1.50 的 #435 請使用者回文字選擇，lock 一直等，#447）。不要給使用者手動 lease 推送或發版的指令。跳第 7 步。
 
 ## 5. 對 develop 開著的 PR
 
@@ -278,7 +287,7 @@ develop 一移動（含已在 HEAD 不重推的情況）就列出這次 rebase �
 
 保留鎖給人的結局（第 1 步放棄、第 2、3 步修不過、第 4 步不移動），還沒有 PR 就照第 1 步第 6 點開（放棄 rebase 的不要把 HEAD 推上去蓋掉鎖，PR 說明寫卡在哪個檔），再留言 `<!-- auto-rebase:needs-human -->`。沒有這個留言，precheck 六小時後會判定鎖過期，把分支刪掉重跑，使用者接手的東西就沒了。
 
-一次交人只留一則 needs-human。留完之後要補充或更正（多驗了一項、上一則寫錯），先重讀 PR 留言，用 `gh api -X PATCH repos/audichuang/openidea/issues/comments/<id> -F body=@<檔>` 改那一則，或另留一則第一行不是標記的留言。不要再留第一行是 `<!-- auto-rebase:needs-human -->` 的留言：precheck 只認排在最後一則 needs-human 之後的 approved，所以使用者在這之間留的核可會作廢（v0.1.53 的 PR #511：run 在 06:59Z 交人後 07:03Z 補了一則 needs-human 的更正，蓋掉 07:01Z 的核可，晚一小時發版）。更正改變了要使用者決定的事、而他已經核可時，在補充留言裡寫明，撤回由他自己留 needs-human。排程只有兩處會在核可之後留 needs-human：第 0 步拒絕核可（sha 的 Fork CI 不綠），以及第 6 步第 3 點推 tag 前重查 Fork CI 不綠。
+一次交人只留一則 needs-human。留完之後要補充或更正（多驗了一項、上一則寫錯），先重讀 PR 留言，用 `gh api -X PATCH repos/audichuang/openidea/issues/comments/<id> -F body=@<檔>` 改那一則，或另留一則第一行不是標記的留言。不要再留第一行是 `<!-- auto-rebase:needs-human -->` 的留言：precheck 只認排在最後一則 needs-human 之後的 approved，所以使用者在這之間留的核可會作廢（v0.1.53 的 PR #511：run 在 06:59Z 交人後 07:03Z 補了一則 needs-human 的更正，蓋掉 07:01Z 的核可，晚一小時發版）。更正改變了要使用者決定的事、而他已經核可時，在補充留言裡寫明，撤回由他自己留 needs-human。排程只有兩處會在核可之後留 needs-human：第 0 步拒絕核可（sha 的 Fork CI 不綠，或上游撤回了 vX 的 Release），以及第 6 步第 3 點推 tag 前重查 Fork CI 不綠。
 
 組內容與送出在同一個 Bash 指令裡：
 
