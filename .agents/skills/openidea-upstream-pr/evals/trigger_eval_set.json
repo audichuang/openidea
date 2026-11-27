@@ -1,0 +1,16 @@
+[
+  { "query": "OpenIDEA 這個 console 長行的效能修正，幫我提 PR 給上游 l0ng-ai/openidea", "should_trigger": true },
+  { "query": "openidea fork 裡修好的 git log 卡頓，想送上游，先幫我切分支量 before/after", "should_trigger": true },
+  { "query": "上游 PR 5649 維護者回覆了，幫我看要怎麼回、要不要改", "should_trigger": true },
+  { "query": "幫我準備一個 OpenIDEA 上游 PR：diff 虛擬化，數字要在 WebKit 也量", "should_trigger": true },
+  { "query": "l0ng-ai/openidea 的維護者都怎麼驗收效能 PR？我要送一個 perf PR", "should_trigger": true },
+  { "query": "send this OpenIDEA fix upstream to l0ng-ai/openidea as a draft PR", "should_trigger": true },
+  { "query": "上游 l0ng-ai/openidea 的 PR 6503 合併了，幫我把 worktree 和分支收掉", "should_trigger": true },
+  { "query": "再從 OpenIDEA 上游 issue 挑兩個好送的，派 worker 各做一個 PR", "should_trigger": true },
+  { "query": "openidea fork 的 Git Graph 修好了，開 PR 進 develop", "should_trigger": false },
+  { "query": "OpenIDEA 的 ⌘V 貼上修好了，在 app 裡實際驗證一下", "should_trigger": false },
+  { "query": "幫我修 openidea fork 的 issue #480 然後提 PR", "should_trigger": false },
+  { "query": "OpenIDEA fork 的 develop 要 rebase 到上游最新 release", "should_trigger": false },
+  { "query": "幫我把這個分支的 PR 內文寫好，repo 是我自己的 side project", "should_trigger": false },
+  { "query": "跑一下 openidea 的 Java eval 看哪個場景最差", "should_trigger": false }
+]
