@@ -128,10 +128,10 @@ export function SelectionHistoryEditor({ input }: { input: EditorInput }) {
         const session = useRemote.getState().session;
         // Released servers only provide the original command with all diffs.
         if (session && !session.commands.includes("vcs_block_history_summary")) {
-          const { headLines, revisions } = await call(
+          const { headLines, head, revisions } = await call(
             commands.vcsBlockHistory(request, data.path, data.text, data.lines),
           );
-          const history = { anchor: null, head: null, revisions, diffs: revisions.slice(0, 1) };
+          const history = { anchor: null, head: head ?? null, revisions, diffs: revisions.slice(0, 1) };
           shown(history, headLines ? new Map(revisions.map((r) => [r.id, r])) : null, true);
           return null;
         }

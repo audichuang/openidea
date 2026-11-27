@@ -24,16 +24,18 @@ export function packageKindAt(
 ): PackageKind | null {
   if (rootFor(roots, rel)?.kind === "excluded") return null;
   if (isJvmSourcePackage(rel, roots)) return "jvm";
-  // A root `pyproject.toml` must not claim `frontend/src`, a root that
-  // `frontend/package.json` detected, unless a deeper Python module holds the folder.
+  // The innermost module wins: a Python file at the repo root must not claim
+  // `frontend/` when `frontend/package.json` is the deeper recognised module. A module that
+  // only excludes folders (a Django app's `node_modules`) claims nothing (upstream #6028).
   let python = -1;
   let other = -1;
   for (const r of [...roots, ...detected]) {
     if (!r.detectedFrom) continue;
-    if (PY_BUILD.test(r.detectedFrom)) {
-      const dir = moduleDir(r.detectedFrom);
-      if (within(rel, dir)) python = Math.max(python, dir.length);
-    } else if (within(rel, r.path)) other = Math.max(other, r.path.length);
+    if (r.kind === "excluded" && !PY_BUILD.test(r.detectedFrom)) continue;
+    const dir = moduleDir(r.detectedFrom);
+    if (!within(rel, dir)) continue;
+    if (PY_BUILD.test(r.detectedFrom)) python = Math.max(python, dir.length);
+    else other = Math.max(other, dir.length);
   }
   return python >= 0 && python >= other ? "python" : null;
 }

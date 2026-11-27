@@ -47,6 +47,15 @@ describe("dateFormat", () => {
     );
   });
 
+  it("fork: keeps the 4-digit year for the blame gutter under Today/Yesterday", () => {
+    const now = new Date(2026, 10, 13, 12, 0).getTime();
+    const pretty = { ...system, pretty: true };
+    const older = new Date(2026, 10, 5, 9, 7);
+    const full = { year: "numeric", month: "numeric", day: "numeric" } as const;
+    expect(formatPrettyDay(new Date(2026, 10, 13, 9, 7).getTime(), now, pretty, true)).toBe("Today");
+    expect(formatPrettyDay(older.getTime(), now, pretty, true)).toBe(older.toLocaleDateString(undefined, full));
+  });
+
   it("formats another date with the same cached formatter", () => {
     const e = new Date(2025, 0, 31);
     formatDay(d, system);
