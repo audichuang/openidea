@@ -181,6 +181,9 @@ struct DocState {
     clean_text: Option<Document>,
     /// External disk state already reported as conflicting with unsaved changes.
     conflict: Option<DiskStamp>,
+    /// External changes seen while the buffer had unsaved changes (each new `conflict`), so an
+    /// undo of a refactoring can tell a write by another program from the IDE's own saves.
+    external_writes: u64,
     closed: bool,
     /// URI of a virtual document (no file behind it).
     uri: Option<String>,
@@ -227,6 +230,16 @@ impl DocState {
         self.disk_hash = hash;
         self.conflict = None;
         self.clean_text = (!self.large).then(|| self.doc.clone());
+    }
+
+    /// The bytes saving `doc` with this document's encoding, BOM and conversion would write.
+    fn bytes_for_save(&self, doc: &Document) -> IdeResult<Vec<u8>> {
+        let text = doc.text_for_save();
+        Ok(if self.native_to_ascii {
+            ide_vfs::encode_properties_ascii(&text).into_bytes()
+        } else {
+            ide_vfs::encode(&text, &self.encoding, self.has_bom)?
+        })
     }
 
     /// Disk state of a file whose bytes changed since we last read or wrote it. The
@@ -608,6 +621,7 @@ impl Documents {
             disk_hash: loaded.content_hash,
             clean_text: None,
             conflict: None,
+            external_writes: 0,
             closed: false,
             uri: None,
         };
@@ -686,6 +700,7 @@ impl Documents {
             disk_hash: None,
             clean_text: None,
             conflict: None,
+            external_writes: 0,
             closed: false,
             uri: Some(uri.to_owned()),
         };
@@ -750,6 +765,7 @@ impl Documents {
             disk_hash: None,
             clean_text: None,
             conflict: None,
+            external_writes: 0,
         };
         let slot: Slot = Arc::new(Mutex::new(state));
         let st = slot.lock();
@@ -1141,21 +1157,27 @@ impl Documents {
     /// state instead. `Ok(false)`: not saved; the document stays dirty until an
     /// explicit save overwrites the file or Reload from Disk discards the buffer.
     pub fn autosave(&self, doc: DocId) -> IdeResult<bool> {
-        let refused = self.with_doc(doc, |st| {
-            if !st.dirty || st.uri.is_some() {
-                return Ok(false);
-            }
-            let Some(stamp) = st.changed_on_disk() else { return Ok(false) };
-            if st.conflict != Some(stamp) {
-                st.conflict = Some(stamp);
-                self.warn_changed_on_disk(doc, st);
-            }
-            Ok(true)
-        })?;
+        let refused = self.with_doc(doc, |st| Ok(self.check_disk_conflict(doc, st)))?;
         if refused {
             return Ok(false);
         }
         self.save(doc).map(|()| true)
+    }
+
+    /// An unsaved buffer whose file another program wrote, checked now since the watcher event
+    /// may not have arrived yet: each new disk state is recorded, counted in `external_writes`
+    /// and reported once. `true` while the file differs from the buffer's baseline.
+    fn check_disk_conflict(&self, doc: DocId, st: &mut DocState) -> bool {
+        if !st.dirty || st.uri.is_some() {
+            return false;
+        }
+        let Some(stamp) = st.changed_on_disk() else { return false };
+        if st.conflict != Some(stamp) {
+            st.conflict = Some(stamp);
+            st.external_writes += 1;
+            self.warn_changed_on_disk(doc, st);
+        }
+        true
     }
 
     /// Reported once per disk state; the editor offers to load the file or keep the buffer.
@@ -1613,12 +1635,7 @@ impl Documents {
                 }
                 if st.dirty {
                     // The disk state the buffer is based on stays: autosave must not overwrite this.
-                    if let Some(stamp) = st.changed_on_disk()
-                        && st.conflict != Some(stamp)
-                    {
-                        st.conflict = Some(stamp);
-                        self.warn_changed_on_disk(id, st);
-                    }
+                    self.check_disk_conflict(id, st);
                     return Ok(());
                 }
                 self.reload_locked(id, st, force_clean).map(drop)

@@ -694,9 +694,10 @@ it.each([
   usePlatform.setState({ os: "macos" });
   vi.spyOn(commands, "clipboardText").mockResolvedValue({ status: "ok", data: text });
   vi.spyOn(commands, "clipboardFileList").mockResolvedValue({ status: "ok", data: files });
+  // fork: clipboard_image returns the bytes (`clipboard_image_data_url` is upstream's data URL).
   vi.spyOn(commands, "clipboardImage").mockResolvedValue({
     status: "ok",
-    data: png && `data:image/png;base64,${png}`,
+    data: png ? { mime: "image/png", data: Array.from(atob(png), (c) => c.charCodeAt(0)) } : null,
   });
   const store = vi.spyOn(commands, "termStoreImage").mockResolvedValue({ status: "ok", data: "/tmp/shot.png" });
   const web = { readText: vi.fn(async () => "web"), read: vi.fn(async () => []) };

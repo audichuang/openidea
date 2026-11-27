@@ -149,7 +149,8 @@ pub(crate) async fn download_update(
     token: &CancellationToken,
     mut progress: impl FnMut(u64, Option<u64>),
 ) -> IdeResult<DownloadedUpdate> {
-    let updater = updater(app, source)?.ok_or_else(|| IdeError::unavailable("updates are not configured"))?;
+    let _ = source; // fork_updater owns the endpoint list
+    let updater = updater(app).await?.ok_or_else(|| IdeError::unavailable("updates are not configured"))?;
     let update =
         cancellable(token, async { updater.check().await.map_err(|error| IdeError::unavailable(error.to_string())) })
             .await?
