@@ -6,7 +6,6 @@
 import { create } from "zustand";
 import { registerAction, type Action } from "@/platform/actions";
 import { commands, isTauri, onIdeEvent } from "@/platform/ipc";
-import { usePlatform } from "@/platform/platformInfo";
 import { setDistractionFree, useDistractionFree } from "./distractionFree";
 
 export const ZEN_MODE_ACTION = "view.toggleZenMode";
@@ -80,8 +79,9 @@ export function installZenMode(): () => void {
     document.addEventListener("fullscreenchange", onFullscreen);
     unsubs.push(() => document.removeEventListener("fullscreenchange", onFullscreen));
   }
-  // Only macOS reports full-screen changes; elsewhere (F11 on Windows) the window resizes.
-  if (isTauri() && usePlatform.getState().os !== "macos") {
+  // Elsewhere (F11 on Windows) the window resizes. fork: macOS sends no event either (its native
+  // tab groups replace upstream's full-screen code), and entering or leaving full screen resizes.
+  if (isTauri()) {
     window.addEventListener("resize", onFullscreen);
     unsubs.push(() => window.removeEventListener("resize", onFullscreen));
   }
