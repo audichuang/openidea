@@ -221,6 +221,14 @@ pub fn window_toggle_fullscreen(window: WebviewWindow) -> IdeResult<bool> {
     Ok(on)
 }
 
+/// Whether this window is in native full screen, as [`window_toggle_fullscreen`] reads it.
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub fn window_is_fullscreen(window: WebviewWindow) -> bool {
+    window.is_fullscreen().unwrap_or(false)
+}
+
 /// Fills the work area without the platform zoom animation. Returns whether it is filled now.
 #[desktop_command(trust = always)]
 #[tauri::command]
@@ -625,7 +633,7 @@ fn configure_updater_client(
 /// How long the automatic proxy configuration (PAC download, WPAD) may hold up an update check.
 const AUTO_PROXY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-async fn updater(app: &AppHandle) -> IdeResult<Option<tauri_plugin_updater::Updater>> {
+pub(crate) async fn updater(app: &AppHandle) -> IdeResult<Option<tauri_plugin_updater::Updater>> {
     use ide_core::proxy_settings::ProxyMode;
     use ide_http::system_proxy::{AutoProxy, auto_proxy_for};
     use tauri_plugin_updater::UpdaterExt;
@@ -774,6 +782,13 @@ impl Drop for InstallingGuard {
     }
 }
 
+/// fork: upstream's resumable download (`crate::updates::download_update`) fetches through the
+/// shared HTTP client, which lacks the PAC / WPAD proxy decision [`updater`] applies, so installs
+/// keep the updater plugin's own download until that client follows it (#523).
+fn resumable_update_download() -> bool {
+    false
+}
+
 async fn prepare_update(
     initializer: impl std::future::Future<Output = IdeResult<Option<tauri_plugin_updater::Updater>>>,
     token: &ide_core::CancellationToken,
@@ -806,25 +821,42 @@ pub async fn app_install_update(
         InstallingGuard::acquire().ok_or_else(|| IdeError::unavailable("an update is already being installed"))?;
     let token = state.host.begin_request(request);
     let result = async {
-        let update = prepare_update(updater(&app), &token).await?;
         let mut throttle = ProgressThrottle::default();
         let progress = on_progress.clone();
-        let mut done = 0u64;
-        let download = update.download(
-            move |len, total| {
-                done += len as u64;
+        let (update, bytes, checkpoint) = if resumable_update_download() {
+            let downloaded = crate::updates::download_update(&app, source, &token, move |done, total| {
                 if let Some(p) = throttle.report(done, total) {
                     let _ = progress.send(p);
                 }
-            },
-            || {},
-        );
-        let bytes = tokio::select! {
-            r = download => r.map_err(|e| IdeError::unavailable(e.to_string()))?,
-            _ = token.cancelled() => return Err(IdeError::cancelled()),
+            })
+            .await?;
+            (downloaded.update, downloaded.bytes, Some(downloaded.path))
+        } else {
+            let update = prepare_update(updater(&app), &token).await?;
+            let mut done = 0u64;
+            let download = update.download(
+                move |len, total| {
+                    done += len as u64;
+                    if let Some(p) = throttle.report(done, total) {
+                        let _ = progress.send(p);
+                    }
+                },
+                || {},
+            );
+            let bytes = tokio::select! {
+                r = download => r.map_err(|e| IdeError::unavailable(e.to_string()))?,
+                _ = token.cancelled() => return Err(IdeError::cancelled()),
+            };
+            (update, bytes, None)
         };
         let _ = on_progress.send(UpdateProgress::Installing);
-        install(update, bytes).await
+        let installed = install(update, bytes).await;
+        if installed.is_ok()
+            && let Some(path) = checkpoint
+        {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+        installed
     }
     .await;
     state.host.end_request(request);
@@ -924,6 +956,11 @@ fn notes_for(manifest: &str, version: &str) -> Option<BTreeMap<String, String>> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn installs_keep_the_updater_plugin_download_with_its_proxy_decision() {
+        assert!(!super::resumable_update_download());
+    }
+
     #[test]
     fn release_notes_come_from_the_manifest_of_that_version() {
         let manifest = serde_json::json!({
@@ -1091,5 +1128,6 @@ ide_command::desktop_domain!(
     window_take_launch,
     window_take_settings_init,
     window_toggle_fullscreen,
+    window_is_fullscreen,
     window_toggle_zoom,
 );

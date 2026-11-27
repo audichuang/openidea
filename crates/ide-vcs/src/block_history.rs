@@ -23,11 +23,12 @@ pub(crate) fn block_history(
     cancel: &CancellationToken,
 ) -> IdeResult<BlockHistory> {
     let rel = r.rel_path(path)?;
-    let Some((anchor, _)) = anchor(r, &rel, current_text, lines, encoding, cancel)? else {
-        return Ok(BlockHistory { head_lines: None, revisions: Vec::new() });
+    let Some((anchor, head)) = anchor(r, &rel, current_text, lines, encoding, cancel)? else {
+        return Ok(BlockHistory { head_lines: None, head: None, revisions: Vec::new() });
     };
     let out = run(r, &rel, &anchor, &[], cancel)?;
-    Ok(BlockHistory { head_lines: Some(anchor.lines), revisions: parse_log(&out.stdout, encoding) })
+    let revisions = parse_log(&out.stdout, encoding);
+    Ok(BlockHistory { head_lines: Some(anchor.lines), head: Some(head), revisions })
 }
 
 fn anchor(

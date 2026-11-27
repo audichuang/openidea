@@ -146,7 +146,13 @@ describe("rows", () => {
   it("compares with HEAD's block, not the newest row, when that row is a merge without a diff", () => {
     // `git log -L` prints no patch for a merge, so its row has empty sides.
     const merge = revision("m", "Merge branch 'side'", "", "");
-    const merged: BlockHistory = { headLines: [1, 2], head: "TWO\nTHREE\n", revisions: [merge, ...history.revisions] };
+    // fork: the list is built from the streamed summary (#299), which carries HEAD's block the same way.
+    const merged: BlockHistorySummary = {
+      anchor,
+      head: "TWO\nTHREE\n",
+      revisions: [merge, ...history.revisions],
+      diffs: [merge],
+    };
     expect(historyRows(merged, "TWO\nTHREE\n").map((r) => r.kind)).toEqual(["revision", "revision", "revision"]);
     expect(historyRows(merged, "TWO\nTHREE!\n")[0]).toEqual({
       kind: "local",
