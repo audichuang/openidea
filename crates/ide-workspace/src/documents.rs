@@ -1124,7 +1124,14 @@ impl Documents {
         if !st.dirty || st.uri.is_some() {
             return false;
         }
-        let Some(stamp) = st.changed_on_disk() else { return false };
+        let had_conflict = st.conflict.is_some();
+        let Some(stamp) = st.changed_on_disk() else {
+            // Another program putting the baseline bytes back over a conflict is still a write.
+            if had_conflict {
+                st.external_writes += 1;
+            }
+            return false;
+        };
         if st.conflict != Some(stamp) {
             // A touch of the conflicting file (same bytes, new mtime) is no new external write.
             if st.conflict.is_none_or(|seen| seen.hash != stamp.hash) {
