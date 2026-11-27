@@ -27,7 +27,7 @@ import { executeAction } from "@/platform/actions";
 import { whenAllSynced, whenSynced, type EditorDocContext } from "@/editor/api";
 import { structure, type NodeAt } from "@/editor/structure";
 import { docOf, incompleteNote, isUnavailable, lspRequest, reportLspError } from "./lsp";
-import { offsetToPos, rangeToOffsets } from "./positions";
+import { offsetToPos, posToOffset, rangeToOffsets } from "./positions";
 import { showHint } from "./hint";
 import { openPopup, type PreviewOccurrence } from "./popupStore";
 import { needsPreview, summarizeWorkspaceEdit } from "./workspaceEdit";
@@ -161,9 +161,13 @@ export async function startRename(view: EditorView) {
   });
 }
 
-/** Opens Rename File for this file when the word at the caret is its top-level type. */
-async function renameFileInstead(view: EditorView, doc: EditorDocContext): Promise<boolean> {
-  const word = view.state.wordAt(view.state.selection.main.head);
+/** Opens Rename File for this file when the word at `head` (the caret) is its top-level type. */
+async function renameFileInstead(
+  view: EditorView,
+  doc: EditorDocContext,
+  head = view.state.selection.main.head,
+): Promise<boolean> {
+  const word = view.state.wordAt(head);
   const name = word ? view.state.sliceDoc(word.from, word.to) : null;
   if (!word || !name || name !== fileStem(doc.path)) return false;
   let at: NodeAt | null = null;
@@ -316,6 +320,8 @@ async function finishRename(view: EditorView, doc: EditorDocContext, pos: Pos, o
         return;
       }
     }
+    // jdtls accepts a top-level type outside a source folder, then edits nothing.
+    if (!note && (await renameFileInstead(view, doc, posToOffset(view.state.doc, pos)))) return;
     if (note) showHint(view, note, { tone: "warning" });
     else showHint(view, "Nothing to rename");
     return;
