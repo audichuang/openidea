@@ -548,11 +548,12 @@ export function buildRepositoryBranchTree(
 /**
  * One tree for several repositories: each branch and tag listed once, with the
  * repositories that have it (`repos`). Its `branch` is the `current` repository's when that
- * one has it, else the first's; it counts as current when it is current in any of them.
+ * one has it, else the first's; it counts as current when it is current in any of them, and a
+ * favorite when it is one in all of them (`favoritesOf` gives each repository's own).
  */
 export function buildMergedBranchTree(
   repositories: readonly { root: string; name: string; branches: Branch[]; tags: string[] }[],
-  favorites: readonly string[] | null,
+  favoritesOf: (root: string) => readonly string[] | null,
   current: string | null,
 ): BranchTreeNode[] {
   const merged = new Map<string, { branch: Branch; byRoot: Map<string, Branch>; current: boolean }>();
@@ -571,6 +572,9 @@ export function buildMergedBranchTree(
     for (const t of r.tags) tagRoots.set(t, [...(tagRoots.get(t) ?? []), r.root]);
   }
   const branches = [...merged.values()].map((m) => ({ ...m.branch, current: m.current }));
+  const favorites = [...merged.values()]
+    .filter((m) => [...m.byRoot.keys()].every((root) => isFavoriteBranch(m.branch, favoritesOf(root))))
+    .map((m) => m.branch.name);
   const withRepos = (nodes: BranchTreeNode[]): BranchTreeNode[] =>
     nodes.map((n) => {
       const byRoot = n.branch && merged.get(`${n.branch.remote}:${n.branch.name}`)?.byRoot;

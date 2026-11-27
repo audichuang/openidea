@@ -249,3 +249,73 @@ describe("a Git Log tab of a repository that is not the selected one", () => {
     expect(labels).toContain("Remove from Favorites");
   });
 });
+
+// #439: a merged row (Group by Repository off) spans several repositories; its favorites are theirs.
+describe("Git Log Branches pane merged row favorites", () => {
+  const key = (root: string) => `openidea.vcs.favoriteBranches.v2:${root}`;
+  let unregister: () => void;
+
+  beforeEach(() => {
+    unregister = registerLogPaneActions();
+    setContext("vcsAvailable", true);
+    data.branches["/p/c"] = [{ ...data.branches["/p/a"]![0]!, name: "main-c" }];
+    data.heads["/p/c"] = "main-c";
+    // `main` is a favorite of B by default, until B's list is edited.
+    data.branches["/p/b"] = [...data.branches["/p/b"]!, { ...data.branches["/p/b"]![1]!, name: "main" }];
+    useVcs.setState({ roots: ["/p/a", "/p/b", "/p/c"], repo: "/p/c" });
+    localStorage.setItem("openidea.vcs.branchesPane.groupByRepository", "false");
+    localStorage.setItem(key("/p/a"), JSON.stringify(["dev"]));
+    useGitLog.setState({
+      filters: emptyFilters(),
+      shownLog: "ab",
+      logTabs: [{ id: "ab", kind: "log", target: "", repositories: ["/p/a", "/p/b"] }],
+    });
+  });
+
+  afterEach(() => {
+    unregister();
+    setContext("vcsAvailable", false);
+    hideContextMenu();
+    delete data.branches["/p/c"];
+    delete data.heads["/p/c"];
+    data.branches["/p/b"] = data.branches["/p/b"]!.filter((b) => b.name !== "main");
+    useGitLog.setState({ logTabs: [], shownLog: "log" });
+  });
+
+  const menuLabels = () => useContextMenuStore.getState().menu!.items.map((i) => ("label" in i ? i.label : null));
+  const runMenu = (label: string) => {
+    const item = useContextMenuStore.getState().menu!.items.find((i) => "label" in i && i.label === label);
+    if (item && "run" in item) item.run?.();
+  };
+
+  it("adds a branch favorite in only one of the row's repositories to all of them, never the selected one", async () => {
+    render(<BranchesPanel />);
+    await screen.findByText("only-b");
+    fireEvent.contextMenu(screen.getByText("dev"));
+    expect(menuLabels()).toContain("Add to Favorites");
+    runMenu("Add to Favorites");
+    expect(favoriteBranches("/p/a")).toEqual(["dev"]);
+    // B's default `main` stays a favorite on its first edit.
+    expect(favoriteBranches("/p/b")).toEqual(["main", "dev"]);
+    expect(localStorage.getItem(key("/p/c"))).toBeNull();
+    expect(useVcs.getState().repo).toBe("/p/c");
+
+    fireEvent.contextMenu(screen.getByText("dev"));
+    expect(menuLabels()).toContain("Remove from Favorites");
+    runMenu("Remove from Favorites");
+    expect(favoriteBranches("/p/a")).toEqual([]);
+    expect(favoriteBranches("/p/b")).toEqual(["main"]);
+    expect(localStorage.getItem(key("/p/c"))).toBeNull();
+  });
+
+  it("stars the row from the toolbar in every repository of the row", async () => {
+    render(<BranchesPanel />);
+    await screen.findByText("only-b");
+    fireEvent.mouseDown(screen.getByText("dev"));
+    fireEvent.click(screen.getByRole("button", { name: "Add to Favorites" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Remove from Favorites" })).toBeInTheDocument());
+    expect(favoriteBranches("/p/a")).toEqual(["dev"]);
+    expect(favoriteBranches("/p/b")).toEqual(["main", "dev"]);
+    expect(localStorage.getItem(key("/p/c"))).toBeNull();
+  });
+});

@@ -328,7 +328,7 @@ describe("buildMergedBranchTree", () => {
   it("lists a branch once with the repositories that have it", () => {
     const tree = buildMergedBranchTree(
       [repo("/a", [b("main"), b("dev"), b("feat/x")]), repo("/b", [b("main"), b("dev")])],
-      null,
+      () => null,
       null,
     );
     expect(find(tree, "b:feat/x")?.repos).toEqual(["/a"]);
@@ -338,14 +338,18 @@ describe("buildMergedBranchTree", () => {
   });
 
   it("marks a branch current when it is current in any repository", () => {
-    const tree = buildMergedBranchTree([repo("/a", [b("dev")]), repo("/b", [b("dev", { current: true })])], null, null);
+    const tree = buildMergedBranchTree(
+      [repo("/a", [b("dev")]), repo("/b", [b("dev", { current: true })])],
+      () => null,
+      null,
+    );
     expect(find(tree, "b:dev")?.branch?.current).toBe(true);
   });
 
   it("uses the current repository's branch", () => {
     const tree = buildMergedBranchTree(
       [repo("/a", [b("dev", { ahead: 1 })]), repo("/b", [b("dev", { ahead: 2 })])],
-      null,
+      () => null,
       "/b",
     );
     expect(find(tree, "b:dev")?.branch?.ahead).toBe(2);
@@ -354,7 +358,7 @@ describe("buildMergedBranchTree", () => {
   it("keeps local and remote namesakes apart", () => {
     const tree = buildMergedBranchTree(
       [repo("/a", [b("x"), b("origin/x", { remote: true })]), repo("/b", [b("upstream/x", { remote: true })])],
-      null,
+      () => null,
       null,
     );
     expect(find(tree, "b:x")?.repos).toEqual(["/a"]);
@@ -362,7 +366,7 @@ describe("buildMergedBranchTree", () => {
     expect(find(tree, "b:upstream/x")?.repos).toEqual(["/b"]);
     const odd = buildMergedBranchTree(
       [repo("/a", [b("origin/y", { remote: false })]), repo("/b", [b("origin/y", { remote: true })])],
-      null,
+      () => null,
       null,
     );
     const ys = nodes(odd).filter((n) => n.kind === "branch");
@@ -378,7 +382,7 @@ describe("buildMergedBranchTree", () => {
         repo("/b", [b("dev", { upstream: "origin/dev" }), b("origin/dev", { remote: true })], ["v1"]),
         repo("/a", [b("dev"), b("origin/dev", { remote: true }), b("solo")], ["v1"]),
       ],
-      null,
+      () => null,
       null,
     );
     const name = (root: string) => root.slice(1);
@@ -388,8 +392,20 @@ describe("buildMergedBranchTree", () => {
     expect(mergedRefTooltip(find(tree, "b:solo")!, name)).toBeUndefined();
   });
 
+  it("stars a branch only when it is a favorite in every repository that has it", () => {
+    const own: Record<string, string[] | null> = { "/a": ["dev", "x"], "/b": ["x"] };
+    const tree = buildMergedBranchTree(
+      [repo("/a", [b("dev"), b("x"), b("main")]), repo("/b", [b("dev"), b("x"), b("main")])],
+      (root) => own[root] ?? null,
+      "/c",
+    );
+    expect(find(tree, "b:dev")?.favorite).toBe(false);
+    expect(find(tree, "b:x")?.favorite).toBe(true);
+    expect(find(tree, "b:main")?.favorite).toBe(false);
+  });
+
   it("merges tags by name", () => {
-    const tree = buildMergedBranchTree([repo("/a", [], ["v1"]), repo("/b", [], ["v1", "v2"])], null, null);
+    const tree = buildMergedBranchTree([repo("/a", [], ["v1"]), repo("/b", [], ["v1", "v2"])], () => null, null);
     expect(find(tree, "t:v1")?.repos).toEqual(["/a", "/b"]);
     expect(find(tree, "t:v2")?.repos).toEqual(["/b"]);
   });
