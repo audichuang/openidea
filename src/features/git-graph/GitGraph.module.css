@@ -28,6 +28,9 @@
   padding: 4px 8px;
   border-bottom: 1px solid var(--border);
   min-height: var(--h-header);
+  /* Narrow editors wrap the buttons onto a second row, as upstream's Git Log filters do (#80). */
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 .dropdown {
   display: inline-flex;
@@ -42,6 +45,7 @@
   font: inherit;
   cursor: pointer;
   max-width: 220px;
+  min-width: 0;
 }
 .dropdown span {
   overflow: hidden;
@@ -52,7 +56,11 @@
   background: var(--bg-toolbar-hover);
 }
 .search {
-  width: 260px;
+  /* Up to 260px, down to upstream's Git Log text filter minimum; the small basis makes the
+     toolbar shrink it before wrapping. */
+  flex: 1 1 100px;
+  max-width: 260px;
+  min-width: min(100px, 60%);
   margin-left: 4px;
 }
 .matchText {
