@@ -1058,6 +1058,16 @@ describe("rename wiring", () => {
     }
   });
 
+  it("keeps the typo fix's spelling: an empty edit says so instead of opening Rename File", async () => {
+    executeAction.mockClear();
+    cmd.lspPrepareRename.mockReturnValueOnce(ok(r(0, 13, 20)));
+    cmd.lspRename.mockReturnValueOnce(ok({ edit: { files: [] }, incomplete: null }));
+    const view = editor("public class Recieve {}", "java", 14, "/p/docs/Recieve.java");
+    await renameNamePart(view, { from: 13, to: 20 }, "Receive");
+    expect(executeAction).not.toHaveBeenCalledWith("project.rename", expect.anything());
+    expect(document.querySelector(".cm-lsp-hint")?.textContent).toBe("Nothing to rename");
+  });
+
   it("keeps the server's refusal for other elements", async () => {
     executeAction.mockClear();
     cmd.lspPrepareRename.mockReturnValueOnce(refused());
