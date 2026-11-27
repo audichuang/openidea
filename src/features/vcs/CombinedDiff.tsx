@@ -246,8 +246,6 @@ export function CombinedDiffView({
   const keys = useMemo(() => entries.map((e) => e.key), [entries]);
   // Each diff's own key, hashing its texts: worked out once, not on every scroll frame.
   const diffKeys = useMemo(() => items.map((item) => diffInput(item).key), [items]);
-  /** Blocks mounted at the last render (fork: see `pinned`). */
-  const mountedRef = useRef<readonly number[]>([]);
   /** Keys of the blocks mounted at the last render (fork: see `pinned`); keys survive list updates. */
   const mountedRef = useRef<readonly string[]>([]);
 
