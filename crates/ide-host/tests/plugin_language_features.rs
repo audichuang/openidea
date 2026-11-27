@@ -430,8 +430,9 @@ fn gutter_actions_see_the_editors_window_project() {
         actions[0].1.argument.clone().unwrap()
     };
     // The outer project's window: the file is its, though the inner project holds it too.
-    assert_eq!(argument(Some(&outer)), outer.to_string_lossy());
-    assert_eq!(argument(Some(&inner)), inner.to_string_lossy());
+    // The plugin gets the project as an IPC path (`/`-separated on Windows too, as in plugin_watch_paths).
+    assert_eq!(argument(Some(&outer)), ide_core::ipc_path::to_ipc(&outer));
+    assert_eq!(argument(Some(&inner)), ide_core::ipc_path::to_ipc(&inner));
     // No window, or a root that is no open project: no invoking project.
     assert_eq!(argument(None), "gutter");
     assert_eq!(argument(Some(&tmp.path().join("elsewhere"))), "gutter");
