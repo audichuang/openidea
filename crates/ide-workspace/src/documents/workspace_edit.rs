@@ -573,6 +573,8 @@ impl Documents {
         for id in self.open_documents() {
             self.with_doc(id, |state| {
                 if roots.iter().any(|p| text_path(&state.path).is_ok_and(|file| file.starts_with(p))) {
+                    // Restoring this state puts its `conflict` back: a stale one would be counted again.
+                    self.check_disk_conflict(id, state);
                     documents.push((id, state.clone()));
                 }
                 Ok(())
