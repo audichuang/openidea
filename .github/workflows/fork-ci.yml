@@ -80,7 +80,7 @@ jobs:
       - uses: actions/checkout@v5
       - run: |
           # Port upstream's ci.yml edits into this file, then update the pin.
-          pin=12ecc0be40bfd974c78d638cb64973a6f04ec0bc19c4608b16df469e0e422ebe
+          pin=553bc434ed4bc74973efae266ed9ed634fe1d146c460e0121a41d49116c90581
           sha=$(sha256sum .github/workflows/ci.yml | cut -d' ' -f1)
           [ "$sha" = "$pin" ] || { echo "::error::upstream ci.yml changed ($sha); port it into fork-ci.yml and update the pin"; exit 1; }
 
@@ -280,6 +280,46 @@ jobs:
       - name: Java 17 (Linux)
         if: runner.os == 'Linux'
         run: echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+      # Maven artifacts the jbuild tests resolve offline (upstream's ci.yml since main f70f362a3, l0ng-ai/openidea#5966).
+      - name: Restore Maven artifacts for Java build tests
+        id: jbuild-maven-cache
+        if: runner.environment == 'github-hosted'
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}/jbuild-maven-repository
+          key: jbuild-maven-${{ runner.os }}-${{ hashFiles('crates/ide-build/tests/fixtures/jbuild-maven/**/pom.xml') }}
+      - name: Prepare Maven artifacts for Java build tests
+        id: jbuild-maven
+        if: runner.environment == 'github-hosted'
+        timeout-minutes: 5
+        shell: bash
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+        env:
+          CACHE_HIT: ${{ steps.jbuild-maven-cache.outputs.cache-hit }}
+        run: |
+          if [[ -z "${JAVA_HOME:-}" || ! -d "$JAVA_HOME/bin" ]] || ! command -v mvn >/dev/null; then
+            exit 0
+          fi
+          export MAVEN_OPTS="${MAVEN_OPTS:+$MAVEN_OPTS }-Dmaven.repo.local=$RUNNER_TEMP/jbuild-maven-repository"
+          echo "MAVEN_OPTS=$MAVEN_OPTS" >> "$GITHUB_ENV"
+          if [[ "$CACHE_HIT" == true ]]; then
+            exit 0
+          fi
+          # The IDE also reads the compiler plugin descriptor when it builds the Maven model.
+          for delay in 0 10 30; do
+            sleep "$delay"
+            if mvn -B -ntp -U -N -f crates/ide-build/tests/fixtures/jbuild-maven/pom.xml resources:resources compiler:compile; then
+              echo "prepared=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          exit 1
+      - name: Save Maven artifacts for Java build tests
+        if: steps.jbuild-maven.outputs.prepared == 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ runner.temp }}/jbuild-maven-repository
+          key: ${{ steps.jbuild-maven-cache.outputs.cache-primary-key }}
       # --timings: per-crate build times in target/cargo-timings, uploaded below.
       - run: cargo nextest run --workspace --no-fail-fast --timings ${{ matrix.partition && format('--partition slice:{0}', matrix.partition) || '' }} ${{ matrix.threads && format('--test-threads {0}', matrix.threads) || '' }} ${{ matrix.filter && format('-E ''{0}''', matrix.filter) || '' }}
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
