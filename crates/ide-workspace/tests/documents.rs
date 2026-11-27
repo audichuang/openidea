@@ -2049,10 +2049,21 @@ fn autosave_tells_a_clean_document_from_a_refused_one() {
 #[test]
 fn undo_back_to_stale_text_after_the_file_became_unloadable_keeps_it_unsaved() {
     let binary = b"\0\x01\x02binary\0".to_vec();
-    for (binary_file, reported) in [(true, false), (true, true), (false, false), (false, true)] {
-        let case = format!("binary={binary_file} reported={reported}");
+    for (binary_file, reported, mapped) in [
+        (true, false, false),
+        (true, true, false),
+        (false, false, false),
+        (false, true, false),
+        (true, false, true),
+        (true, true, true),
+    ] {
+        let case = format!("binary={binary_file} reported={reported} mapped={mapped}");
         let f = fixture();
         let path = f.root.join("turned.txt");
+        if mapped {
+            // fork: a remembered UTF-8 encoding decodes these bytes without a replacement character.
+            encoding_mappings(&f, &[("turned.txt", "utf-8")]);
+        }
         fs::write(&path, "old\n").unwrap();
         let id = f.docs.open(&path).unwrap().id;
         let v = f.docs.edit(id, 0, change(0, 0, "x")).unwrap();
@@ -2077,4 +2088,21 @@ fn undo_back_to_stale_text_after_the_file_became_unloadable_keeps_it_unsaved() {
         }
         assert_eq!(warnings(&f.events.lock()), 1, "{case}");
     }
+}
+
+/// fork: Paste and Restore writes UTF-8; a file whose remembered encoding cannot decode the
+/// restored bytes shows them detected again, as opening it would, not as replacement characters.
+#[test]
+fn reload_from_disk_detects_again_when_the_remembered_encoding_cannot_decode_the_file() {
+    let f = fixture();
+    let path = f.root.join("restored.txt");
+    fs::write(&path, "abc\n").unwrap();
+    encoding_mappings(&f, &[("restored.txt", "shift_jis")]);
+    let doc = f.docs.open(&path).unwrap();
+    f.docs.edit(doc.id, doc.version, change(0, 0, "x")).unwrap();
+    fs::write(&path, "中文\n").unwrap();
+    f.docs.reload_from_disk(std::slice::from_ref(&path));
+    let reloaded = f.docs.snapshot(doc.id).unwrap();
+    assert_eq!((reloaded.text.as_str(), reloaded.encoding.as_str()), ("中文\n", "utf-8"));
+    assert!(!f.docs.is_dirty(doc.id).unwrap());
 }
