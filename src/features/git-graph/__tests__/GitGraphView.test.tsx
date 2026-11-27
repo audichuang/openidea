@@ -205,7 +205,7 @@ beforeEach(() => {
     ok([{ selector: "HEAD@{0}", id: "a".padEnd(40, "0"), action: "commit: subject a", timeMs: 1 }]),
   );
   graphAuthorStats.mockImplementation(() => ok([{ name: "Ann", email: "ann@example.com", commits: 3 }]));
-  graphWorkingState.mockImplementation(() => ok({ staged: 0, unstaged: 0, untracked: 0, conflicted: 0 }));
+  graphWorkingState.mockImplementation(() => ok({ staged: 0, unstaged: 0, untracked: 0, conflicted: 0, files: 0 }));
   withdraw = provideGitGraphBridge(bridge);
   useGraphView.setState(initialGraphView());
 });
@@ -452,11 +452,12 @@ describe("Git Graph view", () => {
 
 describe("Git Graph pseudo rows and panels", () => {
   it("shows uncommitted changes above HEAD and opens its menu", async () => {
-    graphWorkingState.mockImplementation(() => ok({ staged: 1, unstaged: 2, untracked: 0, conflicted: 0 }));
+    // Two files, one of them both staged and unstaged: the row counts files, not sides (#98).
+    graphWorkingState.mockImplementation(() => ok({ staged: 1, unstaged: 2, untracked: 0, conflicted: 0, files: 2 }));
     render(<GitGraphEditor />);
     await screen.findByText("Uncommitted Changes");
     const row = document.querySelector<HTMLElement>('[data-entry="*working*"]')!;
-    expect(row.textContent).toContain("(3)");
+    expect(row.textContent).toContain("(2)");
     fireEvent.click(row);
     expect(await screen.findByText("Staged")).toBeTruthy();
     fireEvent.contextMenu(row);
@@ -542,7 +543,7 @@ describe("Git Graph pseudo rows and panels", () => {
       await act(async () => {});
       expect(layout).toHaveBeenCalledTimes(before);
       // New uncommitted changes add their row.
-      graphWorkingState.mockImplementation(() => ok({ staged: 0, unstaged: 1, untracked: 0, conflicted: 0 }));
+      graphWorkingState.mockImplementation(() => ok({ staged: 0, unstaged: 1, untracked: 0, conflicted: 0, files: 1 }));
       await refresh();
       await screen.findByText("Uncommitted Changes");
       expect(layout.mock.calls.length).toBeGreaterThan(before);
@@ -607,7 +608,7 @@ describe("Git Graph pseudo rows and panels", () => {
     const lib = roots[1]!;
     state = { ...state, roots, repo: roots[0]!, heads: { [lib]: state.heads[REPO]! }, operations: { [lib]: "rebase" } };
     useGraphView.setState({ repo: lib });
-    graphWorkingState.mockImplementation(() => ok({ staged: 0, unstaged: 1, untracked: 0, conflicted: 0 }));
+    graphWorkingState.mockImplementation(() => ok({ staged: 0, unstaged: 1, untracked: 0, conflicted: 0, files: 1 }));
     render(<GitGraphEditor />);
     await screen.findByText("Uncommitted Changes");
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));

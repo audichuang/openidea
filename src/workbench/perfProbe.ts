@@ -810,7 +810,7 @@ export function installPerfProbe(): () => void {
         if (cmd === "vcs_remotes") return Promise.resolve([]);
         if (cmd === "graph_stashes") return Promise.resolve([]);
         if (cmd === "graph_working_state")
-          return Promise.resolve({ staged: 0, unstaged: 0, untracked: 0, conflicted: 0 });
+          return Promise.resolve({ staged: 0, unstaged: 0, untracked: 0, conflicted: 0, files: 0 });
         if (cmd === "graph_bisect_state")
           return Promise.resolve({ active: false, current: null, culprit: null, output: "" });
         if (cmd === "graph_rev_counts") return Promise.resolve({ ahead: count, behind: 0 });
@@ -909,7 +909,7 @@ export function installPerfProbe(): () => void {
         if (cmd === "vcs_remotes") return Promise.resolve([]);
         if (cmd === "graph_stashes") return Promise.resolve([]);
         if (cmd === "graph_working_state")
-          return Promise.resolve({ staged: 0, unstaged: 0, untracked: 0, conflicted: 0 });
+          return Promise.resolve({ staged: 0, unstaged: 0, untracked: 0, conflicted: 0, files: 0 });
         if (cmd === "graph_bisect_state")
           return Promise.resolve({ active: false, current: null, culprit: null, output: "" });
         if (cmd === "vcs_log") {

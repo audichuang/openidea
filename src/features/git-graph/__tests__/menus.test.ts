@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Branch, Commit, GraphStash } from "@/bindings";
+import type { Branch, Commit, GraphStash, GraphWorkingState } from "@/bindings";
 import type { MenuItem } from "@/ui";
 
 const graphRefOp = vi.fn();
@@ -17,7 +17,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 });
 
 import { provideGitGraphBridge, type GitGraphBridge, type GraphCommit } from "@/workbench/gitGraphBridge";
-import { buildEntries, layoutInput, WORKING_ID, type GraphEntry } from "../entries";
+import { buildEntries, changeCount, layoutInput, WORKING_ID, type GraphEntry } from "../entries";
 import { branchExtras, commitExtras, compareExtras, dropMenu, tagExtras } from "../menus";
 import { initialGraphView, useGraphView } from "../viewState";
 
@@ -94,7 +94,7 @@ describe("graph entries", () => {
     const entries = buildEntries(
       commits,
       [stash(0, "s0", "c2"), stash(1, "s1", "c2"), stash(2, "gone", "missing")],
-      { staged: 1, unstaged: 0, untracked: 2, conflicted: 0 },
+      { staged: 1, unstaged: 0, untracked: 2, conflicted: 0, files: 3 },
       "c3",
       REPO,
     );
@@ -106,9 +106,18 @@ describe("graph entries", () => {
 
   it("leaves out the working row when clean or when HEAD is not loaded", () => {
     const commits = [commit("c1", [])];
-    const clean = { staged: 0, unstaged: 0, untracked: 0, conflicted: 0 };
+    const clean = { staged: 0, unstaged: 0, untracked: 0, conflicted: 0, files: 0 };
     expect(buildEntries(commits, [], clean, "c1", REPO).map((e) => e.id)).toEqual(["c1"]);
-    expect(buildEntries(commits, [], { ...clean, unstaged: 1 }, "other", REPO).map((e) => e.id)).toEqual(["c1"]);
+    expect(buildEntries(commits, [], { ...clean, unstaged: 1, files: 1 }, "other", REPO).map((e) => e.id)).toEqual([
+      "c1",
+    ]);
+  });
+
+  it("keeps the working row when an older server sends no file count", () => {
+    const commits = [commit("c1", [])];
+    const old = { staged: 1, unstaged: 1, untracked: 0, conflicted: 0 } as GraphWorkingState;
+    expect(changeCount(old)).toBe(2);
+    expect(buildEntries(commits, [], old, "c1", REPO).map((e) => e.id)).toEqual([WORKING_ID, "c1"]);
   });
 });
 
@@ -146,7 +155,7 @@ describe("drop menu", () => {
       kind: "working",
       id: WORKING_ID,
       parents: ["h"],
-      state: { staged: 1, unstaged: 0, untracked: 0, conflicted: 0 },
+      state: { staged: 1, unstaged: 0, untracked: 0, conflicted: 0, files: 1 },
     };
     expect(dropMenu({ kind: "ref", ref: { kind: "local", name: "feature" } }, working, REPO, head)).toEqual([]);
   });

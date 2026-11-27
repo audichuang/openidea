@@ -12,7 +12,9 @@ export type GraphEntry =
 
 export const WORKING_ID = "*working*";
 
-export const changeCount = (s: GraphWorkingState) => s.staged + s.unstaged + s.untracked + s.conflicted;
+// An openidea-server older than `files` omits it: fall back to the per-side sum it used to show.
+export const changeCount = (s: Omit<GraphWorkingState, "files"> & { files?: number }) =>
+  s.files ?? s.staged + s.unstaged + s.untracked + s.conflicted;
 
 /** A stash as a commit row: its commit, with the base it was made on as the only parent. */
 export function stashCommit(s: GraphStash, repo: string): GraphCommit {
