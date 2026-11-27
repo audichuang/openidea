@@ -1840,6 +1840,24 @@ export function useFavoriteBranchNames(repo?: string | null): string[] | null {
   return useMemo(() => (edited !== undefined ? edited : readFavorites(root)), [edited, root]);
 }
 
+/** A branch's repository (unset: the selected one) and its branches, which the branch's favorites belong to. */
+export interface FavoriteScope {
+  repo?: string;
+  branches?: readonly Branch[];
+}
+
+/** Whether `b` is a favorite in every repository of `scopes` (a row several repositories share). */
+export function isFavoriteIn(b: Branch, scopes: readonly FavoriteScope[]): boolean {
+  return scopes.every((s) => isFavoriteBranch(b, favoriteBranches(s.repo)));
+}
+
+/** Removes `b` from the favorites of every repository of `scopes` when all have it, otherwise adds it to all of them. */
+export function toggleFavoriteBranchIn(b: Branch, scopes: readonly FavoriteScope[]) {
+  const all = isFavoriteIn(b, scopes);
+  for (const s of scopes)
+    if (isFavoriteBranch(b, favoriteBranches(s.repo)) === all) toggleFavoriteBranch(b, s.repo, s.branches);
+}
+
 /** Toggles `b` in the favorites of `repo` (unset: the selected repository), whose branches are `branches`. */
 export function toggleFavoriteBranch(b: Branch, repo?: string | null, branches?: readonly Branch[]) {
   const root = listRepo(repo);

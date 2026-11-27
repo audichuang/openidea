@@ -2,7 +2,6 @@
 import type { Branch } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { showContextMenu, useContextMenuStore, type MenuItem } from "@/ui";
-import { isFavoriteBranch } from "./branches";
 import {
   branchRef,
   checkoutAndUpdate,
@@ -16,13 +15,14 @@ import {
   mergeInRepos,
   newBranchInRepos,
   renameInRepos,
-  favoriteBranches,
+  isFavoriteIn,
   mergeIntoCurrent,
   newBranch,
   renameBranch,
-  toggleFavoriteBranch,
+  toggleFavoriteBranchIn,
   configuredRemoteNames,
   type BranchUpdateTarget,
+  type FavoriteScope,
 } from "./branchOps";
 import { branchRebaseProblem } from "./branchRebase";
 import type { CommonBranch } from "./repoBranches";
@@ -62,13 +62,12 @@ function updateSelection(targets: readonly BranchUpdateTarget[]) {
   );
 }
 
-/** `repo`, `branches`: the branch's repository and its branches when it is not the selected one (its favorites are its own). */
-function favoriteMenuItem(b: Branch, run: Run, repo?: string, branches?: readonly Branch[]): MenuItem {
-  const favorite = isFavoriteBranch(b, favoriteBranches(repo));
+/** `scopes`: the repositories whose favorites the branch's row edits, each with its branches. */
+function favoriteMenuItem(b: Branch, run: Run, scopes: readonly FavoriteScope[]): MenuItem {
   return {
-    label: favorite ? "Remove from Favorites" : "Add to Favorites",
+    label: isFavoriteIn(b, scopes) ? "Remove from Favorites" : "Add to Favorites",
     icon: "star",
-    run: run(() => toggleFavoriteBranch(b, repo, branches)),
+    run: run(() => toggleFavoriteBranchIn(b, scopes)),
   };
 }
 
@@ -119,7 +118,7 @@ export function branchMenu(
   };
   const cur = current ?? "HEAD";
   const rebaseBase = current ?? headCommit?.slice(0, 8);
-  const favoriteItem = favoriteMenuItem(b, run, repo, branches);
+  const favoriteItem = favoriteMenuItem(b, run, [{ repo, branches }]);
   const newWorktree = worktreeMenuItem(b, run);
   // Update Selected acts on every selected local branch, each in its own repository.
   const updating = !!useVcs.getState().remoteBusy;
@@ -457,6 +456,7 @@ export function mergedBranchMenu(
   selected: readonly { repo?: string; branch?: Branch }[],
   done: () => void = () => {},
   checkedOutInWorktree = false,
+  branchesOf: (root: string) => readonly Branch[] | undefined = () => undefined,
 ): MenuItem[] {
   const run: Run = (fn) => () => {
     done();
@@ -486,7 +486,11 @@ export function mergedBranchMenu(
   return tidySeparators([
     ...own,
     { kind: "separator" },
-    favoriteMenuItem(b, run),
+    favoriteMenuItem(
+      b,
+      run,
+      roots.map((repo) => ({ repo, branches: branchesOf(repo) })),
+    ),
     historyMenuItem(b.name, run),
     { kind: "separator" },
     ...selection,

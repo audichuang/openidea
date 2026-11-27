@@ -7,7 +7,7 @@ import type { Branch, Commit } from "@/bindings";
 import { executeAction, registerActions } from "@/platform/actions";
 import { relativePath } from "@/platform/project";
 import { notifications, toolWindowService } from "@/workbench/contributions";
-import { deleteBranches, newBranch, newBranchInRepos, toggleFavoriteBranch, updateBranches } from "./branchOps";
+import { deleteBranches, newBranch, newBranchInRepos, toggleFavoriteBranchIn, updateBranches } from "./branchOps";
 import {
   applySelectedChanges,
   changesArg,
@@ -72,7 +72,7 @@ export interface BranchTarget {
   ref: string;
   repo?: string;
   branch?: Branch;
-  /** A pane listing one repository: that repository and its branches, which the branch's favorites belong to. */
+  /** The branch's repository and its branches, which the branch's favorites belong to. */
   listed?: { repo: string; branches: readonly Branch[] };
 }
 
@@ -205,10 +205,15 @@ export function registerLogPaneActions(): () => void {
       when: VCS,
       hidden: true,
       run: async ({ arg }) => {
-        const target = branchArg(arg);
-        if (!target?.branch) return;
-        // The favorites are the branch's own repository's (#384): no need to select it.
-        toggleFavoriteBranch(target.branch, target.listed?.repo ?? target.repo, target.listed?.branches);
+        const [first, ...rest] = branchTargets(arg);
+        if (!first?.branch) return;
+        // The favorites are the branch's own repository's (#384): no need to select it. A merged row
+        // has one target per repository (#439).
+        const scopes = [first, ...rest.filter((t) => t.ref === first.ref)].map((t) => ({
+          repo: t.listed?.repo ?? t.repo,
+          branches: t.listed?.branches,
+        }));
+        toggleFavoriteBranchIn(first.branch, scopes);
       },
     },
     {
