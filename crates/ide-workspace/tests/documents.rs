@@ -2090,19 +2090,40 @@ fn undo_back_to_stale_text_after_the_file_became_unloadable_keeps_it_unsaved() {
     }
 }
 
-/// fork: Paste and Restore writes UTF-8; a file whose remembered encoding cannot decode the
-/// restored bytes shows them detected again, as opening it would, not as replacement characters.
+/// fork: a remembered encoding that no longer decoded the file when it opened still lets the
+/// binary guard see binary content written over it.
 #[test]
-fn reload_from_disk_detects_again_when_the_remembered_encoding_cannot_decode_the_file() {
+fn undo_after_binary_replaced_a_file_whose_remembered_encoding_failed_on_open_keeps_it_unsaved() {
     let f = fixture();
-    let path = f.root.join("restored.txt");
-    fs::write(&path, "abc\n").unwrap();
-    encoding_mappings(&f, &[("restored.txt", "shift_jis")]);
+    latin_project(&f);
+    let path = f.root.join("latin.txt");
+    fs::write(&path, b"a\xe7\n").unwrap();
+    encoding_mappings(&f, &[("latin.txt", "utf-8")]);
     let doc = f.docs.open(&path).unwrap();
-    f.docs.edit(doc.id, doc.version, change(0, 0, "x")).unwrap();
-    fs::write(&path, "中文\n").unwrap();
-    f.docs.reload_from_disk(std::slice::from_ref(&path));
+    let v = f.docs.edit(doc.id, doc.version, change(0, 0, "x")).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    let binary = b"\0\x01\x02binary\0".to_vec();
+    fs::write(&path, &binary).unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+    f.docs.edit(doc.id, v, change(0, 1, "")).unwrap();
+    assert!(f.docs.is_dirty(doc.id).unwrap());
+    assert!(!f.docs.autosave(doc.id).unwrap());
+    assert_eq!(fs::read(&path).unwrap(), binary);
+}
+
+/// fork: UTF-16 chosen by the user reloads mostly non-ASCII text without a BOM, which the
+/// binary heuristic alone would take for binary.
+#[test]
+fn a_chosen_utf16_document_reloads_bomless_non_ascii_text() {
+    let f = fixture();
+    let path = f.root.join("wide.txt");
+    let utf16 = |text: &str| text.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>();
+    fs::write(&path, utf16("plain ascii\n")).unwrap();
+    let doc = f.docs.open(&path).unwrap();
+    f.docs.set_encoding(doc.id, "utf-16le", true).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    fs::write(&path, utf16("中文中文中文\n")).unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
     let reloaded = f.docs.snapshot(doc.id).unwrap();
-    assert_eq!((reloaded.text.as_str(), reloaded.encoding.as_str()), ("中文\n", "utf-8"));
-    assert!(!f.docs.is_dirty(doc.id).unwrap());
+    assert_eq!((reloaded.text.as_str(), reloaded.encoding.as_str()), ("中文中文中文\n", "utf-16le"));
 }

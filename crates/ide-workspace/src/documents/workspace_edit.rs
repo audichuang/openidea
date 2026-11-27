@@ -856,11 +856,12 @@ impl Documents {
                 }
                 let defaults = self.file_defaults();
                 let native_to_ascii = defaults.native_to_ascii_for(path);
-                let loaded = if state.encoding_chosen {
+                let mut loaded = if state.encoding_chosen {
                     Self::load_as(path, &state.encoding, native_to_ascii)?
                 } else {
                     Self::load_with_defaults(path, &defaults, state.editorconfig.as_ref())?.0
                 };
+                super::mark_binary(&mut loaded, path);
                 // Not text (binary): keep the buffer on its baseline rather than adopt the file.
                 if loaded.binary && !state.binary {
                     return Ok(());
