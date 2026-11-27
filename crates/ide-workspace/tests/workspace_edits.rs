@@ -523,6 +523,25 @@ fn undo_refuses_after_a_conflicting_file_is_restored_to_its_baseline() {
 }
 
 #[test]
+fn undo_refuses_after_a_restored_conflict_is_cleared_by_editing_back() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("a.txt");
+    std::fs::write(&path, "old\n").unwrap();
+    let (docs, events) = recorded_documents();
+    let info = docs.open(&path).unwrap();
+    type_text(&docs, info.id, "own\n");
+    std::fs::write(&path, "external\n").unwrap();
+    assert!(!docs.autosave(info.id).unwrap(), "the external write is a disk conflict");
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&path, "new")], ..Default::default() }).unwrap();
+    std::fs::write(&path, "old\n").unwrap();
+    // Typing the file's text back clears the conflict; typing the refactored text makes it dirty again.
+    type_text(&docs, info.id, "old\n");
+    type_text(&docs, info.id, "new\n");
+    assert_eq!(docs.undo_workspace_edit(undo_id(&events)).unwrap_err().kind, ErrorKind::OutOfSync);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "old\n");
+}
+
+#[test]
 fn redo_keeps_an_external_write_made_after_the_undo() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("a.txt");
