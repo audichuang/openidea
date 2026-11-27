@@ -885,6 +885,7 @@ window_group_merge                           always             desktop      bin
 window_group_reorder                         always             desktop      bindings async
 window_group_restore                         always             desktop      bindings async
 window_group_select                          always             desktop      bindings async
+window_is_fullscreen                         always             desktop      bindings sync
 window_launch_settled                        trusted            desktop      bindings sync
 window_new                                   always             desktop      bindings async
 window_open_clone                            always             desktop      bindings async
