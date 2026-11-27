@@ -31,6 +31,8 @@ pub struct GraphWorkingState {
     pub unstaged: u32,
     pub untracked: u32,
     pub conflicted: u32,
+    /// Distinct paths, untracked ones included: a file with both staged and unstaged changes counts once.
+    pub files: u32,
 }
 
 /// Ahead and behind commit counts of a head revision relative to a base revision.
@@ -312,6 +314,9 @@ fn parse_porcelain(text: &str) -> GraphWorkingState {
         if x == b'R' || x == b'C' {
             entries.next();
         }
+        if (x, y) != (b'!', b'!') {
+            s.files += 1;
+        }
         match (x, y) {
             (b'?', b'?') => s.untracked += 1,
             (b'!', b'!') => {}
@@ -388,7 +393,10 @@ mod tests {
     #[test]
     fn porcelain_counts_each_side() {
         let text = "M  a\0 M b\0MM c\0?? d\0UU e\0R  new\0old\0";
-        assert_eq!(parse_porcelain(text), GraphWorkingState { staged: 3, unstaged: 2, untracked: 1, conflicted: 1 });
+        assert_eq!(
+            parse_porcelain(text),
+            GraphWorkingState { staged: 3, unstaged: 2, untracked: 1, conflicted: 1, files: 6 }
+        );
     }
 
     #[test]

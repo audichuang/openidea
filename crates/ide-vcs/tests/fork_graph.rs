@@ -70,7 +70,13 @@ fn working_state_counts_staged_unstaged_and_untracked() {
     std::fs::write(dir.join("new.txt"), "untracked").unwrap();
     assert_eq!(
         repo.graph_working_state().unwrap(),
-        GraphWorkingState { staged: 1, unstaged: 1, untracked: 1, conflicted: 0 }
+        GraphWorkingState { staged: 1, unstaged: 1, untracked: 1, conflicted: 0, files: 3 }
+    );
+    // #98: staged and then changed again is one file, not two.
+    std::fs::write(dir.join("a.txt"), "staged, then changed").unwrap();
+    assert_eq!(
+        repo.graph_working_state().unwrap(),
+        GraphWorkingState { staged: 1, unstaged: 2, untracked: 1, conflicted: 0, files: 3 }
     );
 }
 
