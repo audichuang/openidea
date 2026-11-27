@@ -569,6 +569,60 @@ fn redo_keeps_an_external_write_made_after_the_undo() {
     assert_eq!(docs.snapshot(id).unwrap().text, "own\n");
 }
 
+/// #514: typing back to the clean text loads an external write nobody reported yet; that write
+/// still counts, so retyping the refactored text cannot let undo overwrite it.
+#[test]
+fn undo_refuses_after_editing_back_loads_an_unreported_external_write() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("a.txt");
+    let (docs, events, id) = refactored_unsaved(&path);
+    std::fs::write(&path, "ext\n").unwrap();
+    type_text(&docs, id, "old\n");
+    assert_eq!(docs.snapshot(id).unwrap().text, "ext\n");
+    type_text(&docs, id, "new\n");
+    assert_eq!(docs.undo_workspace_edit(undo_id(&events)).unwrap_err().kind, ErrorKind::OutOfSync);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "ext\n");
+}
+
+/// #514: Load Changes from Disk takes an external write nobody reported yet as the baseline.
+#[test]
+fn undo_refuses_after_loading_an_unreported_external_write_from_disk() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("a.txt");
+    let (docs, events, id) = refactored_unsaved(&path);
+    std::fs::write(&path, "ext\n").unwrap();
+    docs.discard_and_reload(id).unwrap();
+    type_text(&docs, id, "new\n");
+    assert_eq!(docs.undo_workspace_edit(undo_id(&events)).unwrap_err().kind, ErrorKind::OutOfSync);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "ext\n");
+}
+
+/// #529: a conflict the file already left before a refactoring is not counted again when undo
+/// puts that refactoring's backup back.
+#[test]
+fn undo_and_redo_of_two_refactorings_count_an_external_write_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("a.txt");
+    std::fs::write(&path, "old\n").unwrap();
+    let (docs, events) = recorded_documents();
+    let info = docs.open(&path).unwrap();
+    type_text(&docs, info.id, "own\n");
+    std::fs::write(&path, "external\n").unwrap();
+    assert!(!docs.autosave(info.id).unwrap(), "the external write is a disk conflict");
+    // Written back before anything checked the file again.
+    std::fs::write(&path, "old\n").unwrap();
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&path, "new")], ..Default::default() }).unwrap();
+    let first = undo_id(&events);
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&path, "two")], ..Default::default() }).unwrap();
+    let second = undo_id(&events);
+    docs.undo_workspace_edit(second).unwrap();
+    docs.undo_workspace_edit(first).unwrap();
+    docs.redo_workspace_edit(first).unwrap();
+    docs.redo_workspace_edit(second).unwrap();
+    assert_eq!(docs.snapshot(info.id).unwrap().text, "two\n");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "old\n");
+}
+
 #[test]
 fn ordered_resource_operations_and_binary_deletion_are_undoable() {
     let tmp = tempfile::tempdir().unwrap();

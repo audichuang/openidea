@@ -181,8 +181,9 @@ struct DocState {
     clean_text: Option<Document>,
     /// External disk state already reported as conflicting with unsaved changes.
     conflict: Option<DiskStamp>,
-    /// External changes seen while the buffer had unsaved changes (each new `conflict`), so an
-    /// undo of a refactoring can tell a write by another program from the IDE's own saves.
+    /// External changes seen while the buffer had unsaved changes (each new `conflict`, or bytes
+    /// loaded as the baseline before one was recorded), so an undo of a refactoring can tell a write by
+    /// another program from the IDE's own saves.
     external_writes: u64,
     closed: bool,
     /// URI of a virtual document (no file behind it).
@@ -258,6 +259,14 @@ impl DocState {
             self.external_writes += 1;
         }
         None
+    }
+
+    /// The buffer is about to take another program's bytes as its baseline, which hides that
+    /// write from refactoring undo: count it unless it is the conflict already counted.
+    fn adopt_external(&mut self, stamp: DiskStamp) {
+        if self.conflict.is_none_or(|seen| seen.hash != stamp.hash) {
+            self.external_writes += 1;
+        }
     }
 }
 
@@ -922,7 +931,11 @@ impl Documents {
             let clean = st.clean_text.as_ref().is_some_and(|clean| clean.same_text(&st.doc));
             // Back to the text of a file that changed on disk meanwhile (its watcher event was
             // spent warning about the unsaved changes): show what the file holds now.
-            let reload = clean && st.uri.is_none() && st.changed_on_disk().is_some();
+            let changed = if clean && st.uri.is_none() { st.changed_on_disk() } else { None };
+            if let Some(stamp) = changed {
+                st.adopt_external(stamp);
+            }
+            let reload = changed.is_some();
             self.set_dirty(doc, st, !clean || reload);
             self.notify_changed(doc, st, &applied, &edits);
             let version = st.doc.version();
@@ -1425,6 +1438,9 @@ impl Documents {
         self.with_doc(doc, |st| {
             if st.uri.is_some() || st.binary {
                 return Err(IdeError::invalid("only a file's text can be reloaded from disk"));
+            }
+            if let Some(stamp) = st.changed_on_disk() {
+                st.adopt_external(stamp);
             }
             let loaded = Self::load_as(&st.path, &st.encoding, st.native_to_ascii)?;
             st.has_bom = loaded.has_bom;
