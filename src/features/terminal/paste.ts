@@ -149,7 +149,13 @@ export async function pasteTerminalClipboard(paste: (text: string) => void, getT
     // The backend reads the image too; the webview reads below only where it cannot (Linux).
     const image = await readClipboardImage();
     if (image !== undefined) {
-      if (image && target.current()) await pasteMedia(image, target, paste);
+      if (image) {
+        if (target.current()) await pasteMedia(image, target, paste);
+      } else if (target.remote) {
+        // A remote shell cannot open local files, so it gets their paths as plain text.
+        const paths = await readClipboardText();
+        if (paths && target.current()) paste(paths);
+      }
       return;
     }
     // Native paste preserves clipboard blobs where Clipboard.read() is unavailable.

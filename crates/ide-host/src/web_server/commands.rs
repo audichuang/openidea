@@ -403,7 +403,8 @@ pub fn register(dispatcher: &mut Dispatcher, shell: Arc<WebShellState>) {
         ("wsl_resolve", Always),
         ("remote_current", Always),
         ("plugin_market_url", Always),
-        ("clipboard_text", Trusted),
+        // fork: the desktop declaration is `always`, so menu paste reads natively in an untrusted window too.
+        ("clipboard_text", Always),
         ("clipboard_image", Always),
     ] {
         dispatcher.add(null_opt, trust, |_| async move { Ok(Value::Null) });
