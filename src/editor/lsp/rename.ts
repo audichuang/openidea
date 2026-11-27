@@ -27,7 +27,7 @@ import { executeAction } from "@/platform/actions";
 import { whenAllSynced, whenSynced, type EditorDocContext } from "@/editor/api";
 import { structure, type NodeAt } from "@/editor/structure";
 import { docOf, incompleteNote, isUnavailable, lspRequest, reportLspError } from "./lsp";
-import { offsetToPos, rangeToOffsets } from "./positions";
+import { offsetToPos, posToOffset, rangeToOffsets } from "./positions";
 import { showHint } from "./hint";
 import { openPopup, type PreviewOccurrence } from "./popupStore";
 import { needsPreview, summarizeWorkspaceEdit } from "./workspaceEdit";
@@ -177,9 +177,13 @@ export async function startRename(view: EditorView) {
   });
 }
 
-/** Opens Rename File for this file when the word at the caret is its top-level type. */
-async function renameFileInstead(view: EditorView, doc: EditorDocContext): Promise<boolean> {
-  const word = view.state.wordAt(view.state.selection.main.head);
+/** Opens Rename File for this file when the word at `head` (the caret) is its top-level type. */
+async function renameFileInstead(
+  view: EditorView,
+  doc: EditorDocContext,
+  head = view.state.selection.main.head,
+): Promise<boolean> {
+  const word = view.state.wordAt(head);
   const name = word ? view.state.sliceDoc(word.from, word.to) : null;
   if (!word || !name || name !== fileStem(doc.path)) return false;
   let at: NodeAt | null = null;
@@ -324,11 +328,15 @@ async function finishRename(view: EditorView, doc: EditorDocContext, pos: Pos, o
   const { edit, incomplete } = renamed;
   const note = incomplete && incompleteNote(incomplete, oldName);
   await presentRename(view, edit, oldName, newName, note || null, !!renamed.preview, async () => {
-    if (!(await hasSyntaxErrors(doc.doc))) return false;
-    const plan = await syntaxPlan(view, doc, pos);
-    if (!plan || plan.symbol.name !== oldName) return false;
-    await commitSyntaxRename(view, doc, plan, newName);
-    return true;
+    if (await hasSyntaxErrors(doc.doc)) {
+      const plan = await syntaxPlan(view, doc, pos);
+      if (plan && plan.symbol.name === oldName) {
+        await commitSyntaxRename(view, doc, plan, newName);
+        return true;
+      }
+    }
+    // jdtls accepts a top-level type outside a source folder, then edits nothing.
+    return !note && (await renameFileInstead(view, doc, posToOffset(view.state.doc, pos)));
   });
 }
 
