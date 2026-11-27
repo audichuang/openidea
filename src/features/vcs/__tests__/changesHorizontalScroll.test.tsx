@@ -1,5 +1,5 @@
 import { render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -9,13 +9,16 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 vi.mock("../DiffEditor", () => ({ DiffEditor: () => <div /> }));
 
 import { ChangesTree } from "../CommitView";
+import { forkChangesScroll } from "../forkChangesScroll";
 import { useVcs } from "../store";
 import { useProject } from "@/platform/project";
 
 const NAME = "some_long_service_implementation_with_a_very_long_name.ts";
 
 describe("changes tree width (#6080)", () => {
+  // fork: upstream's horizontal scroll is behind a flag (#526); these cover it switched on.
   beforeEach(() => {
+    forkChangesScroll.upstream = true;
     localStorage.clear();
     useProject.setState({
       project: { name: "p", root: "/p", trusted: true, isGit: true, settings: {} } as never,
@@ -35,6 +38,10 @@ describe("changes tree width (#6080)", () => {
         },
       ],
     });
+  });
+
+  afterEach(() => {
+    forkChangesScroll.upstream = false;
   });
 
   it.each(["commit", "local"] as const)("scrolls horizontally in %s mode instead of clipping rows", (mode) => {

@@ -66,6 +66,7 @@ import {
 } from "@/workbench/contributions";
 import { evaluateWhen, useContextKeys } from "@/platform/context";
 import { useToolWindowLayout } from "@/workbench/toolwindows/store";
+import { forkChangesScroll } from "./forkChangesScroll";
 import {
   aggregateCheck,
   buildChangeTree,
@@ -1212,7 +1213,7 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
       >
         <Tree<ChangeNode>
           handleRef={treeRef}
-          horizontalScroll
+          horizontalScroll={forkChangesScroll.upstream}
           roots={roots}
           getKey={(n) => n.key}
           getLabel={nodeText}
