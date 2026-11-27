@@ -74,6 +74,22 @@ fn working_state_counts_staged_unstaged_and_untracked() {
     );
 }
 
+/// #410: like upstream's status reads, the graph's `git status` must not rewrite the index after
+/// refreshing stale stat data, or the watcher sees a foreign index write and refreshes again.
+#[test]
+fn working_state_leaves_the_index_alone() {
+    let (tmp, repo) = repo();
+    let dir = tmp.path();
+    commit(dir, "a.txt", "one");
+    // Same content, new stat data: plain `git status` would refresh and write the index.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    std::fs::write(dir.join("a.txt"), "one").unwrap();
+    let index = dir.join(".git/index");
+    let before = std::fs::read(&index).unwrap();
+    assert_eq!(repo.graph_working_state().unwrap(), GraphWorkingState::default());
+    assert_eq!(std::fs::read(&index).unwrap(), before, "git status rewrote the index");
+}
+
 #[test]
 fn reflog_lists_head_moves_newest_first() {
     let (tmp, repo) = repo();

@@ -149,7 +149,13 @@ impl Repo {
 
     pub fn graph_working_state(&self) -> IdeResult<GraphWorkingState> {
         let _scope = self.fork_scope();
-        let out = run(self.root(), &["status", "--porcelain=v1", "-z", "--untracked-files=all"], None)?;
+        // No index lock, as in upstream's status reads: a stat refresh write-back is a foreign
+        // index change to the watcher, which would refresh again (#410).
+        let out = run(
+            self.root(),
+            &["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+            None,
+        )?;
         Ok(parse_porcelain(&out.stdout_str()))
     }
 
