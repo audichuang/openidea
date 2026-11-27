@@ -279,6 +279,14 @@ fn absolute(path: &Path) -> PathBuf {
     }
 }
 
+/// fork: decoding in a chosen encoding (remembered per file since #5510) never reports binary
+/// content, which the reload guards must still see. UTF-16 text holds NULs, so it is left alone.
+fn mark_binary(loaded: &mut ide_vfs::LoadedText, path: &Path) {
+    if !loaded.binary && !loaded.encoding.starts_with("utf-16") {
+        loaded.binary = ide_vfs::probe(path).is_ok_and(|probe| probe.binary);
+    }
+}
+
 fn disk_len(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
@@ -1549,24 +1557,12 @@ impl Documents {
         } else {
             let defaults = self.file_defaults();
             let native_to_ascii = defaults.native_to_ascii_for(&st.path);
-            let loaded = if st.encoding_chosen {
-                // fork: since #5510 a remembered encoding sets `encoding_chosen` on open. Binary bytes
-                // must still reach the guard below, and bytes that are not text in that encoding are
-                // detected again, as `load_with_defaults` does on open.
-                let detected = ide_vfs::load_text(&st.path)?;
-                if detected.binary {
-                    detected
-                } else {
-                    let chosen = Self::load_as(&st.path, &st.encoding, native_to_ascii)?;
-                    if chosen.text.contains(char::REPLACEMENT_CHARACTER) {
-                        Self::load_with_defaults(&st.path, &defaults, st.editorconfig.as_ref())?.0
-                    } else {
-                        chosen
-                    }
-                }
+            let mut loaded = if st.encoding_chosen {
+                Self::load_as(&st.path, &st.encoding, native_to_ascii)?
             } else {
                 Self::load_with_defaults(&st.path, &defaults, st.editorconfig.as_ref())?.0
             };
+            mark_binary(&mut loaded, &st.path);
             st.native_to_ascii = native_to_ascii;
             loaded
         };
