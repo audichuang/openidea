@@ -520,38 +520,6 @@ mod imp {
         (unsafe { IsClipboardFormatAvailable(CF_HDROP) }) != 0
     }
 
-    pub fn text() -> Option<String> {
-        // Still busy after the retries: the webview's read is the fallback.
-        if !open() {
-            return None;
-        }
-        let text = if (unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT) }) == 0 {
-            Some(String::new())
-        } else {
-            let memory = unsafe { GetClipboardData(CF_UNICODETEXT) };
-            if memory.is_null() {
-                None
-            } else {
-                // SAFETY: as in `files`; the text is UTF-16 up to its NUL,
-                // and `GlobalSize` bounds the units read.
-                unsafe {
-                    let data = GlobalLock(memory) as *const u16;
-                    if data.is_null() {
-                        None
-                    } else {
-                        let units = std::slice::from_raw_parts(data, GlobalSize(memory) / 2);
-                        let end = units.iter().position(|&u| u == 0).unwrap_or(units.len());
-                        let text = String::from_utf16_lossy(&units[..end]);
-                        GlobalUnlock(memory);
-                        Some(text)
-                    }
-                }
-            }
-        };
-        unsafe { CloseClipboard() };
-        text
-    }
-
     pub fn files() -> std::io::Result<Vec<PathBuf>> {
         let _clipboard = lock();
         if !open() {

@@ -362,7 +362,7 @@ function build(lines: BlameLine[], doc: Text): BlameState {
     let label = labels.get(line.commit);
     if (!label && !isUncommitted(line)) {
       label = {
-        date: line.timeMs ? formatPrettyDay(line.timeMs) : "",
+        date: line.timeMs ? formatPrettyDay(line.timeMs, undefined, undefined, true) : "",
         author: shortAuthorName(line.author, names),
         revision: line.commit.slice(0, 8),
       };

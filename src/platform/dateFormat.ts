@@ -103,12 +103,19 @@ export function formatTimestamp(ms: number, now = Date.now(), o: DateFormatOptio
 /**
  * Day without clock time (blame gutter): "Today" / "Yesterday" when pretty
  * formatting is on, as IDEA's annotate shows; older dates keep the short date.
+ * fork: `fullYear` (the blame gutter) keeps the fork's 4-digit year, `formatDay`'s short form.
  */
-export function formatPrettyDay(ms: number, now = Date.now(), o: DateFormatOptions = dateFormatOptions()): string {
+export function formatPrettyDay(
+  ms: number,
+  now = Date.now(),
+  o: DateFormatOptions = dateFormatOptions(),
+  fullYear = false,
+): string {
   const d = new Date(ms);
   if (o.pretty) {
     if (d.toDateString() === new Date(now).toDateString()) return tx("Today");
     if (d.toDateString() === new Date(now - 86_400_000).toDateString()) return tx("Yesterday");
   }
-  return formatDay(d, o, true);
+  if (fullYear || o.overrideSystem) return formatDay(d, o, true);
+  return formatter(undefined, { year: "2-digit", month: "2-digit", day: "2-digit" }).format(d);
 }

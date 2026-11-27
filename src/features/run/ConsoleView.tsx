@@ -57,7 +57,22 @@ const cut = (line: ConsoleLine) => !!line.continues;
 const MARK_COLOR = "var(--bg-search-match)";
 const CURRENT_MARK_COLOR = "var(--bg-search-match-current)";
 const EMPTY_FIND: FindResult = { matches: [], overflow: false, invalid: false };
-const EMPTY_ROW_MAP = new Map<number, number>();
+/**
+ * Row index of each line, built on first use: Find and Up / Down the Stack Trace read it, plain
+ * output streaming in does not pay for it on every append.
+ */
+function rowsByLine(rows: readonly { kind: string; index?: number }[]) {
+  let map: Map<number, number> | undefined;
+  const build = () => {
+    if (map) return map;
+    map = new Map();
+    rows.forEach((row, i) => {
+      if (row.kind === "line" && row.index !== undefined) map!.set(row.index, i);
+    });
+    return map;
+  };
+  return { get: (line: number) => build().get(line), has: (line: number) => build().has(line) };
+}
 const isCurrentMark = (m: SegmentMark) => !!m.current;
 /** Matches `.line { padding: 0 12px }` in `Run.module.css`. */
 const LINE_PADDING_LEFT_PX = 12;
@@ -550,14 +565,7 @@ export function ConsoleView({
   const activeIndex = found.matches.length ? Math.min(Math.max(active, 0), found.matches.length - 1) : -1;
   const activeMatch = activeIndex >= 0 ? found.matches[activeIndex] : undefined;
   const marksByLine = useMemo(() => marksByRow(found.matches, activeIndex, lines, cut), [found, activeIndex, lines]);
-  const rowOfLine = useMemo(() => {
-    if (!findOpen) return EMPTY_ROW_MAP;
-    const rowsByLine = new Map<number, number>();
-    rows.forEach((row, i) => {
-      if (row.kind === "line") rowsByLine.set(row.index, i);
-    });
-    return rowsByLine;
-  }, [findOpen, rows]);
+  const rowOfLine = useMemo(() => rowsByLine(rows), [rows]);
 
   /** The line at the top of the viewport: typing searches from there, as IDEA does. */
   const topLine = () => {
@@ -683,7 +691,7 @@ export function ConsoleView({
   const [currentLink, setCurrentLink] = useState<LinkPosition | null>(null);
   // Read by key repeat before the next render; the links are found on demand, once per output change.
   const stepFrom = useRef<LinkPosition | null>(null);
-  const linksCache = useRef<{ rows: Map<number, number>; links: FileLink[] } | null>(null);
+  const linksCache = useRef<{ rows: ReturnType<typeof rowsByLine>; links: FileLink[] } | null>(null);
   useOccurrenceNavigator(occurrences ?? null, (dir, focus) => {
     if (linksCache.current?.rows !== rowOfLine)
       linksCache.current = { rows: rowOfLine, links: fileLinks(lines, (i) => rowOfLine.has(i)) };

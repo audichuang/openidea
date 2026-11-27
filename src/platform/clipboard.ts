@@ -56,7 +56,7 @@ const rawPaths: FormatFiles = (paths) => paths.join("\n");
  * cannot read it (outside Tauri, Linux): the caller reads it through the webview then.
  */
 export async function readClipboardImage(): Promise<Blob | null | undefined> {
-  if (!isTauri()) return undefined;
+  if (!isDesktop()) return undefined;
   try {
     const image = await call(commands.clipboardImage());
     return image && new Blob([new Uint8Array(image.data)], { type: image.mime });
@@ -79,8 +79,10 @@ export async function readClipboardText(
   } catch {
     return text;
   }
-  // Windows also supplies the file list as text; unrelated text still wins.
-  if (text && text.replace(/\r\n/g, "\n").split("\n").map(ipcPath).join("\n") !== paths.join("\n")) return text;
+  // Windows also supplies the file list as text, Finder the file names; unrelated text still wins.
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const names = paths.map((path) => path.slice(path.lastIndexOf("/") + 1));
+  if (text && lines.map(ipcPath).join("\n") !== paths.join("\n") && lines.join("\n") !== names.join("\n")) return text;
   return formatFiles(paths);
 }
 

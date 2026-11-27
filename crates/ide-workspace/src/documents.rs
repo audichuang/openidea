@@ -1173,8 +1173,11 @@ impl Documents {
         }
         let Some(stamp) = st.changed_on_disk() else { return false };
         if st.conflict != Some(stamp) {
+            // A touch of the conflicting file (same bytes, new mtime) is no new external write.
+            if st.conflict.is_none_or(|seen| seen.hash != stamp.hash) {
+                st.external_writes += 1;
+            }
             st.conflict = Some(stamp);
-            st.external_writes += 1;
             self.warn_changed_on_disk(doc, st);
         }
         true

@@ -9,8 +9,9 @@ vi.mock("@/workbench/contributions", () => ({ notifications: () => ({ notify }) 
 
 beforeEach(() => {
   vi.stubGlobal("__TAURI_INTERNALS__", {});
-  // The webview reads the text, as on Windows; `readClipboardPlainText` covers the native read.
-  vi.spyOn(commands, "clipboardText").mockResolvedValue({ status: "ok", data: null });
+  // The backend refuses the read, so the webview reads the text (on macOS a native `null` now
+  // means "no text", upstream #6061); `readClipboardPlainText` covers the native read.
+  vi.spyOn(commands, "clipboardText").mockRejectedValue(new Error("unavailable"));
   // The webview reads images, as on Linux; the native read is covered separately.
   vi.spyOn(commands, "clipboardImage").mockResolvedValue({
     status: "error",
