@@ -52,7 +52,10 @@ fn the_plugins_configuration_completes_only_the_argument_under_the_caret() {
     let config = "plugin:test.run-anything:tasks";
     // Not provided until its program is approved.
     assert!(p.run_configuration_complete("main", &root, config, "arguments", "b", 1).is_err());
-    p.choose_program(ID, "process:task", Some(&root), Some(Path::new("/bin/echo"))).unwrap();
+    // Never run (the fixture lists its tasks itself): any absolute executable file is approved,
+    // and Windows has no `/bin/echo`.
+    let program = if cfg!(windows) { std::env::current_exe().unwrap() } else { Path::new("/bin/echo").to_path_buf() };
+    p.choose_program(ID, "process:task", Some(&root), Some(&program)).unwrap();
     assert!(p.run_detection().detect(&root).iter().any(|c| c.id == config));
     let complete = |text: &str, caret: u32| -> Vec<(String, String, u32, u32)> {
         p.run_configuration_complete("main", &root, config, "arguments", text, caret)
