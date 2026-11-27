@@ -1550,7 +1550,20 @@ impl Documents {
             let defaults = self.file_defaults();
             let native_to_ascii = defaults.native_to_ascii_for(&st.path);
             let loaded = if st.encoding_chosen {
-                Self::load_as(&st.path, &st.encoding, native_to_ascii)?
+                // fork: since #5510 a remembered encoding sets `encoding_chosen` on open. Binary bytes
+                // must still reach the guard below, and bytes that are not text in that encoding are
+                // detected again, as `load_with_defaults` does on open.
+                let detected = ide_vfs::load_text(&st.path)?;
+                if detected.binary {
+                    detected
+                } else {
+                    let chosen = Self::load_as(&st.path, &st.encoding, native_to_ascii)?;
+                    if chosen.text.contains(char::REPLACEMENT_CHARACTER) {
+                        Self::load_with_defaults(&st.path, &defaults, st.editorconfig.as_ref())?.0
+                    } else {
+                        chosen
+                    }
+                }
             } else {
                 Self::load_with_defaults(&st.path, &defaults, st.editorconfig.as_ref())?.0
             };
