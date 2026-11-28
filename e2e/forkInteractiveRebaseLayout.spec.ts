@@ -36,6 +36,7 @@ test("Fork interactive rebase dialog keeps commit messages and plan controls usa
       h.vcs_log_refs = () => ({});
       h.vcs_log_users = () => ["Sam Rivera <sam@example.com>"];
       h.vcs_config_get = () => null;
+      h.vcs_config_get_bool = () => null;
       h.vcs_commit_files = () => [];
       h.vcs_log_details_batch = () => [];
       const vcsPath = "/src/features/vcs/store.ts";
@@ -128,6 +129,7 @@ test("Fork interactive rebase dialog shows the whole row Shift+Tab lands on belo
     h.vcs_log_refs = () => ({});
     h.vcs_log_users = () => ["Sam Rivera <sam@example.com>"];
     h.vcs_config_get = () => null;
+    h.vcs_config_get_bool = () => null;
     h.vcs_commit_files = () => [];
     h.vcs_log_details_batch = () => [];
     const vcsPath = "/src/features/vcs/store.ts";
