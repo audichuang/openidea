@@ -221,14 +221,6 @@ pub fn window_toggle_fullscreen(window: WebviewWindow) -> IdeResult<bool> {
     Ok(on)
 }
 
-/// Whether this window is in native full screen, as [`window_toggle_fullscreen`] reads it.
-#[desktop_command(trust = always)]
-#[tauri::command]
-#[specta::specta]
-pub fn window_is_fullscreen(window: WebviewWindow) -> bool {
-    window.is_fullscreen().unwrap_or(false)
-}
-
 /// Fills the work area without the platform zoom animation. Returns whether it is filled now.
 #[desktop_command(trust = always)]
 #[tauri::command]
@@ -396,6 +388,14 @@ pub fn window_open_projects(
             })
         })
         .collect())
+}
+
+/// Whether this window is in native full screen (on macOS, also a tab of a fullscreen group).
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub fn window_is_fullscreen(window: WebviewWindow) -> bool {
+    window.is_fullscreen().unwrap_or(false)
 }
 
 #[derive(Serialize, Deserialize, Type)]
@@ -1106,6 +1106,7 @@ ide_command::desktop_domain!(
     window_complete_launch,
     window_cycle,
     window_flash_taskbar,
+    window_is_fullscreen,
     window_launch_settled,
     window_new,
     window_open_clone,
@@ -1128,6 +1129,5 @@ ide_command::desktop_domain!(
     window_take_launch,
     window_take_settings_init,
     window_toggle_fullscreen,
-    window_is_fullscreen,
     window_toggle_zoom,
 );
