@@ -2127,3 +2127,104 @@ fn a_chosen_utf16_document_reloads_bomless_non_ascii_text() {
     let reloaded = f.docs.snapshot(doc.id).unwrap();
     assert_eq!((reloaded.text.as_str(), reloaded.encoding.as_str()), ("中文中文中文\n", "utf-16le"));
 }
+
+/// fork: a UTF-16 encoding, chosen in the session or remembered for the file, decodes an empty ZIP
+/// (`PK\x05\x06` and NULs) without a replacement character; the binary guard still sees it.
+#[test]
+fn undo_after_binary_replaced_a_utf16_document_keeps_it_unsaved() {
+    let zip = [&b"PK\x05\x06"[..], &[0; 18]].concat();
+    for remembered in [false, true] {
+        let f = fixture();
+        let path = f.root.join("wide.txt");
+        fs::write(&path, b"a\xe7\n").unwrap();
+        if remembered {
+            // Three bytes are no UTF-16: the file opens detected, its mapping stays for reloads.
+            encoding_mappings(&f, &[("wide.txt", "utf-16le")]);
+        }
+        let doc = f.docs.open(&path).unwrap();
+        if !remembered {
+            f.docs.set_encoding(doc.id, "utf-16le", true).unwrap();
+        }
+        let v = f.docs.edit(doc.id, f.docs.snapshot(doc.id).unwrap().version, change(0, 0, "x")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        fs::write(&path, &zip).unwrap();
+        f.docs.on_disk_changed(std::slice::from_ref(&path));
+        f.docs.edit(doc.id, v, change(0, 1, "")).unwrap();
+        assert!(f.docs.is_dirty(doc.id).unwrap(), "remembered={remembered}");
+        assert!(!f.docs.autosave(doc.id).unwrap(), "remembered={remembered}");
+        assert_eq!(fs::read(&path).unwrap(), zip, "remembered={remembered}");
+    }
+}
+
+/// fork: an IDE operation (Git checkout, reset) that turns an open file into binary content
+/// leaves the buffer's text, as an external change does, instead of loading the bytes as text.
+#[test]
+fn own_disk_change_to_binary_content_keeps_the_text() {
+    let f = fixture();
+    let path = f.root.join("turned.txt");
+    fs::write(&path, "old\n").unwrap();
+    let doc = f.docs.open(&path).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    fs::write(&path, b"\0\x01\x02binary\0").unwrap();
+    f.docs.sync_after_disk_change();
+    assert_eq!(f.docs.snapshot(doc.id).unwrap().text, "old\n");
+}
+
+/// fork: Paste and Restore writes UTF-8. Over a file whose remembered single-byte encoding would
+/// show those bytes as other text, the document reloads them as UTF-8 instead of `cafÃ©`.
+#[test]
+fn reload_from_disk_shows_restored_utf8_over_a_remembered_single_byte_encoding() {
+    let f = fixture();
+    let path = f.root.join("restored.txt");
+    fs::write(&path, "cafe\n").unwrap();
+    encoding_mappings(&f, &[("restored.txt", "windows-1252")]);
+    let doc = f.docs.open(&path).unwrap();
+    f.docs.edit(doc.id, doc.version, change(0, 0, "x")).unwrap();
+    fs::write(&path, "café\n").unwrap();
+    assert_eq!(f.docs.reload_from_disk(std::slice::from_ref(&path)), std::slice::from_ref(&path));
+    let reloaded = f.docs.snapshot(doc.id).unwrap();
+    assert_eq!((reloaded.text.as_str(), reloaded.encoding.as_str()), ("café\n", "utf-8"));
+    assert!(!f.docs.is_dirty(doc.id).unwrap());
+    // The status bar follows the new encoding.
+    let encodings: Vec<_> = f
+        .events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::DocEncoding { doc: d, encoding, has_bom } if *d == doc.id => Some((encoding.clone(), *has_bom)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(encodings, [("utf-8".to_owned(), false)]);
+}
+
+/// fork: an encoding nobody chose (an ASCII file labelled with a legacy project encoding) is
+/// detected again on reload, so restored UTF-8 shows without a remembered encoding to change.
+#[test]
+fn reload_from_disk_reports_no_encoding_for_a_file_nobody_chose_one_for() {
+    let f = fixture();
+    latin_project(&f);
+    let path = f.root.join("ascii.txt");
+    fs::write(&path, "cafe\n").unwrap();
+    let doc = f.docs.open(&path).unwrap();
+    fs::write(&path, "café\n").unwrap();
+    assert!(f.docs.reload_from_disk(std::slice::from_ref(&path)).is_empty());
+    let reloaded = f.docs.snapshot(doc.id).unwrap();
+    assert_eq!((reloaded.text.as_str(), reloaded.encoding.as_str()), ("café\n", "utf-8"));
+}
+
+/// fork: restored text that reads the same in the remembered encoding (ASCII) keeps it, so the
+/// next save still writes that encoding.
+#[test]
+fn reload_from_disk_keeps_a_remembered_encoding_that_shows_the_restored_text() {
+    let f = fixture();
+    let path = f.root.join("restored.txt");
+    fs::write(&path, "old\n").unwrap();
+    encoding_mappings(&f, &[("restored.txt", "windows-1252")]);
+    let doc = f.docs.open(&path).unwrap();
+    fs::write(&path, "plain\n").unwrap();
+    assert!(f.docs.reload_from_disk(std::slice::from_ref(&path)).is_empty());
+    let reloaded = f.docs.snapshot(doc.id).unwrap();
+    assert_eq!((reloaded.text.as_str(), reloaded.encoding.as_str()), ("plain\n", "windows-1252"));
+    assert!(!f.events.lock().iter().any(|e| matches!(e, IdeEvent::DocEncoding { .. })));
+}

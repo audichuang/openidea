@@ -94,7 +94,7 @@ pub(super) fn remember_saved_encodings(project: &Project) {
     }
 }
 
-fn remember_encoding(project: &Project, path: &Path, encoding: &str) -> IdeResult<()> {
+pub(crate) fn remember_encoding(project: &Project, path: &Path, encoding: &str) -> IdeResult<()> {
     const MAPPINGS: &str = "editor.encodings.mappings";
     if project.light {
         return Ok(());
