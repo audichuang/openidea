@@ -289,11 +289,18 @@ fn absolute(path: &Path) -> PathBuf {
 }
 
 /// fork: decoding in a chosen encoding (remembered per file since #5510) never reports binary
-/// content, which the reload guards must still see. UTF-16 text holds NULs, so it is left alone.
-fn mark_binary(loaded: &mut ide_vfs::LoadedText, path: &Path) {
-    if !loaded.binary && !loaded.encoding.starts_with("utf-16") {
-        loaded.binary = ide_vfs::probe(path).is_ok_and(|probe| probe.binary);
+/// content, which the reload guards must still see. UTF-16 text holds NUL bytes, so it counts as
+/// binary only for a NUL code unit, as a NUL byte does in other encodings; a BOM marks it as text.
+/// A file that cannot be probed fails to load, as on open.
+fn mark_binary(loaded: &mut ide_vfs::LoadedText, path: &Path) -> IdeResult<()> {
+    if !loaded.binary {
+        loaded.binary = if loaded.encoding.starts_with("utf-16") {
+            !loaded.has_bom && loaded.text.contains('\0')
+        } else {
+            ide_vfs::probe(path)?.binary
+        };
     }
+    Ok(())
 }
 
 fn disk_len(path: &Path) -> u64 {
@@ -1569,7 +1576,9 @@ impl Documents {
     /// re-detecting it.
     fn reload_locked(&self, id: DocId, st: &mut DocState, keep_codec: bool) -> IdeResult<Reload> {
         let loaded = if keep_codec {
-            Self::load_as(&st.path, &st.encoding, st.native_to_ascii)?
+            let mut loaded = Self::load_as(&st.path, &st.encoding, st.native_to_ascii)?;
+            mark_binary(&mut loaded, &st.path)?;
+            loaded
         } else {
             let defaults = self.file_defaults();
             let native_to_ascii = defaults.native_to_ascii_for(&st.path);
@@ -1578,7 +1587,7 @@ impl Documents {
             } else {
                 Self::load_with_defaults(&st.path, &defaults, st.editorconfig.as_ref())?.0
             };
-            mark_binary(&mut loaded, &st.path);
+            mark_binary(&mut loaded, &st.path)?;
             st.native_to_ascii = native_to_ascii;
             loaded
         };
@@ -1684,6 +1693,20 @@ fn first_line_on_disk(path: &Path) -> Option<String> {
     let mut line = String::new();
     std::io::BufReader::new(std::fs::File::open(path).ok()?.take(1024)).read_line(&mut line).ok()?;
     Some(line)
+}
+
+#[cfg(test)]
+mod mark_binary_tests {
+    /// fork: a file that cannot be probed is not taken for text.
+    #[test]
+    fn a_file_that_cannot_be_probed_cannot_be_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gone.txt");
+        std::fs::write(&path, "text\n").unwrap();
+        let mut loaded = ide_vfs::load_text(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(super::mark_binary(&mut loaded, &path).is_err());
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]
