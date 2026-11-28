@@ -94,6 +94,8 @@ export interface DocBackend {
    * Type), or its own mode (`DocumentInfo.uiMode`).
    */
   onLanguage?(handler: (e: { doc: DocId; language: string; uiMode: string | null }) => void): () => void;
+  /** A reload from disk changed an open document's encoding or BOM. */
+  onEncoding?(handler: (e: { doc: DocId; encoding: string; hasBom: boolean }) => void): () => void;
 }
 
 /** Remote sessions whose server predates `doc_autosave`. */
@@ -156,6 +158,7 @@ export const ipcBackend: DocBackend = {
     return () => void listener.then((unlisten) => unlisten());
   },
   onLanguage: (h) => onIdeEvent("docLanguage", (e) => h(e)),
+  onEncoding: (h) => onIdeEvent("docEncoding", (e) => h(e)),
 };
 
 // ---------------------------------------------------------------------------

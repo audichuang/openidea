@@ -2185,6 +2185,17 @@ fn reload_from_disk_shows_restored_utf8_over_a_remembered_single_byte_encoding()
     let reloaded = f.docs.snapshot(doc.id).unwrap();
     assert_eq!((reloaded.text.as_str(), reloaded.encoding.as_str()), ("café\n", "utf-8"));
     assert!(!f.docs.is_dirty(doc.id).unwrap());
+    // The status bar follows the new encoding.
+    let encodings: Vec<_> = f
+        .events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::DocEncoding { doc: d, encoding, has_bom } if *d == doc.id => Some((encoding.clone(), *has_bom)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(encodings, [("utf-8".to_owned(), false)]);
 }
 
 /// fork: an encoding nobody chose (an ASCII file labelled with a legacy project encoding) is
@@ -2215,4 +2226,5 @@ fn reload_from_disk_keeps_a_remembered_encoding_that_shows_the_restored_text() {
     assert!(f.docs.reload_from_disk(std::slice::from_ref(&path)).is_empty());
     let reloaded = f.docs.snapshot(doc.id).unwrap();
     assert_eq!((reloaded.text.as_str(), reloaded.encoding.as_str()), ("plain\n", "windows-1252"));
+    assert!(!f.events.lock().iter().any(|e| matches!(e, IdeEvent::DocEncoding { .. })));
 }

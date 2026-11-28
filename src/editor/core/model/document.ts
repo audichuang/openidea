@@ -931,6 +931,8 @@ export class DocumentManager {
       this.workspaceHistory.start(),
       this.backend.onPatched((e) => this.byId.get(e.doc)?.sync.remote(e)),
       this.backend.onLanguage?.((e) => this.byId.get(e.doc)?.setLanguage(e.language, e.uiMode)) ?? (() => {}),
+      this.backend.onEncoding?.((e) => this.byId.get(e.doc)?.setMeta({ encoding: e.encoding, hasBom: e.hasBom })) ??
+        (() => {}),
       this.backend.onDirty((e) => this.byId.get(e.doc)?.onBackendDirty(e)),
     );
     let prev = useEditorRegistry.getState().contributions;
