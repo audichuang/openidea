@@ -11,11 +11,11 @@ languages / platforms / entry points too?". Answer that before anyone asks.
 
 ## 1. Read and reproduce
 
-- `gh issue view <n> --comments` (repo `l0ng-ai/openidea`). Read attached logs/screenshots
+- `gh issue view <n> -R audichuang/openidea --comments` (an upstream issue: `-R l0ng-ai/openidea`, read only). Read attached logs/screenshots
   closely: OS, language, toolchain versions, exact error text.
 - Locate the code path and confirm the claim in code, with `file:line` evidence.
   Say plainly whether it is a real bug, a missing feature, or user environment.
-- Reproduce locally when possible (`fixtures/` projects, `/verify` for runtime). If the
+- Reproduce locally when possible (`fixtures/` projects, `fork-verify` for runtime). If the
   reporter's platform (often Windows/Linux) can't be reproduced here, say so up front.
 - Do not ask for a generic environment/log checklist before trying the flow and inspecting the code.
   Record the attempt and result; ask only for a fact that actually blocks the next diagnostic step.
@@ -66,17 +66,17 @@ Search systematically, not by memory:
 - Tests cover the class: table-driven over languages/platforms/states, not just the
   reported input. Include the reporter's case verbatim.
 - Run the scoped checks (`pnpm vitest run <path>`, `cargo nextest run -p <crate>`), then
-  `/verify` in the app for UI or runtime behaviour.
+  `fork-verify` in the app for UI or runtime behaviour.
 
 ## 6. PR
 
-- One branch `fix/<slug>`, one PR unless the user asks otherwise; `Fixes #<n>` in the body.
+- One branch `fix/<slug>` from `fork/develop`, one PR into `develop` unless the user asks otherwise.
 - Don't stage untracked IDE-state dirs (`.ideal/`, `.openidea/`) or screenshots.
 - PR body follows `.github/pull_request_template.md`: `Closes #<n>`, then
   **What and why** (user-visible change + root cause at class level, 2–4 sentences),
   **How it was verified** (commands run and results, siblings fixed/deferred, what could break and how
   it was checked, what was not verified, e.g. "Windows not tested"; for UI changes the before/after
-  screenshot paths from `/verify`), **Review focus** (optional). Short and plain.
+  screenshot paths from `fork-verify`), **Review focus** (optional). Short and plain.
 
 ## Report format
 
