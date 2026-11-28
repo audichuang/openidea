@@ -638,9 +638,18 @@ pub async fn persist(app: &AppHandle) -> IdeResult<()> {
     }
     let groups = state.groups.lock().groups().to_vec();
     let host = app.state::<AppState>();
+    let restored = state.groups_restore_done.load(Ordering::SeqCst)
+        || !host.global_settings.effective().general.reopen_last_project;
+    // Only a project that opened: one declined at its trust prompt stays launched but is not reopened.
+    let opened: Vec<_> = windows::project_window_labels(app)
+        .into_iter()
+        .filter_map(|label| windows::window_project_path(app, &label).map(|project| (label, project)))
+        .collect();
     // A restored member may still be opening its project, or have failed to: saved as launched.
     let current = snapshot(
         &groups,
+        &opened,
+        restored,
         |label| {
             // A remote window keeps its remote location; one still connecting, the one it launched with.
             let connecting = || {
@@ -651,8 +660,6 @@ pub async fn persist(app: &AppHandle) -> IdeResult<()> {
         },
         &fullscreen,
     );
-    let restored = state.groups_restore_done.load(Ordering::SeqCst)
-        || !host.global_settings.effective().general.reopen_last_project;
     let unrestored = state.groups_unrestored.lock().clone();
     let open_count = current.len();
     let path = host.config_dir.join(SAVED_GROUPS);
@@ -682,9 +689,14 @@ pub async fn persist(app: &AppHandle) -> IdeResult<()> {
     Ok(())
 }
 
-/// The open groups as saved. `resolve`: the project a member window holds or was launched with.
+/// The open groups as saved, then, once the saved groups were `restored`, each `opened` window
+/// (label, the project it holds) outside a group as a group of one. Before, `main` may hold a
+/// project of a saved group not reopened yet: saving it alone would replace that group.
+/// `resolve`: the project a member window holds or was launched with.
 fn snapshot(
     groups: &[WindowGroup],
+    opened: &[(String, PathBuf)],
+    restored: bool,
     resolve: impl Fn(&str) -> Option<PathBuf>,
     fullscreen: &HashSet<String>,
 ) -> Vec<SavedGroup> {
@@ -694,8 +706,8 @@ fn snapshot(
             // Left out: a member holding no project and not launched with one.
             let kept: Vec<_> =
                 group.members.iter().enumerate().filter_map(|(i, label)| Some((i, resolve(label)?))).collect();
-            // Fewer than two left: a plain window, as when tabs leave a group.
-            if kept.len() < 2 {
+            // One left reopens as a plain window, as when tabs leave a group.
+            if kept.is_empty() {
                 return None;
             }
             // A dropped shown tab passes to the next one, else the last, as `WindowGroups::detach`.
@@ -708,6 +720,12 @@ fn snapshot(
                 projects: kept.into_iter().map(|(_, project)| project).collect(),
             })
         })
+        .chain(
+            opened
+                .iter()
+                .filter(|(label, _)| restored && !groups.iter().any(|g| g.members.contains(label)))
+                .map(|(_, project)| SavedGroup { projects: vec![project.clone()], selected: 0, fullscreen: false }),
+        )
         .collect()
 }
 
@@ -964,16 +982,16 @@ mod tests {
     #[test]
     fn snapshot_drops_a_member_that_holds_no_project() {
         let groups = [group(&["a", "b", "c"], "a"), group(&["d", "e"], "e"), group(&["f", "g"], "f")];
-        let current = snapshot(&groups, resolver(&["b", "f"]), &set(&["a", "d"]));
-        // `f`'s group keeps one project: a plain window, not a group.
-        assert_eq!(current, [saved(&["/a", "/c"], 0, true), saved(&["/d", "/e"], 1, true)]);
+        let current = snapshot(&groups, &[], true, resolver(&["b", "f"]), &set(&["a", "d"]));
+        // `f`'s group keeps one project: reopened as a plain window, not a group.
+        assert_eq!(current, [saved(&["/a", "/c"], 0, true), saved(&["/d", "/e"], 1, true), saved(&["/g"], 0, false)]);
     }
 
     // The shown tab failed: the one after it is shown, as when a tab leaves the group.
     #[test]
     fn snapshot_moves_the_selection_off_a_dropped_member() {
         let groups = [group(&["a", "b", "c"], "b"), group(&["d", "e", "f"], "f")];
-        let current = snapshot(&groups, resolver(&["b", "f"]), &set(&[]));
+        let current = snapshot(&groups, &[], true, resolver(&["b", "f"]), &set(&[]));
         assert_eq!(current, [saved(&["/a", "/c"], 1, false), saved(&["/d", "/e"], 1, false)]);
     }
 
@@ -982,7 +1000,7 @@ mod tests {
     fn snapshot_keeps_a_member_still_opening_its_project() {
         let groups = [group(&["a", "b"], "b")];
         let opening = |label: &str| Some(PathBuf::from(format!("/{label}")));
-        assert_eq!(snapshot(&groups, opening, &set(&["b"])), [saved(&["/a", "/b"], 1, true)]);
+        assert_eq!(snapshot(&groups, &[], true, opening, &set(&["b"])), [saved(&["/a", "/b"], 1, true)]);
     }
 
     // A restored member whose project failed to open (or whose trust prompt was cancelled) keeps
@@ -999,8 +1017,28 @@ mod tests {
             st.launch_settled(label, label == "a");
         }
         let held = |label: &str| (label == "a").then(|| PathBuf::from("/a"));
-        let current = snapshot(&[group(&["a", "b"], "b")], |l| st.saved_project(l, held(l)), &set(&["a"]));
+        let current = snapshot(&[group(&["a", "b"], "b")], &[], true, |l| st.saved_project(l, held(l)), &set(&["a"]));
         assert_eq!(current, [saved(&["/a", "/b"], 1, true)]);
+    }
+
+    // A project window outside any group is saved as a group of one, so it reopens as a plain
+    // window (#170); a grouped one is saved once.
+    #[test]
+    fn snapshot_keeps_project_windows_outside_a_group() {
+        let groups = [group(&["a", "b"], "b")];
+        let opened = ["main", "a", "b", "c"].map(|l| (l.to_owned(), PathBuf::from(format!("/{l}"))));
+        let current = snapshot(&groups, &opened, true, resolver(&[]), &set(&["c"]));
+        assert_eq!(current, [saved(&["/a", "/b"], 1, false), saved(&["/main"], 0, false), saved(&["/c"], 0, false)]);
+    }
+
+    // At launch `main` reopens a project of a saved group before the restore runs: saving `main`
+    // alone then must not replace that group.
+    #[test]
+    fn snapshot_before_restore_keeps_the_saved_group_holding_main() {
+        let opened = [("main".to_owned(), PathBuf::from("/x"))];
+        let current = snapshot(&[], &opened, false, resolver(&[]), &set(&[]));
+        let on_disk = vec![saved(&["/x", "/y"], 1, false)];
+        assert_eq!(groups_to_save(current, on_disk), [saved(&["/x", "/y"], 1, false)]);
     }
 
     // Before the restore has run, saved groups not reopened yet stay saved, also when a member
@@ -1008,7 +1046,7 @@ mod tests {
     #[test]
     fn snapshot_keeps_the_saved_groups_not_reopened_yet() {
         let groups = [group(&["a", "b"], "a"), group(&["c", "d", "e"], "c")];
-        let current = snapshot(&groups, resolver(&["e"]), &set(&["c"]));
+        let current = snapshot(&groups, &[], true, resolver(&["e"]), &set(&["c"]));
         let on_disk = vec![saved(&["/x", "/y"], 1, true), saved(&["/e", "/z"], 0, false)];
         assert_eq!(
             groups_to_save(current, on_disk),
