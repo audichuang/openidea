@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct VcsSettings {
+    /// ClipCode clipboard copies (the ClipCode plugins' settings).
+    pub clip_code: ClipCodeSettings,
     /// Colour folders that contain changed files (project tree, tabs).
     pub show_dirty_directories: bool,
     pub create_changelists_automatically: bool,
@@ -27,8 +29,6 @@ pub struct VcsSettings {
     pub mappings: VcsMappings,
     /// Settings › Version Control › GitHub: per-project GitHub CLI account selection.
     pub github: GithubSettings,
-    /// ClipCode clipboard copies (the ClipCode plugins' settings).
-    pub clip_code: ClipCodeSettings,
 }
 
 /// Settings › Version Control › GitHub (`vcs.github`).
@@ -69,6 +69,7 @@ impl VcsMappings {
 impl Default for VcsSettings {
     fn default() -> Self {
         Self {
+            clip_code: ClipCodeSettings::default(),
             // IDEA's VcsConfiguration.SHOW_DIRTY_RECURSIVELY is off by default.
             show_dirty_directories: false,
             create_changelists_automatically: false,
@@ -82,7 +83,6 @@ impl Default for VcsSettings {
             issue_navigation: Vec::new(),
             mappings: VcsMappings::default(),
             github: GithubSettings::default(),
-            clip_code: ClipCodeSettings::default(),
         }
     }
 }

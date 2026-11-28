@@ -123,6 +123,7 @@ export interface ClipCodeSettingsValid {
 }
 
 export interface VcsSettingsValid {
+  clipCode: ClipCodeSettingsValid;
   showDirtyDirectories: boolean;
   createChangelistsAutomatically: boolean;
   /** Off: diffs the user opens show in a separate window. */
@@ -142,7 +143,6 @@ export interface VcsSettingsValid {
   issueNavigation: IssueLinkValid[];
   /** Directory Mappings: repository roots excluded from / added to the detected ones. */
   mappings: { excluded: string[]; added: string[] };
-  clipCode: ClipCodeSettingsValid;
 }
 
 /** Mirrors `ide-core::workflow_settings::LogLevelColors` defaults. */
@@ -297,6 +297,8 @@ export interface WorkflowSettings extends RemoteSettings {
 }
 
 export const WORKFLOW_LIMITS = {
+  clipFileCount: { min: 1, max: 100_000 },
+  clipFileSizeKb: { min: 1, max: 32_768 },
   historyLimit: { min: 10, max: 100_000 },
   messageLimit: { min: 20, max: 500 },
   largeFileMb: { min: 1, max: 100_000 },
@@ -311,8 +313,6 @@ export const WORKFLOW_LIMITS = {
   terminalColumnWidth: { min: 0.5, max: 2 },
   agentChatFontSize: { min: 6, max: 72 },
   agentCodeFontSize: { min: 6, max: 72 },
-  clipFileCount: { min: 1, max: 100_000 },
-  clipFileSizeKb: { min: 1, max: 32_768 },
 } as const;
 
 function clipCode(c: Record<string, unknown>, d: ClipCodeSettingsValid): ClipCodeSettingsValid {
@@ -565,6 +565,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
   const L = WORKFLOW_LIMITS;
   const confirm = ["ask", "silently", "never"] as const;
   return {
+    clipCode: clipCode(obj(v.clipCode), d.clipCode),
     showDirtyDirectories: bool(v.showDirtyDirectories, d.showDirtyDirectories),
     createChangelistsAutomatically: bool(v.createChangelistsAutomatically, d.createChangelistsAutomatically),
     diffAsEditorTab: bool(v.diffAsEditorTab, d.diffAsEditorTab),
@@ -649,7 +650,6 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       excluded: strings(obj(v.mappings).excluded, d.mappings.excluded),
       added: strings(obj(v.mappings).added, d.mappings.added),
     },
-    clipCode: clipCode(obj(v.clipCode), d.clipCode),
   };
 }
 
