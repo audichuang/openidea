@@ -2,24 +2,33 @@
 //!
 //! reqwest's built-in system proxy ignores macOS PAC scripts. When a PAC URL is
 //! enabled and no `*_PROXY` env var overrides it, we fetch the script in the
-//! background (refreshing after a TTL) and evaluate it per request on a
-//! dedicated worker thread with a timeout so requests never hang.
+//! background (refreshing after a 60 s TTL) and evaluate it on a single
+//! dedicated worker thread per slot with a 5 s per-origin result cache,
+//! in-flight deduplication, a 1 s per-request wait cap, and 5 s wedge
+//! detection.
 
 use hyper_util::client::proxy::matcher::Matcher;
 use ide_core::proxy_settings::{ProxyMode, ProxyRoute, ProxySettings};
 use objc2_cf_network as cf;
 use objc2_core_foundation::{CFArray, CFDictionary, CFNumber, CFRetained, CFString, CFType, CFURL};
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
+use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 const PROXY_ENV: [&str; 6] = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"];
 const PAC_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
-const SCRIPT_TTL: Duration = Duration::from_secs(5 * 60);
+const SCRIPT_TTL: Duration = Duration::from_secs(60);
 const RETRY_BACKOFF: Duration = Duration::from_secs(30);
-const EVAL_TIMEOUT: Duration = Duration::from_millis(200);
+const EVAL_TIMEOUT: Duration = Duration::from_secs(1);
+const WEDGE_THRESHOLD: Duration = Duration::from_secs(5);
+const ROUTE_CACHE_TTL: Duration = Duration::from_secs(5);
+const MAX_CACHED_ROUTES: usize = 64;
 
 fn env_proxy_set() -> bool {
     PROXY_ENV.iter().any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty()))
@@ -61,25 +70,135 @@ pub(crate) fn system_pac_fingerprint() -> Option<String> {
     (!env_proxy_set()).then(system_settings).flatten().and_then(|s| pac_fingerprint(&s))
 }
 
+#[derive(Clone, Copy)]
+struct SlotTiming {
+    script_ttl: Duration,
+    retry_backoff: Duration,
+    eval_timeout: Duration,
+    wedge_threshold: Duration,
+    route_ttl: Duration,
+}
+
+impl SlotTiming {
+    const DEFAULT: Self = Self {
+        script_ttl: SCRIPT_TTL,
+        retry_backoff: RETRY_BACKOFF,
+        eval_timeout: EVAL_TIMEOUT,
+        wedge_threshold: WEDGE_THRESHOLD,
+        route_ttl: ROUTE_CACHE_TTL,
+    };
+}
+
 enum Load {
     Pending,
     Ready { script: Arc<str>, fetched_at: Instant, refreshing: bool },
     Failed(Instant),
 }
 
+struct CachedRoute {
+    route: Option<String>,
+    at: Instant,
+}
+
+struct InFlight {
+    started_at: Instant,
+    result: Mutex<Option<Option<String>>>,
+    done: Condvar,
+}
+
+impl InFlight {
+    fn new() -> Self {
+        Self { started_at: Instant::now(), result: Mutex::new(None), done: Condvar::new() }
+    }
+
+    fn complete(&self, route: Option<String>) {
+        *self.result.lock() = Some(route);
+        self.done.notify_all();
+    }
+
+    fn wait_until(&self, deadline: Instant) -> Option<String> {
+        let mut res = self.result.lock();
+        while res.is_none() {
+            if Instant::now() >= deadline || self.done.wait_until(&mut res, deadline).timed_out() {
+                break;
+            }
+        }
+        res.clone().flatten()
+    }
+}
+
 struct EvalJob {
     script: Arc<str>,
     url: String,
-    reply: mpsc::SyncSender<Option<String>>,
+    flight: Arc<InFlight>,
+}
+
+struct EvalState {
+    routes_script: Option<Arc<str>>,
+    routes: HashMap<String, CachedRoute>,
+    in_flight: HashMap<String, Arc<InFlight>>,
+    active_since: Option<Instant>,
+    /// Broken PAC behaviour (e.g. an infinite loop in `FindProxyForURL`): a slot
+    /// spawns at most one evaluation worker for its entire lifetime. Once any
+    /// single evaluation runs longer than `wedge_threshold` (5 s), the slot is
+    /// permanently marked wedged and all requests fall back immediately to
+    /// `main`'s routing until the process restarts (no worker respawn).
+    wedged: bool,
+    worker_spawned: bool,
+    tx: Option<mpsc::Sender<EvalJob>>,
+}
+
+impl EvalState {
+    fn new() -> Self {
+        Self {
+            routes_script: None,
+            routes: HashMap::new(),
+            in_flight: HashMap::new(),
+            active_since: None,
+            wedged: false,
+            worker_spawned: false,
+            tx: None,
+        }
+    }
+}
+
+struct EvalShared {
+    timing: SlotTiming,
+    wedged: AtomicBool,
+    state: Mutex<EvalState>,
+    #[cfg(test)]
+    eval_count: AtomicUsize,
+}
+
+impl EvalShared {
+    fn new(timing: SlotTiming) -> Arc<Self> {
+        Arc::new(Self {
+            timing,
+            wedged: AtomicBool::new(false),
+            state: Mutex::new(EvalState::new()),
+            #[cfg(test)]
+            eval_count: AtomicUsize::new(0),
+        })
+    }
+
+    fn run_eval(&self, script: &str, url: &str) -> Option<String> {
+        #[cfg(test)]
+        self.eval_count.fetch_add(1, Ordering::SeqCst);
+        evaluate_sync(script, url)
+    }
 }
 
 struct ScriptSlot {
     url: String,
-    ttl: Duration,
-    backoff: Duration,
-    eval_timeout: Duration,
+    timing: SlotTiming,
     load: Mutex<Load>,
-    worker: Mutex<Option<mpsc::SyncSender<EvalJob>>>,
+    eval: Arc<EvalShared>,
+}
+
+impl Drop for ScriptSlot {
+    fn drop(&mut self) {
+        self.eval.state.lock().tx = None;
+    }
 }
 
 impl ScriptSlot {
@@ -92,22 +211,25 @@ impl ScriptSlot {
         {
             return Arc::clone(slot);
         }
-        let slot = Self::new(url.clone(), SCRIPT_TTL, RETRY_BACKOFF, EVAL_TIMEOUT);
+        let slot = Self::new(url.clone(), SlotTiming::DEFAULT);
         *active = Some((url, Arc::clone(&slot)));
         slot
     }
 
-    fn new(url: String, ttl: Duration, backoff: Duration, eval_timeout: Duration) -> Arc<Self> {
-        let slot = Arc::new(Self {
-            url,
-            ttl,
-            backoff,
-            eval_timeout,
-            load: Mutex::new(Load::Pending),
-            worker: Mutex::new(None),
-        });
+    fn new(url: String, timing: SlotTiming) -> Arc<Self> {
+        let slot = Arc::new(Self { url, timing, load: Mutex::new(Load::Pending), eval: EvalShared::new(timing) });
         slot.spawn_fetch();
         slot
+    }
+
+    #[cfg(test)]
+    fn eval_count(&self) -> usize {
+        self.eval.eval_count.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    fn is_wedged(&self) -> bool {
+        self.eval.wedged.load(Ordering::Acquire)
     }
 
     fn script(self: &Arc<Self>) -> Option<Arc<str>> {
@@ -115,14 +237,14 @@ impl ScriptSlot {
         match &mut *load {
             Load::Ready { script, fetched_at, refreshing } => {
                 let current = Arc::clone(script);
-                if !*refreshing && fetched_at.elapsed() >= self.ttl {
+                if !*refreshing && fetched_at.elapsed() >= self.timing.script_ttl {
                     *refreshing = true;
                     drop(load);
                     self.spawn_fetch();
                 }
                 Some(current)
             }
-            Load::Failed(at) if at.elapsed() >= self.backoff => {
+            Load::Failed(at) if at.elapsed() >= self.timing.retry_backoff => {
                 *load = Load::Pending;
                 drop(load);
                 self.spawn_fetch();
@@ -132,41 +254,62 @@ impl ScriptSlot {
         }
     }
 
-    fn fail_if_current(&self, failed: &Arc<str>) {
-        let mut load = self.load.lock();
-        if let Load::Ready { script, .. } = &*load
-            && Arc::ptr_eq(script, failed)
-        {
-            *load = Load::Failed(Instant::now());
-        }
-    }
-
     fn evaluate(self: &Arc<Self>, url: &str) -> Option<String> {
-        let _ = self.script()?;
-        let mut worker = self.worker.lock();
-        // Re-read after acquiring the worker lock so a prior timeout's `Failed` skips spawning a new thread.
-        let script = match &*self.load.lock() {
-            Load::Ready { script, .. } => Arc::clone(script),
-            Load::Pending | Load::Failed(_) => return None,
-        };
-        if worker.is_none() {
-            *worker = spawn_eval_worker();
-        }
-        let tx = worker.as_ref()?;
-        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-        if tx.send(EvalJob { script: Arc::clone(&script), url: url.to_owned(), reply: reply_tx }).is_err() {
-            *worker = None;
+        if self.eval.wedged.load(Ordering::Acquire) {
             return None;
         }
-        match reply_rx.recv_timeout(self.eval_timeout) {
-            Ok(route) => route,
-            Err(_) => {
-                // Abandon the wedged worker thread and stop evaluating this script until refetch.
-                *worker = None;
-                self.fail_if_current(&script);
-                None
+        let script = self.script()?;
+        let flight = {
+            let mut state = self.eval.state.lock();
+            if state.wedged
+                || state.active_since.is_some_and(|started| started.elapsed() >= self.timing.wedge_threshold)
+            {
+                let abandoned = if !state.wedged {
+                    state.wedged = true;
+                    self.eval.wedged.store(true, Ordering::Release);
+                    state.tx = None;
+                    state.routes.clear();
+                    state.in_flight.drain().map(|(_, f)| f).collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                drop(state);
+                for f in abandoned {
+                    f.complete(None);
+                }
+                return None;
             }
-        }
+            if !state.routes_script.as_ref().is_some_and(|s| Arc::ptr_eq(s, &script)) {
+                state.routes.clear();
+                state.in_flight.clear();
+                state.routes_script = Some(Arc::clone(&script));
+            }
+            if let Some(cached) = state.routes.get(url)
+                && cached.at.elapsed() < self.timing.route_ttl
+            {
+                return cached.route.clone();
+            }
+            if let Some(existing) = state.in_flight.get(url) {
+                Arc::clone(existing)
+            } else {
+                if !state.worker_spawned {
+                    state.worker_spawned = true;
+                    state.tx = spawn_eval_worker(Arc::clone(&self.eval));
+                }
+                let tx = state.tx.as_ref()?;
+                let flight = Arc::new(InFlight::new());
+                let job = EvalJob { script, url: url.to_owned(), flight: Arc::clone(&flight) };
+                if tx.send(job).is_err() {
+                    state.tx = None;
+                    return None;
+                }
+                state.in_flight.insert(url.to_owned(), Arc::clone(&flight));
+                flight
+            }
+        };
+        // Release all locks before waiting; a timeout falls back for this request only,
+        // leaving the single worker to finish (e.g. a slow `dnsResolve`) in the background.
+        flight.wait_until(flight.started_at + self.timing.eval_timeout)
     }
 
     fn spawn_fetch(self: &Arc<Self>) {
@@ -200,13 +343,60 @@ impl ScriptSlot {
     }
 }
 
-fn spawn_eval_worker() -> Option<mpsc::SyncSender<EvalJob>> {
-    let (tx, rx) = mpsc::sync_channel::<EvalJob>(0);
+fn insert_route(routes: &mut HashMap<String, CachedRoute>, url: String, route: Option<String>, ttl: Duration) {
+    if ttl.is_zero() {
+        return;
+    }
+    if routes.len() >= MAX_CACHED_ROUTES {
+        routes.retain(|_, entry| entry.at.elapsed() < ttl);
+        if routes.len() >= MAX_CACHED_ROUTES
+            && let Some(oldest) = routes.iter().min_by_key(|(_, e)| e.at).map(|(k, _)| k.clone())
+        {
+            routes.remove(&oldest);
+        }
+    }
+    routes.insert(url, CachedRoute { route, at: Instant::now() });
+}
+
+fn spawn_eval_worker(eval: Arc<EvalShared>) -> Option<mpsc::Sender<EvalJob>> {
+    // Keep a single evaluation worker per slot: CFNetwork JS evaluation concurrency is unverified.
+    let (tx, rx) = mpsc::channel::<EvalJob>();
     std::thread::Builder::new()
         .name("ide-http-pac-eval".into())
         .spawn(move || {
             while let Ok(job) = rx.recv() {
-                let _ = job.reply.send(evaluate_sync(&job.script, &job.url));
+                {
+                    let mut state = eval.state.lock();
+                    if state.wedged {
+                        drop(state);
+                        job.flight.complete(None);
+                        break;
+                    }
+                    state.active_since = Some(Instant::now());
+                }
+
+                let route = eval.run_eval(&job.script, &job.url);
+
+                let wedged = {
+                    let mut state = eval.state.lock();
+                    state.active_since = None;
+                    if state.in_flight.get(&job.url).is_some_and(|f| Arc::ptr_eq(f, &job.flight)) {
+                        state.in_flight.remove(&job.url);
+                    }
+                    let wedged = state.wedged;
+                    if !wedged && state.routes_script.as_ref().is_some_and(|s| Arc::ptr_eq(s, &job.script)) {
+                        insert_route(&mut state.routes, job.url, route.clone(), eval.timing.route_ttl);
+                    }
+                    wedged
+                };
+
+                job.flight.complete(if wedged { None } else { route });
+                if wedged {
+                    break;
+                }
+            }
+            while let Ok(job) = rx.try_recv() {
+                job.flight.complete(None);
             }
         })
         .ok()?;
@@ -385,7 +575,6 @@ mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     fn settings_dict(entries: Vec<(&'static CFString, CFRetained<CFType>)>) -> CFRetained<CFDictionary> {
         let keys: Vec<&CFString> = entries.iter().map(|(k, _)| *k).collect();
@@ -626,7 +815,7 @@ mod tests {
         let pac_port = serve_pac(pac_script, Arc::clone(&pac_hits));
         let pac_url = format!("http://127.0.0.1:{pac_port}/proxy.pac");
 
-        let slot = ScriptSlot::new(pac_url.clone(), SCRIPT_TTL, RETRY_BACKOFF, EVAL_TIMEOUT);
+        let slot = ScriptSlot::new(pac_url.clone(), SlotTiming::DEFAULT);
         let client = crate::client::build_with_builder(|b| {
             with_pac_from(b, false, || Some(settings_with_pac_url(&pac_url, true)), "", |_| Arc::clone(&slot))
         })
@@ -665,7 +854,7 @@ mod tests {
         )
         .unwrap();
         let file_url = reqwest::Url::from_file_path(&file_pac).unwrap().to_string();
-        let file_slot = ScriptSlot::new(file_url.clone(), SCRIPT_TTL, RETRY_BACKOFF, EVAL_TIMEOUT);
+        let file_slot = ScriptSlot::new(file_url.clone(), SlotTiming::DEFAULT);
         let file_client = crate::client::build_with_builder(|b| {
             with_pac_from(b, false, || Some(settings_with_pac_url(&file_url, true)), "", |_| Arc::clone(&file_slot))
         })
@@ -731,7 +920,7 @@ mod tests {
         let closed_url = format!("http://127.0.0.1:{closed_port}/proxy.pac");
         let pending_settings = make_settings(&closed_url);
         let pending_resolver = PacResolver::new(
-            ScriptSlot::new(closed_url, SCRIPT_TTL, RETRY_BACKOFF, EVAL_TIMEOUT),
+            ScriptSlot::new(closed_url, SlotTiming::DEFAULT),
             manual_matcher(&pending_settings, no_proxy),
             no_proxy,
         );
@@ -759,7 +948,7 @@ mod tests {
         );
         let pac_port = serve_pac(pac_script, Arc::new(AtomicUsize::new(0)));
         let pac_url = format!("http://127.0.0.1:{pac_port}/proxy.pac");
-        let slot = ScriptSlot::new(pac_url.clone(), SCRIPT_TTL, RETRY_BACKOFF, EVAL_TIMEOUT);
+        let slot = ScriptSlot::new(pac_url.clone(), SlotTiming::DEFAULT);
         let loaded_settings = make_settings(&pac_url);
         let resolver = PacResolver::new(Arc::clone(&slot), manual_matcher(&loaded_settings, no_proxy), no_proxy);
         wait_for_script(&slot).await;
@@ -843,7 +1032,7 @@ mod tests {
 
         let pac_url = format!("http://127.0.0.1:{pac_port}/proxy.pac");
         let ttl = Duration::from_millis(60);
-        let slot = ScriptSlot::new(pac_url.clone(), ttl, Duration::from_secs(30), EVAL_TIMEOUT);
+        let slot = ScriptSlot::new(pac_url.clone(), SlotTiming { script_ttl: ttl, ..SlotTiming::DEFAULT });
         let client = crate::client::build_with_builder(|b| {
             with_pac_from(b, false, || Some(settings_with_pac_url(&pac_url, true)), "", |_| Arc::clone(&slot))
         })
@@ -905,34 +1094,207 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn looping_pac_script_times_out_and_falls_back_to_main() {
+    async fn slow_pac_eval_times_out_single_request_without_failing_slot() {
+        let proxy_reqs = Arc::new(Mutex::new(Vec::new()));
+        let proxy_port = recording_server(Arc::clone(&proxy_reqs));
         let direct_reqs = Arc::new(Mutex::new(Vec::new()));
         let direct_port = recording_server(Arc::clone(&direct_reqs));
-        let pac_port =
-            serve_pac("function FindProxyForURL(url, host) { while (true) {} }".into(), Arc::new(AtomicUsize::new(0)));
-        let pac_url = format!("http://127.0.0.1:{pac_port}/loop.pac");
-        let eval_timeout = Duration::from_millis(80);
-        let slot = ScriptSlot::new(pac_url.clone(), SCRIPT_TTL, RETRY_BACKOFF, eval_timeout);
+        // Simulate a slow `dnsResolve` (~1.5 s) for `127.0.0.1` while `localhost` resolves immediately.
+        let pac_script = format!(
+            r#"function FindProxyForURL(url, host) {{
+                if (host == "127.0.0.1") {{
+                    var end = Date.now() + 1500;
+                    while (Date.now() < end) {{}}
+                    return "PROXY 127.0.0.1:{proxy_port}";
+                }}
+                if (host == "localhost") return "PROXY 127.0.0.1:{proxy_port}";
+                return "DIRECT";
+            }}"#
+        );
+        let pac_port = serve_pac(pac_script, Arc::new(AtomicUsize::new(0)));
+        let pac_url = format!("http://127.0.0.1:{pac_port}/slow-host.pac");
+        let slot = ScriptSlot::new(pac_url.clone(), SlotTiming::DEFAULT);
         let client = crate::client::build_with_builder(|b| {
             with_pac_from(b, false, || Some(settings_with_pac_url(&pac_url, true)), "", |_| Arc::clone(&slot))
         })
         .unwrap();
         wait_for_script(&slot).await;
 
-        let target = format!("http://127.0.0.1:{direct_port}/loop");
+        // 1. Slow host hits the 1 s cap and falls back to main's routing (direct) for this request only.
         let t0 = Instant::now();
-        assert_eq!(client.get(&target).send().await.unwrap().status(), reqwest::StatusCode::OK);
-        let first = t0.elapsed();
+        assert_eq!(
+            client.get(format!("http://127.0.0.1:{direct_port}/slow")).send().await.unwrap().status(),
+            reqwest::StatusCode::OK
+        );
+        let slow_elapsed = t0.elapsed();
+        assert!(slow_elapsed < Duration::from_millis(1350), "slow host did not cap at 1 s: {slow_elapsed:?}");
+        assert_eq!(direct_reqs.lock().as_slice(), ["GET /slow HTTP/1.1"]);
+        // Slot is NOT failed and NOT wedged (1.5 s < 5 s wedge threshold).
+        assert!(slot.script().is_some());
+        assert!(!slot.is_wedged());
 
-        // After timing out once, the script is marked Failed so subsequent requests fall back immediately.
+        // 2. Right after, another host is still routed by the PAC once the background eval finishes (~0.5 s later).
         let t1 = Instant::now();
-        assert_eq!(client.get(&target).send().await.unwrap().status(), reqwest::StatusCode::OK);
-        let second = t1.elapsed();
+        assert_eq!(
+            client.get(format!("http://localhost:{direct_port}/fast")).send().await.unwrap().status(),
+            reqwest::StatusCode::OK
+        );
+        let other_elapsed = t1.elapsed();
 
-        eprintln!("Looping PAC: first={first:?} (timeout={eval_timeout:?}), second={second:?}");
-        assert!(first < Duration::from_millis(500), "looping PAC hung: {first:?}");
-        assert!(second < Duration::from_millis(50), "second request waited again: {second:?}");
-        assert_eq!(direct_reqs.lock().len(), 2);
+        // 3. The slow host's background eval has finished and populated the 5 s cache, so a retry succeeds immediately.
+        let t2 = Instant::now();
+        assert_eq!(
+            client.get(format!("http://127.0.0.1:{direct_port}/slow-cached")).send().await.unwrap().status(),
+            reqwest::StatusCode::OK
+        );
+        let cached_elapsed = t2.elapsed();
+
+        eprintln!(
+            "Slow PAC host: first_timeout={slow_elapsed:?}, next_host={other_elapsed:?}, slow_retry={cached_elapsed:?}"
+        );
+        assert!(
+            cached_elapsed < Duration::from_millis(200),
+            "cached slow host did not return fast: {cached_elapsed:?}"
+        );
+        assert_eq!(
+            proxy_reqs.lock().as_slice(),
+            [
+                format!("GET http://localhost:{direct_port}/fast HTTP/1.1"),
+                format!("GET http://127.0.0.1:{direct_port}/slow-cached HTTP/1.1"),
+            ]
+        );
+        assert_eq!(slot.eval_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn wedged_pac_script_falls_back_immediately_without_respawning() {
+        let direct_reqs = Arc::new(Mutex::new(Vec::new()));
+        let direct_port = recording_server(Arc::clone(&direct_reqs));
+        // Finite ~1.5 s busy loop so CFNetworkAgent idles again cleanly after the test.
+        let pac_script = r#"function FindProxyForURL(url, host) {
+            var end = Date.now() + 1500;
+            while (Date.now() < end) {}
+            return "PROXY 127.0.0.1:9999";
+        }"#;
+        let pac_port = serve_pac(pac_script.into(), Arc::new(AtomicUsize::new(0)));
+        let pac_url = format!("http://127.0.0.1:{pac_port}/wedge.pac");
+        let timing = SlotTiming {
+            eval_timeout: Duration::from_millis(100),
+            wedge_threshold: Duration::from_millis(500),
+            ..SlotTiming::DEFAULT
+        };
+        let slot = ScriptSlot::new(pac_url.clone(), timing);
+        let client = crate::client::build_with_builder(|b| {
+            with_pac_from(b, false, || Some(settings_with_pac_url(&pac_url, true)), "", |_| Arc::clone(&slot))
+        })
+        .unwrap();
+        wait_for_script(&slot).await;
+
+        // 1. First request hits the 100 ms eval cap and falls back to direct; slot is not wedged yet.
+        let t0 = Instant::now();
+        assert_eq!(
+            client.get(format!("http://127.0.0.1:{direct_port}/one")).send().await.unwrap().status(),
+            reqwest::StatusCode::OK
+        );
+        let first = t0.elapsed();
+        assert!(first < Duration::from_millis(350), "first request exceeded cap: {first:?}");
+        assert!(!slot.is_wedged());
+
+        // 2. Wait past the 500 ms wedge threshold while the 1.5 s eval is still running.
+        tokio::time::sleep(Duration::from_millis(450)).await;
+        let t1 = Instant::now();
+        // Use a different host (`localhost`) so this proves wedge detection, not per-host in-flight reuse.
+        assert_eq!(
+            client.get(format!("http://localhost:{direct_port}/two")).send().await.unwrap().status(),
+            reqwest::StatusCode::OK
+        );
+        let wedged_req = t1.elapsed();
+        assert!(slot.is_wedged(), "slot should be marked wedged once eval exceeds wedge_threshold");
+        assert!(
+            wedged_req < Duration::from_millis(50),
+            "wedged request waited instead of falling back: {wedged_req:?}"
+        );
+
+        // 3. Let the finite busy loop finish so CFNetworkAgent returns to idle; slot stays wedged (no respawn).
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        let t2 = Instant::now();
+        assert_eq!(
+            client.get(format!("http://127.0.0.1:{direct_port}/three")).send().await.unwrap().status(),
+            reqwest::StatusCode::OK
+        );
+        let after_finish = t2.elapsed();
+        eprintln!("Wedged PAC: first_timeout={first:?}, wedged_immediate={wedged_req:?}, after_idle={after_finish:?}");
+        assert!(after_finish < Duration::from_millis(50), "wedged slot respawned or waited: {after_finish:?}");
+        assert_eq!(slot.eval_count(), 1);
+        assert_eq!(direct_reqs.lock().len(), 3);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn parallel_burst_to_same_host_dedupes_to_single_evaluation() {
+        let proxy_reqs = Arc::new(Mutex::new(Vec::new()));
+        let proxy_port = recording_server(Arc::clone(&proxy_reqs));
+        // Each evaluation takes ~150 ms so 20 parallel callers overlap in flight (serialized would take ~3 s).
+        let pac_script = format!(
+            r#"function FindProxyForURL(url, host) {{
+                var end = Date.now() + 150;
+                while (Date.now() < end) {{}}
+                return "PROXY 127.0.0.1:{proxy_port}";
+            }}"#
+        );
+        let pac_port = serve_pac(pac_script, Arc::new(AtomicUsize::new(0)));
+        let pac_url = format!("http://127.0.0.1:{pac_port}/burst.pac");
+        let slot = ScriptSlot::new(pac_url.clone(), SlotTiming::DEFAULT);
+        wait_for_script(&slot).await;
+
+        const N: usize = 20;
+        let expected = format!("http://127.0.0.1:{proxy_port}");
+
+        // 1. Barrier-synchronized parallel `resolve()` burst guarantees true in-flight deduplication.
+        let resolver = Arc::new(PacResolver::new(Arc::clone(&slot), Matcher::builder().build(), ""));
+        let barrier = Arc::new(std::sync::Barrier::new(N));
+        let t0 = Instant::now();
+        let handles: Vec<_> = (0..N)
+            .map(|i| {
+                let resolver = Arc::clone(&resolver);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let url = reqwest::Url::parse(&format!("http://burst.invalid/item-{i}")).unwrap();
+                    barrier.wait();
+                    resolver.resolve(&url)
+                })
+            })
+            .collect();
+        for h in handles {
+            assert_eq!(h.join().unwrap().as_deref(), Some(expected.as_str()));
+        }
+        let resolve_burst = t0.elapsed();
+        assert_eq!(slot.eval_count(), 1, "20 parallel resolve calls should share one evaluation");
+        assert!(resolve_burst < Duration::from_millis(700), "parallel burst serialized: {resolve_burst:?}");
+
+        // 2. End-to-end burst of 20 concurrent HTTP requests to another host also runs a single evaluation.
+        let client = crate::client::build_with_builder(|b| {
+            with_pac_from(b, false, || Some(settings_with_pac_url(&pac_url, true)), "", |_| Arc::clone(&slot))
+        })
+        .unwrap();
+        let t1 = Instant::now();
+        let mut set = tokio::task::JoinSet::new();
+        for i in 0..N {
+            let client = client.clone();
+            set.spawn(async move {
+                client.get(format!("http://burst-http.invalid/req-{i}")).send().await.unwrap().status()
+            });
+        }
+        while let Some(res) = set.join_next().await {
+            assert_eq!(res.unwrap(), reqwest::StatusCode::OK);
+        }
+        let http_burst = t1.elapsed();
+        eprintln!(
+            "Burst dedupe ({N} parallel): resolve_burst={resolve_burst:?}, http_burst={http_burst:?}, evals={}",
+            slot.eval_count()
+        );
+        assert_eq!(slot.eval_count(), 2, "expected 1 eval per host across both 20-request bursts");
+        assert!(http_burst < Duration::from_millis(800), "HTTP burst serialized: {http_burst:?}");
+        assert_eq!(proxy_reqs.lock().len(), N);
     }
 
     #[tokio::test]
@@ -945,8 +1307,11 @@ mod tests {
         }"#;
         let pac_port = serve_pac(pac_script.into(), Arc::new(AtomicUsize::new(0)));
         let pac_url = format!("http://127.0.0.1:{pac_port}/fast.pac");
-        let slot = ScriptSlot::new(pac_url.clone(), SCRIPT_TTL, RETRY_BACKOFF, EVAL_TIMEOUT);
+        let slot = ScriptSlot::new(pac_url.clone(), SlotTiming::DEFAULT);
+        let uncached_slot =
+            ScriptSlot::new(pac_url.clone(), SlotTiming { route_ttl: Duration::ZERO, ..SlotTiming::DEFAULT });
         wait_for_script(&slot).await;
+        wait_for_script(&uncached_slot).await;
 
         let baseline = crate::client::build(&ProxySettings { mode: ProxyMode::None, ..Default::default() }).unwrap();
         let pac_client = crate::client::build_with_builder(|b| {
@@ -955,7 +1320,7 @@ mod tests {
         .unwrap();
 
         let target = format!("http://127.0.0.1:{direct_port}/bench");
-        // Warm up both clients and the evaluator worker thread.
+        // Warm up both clients, the 5 s route cache, and both evaluator worker threads.
         for _ in 0..3 {
             assert_eq!(baseline.get(&target).send().await.unwrap().status(), reqwest::StatusCode::OK);
             assert_eq!(pac_client.get(&target).send().await.unwrap().status(), reqwest::StatusCode::OK);
@@ -974,20 +1339,29 @@ mod tests {
         }
         let with_pac_per_req = t1.elapsed() / N;
 
-        let resolver = PacResolver::new(Arc::clone(&slot), Matcher::builder().build(), "");
+        let cached_resolver = PacResolver::new(Arc::clone(&slot), Matcher::builder().build(), "");
+        let uncached_resolver = PacResolver::new(Arc::clone(&uncached_slot), Matcher::builder().build(), "");
         let sample = reqwest::Url::parse(&target).unwrap();
+        assert_eq!(uncached_resolver.resolve(&sample), None);
         let t2 = Instant::now();
         for _ in 0..100 {
-            assert_eq!(resolver.resolve(&sample), None);
+            assert_eq!(cached_resolver.resolve(&sample), None);
         }
-        let resolve_per_call = t2.elapsed() / 100;
+        let cached_resolve = t2.elapsed() / 100;
+
+        let t3 = Instant::now();
+        for _ in 0..100 {
+            assert_eq!(uncached_resolver.resolve(&sample), None);
+        }
+        let uncached_resolve = t3.elapsed() / 100;
 
         let delta = with_pac_per_req.saturating_sub(no_pac_per_req);
         eprintln!(
-            "Loaded PAC timing ({N} reqs): no_pac={no_pac_per_req:?}/req, \
-             with_pac={with_pac_per_req:?}/req, delta={delta:?}/req, resolve={resolve_per_call:?}/call"
+            "Loaded PAC timing ({N} plain-http literal-IP reqs, no DNS): no_pac={no_pac_per_req:?}/req, \
+             with_pac={with_pac_per_req:?}/req, delta={delta:?}/req, \
+             resolve_cached={cached_resolve:?}/call, resolve_uncached={uncached_resolve:?}/call"
         );
-        assert!(resolve_per_call < Duration::from_millis(5), "PAC resolve too slow: {resolve_per_call:?}");
+        assert!(uncached_resolve < Duration::from_millis(5), "uncached PAC resolve too slow: {uncached_resolve:?}");
     }
 
     #[tokio::test]
@@ -1014,7 +1388,7 @@ mod tests {
                 false,
                 || Some(settings_with_pac_url(&closed_url, true)),
                 "",
-                |u| ScriptSlot::new(u, SCRIPT_TTL, RETRY_BACKOFF, EVAL_TIMEOUT),
+                |u| ScriptSlot::new(u, SlotTiming::DEFAULT),
             )
         })
         .unwrap();
@@ -1039,7 +1413,7 @@ mod tests {
                 false,
                 || Some(settings_with_pac_url(&stalled_url, true)),
                 "",
-                |u| ScriptSlot::new(u, SCRIPT_TTL, RETRY_BACKOFF, EVAL_TIMEOUT),
+                |u| ScriptSlot::new(u, SlotTiming::DEFAULT),
             )
         })
         .unwrap();
@@ -1091,7 +1465,8 @@ mod tests {
         });
 
         let pac_url = format!("http://127.0.0.1:{port}/proxy.pac");
-        let slot = ScriptSlot::new(pac_url, SCRIPT_TTL, Duration::from_millis(40), EVAL_TIMEOUT);
+        let slot =
+            ScriptSlot::new(pac_url, SlotTiming { retry_backoff: Duration::from_millis(40), ..SlotTiming::DEFAULT });
         let resolver = PacResolver::new(Arc::clone(&slot), Matcher::builder().build(), "");
         // Wait for the initial 503 fetch to complete.
         tokio::time::sleep(Duration::from_millis(60)).await;
