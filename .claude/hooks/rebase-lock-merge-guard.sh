@@ -2,7 +2,7 @@
 # PreToolUse(Bash) guard: refuse `gh pr merge` into the fork while an auto-rebase lock holds work.
 # A lock is a fork `rebase/*` branch whose tip is not `develop` yet (develop has not moved onto it).
 # Merging then breaks the lock's lease push and forces carrying every merged commit onto the lock
-# (FORK.md "Auto-rebase"; 2026-11-15: 36 commits carried by hand onto rebase/v0.1.45).
+# (FORK.md "Unattended rebase"; 2026-11-15: 36 commits carried by hand onto rebase/v0.1.45).
 # Override for one command: prefix it with OPENIDEA_MERGE_DURING_LOCK=1 after the user agreed.
 set -u
 input=$(cat)
