@@ -104,7 +104,9 @@ describe("before-commit formatting", () => {
       files: [{ kind: "edit", path: python.path, edits: [edit(0, firstEdit), edit(2, lastEdit)], version: 3 }],
     });
     expect(commands.lspFormat).not.toHaveBeenCalled();
-    expect(commands.docSave).toHaveBeenCalled();
+    // Fork (#291): saved through the guarded save, which never overwrites a file changed on disk.
+    expect(commands.docAutosave).toHaveBeenCalledWith(1);
+    expect(commands.docSave).not.toHaveBeenCalled();
   });
 
   it("fixes a fully staged Python snapshot and syncs the clean working file", async () => {

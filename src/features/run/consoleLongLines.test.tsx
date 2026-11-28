@@ -55,13 +55,20 @@ describe("ConsoleView long lines and no-newline output", () => {
 
     const targetLink = screen.getByRole("link", { name: "target.txt:1:1" });
     fireEvent.click(targetLink);
-    expect(nav.openTarget).toHaveBeenCalledWith(expect.objectContaining({ path: "target.txt", line: 1, col: 1 }), "/p");
+    expect(nav.openTarget).toHaveBeenCalledWith(
+      expect.objectContaining({ path: "target.txt", line: 1, col: 1 }),
+      "/p",
+      true,
+      undefined,
+    );
 
     const splitLink = screen.getByRole("link", { name: "src/split.rs:12:3" });
     fireEvent.click(splitLink);
     expect(nav.openTarget).toHaveBeenCalledWith(
       expect.objectContaining({ path: "src/split.rs", line: 12, col: 3 }),
       "/p",
+      true,
+      undefined,
     );
   });
 
@@ -119,6 +126,8 @@ describe("ConsoleView long lines and no-newline output", () => {
     expect(nav.openTarget).toHaveBeenCalledWith(
       expect.objectContaining({ path: "mid/scrolled.ts", line: 77, col: 2 }),
       "/p",
+      true,
+      undefined,
     );
   });
 
@@ -166,6 +175,8 @@ describe("ConsoleView long lines and no-newline output", () => {
     expect(nav.openTarget).toHaveBeenCalledWith(
       expect.objectContaining({ path: "src/col2600.ts", line: 12, col: 3 }),
       "/p",
+      true,
+      undefined,
     );
 
     fireEvent.keyDown(log, { key: "f", code: "KeyF", metaKey: true });
@@ -399,6 +410,8 @@ describe("ConsoleView long lines and no-newline output", () => {
       expect(nav.openTarget).toHaveBeenCalledWith(
         expect.objectContaining({ path: "src/col6020.ts", line: 4, col: 2 }),
         "/p",
+        true,
+        undefined,
       );
       expect(load).toHaveBeenCalled();
       expect(load.mock.calls.every(([spec]) => !String(spec).includes("var("))).toBe(true);

@@ -247,6 +247,8 @@ describe("Debug console links", () => {
       expect(nav.openTarget).toHaveBeenCalledWith(
         expect.objectContaining({ path: "src/col6020.ts", line: 4, col: 2 }),
         "/p",
+        true,
+        undefined,
       );
       expect(load).toHaveBeenCalled();
       expect(load.mock.calls.every(([spec]) => !String(spec).includes("var("))).toBe(true);
