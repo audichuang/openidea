@@ -2513,7 +2513,7 @@ export const commands = {
 	windowGroupReorder: (labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_reorder", { labels })),
 	windowGroupRestore: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_restore")),
 	windowGroupSelect: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_select", { label })),
-	/**  Whether this window is in native full screen, as [`window_toggle_fullscreen`] reads it. */
+	/**  Whether this window is in native full screen (on macOS, also a tab of a fullscreen group). */
 	windowIsFullscreen: () => __TAURI_INVOKE<boolean>("window_is_fullscreen"),
 	/**  This window is done with the launch it took: its project opened, failed to, or was cancelled. */
 	windowLaunchSettled: () => __TAURI_INVOKE<void>("window_launch_settled"),
@@ -15454,6 +15454,8 @@ export type VcsRoot = {
 
 /**  Version Control (main page) and its sub-pages. */
 export type VcsSettings = {
+	/**  ClipCode clipboard copies (the ClipCode plugins' settings). */
+	clipCode?: ClipCodeSettings,
 	/**  Colour folders that contain changed files (project tree, tabs). */
 	showDirtyDirectories?: boolean,
 	createChangelistsAutomatically?: boolean,
@@ -15472,8 +15474,6 @@ export type VcsSettings = {
 	mappings?: VcsMappings,
 	/**  Settings › Version Control › GitHub: per-project GitHub CLI account selection. */
 	github?: GithubSettings,
-	/**  ClipCode clipboard copies (the ClipCode plugins' settings). */
-	clipCode?: ClipCodeSettings,
 };
 
 /**  The tool that creates a new Python environment in "Add Python Interpreter". */
