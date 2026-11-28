@@ -78,6 +78,18 @@ describe("writeFileText without an editor view of the file", () => {
     }
   });
 
+  it("leaves a file that changed on disk alone and throws, so a merge result is not staged (fork #291)", async () => {
+    // The guarded save refuses: the file changed on disk since the document read it.
+    backend.autosave = async () => false;
+    const tab = await backgroundTab();
+    try {
+      await expect(writeFileText(PATH, "<v>ours</v>\n", { save: true, exact: true })).rejects.toThrow();
+      expect(saved(PATH)).toBe(CONFLICT);
+    } finally {
+      tab.dispose();
+    }
+  });
+
   it("writes a file that no tab shows as is and leaves nothing open", async () => {
     manager.stop();
     setup({ files: { ensureFinalNewline: true, trimTrailingWhitespace: true } });

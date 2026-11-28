@@ -14,6 +14,7 @@ import { confirm } from "@/workbench/messages";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
 import { promptInstall } from "./missing";
 import { installTool, refreshTools, toolByName, useTools } from "./store";
+import { forkCssModulesSave } from "./forkCssModulesSave";
 
 const TOOL = "css-modules-kit";
 const OPTION = '"cmkOptions": { "enabled": true }';
@@ -187,8 +188,13 @@ async function insertOption(tsconfig: string): Promise<boolean> {
         }),
       );
     } else if (state !== "enabled") return false;
-    await call(commands.docSave(doc.id));
-    return true;
+    if (forkCssModulesSave.upstream) {
+      await call(commands.docSave(doc.id));
+      return true;
+    }
+    // Fork (#291): the guarded save, which never writes over a tsconfig.json changed on disk.
+    const { ipcBackend } = await import("@/editor/core/backend");
+    return await ipcBackend.autosave!(doc.id);
   } catch {
     return false;
   } finally {

@@ -5,6 +5,7 @@ const ipc = vi.hoisted(() => ({
   docOpen: vi.fn(),
   applyWorkspaceEdit: vi.fn(),
   docSave: vi.fn(),
+  docAutosave: vi.fn(),
   docClose: vi.fn(),
   lspRestartNamed: vi.fn(),
 }));
@@ -25,6 +26,7 @@ vi.mock("./store", () => ({
   useTools: { getState: () => ({ loaded: true }) },
 }));
 
+const { forkCssModulesSave } = await import("./forkCssModulesSave");
 const { cmkOptionsInsertion, cmkState, effectiveCmkState, enable, localExtends, stripJsonc, usesCssModules } =
   await import("./cssModules");
 
@@ -83,6 +85,8 @@ describe("CSS Modules Kit hint", () => {
   });
 
   it("enables through the document and saves it, restarting nothing itself", async () => {
+    // Upstream's save, behind the fork's switch.
+    forkCssModulesSave.upstream = true;
     // tsconfig.json open with an unsaved change: the edit goes into that text, then it is saved.
     const text = '{\n  "compilerOptions": {},\n  "exclude": ["dist"]\n}\n';
     const calls: string[] = [];
@@ -106,7 +110,36 @@ describe("CSS Modules Kit hint", () => {
       expect(ipc.lspRestartNamed).not.toHaveBeenCalled();
       expect(store.installTool).toHaveBeenCalledTimes(status === "missing" ? 1 : 0);
     };
-    await run("installed");
-    await run("missing");
+    try {
+      await run("installed");
+      await run("missing");
+    } finally {
+      forkCssModulesSave.upstream = false;
+    }
+  });
+
+  it("saves through the guarded save and stops when tsconfig.json changed on disk (fork #291)", async () => {
+    const text = '{\n  "compilerOptions": {}\n}\n';
+    const calls: string[] = [];
+    ipc.docOpen.mockImplementation(async () => (calls.push("open"), ok({ id: 7, text, dirty: true })));
+    ipc.applyWorkspaceEdit.mockImplementation(async () => (calls.push("edit"), ok(null)));
+    ipc.docSave.mockClear();
+    ipc.docClose.mockImplementation(async () => (calls.push("close"), ok(null)));
+    store.status = "missing";
+    store.installTool.mockClear();
+    ipc.docAutosave.mockImplementation(async () => (calls.push("autosave"), ok(false)));
+    await enable("/p/tsconfig.json", "tsconfig.json");
+    await Promise.resolve();
+    expect(calls).toEqual(["open", "edit", "autosave", "close"]);
+    expect(ipc.docSave).not.toHaveBeenCalled();
+    // Refused: the plugin is not installed for a tsconfig.json that never got the option.
+    expect(store.installTool).not.toHaveBeenCalled();
+
+    calls.length = 0;
+    ipc.docAutosave.mockImplementation(async () => (calls.push("autosave"), ok(true)));
+    await enable("/p/tsconfig.json", "tsconfig.json");
+    await Promise.resolve();
+    expect(calls).toEqual(["open", "edit", "autosave", "close"]);
+    expect(store.installTool).toHaveBeenCalledTimes(1);
   });
 });
