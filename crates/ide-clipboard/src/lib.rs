@@ -62,9 +62,9 @@ pub fn set_text(text: &str, owner: usize) -> std::io::Result<()> {
 /// so both apps paste alike); Linux reads it asynchronously through GTK in the app. In the macOS
 /// webview, `navigator.clipboard.readText()` outside a paste event makes WebKit ask the user to
 /// confirm with a "Paste" callout, so macOS never returns None: empty when the clipboard holds no
-/// text, and empty while it holds a file list (Finder adds the file name as text), as WebKit's own
-/// read is, so the caller reads [`files`]. None on Windows when the clipboard stays busy: the
-/// webview reads it then.
+/// text, and empty while its text only names the files of a file list (Finder adds the file names
+/// as text), as WebKit's own read is, so the caller reads [`files`]. None on Windows when the
+/// clipboard stays busy: the webview reads it then.
 #[cfg(any(target_os = "macos", windows))]
 pub fn text() -> Option<String> {
     imp::text()
@@ -175,6 +175,16 @@ fn names_text(paths: &[PathBuf], separator: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(separator)
+}
+
+/// Whether `text` only names `paths` (their names or full paths, one per line), as the text Finder
+/// puts beside copied files does: [`text`] leaves it out on macOS so the caller pastes the files,
+/// while other text copied beside them still comes through (#350).
+#[cfg(any(target_os = "macos", test))]
+fn only_names(text: &str, paths: &[PathBuf]) -> bool {
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+    let full = paths.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>().join("\n");
+    text == names_text(paths, "\n") || text == full
 }
 
 /// The `file://` URIs in a `text/uri-list` or `x-special/gnome-copied-files`
@@ -774,16 +784,17 @@ mod imp {
     }
 
     pub fn text() -> Option<String> {
-        if has_files() {
-            return Some(String::new());
-        }
         debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
-        autoreleasepool(|_| {
+        let text = autoreleasepool(|_| {
             let board = NSPasteboard::generalPasteboard();
             // SAFETY: the type is an AppKit constant, valid for the process' lifetime.
             let text = board.stringForType(unsafe { NSPasteboardTypeString });
-            Some(text.map(|t| t.to_string()).unwrap_or_default())
-        })
+            text.map(|t| t.to_string()).unwrap_or_default()
+        });
+        if has_files() && files().map_or(true, |files| super::only_names(&text, &files)) {
+            return Some(String::new());
+        }
+        Some(text)
     }
 
     pub fn files() -> std::io::Result<Vec<PathBuf>> {
@@ -1105,6 +1116,16 @@ mod tests {
         let mut far = encode(&paths(&["C:/a"]));
         far[0] = 0xff; // pFiles past the end
         assert_eq!(decode(&far), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn only_text_naming_the_files_is_left_out() {
+        let files = paths(&["/p/a b.txt", "/p/src"]);
+        assert!(only_names("a b.txt\nsrc", &files));
+        assert!(only_names("/p/a b.txt\r\n/p/src", &files));
+        assert!(only_names("a b.txt\rsrc", &files));
+        assert!(!only_names("curl https://example.com", &files));
+        assert!(!only_names("a b.txt", &files));
     }
 
     #[test]
