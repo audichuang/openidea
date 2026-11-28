@@ -863,7 +863,7 @@ impl Documents {
                 } else {
                     Self::load_with_defaults(path, &defaults, state.editorconfig.as_ref())?.0
                 };
-                super::mark_binary(&mut loaded, path);
+                super::mark_binary(&mut loaded, path)?;
                 // Not text (binary): keep the buffer on its baseline rather than adopt the file.
                 if loaded.binary && !state.binary {
                     return Ok(());
