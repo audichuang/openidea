@@ -71,8 +71,8 @@ fn is_python(path: &Path) -> bool {
 }
 
 /// jdtls renames the type of a renamed `Foo.java` only for files it knows (inside a source folder);
-/// for any other file the top-level `Foo` and its uses in that file follow the new name here,
-/// so file and public class still agree. Skipped when a server already edited the file.
+/// for a file outside every source root the top-level `Foo` and its uses in that file follow the
+/// new name here, so file and public class still agree.
 fn java_type_rename_edit(
     project: &crate::project::Project,
     syntax: &Syntax,
@@ -80,24 +80,41 @@ fn java_type_rename_edit(
     server: &WorkspaceEdit,
     cancel: &CancellationToken,
 ) -> Option<FileEdit> {
+    let (old, new) = java_type_rename_names(m, server, &project.root, &project.roots())?;
+    let text = project.text_of(&m.from).ok()?;
+    let edits = java_type_renames(syntax, &project.structure, &text, old, new, cancel);
+    (!edits.is_empty()).then(|| FileEdit::Edit { path: m.from.clone(), edits, version: None })
+}
+
+/// The old and new type names when the move `m` should rename its file's top-level Java type here:
+/// a renamed `.java` file outside the source / test roots that no server edit touches. Inside a
+/// root an empty answer means jdtls was not ready, and a file-local rename would hide broken usages.
+fn java_type_rename_names<'a>(
+    m: &'a FileMove,
+    server: &WorkspaceEdit,
+    root: &Path,
+    roots: &ProjectRoots,
+) -> Option<(&'a str, &'a str)> {
     let java = |p: &Path| p.extension().is_some_and(|e| e == "java");
     if !java(&m.from) || !java(&m.to) || !m.from.is_file() {
         return None;
     }
     let old = m.from.file_stem()?.to_str()?;
     let new = m.to.file_stem()?.to_str()?;
-    let same = |p: &Path| p == &*m.from || std::fs::canonicalize(p).ok() == std::fs::canonicalize(&*m.from).ok();
-    if old == new
-        || server
-            .files
-            .iter()
-            .any(|f| matches!(f, FileEdit::Edit { path, edits, .. } if !edits.is_empty() && same(path)))
+    if old == new {
+        return None;
+    }
+    if let Ok(rel) = m.from.strip_prefix(root)
+        && roots
+            .root_for(&rel.to_string_lossy().replace('\\', "/"))
+            .is_some_and(|r| matches!(r.kind, RootKind::Source | RootKind::Test))
     {
         return None;
     }
-    let text = project.text_of(&m.from).ok()?;
-    let edits = java_type_renames(syntax, &project.structure, &text, old, new, cancel);
-    (!edits.is_empty()).then(|| FileEdit::Edit { path: m.from.clone(), edits, version: None })
+    let same = |p: &Path| p == &*m.from || std::fs::canonicalize(p).ok() == std::fs::canonicalize(&*m.from).ok();
+    let edited =
+        server.files.iter().any(|f| matches!(f, FileEdit::Edit { path, edits, .. } if !edits.is_empty() && same(path)));
+    (!edited).then_some((old, new))
 }
 
 /// Renames of `old` to `new` in a Java file declaring the top-level type `old`: every unqualified
@@ -110,8 +127,70 @@ fn java_type_renames(
     new: &str,
     cancel: &CancellationToken,
 ) -> Vec<ide_core::TextEdit> {
+    const KEYWORDS: &[&str] = &[
+        "abstract",
+        "assert",
+        "boolean",
+        "break",
+        "byte",
+        "case",
+        "catch",
+        "char",
+        "class",
+        "const",
+        "continue",
+        "default",
+        "do",
+        "double",
+        "else",
+        "enum",
+        "extends",
+        "final",
+        "finally",
+        "float",
+        "for",
+        "goto",
+        "if",
+        "implements",
+        "import",
+        "instanceof",
+        "int",
+        "interface",
+        "long",
+        "native",
+        "new",
+        "package",
+        "private",
+        "protected",
+        "public",
+        "return",
+        "short",
+        "static",
+        "strictfp",
+        "super",
+        "switch",
+        "synchronized",
+        "this",
+        "throw",
+        "throws",
+        "transient",
+        "try",
+        "void",
+        "volatile",
+        "while",
+        "true",
+        "false",
+        "null",
+        "_",
+        "var",
+        "yield",
+        "record",
+        "sealed",
+        "permits",
+    ];
     let valid = new.chars().next().is_some_and(|c| c == '_' || c == '$' || c.is_alphabetic())
-        && new.chars().all(|c| c == '_' || c == '$' || c.is_alphanumeric());
+        && new.chars().all(|c| c == '_' || c == '$' || c.is_alphanumeric())
+        && !KEYWORDS.contains(&new);
     let java = LanguageId::new("java");
     if !valid || !syntax.outline(&java, text).iter().any(|i| i.name == old && i.kind.is_type_like()) {
         return Vec::new();
@@ -364,8 +443,51 @@ mod tests {
         assert!(out.contains("    Renamed() {}"), "{out}");
         assert!(out.contains("o.Standalone = 1;") && out.contains("// Standalone"), "{out}");
         assert_eq!(renames(src, "Standalone", "Not-Valid").0, 0);
+        assert_eq!(renames(src, "Standalone", "int").0, 0);
         assert_eq!(renames(src, "Missing", "Renamed").0, 0);
         assert_eq!(renames("class Outer { class Standalone {} }", "Standalone", "Renamed").0, 0);
+    }
+
+    #[test]
+    fn java_type_rename_only_outside_source_roots_and_server_edits() {
+        let dir = std::env::temp_dir().join(format!("refactor-java-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("docs")).unwrap();
+        std::fs::create_dir_all(dir.join("src/main/java")).unwrap();
+        std::fs::write(dir.join("docs/Standalone.java"), "class Standalone {}").unwrap();
+        std::fs::write(dir.join("src/main/java/App.java"), "class App {}").unwrap();
+        let folder = |path: &str, kind| SourceFolder { path: path.into(), kind, detected_from: None };
+        let roots = ProjectRoots::compute(vec![folder("src/main/java", RootKind::Source)], &Default::default());
+        let mv = |from: &str, to: &str| FileMove { from: dir.join(from).into(), to: dir.join(to).into() };
+        let no_edit = WorkspaceEdit::default();
+        let edit_of = |path: PathBuf, edits| WorkspaceEdit {
+            files: vec![FileEdit::Edit { path: path.into(), edits, version: None }],
+            ..Default::default()
+        };
+        let one = vec![ide_core::TextEdit { range: Default::default(), new_text: "X".into() }];
+        let names = |m: &FileMove, server: &WorkspaceEdit| {
+            java_type_rename_names(m, server, &dir, &roots).map(|(a, b)| (a.to_owned(), b.to_owned()))
+        };
+
+        let out = mv("docs/Standalone.java", "docs/Renamed.java");
+        assert_eq!(names(&out, &no_edit), Some(("Standalone".into(), "Renamed".into())));
+        assert_eq!(
+            names(&out, &edit_of(dir.join("docs/Standalone.java"), vec![])),
+            Some(("Standalone".into(), "Renamed".into()))
+        );
+        assert_eq!(names(&out, &edit_of(dir.join("docs/Standalone.java"), one.clone())), None);
+        assert_eq!(names(&mv("docs/Standalone.java", "other/Standalone.java"), &no_edit), None);
+        assert_eq!(names(&mv("docs/Standalone.java", "docs/Standalone.txt"), &no_edit), None);
+        assert_eq!(names(&mv("docs/Missing.java", "docs/Renamed.java"), &no_edit), None);
+        // In a source root an empty answer means jdtls was not ready: no file-local rename.
+        assert_eq!(names(&mv("src/main/java/App.java", "src/main/java/Main.java"), &no_edit), None);
+        // A server edit spelled through a symlink (macOS `/tmp` vs `/private/tmp`) is the same file.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.join("docs"), dir.join("link")).unwrap();
+            assert_eq!(names(&out, &edit_of(dir.join("link/Standalone.java"), one)), None);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
