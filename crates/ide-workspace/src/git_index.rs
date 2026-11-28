@@ -22,19 +22,31 @@ pub(crate) struct IndexMove {
 /// Plans a batch with bounded index reads per repository. Sparse / assume-unchanged
 /// entries leave their own move alone, without suppressing sibling moves.
 ///
+/// Only repositories whose root is in `allowed` (the project's repositories, Directory
+/// Mappings applied) are touched.
+///
 /// Known unhandled race: `plan` reads the entries and `apply` writes them back later, so
 /// a concurrent `git add` on the same paths in between can be overwritten (rare, not fixed).
-pub(crate) fn plan(moves: &[FileMove]) -> Vec<IndexMove> {
-    plan_with(moves, &mut |dir, args| run(dir, args, None).map(|out| out.stdout))
+pub(crate) fn plan(moves: &[FileMove], allowed: &[PathBuf]) -> Vec<IndexMove> {
+    plan_with(moves, allowed, &mut |dir, args| run(dir, args, None).map(|out| out.stdout))
 }
 
-fn plan_with(moves: &[FileMove], run: &mut impl FnMut(&Path, &[&str]) -> Option<Vec<u8>>) -> Vec<IndexMove> {
+fn plan_with(
+    moves: &[FileMove],
+    allowed: &[PathBuf],
+    run: &mut impl FnMut(&Path, &[&str]) -> Option<Vec<u8>>,
+) -> Vec<IndexMove> {
+    if allowed.is_empty() {
+        return Vec::new();
+    }
+    // `locate` returns canonical roots; the project's may be spelled otherwise (/var vs /private/var).
+    let allowed: Vec<_> = allowed.iter().map(|r| dunce::canonicalize(r).unwrap_or_else(|_| r.clone())).collect();
     let mut roots = HashMap::new();
     type LocatedMove = (usize, String, String);
     let mut groups: Vec<(PathBuf, Vec<LocatedMove>)> = Vec::new();
     for (i, m) in moves.iter().enumerate() {
-        let Some((root, old)) = locate(&m.from, &mut roots, run) else { continue };
-        let Some((to_root, new)) = locate(&m.to, &mut roots, run) else { continue };
+        let Some((root, old)) = locate(&m.from, &allowed, &mut roots, run) else { continue };
+        let Some((to_root, new)) = locate(&m.to, &allowed, &mut roots, run) else { continue };
         if root != to_root {
             continue;
         }
@@ -232,9 +244,10 @@ fn apply_repository(root: &Path, moves: &[&IndexMove]) -> std::io::Result<()> {
 
 /// The repository root containing `path` and `path` relative to it (`/`-separated).
 /// `path` and any of its parent folders need not exist yet (a move creates them), so
-/// this resolves from the nearest existing ancestor.
+/// this resolves from the nearest existing ancestor. `None` outside the `allowed` roots.
 fn locate(
     path: &Path,
+    allowed: &[PathBuf],
     roots: &mut HashMap<PathBuf, Option<PathBuf>>,
     run: &mut impl FnMut(&Path, &[&str]) -> Option<Vec<u8>>,
 ) -> Option<(PathBuf, String)> {
@@ -252,7 +265,7 @@ fn locate(
         .entry(base.clone())
         .or_insert_with(|| {
             let top = String::from_utf8(run(&base, &["rev-parse", "--show-toplevel"])?).ok()?;
-            dunce::canonicalize(top.trim_end_matches(['\n', '\r'])).ok()
+            dunce::canonicalize(top.trim_end_matches(['\n', '\r'])).ok().filter(|top| allowed.contains(top))
         })
         .clone()?;
     let mut parts = Vec::new();
@@ -363,9 +376,15 @@ mod transaction_tests {
             .map(|(from, to)| FileMove { from: root.join(from).into(), to: root.join(to).into() })
             .collect();
         FileMoves::new()
-            .perform(&documents, None, &moves, &WorkspaceEdit::default(), "Rename", true, &|edit| {
-                documents.apply_file_move_edits(edit)
-            })
+            .perform(
+                &documents,
+                None,
+                &moves,
+                &WorkspaceEdit::default(),
+                "Rename",
+                Some(&[root.to_path_buf()]),
+                &|edit| documents.apply_file_move_edits(edit),
+            )
             .unwrap();
     }
 
@@ -562,6 +581,7 @@ mod batch_tests {
                 mv(root, "a", "new/a"),
                 mv(root, "untracked", "new/u"),
             ],
+            &[root.to_path_buf()],
             &mut |dir, args| {
                 calls.push(args[0].to_owned());
                 run(dir, args, None).map(|out| out.stdout)
@@ -582,7 +602,7 @@ mod batch_tests {
         let names: Vec<_> = (0..1000).map(|i| format!("module-{i:04}-abcdefghijklmnopqrstuvwxyz.ts")).collect();
         let moves: Vec<_> = names.iter().map(|name| mv(&root, name, &format!("new-{name}"))).collect();
         let mut reads = 0;
-        let result = plan_with(&moves, &mut |_, args| {
+        let result = plan_with(&moves, std::slice::from_ref(&root), &mut |_, args| {
             if args[0] == "rev-parse" {
                 return Some(format!("{}\n", root.display()).into_bytes());
             }
@@ -637,11 +657,14 @@ mod batch_tests {
             .unwrap();
         child.stdin.take().unwrap().write_all(&input).unwrap();
         assert!(child.wait().unwrap().success());
-        let planned = plan(&[
-            mv(root, "folder", "newfolder"),
-            mv(root, "ok", "renamed"),
-            mv(root, "replacement-\u{fffd}", "new-replacement"),
-        ]);
+        let planned = plan(
+            &[
+                mv(root, "folder", "newfolder"),
+                mv(root, "ok", "renamed"),
+                mv(root, "replacement-\u{fffd}", "new-replacement"),
+            ],
+            &[root.to_path_buf()],
+        );
         assert_eq!(planned.len(), 2);
         assert_eq!(planned[0].entries[0].2, "ok");
         assert_eq!(planned[0].entries[0].3, "renamed");
@@ -663,7 +686,10 @@ mod batch_tests {
         let other = tempfile::tempdir().unwrap();
         git(other.path(), &["init", "-q"]);
         let cross = FileMove { from: root.join("ok").into(), to: other.path().join("other").into() };
-        let result = plan(&[mv(root, "dir", "new"), mv(root, "assumed", "renamed"), cross, mv(root, "ok", "good")]);
+        let result = plan(
+            &[mv(root, "dir", "new"), mv(root, "assumed", "renamed"), cross, mv(root, "ok", "good")],
+            &[root.to_path_buf(), other.path().to_path_buf()],
+        );
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].entries[0].3, "good");
     }

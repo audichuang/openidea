@@ -100,14 +100,14 @@ fn mixed_move_and_undo_apply_rules_only_to_unity_assets() {
             ],
             &WorkspaceEdit::default(),
             "Move",
-            false,
+            None,
             &|_| Ok(()),
         )
         .unwrap();
     assert!(destination.exists() && metadata_path(&destination).exists());
     assert!(ordinary_to.exists() && !metadata_path(&ordinary_to).exists());
     assert!(metadata_path(&ordinary).exists());
-    moves.undo(&docs, None, false, token).unwrap();
+    moves.undo(&docs, None, None, token).unwrap();
     assert!(source.exists() && metadata_path(&source).exists());
     assert!(ordinary.exists() && metadata_path(&ordinary).exists());
     assert!(!destination.exists() && !metadata_path(&destination).exists());
@@ -125,7 +125,7 @@ fn mixed_move_and_undo_apply_rules_only_to_unity_assets() {
                 ],
                 &WorkspaceEdit::default(),
                 "Move",
-                false,
+                None,
                 &|_| Ok(()),
             )
             .is_err()
