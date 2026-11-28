@@ -1574,7 +1574,7 @@ impl Documents {
                     .then(|| st.path.clone())
             })
             .collect();
-        self.refresh_from_disk(&paths, force_clean, true);
+        self.reload_from_disk(&paths, force_clean, true);
     }
 
     /// Re-reads the document from disk and replaces its text (minimal diff).
@@ -1630,7 +1630,7 @@ impl Documents {
     /// fork: Paste and Restore writes text as UTF-8. A file whose encoding (the document's, or the
     /// one File Encodings keeps for it, open or not) shows those bytes as other text is read as
     /// UTF-8; those files are returned, for the caller to keep UTF-8 as their encoding.
-    pub fn reload_from_disk(&self, paths: &[PathBuf]) -> Vec<PathBuf> {
+    pub fn reload_overwritten(&self, paths: &[PathBuf]) -> Vec<PathBuf> {
         let defaults = self.file_defaults();
         let mut utf8 = Vec::new();
         for path in paths {
@@ -1676,11 +1676,11 @@ impl Documents {
     /// silently; dirty ones are left alone and reported via `IdeEvent::DocDiskConflict`.
     /// Changes matching our own last save are ignored.
     pub fn on_disk_changed(&self, paths: &[PathBuf]) {
-        self.refresh_from_disk(paths, false, false);
+        self.reload_from_disk(paths, false, false);
     }
 
     /// `dedup`: blind scans skip files whose `(mtime, length)` stamp still matches.
-    fn refresh_from_disk(&self, paths: &[PathBuf], force_clean: bool, dedup: bool) {
+    fn reload_from_disk(&self, paths: &[PathBuf], force_clean: bool, dedup: bool) {
         for path in paths {
             let Some(id) = self.by_path(path) else { continue };
             let result = self.with_doc(id, |st| {
