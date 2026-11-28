@@ -18,7 +18,6 @@ import {
   useAnnotateNames,
 } from "../blame";
 import { closeBlamePopup } from "../BlamePopup";
-import { forkAnnotateColors } from "../forkAnnotateColors";
 import { useVcs } from "../store";
 
 const mocks = vi.hoisted(() => ({
@@ -190,8 +189,6 @@ describe("git blame gutter and commit popup", () => {
       "Show Commit in Git Log",
       "Ignore This Commit",
       "Options",
-      // The fork's Colors submenu follows Options.
-      "Colors",
     ]);
 
     items[1]!.run!();
@@ -303,8 +300,7 @@ describe("git blame gutter and commit popup", () => {
     )!;
     fireEvent.contextMenu(edited);
     const items = mocks.menu.mock.calls[0]![1] as { label?: string }[];
-    // The fork's Colors submenu follows Options.
-    expect(items.map((i) => i.label)).toEqual(["Close Annotations", "Options", "Colors"]);
+    expect(items.map((i) => i.label)).toEqual(["Close Annotations", "Options"]);
   });
 });
 
@@ -552,20 +548,7 @@ describe("annotate Options", () => {
     }
   });
 
-  it("keeps the fork's Colors menu and ramp by default, without upstream's Options › Colors", async () => {
-    view = await annotated();
-    expect(options(view).some((i) => i.label === "Colors")).toBe(false);
-    const top = mocks.menu.mock.calls[0]![1] as Item[];
-    expect(top.find((i) => i.label === "Colors")!.submenu!.map((i) => i.label)).toEqual(["Order", "Author", "Hide"]);
-    const bg = view.dom
-      .querySelector<HTMLElement>(`.cm-vcs-blame [data-commit="${sha}"]`)!
-      .style.getPropertyValue("--blame-bg");
-    expect(bg).toContain("--vcs-annotate-");
-  });
-
   it("tints by commit order by default and switches every annotated editor from Options › Colors", async () => {
-    // Upstream's Colors, behind the fork's switch.
-    forkAnnotateColors.upstream = true;
     const thirdSha = "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b";
     mocks.blame.mockResolvedValue({
       status: "ok",
@@ -620,7 +603,6 @@ describe("annotate Options", () => {
       }
     } finally {
       historical.destroy();
-      forkAnnotateColors.upstream = false;
     }
   });
 

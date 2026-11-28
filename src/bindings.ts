@@ -8442,8 +8442,6 @@ export type GitSettings = {
 	showBranchInProjectView?: boolean,
 	/**  Branch operations from the branches popup act on every repository of the project. */
 	syncBranchOperations?: boolean,
-	/**  Annotate gutter background colours: `order` (by commit age) | `author` | `none`. */
-	annotateColors?: string,
 	/**  Path to the git executable; empty = auto-detect. */
 	executable?: string,
 	/**  Clone all submodules along with the root repository. */

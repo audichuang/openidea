@@ -3,7 +3,7 @@
 ## Sub-features
 
 - Gutter column with date (4-digit year) and author per line.
-- Background color per commit. Default mode `order`: IntelliJ new-UI ramp, newest commit darkest (`--vcs-annotate-1..5` in `src/styles/tokens.css`, mixed from `--accent`). Modes `order` / `author` / `none` (`vcs.git.annotateColors`, also in the annotate gutter's right-click menu).
+- Background color per commit: upstream's gutter menu › Options › Colors (Author / Order / Hide, Order by default; `--project-color-N` tints, saved in localStorage `openidea.vcs.annotateColors`). The fork's own Colors were removed (#556).
 - Close Annotations from the same menus.
 
 ## How to get to it (user POV)
@@ -23,12 +23,11 @@
    ```
 2. Open it with `openProjectInWindow` and trust it (SKILL.md recipes).
 3. `webview_interact action=right-click windowId=project-N selector=".cm-lineNumbers .cm-gutterElement:nth-child(3)"`, then `webview_interact action=click strategy=text selector="Annotate with Git Blame"`.
-4. `webview_find_element selector=".cm-vcs-blame .cm-vcs-blame-colored" properties=["background-color"] limit=20`.
-   Proof: each commit's lines share one `cm-vcs-blame-cN` class (N spread over 0–20, not consecutive); `cm-vcs-blame-c0` is the newest; colors get lighter (light theme) / closer to the editor background (dark theme) as commits get older. Reference values measured 2026-11-04: light newest ≈ `#a3bef1` (IDEA `#a1bef7`), dark newest ≈ `#2d5198` (IDEA `#2f5194`).
+4. `webview_find_element selector=".cm-vcs-blame [data-commit]" properties=["background-color"] limit=20`.
+   Proof: each commit's lines share one background; Options › Colors › Author recolours by author, Hide removes the backgrounds, in every annotated editor.
 5. `webview_screenshot` in light and dark (switch `appearance.theme` via the bindings recipe, restore after).
 
 ## Gotchas
 
-- The gutter also holds a hidden width-measuring row (text like `2020/12/28Mmmmmmmm`, no color); selecting `.cm-vcs-blame-colored` skips it.
-- A repo with fewer than 2 commits (or 2 authors in `author` mode) gets no colors by design (`annotateColorIndexes` in `src/features/vcs/blame.ts`).
+- The gutter also holds a hidden width-measuring row (text like `2020/12/28Mmmmmmmm`, no color, `data-commit="ffffffff"`): skip it.
 - Uncommitted lines have no color.
