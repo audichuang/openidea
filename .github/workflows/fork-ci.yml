@@ -169,7 +169,8 @@ jobs:
     name: Rust tests (${{ matrix.os }}${{ matrix.partition && format(' {0}', matrix.partition) || '' }})
     needs: scope
     if: needs.scope.outputs.rust == 'true'
-    timeout-minutes: 60
+    # macOS runs clippy and every test in one job: 46-53 min on 11-28, and one run hit 60 (#545).
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && 75 || 60 }}
     strategy:
       fail-fast: false
       matrix:
