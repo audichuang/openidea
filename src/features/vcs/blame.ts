@@ -14,7 +14,8 @@ import { notifications } from "@/workbench/contributions";
 import { closeBlamePopup, scheduleCloseBlamePopup, scheduleOpenBlamePopup } from "./BlamePopup";
 import { formatPrettyDay } from "@/platform/dateFormat";
 import { saveVcsSetting } from "./settingsUi";
-import { useVcs } from "./store";
+import { repoOf, useVcs } from "./store";
+import { forkAnnotateColors } from "./forkAnnotateColors";
 
 const ZERO = /^0+$/;
 
@@ -89,6 +90,46 @@ const colorClasses = Object.fromEntries(
   ]),
 );
 
+const BLAME_PALETTE = [
+  "var(--project-color-5)",
+  "var(--project-color-7)",
+  "var(--project-color-4)",
+  "var(--project-color-8)",
+  "var(--project-color-6)",
+  "var(--project-color-1)",
+  "var(--project-color-2)",
+  "var(--project-color-9)",
+  "var(--project-color-3)",
+] as const;
+
+/** Upstream's Order tint (`forkAnnotateColors.upstream`): each commit from oldest (cool) to newest (warm/green). */
+function commitBackgrounds(lines: readonly Pick<BlameLine, "timeMs" | "commit">[]): Map<string, string> {
+  const unique = new Map<string, number>();
+  for (const l of lines) {
+    if (isUncommitted(l)) continue;
+    const prev = unique.get(l.commit);
+    const t = l.timeMs ?? 0;
+    if (prev === undefined || t > prev) unique.set(l.commit, t);
+  }
+  const sorted = [...unique.entries()].sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]));
+  const out = new Map<string, string>();
+  const count = sorted.length;
+  for (let i = 0; i < count; i++) {
+    const [commit] = sorted[i]!;
+    const t = count <= 1 ? 1 : i / (count - 1);
+    const scaled = t * (BLAME_PALETTE.length - 1);
+    const idx = Math.floor(scaled);
+    const frac = Math.round((scaled - idx) * 100);
+    const hue =
+      frac === 0 || idx >= BLAME_PALETTE.length - 1
+        ? BLAME_PALETTE[idx]!
+        : `color-mix(in srgb, ${BLAME_PALETTE[idx + 1]!} ${frac}%, ${BLAME_PALETTE[idx]!})`;
+    const strength = count > BLAME_PALETTE.length && i % 2 === 1 ? 24 : 18;
+    out.set(commit, `color-mix(in srgb, ${hue} ${strength}%, var(--bg-editor-gutter))`);
+  }
+  return out;
+}
+
 const COLUMNS = ["date", "author", "revision"] as const;
 const GUTTER_ORDER = ["revision", "date", "author"] as const;
 type AnnotateColumn = (typeof COLUMNS)[number];
@@ -102,6 +143,9 @@ class BlameMarker extends GutterMarker {
     readonly labels: BlameLabels | undefined,
     readonly rank: number,
     readonly color?: number,
+    /** Upstream's tint (`forkAnnotateColors.upstream`). */
+    readonly bg = "",
+    readonly current = false,
   ) {
     super();
     // On the gutter element, so the lines of one commit form a solid block.
@@ -112,6 +156,8 @@ class BlameMarker extends GutterMarker {
       o.line.commit === this.line.commit &&
       o.rank === this.rank &&
       o.color === this.color &&
+      o.bg === this.bg &&
+      o.current === this.current &&
       COLUMNS.every((column) => o.labels?.[column] === this.labels?.[column])
     );
   }
@@ -128,16 +174,17 @@ class BlameMarker extends GutterMarker {
       cell.textContent = this.labels[column];
       el.append(cell);
     }
-    if (this.color !== undefined) {
-      const bg = annotateColor(this.color);
+    const bg = this.bg || (this.color !== undefined ? annotateColor(this.color) : "");
+    if (bg) {
       el.style.setProperty("--blame-bg", bg);
       el.style.backgroundColor = bg;
-    } else {
+    } else if (!this.current && !forkAnnotateColors.upstream) {
       // Without a background, age fades the text instead.
       const pct = Math.round(25 + this.rank * 75);
       el.style.color = `color-mix(in srgb, var(--fg-secondary) ${pct}%, var(--fg-gutter))`;
     }
     el.dataset.commit = this.line.commit;
+    if (this.current) el.classList.add("cm-vcs-blame-current");
     return el;
   }
 }
@@ -220,6 +267,57 @@ function setAnnotateNames(names: AnnotateNames, save = true) {
   }
 }
 
+/** Upstream's Options › Colors (`forkAnnotateColors.upstream`; Order by default, as in IDEA); kept across sessions. */
+const COLORS_KEY = "openidea.vcs.annotateColors";
+const UPSTREAM_COLOR_MODES = ["author", "order", "hide"] as const;
+type UpstreamAnnotateColors = (typeof UPSTREAM_COLOR_MODES)[number];
+
+export function readAnnotateColors(): UpstreamAnnotateColors {
+  try {
+    const raw = localStorage.getItem(COLORS_KEY);
+    return UPSTREAM_COLOR_MODES.find((m) => m === raw) ?? "order";
+  } catch {
+    return "order";
+  }
+}
+
+export const useAnnotateColors = create<{ colors: UpstreamAnnotateColors }>(() => ({ colors: readAnnotateColors() }));
+
+if (typeof window !== "undefined")
+  window.addEventListener("storage", (e) => {
+    if (e.key === COLORS_KEY) setAnnotateColors(readAnnotateColors(), false);
+  });
+
+function setAnnotateColors(colors: UpstreamAnnotateColors, save = true) {
+  if (useAnnotateColors.getState().colors === colors) return;
+  useAnnotateColors.setState({ colors });
+  if (!save) return;
+  try {
+    localStorage.setItem(COLORS_KEY, colors);
+  } catch {
+    // ignore
+  }
+}
+
+/** IDEA's ColorMode.AUTHOR: authors sorted by name take the palette colours in turn, keyed by commit. */
+function authorBackgrounds(lines: readonly BlameLine[]): Map<string, string> {
+  const committed = lines.filter((l) => !isUncommitted(l));
+  const authors = [...new Set(committed.map((l) => l.author))].sort();
+  const tint = new Map(
+    authors.map((a, i) => [
+      a,
+      `color-mix(in srgb, ${BLAME_PALETTE[i % BLAME_PALETTE.length]!} 18%, var(--bg-editor-gutter))`,
+    ]),
+  );
+  return new Map(committed.map((l) => [l.commit, tint.get(l.author)!]));
+}
+
+function backgrounds(lines: readonly BlameLine[]): Map<string, string> {
+  const { colors } = useAnnotateColors.getState();
+  if (colors === "hide") return new Map();
+  return colors === "author" ? authorBackgrounds(lines) : commitBackgrounds(lines);
+}
+
 /** Characters IDEA's ShortNameType splits an email's local part and initials on. */
 const NAME_DELIMITERS = /[.,<>()":_-]/g;
 
@@ -271,7 +369,9 @@ const annotateColumns = ViewPlugin.define(
     view.requestMeasure(measureBlameColumns);
     return {
       update(update: ViewUpdate) {
-        if (update.startState.field(blameField, false)?.labels !== update.state.field(blameField).labels)
+        const before = update.startState.field(blameField, false);
+        const after = update.state.field(blameField);
+        if (before?.labels !== after.labels || before.current !== after.current)
           view.requestMeasure(measureBlameColumns);
       },
       destroy: useAnnotateColumns.subscribe(() => view.dispatch({})),
@@ -294,11 +394,13 @@ const NAME_LABELS: Record<AnnotateNames, string> = {
   firstName: "First Name",
   fullName: "Full Name",
 };
+const COLOR_LABELS: Record<UpstreamAnnotateColors, string> = { author: "Author", order: "Order", hide: "Hide" };
 
 function optionsMenu(): MenuItem {
   const c = useAnnotateColumns.getState();
   const shown = COLUMNS.filter((k) => c[k]).length;
   const { names } = useAnnotateNames.getState();
+  const { colors } = useAnnotateColors.getState();
   const { ignoreWhitespace, movement } = workflowSettings().vcs.git.annotate;
   return {
     label: "Options",
@@ -309,6 +411,18 @@ function optionsMenu(): MenuItem {
         disabled: c[k] && shown === 1,
         run: () => setAnnotateColumn(k, !c[k]),
       })),
+      ...(forkAnnotateColors.upstream
+        ? [
+            {
+              label: "Colors",
+              submenu: UPSTREAM_COLOR_MODES.map((m) => ({
+                label: COLOR_LABELS[m],
+                checked: colors === m,
+                run: () => setAnnotateColors(m),
+              })),
+            },
+          ]
+        : []),
       {
         label: "Names",
         submenu: NAME_TYPES.map((t) => ({
@@ -343,16 +457,23 @@ function optionsMenu(): MenuItem {
 }
 
 const setBlame = StateEffect.define<BlameLine[]>();
+/** The file's current revision (IDEA's FileAnnotation.getCurrentRevision): the last commit to it. */
+const setCurrentRevision = StateEffect.define<string | null>();
 
 interface BlameState {
   lines: BlameLine[];
   markers: RangeSet<GutterMarker>;
   labels: Map<string, BlameLabels>;
+  current?: string | null;
 }
 
 function build(lines: BlameLine[], doc: Text): BlameState {
   const ranks = ageRanks(lines);
-  const colors = annotateColorIndexes(lines, workflowSettings().vcs.git.annotateColors);
+  const upstream = forkAnnotateColors.upstream;
+  const bgs = upstream ? backgrounds(lines) : new Map<string, string>();
+  const colors = upstream
+    ? new Map<string, number>()
+    : annotateColorIndexes(lines, workflowSettings().vcs.git.annotateColors);
   const { names } = useAnnotateNames.getState();
   const labels = new Map<string, BlameLabels>();
   const out = [];
@@ -368,15 +489,33 @@ function build(lines: BlameLine[], doc: Text): BlameState {
       };
       labels.set(line.commit, label);
     }
-    out.push(new BlameMarker(line, label, ranks[i]!, colors.get(line.commit)).range(doc.line(i + 1).from));
+    out.push(
+      new BlameMarker(line, label, ranks[i]!, colors.get(line.commit), bgs.get(line.commit)).range(
+        doc.line(i + 1).from,
+      ),
+    );
   }
   return { lines, markers: RangeSet.of(out), labels };
+}
+
+/** Marks the lines last changed by `current`; the doc may have changed since `st` was built. */
+function markCurrent(st: BlameState, current: string | null | undefined): BlameState {
+  if (current === undefined) return st;
+  const out = [];
+  for (const it = st.markers.iter(); it.value; it.next()) {
+    const m = it.value as BlameMarker;
+    out.push(new BlameMarker(m.line, m.labels, m.rank, m.color, m.bg, m.line.commit === current).range(it.from));
+  }
+  return { ...st, markers: RangeSet.of(out), current };
 }
 
 const blameField = StateField.define<BlameState>({
   create: () => ({ lines: [], markers: RangeSet.empty, labels: new Map() }),
   update(value, tr) {
-    for (const e of tr.effects) if (e.is(setBlame)) return build(e.value, tr.state.doc);
+    for (const e of tr.effects) {
+      if (e.is(setBlame)) return markCurrent(build(e.value, tr.state.doc), value.current);
+      if (e.is(setCurrentRevision)) return markCurrent(value, e.value);
+    }
     return tr.docChanged ? { ...value, markers: value.markers.map(tr.changes) } : value;
   },
 });
@@ -387,7 +526,8 @@ type BlameWidthMeasurement = { gutter: HTMLElement; widths: Record<AnnotateColum
 const measureBlameColumns = {
   read(view: EditorView): BlameWidthMeasurement | null {
     const gutter = view.dom.querySelector<HTMLElement>(".cm-vcs-blame");
-    const labels = view.state.field(blameField, false)?.labels;
+    const st = view.state.field(blameField, false);
+    const labels = st?.labels;
     if (!gutter || !labels?.size || typeof CanvasRenderingContext2D === "undefined") return null;
     const context = view.dom.ownerDocument.createElement("canvas").getContext("2d");
     if (!context) return null;
@@ -398,6 +538,13 @@ const measureBlameColumns = {
       for (const label of new Set(Array.from(labels.values(), (entry) => entry[column]))) {
         widths[column] = Math.max(widths[column], context.measureText(label).width);
       }
+    }
+    // The current revision's labels are bold, so wider.
+    const current = st?.current && labels.get(st.current);
+    if (current) {
+      context.font = `bold ${context.font}`;
+      for (const column of COLUMNS)
+        widths[column] = Math.max(widths[column], context.measureText(current[column]).width);
     }
     return { gutter, widths };
   },
@@ -418,6 +565,7 @@ interface BlameSource {
 class BlameRefresher implements PluginValue {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private generation = 0;
+  private currentGeneration = 0;
   private readonly off: (() => void)[];
   private readonly live: boolean;
 
@@ -432,14 +580,19 @@ class BlameRefresher implements PluginValue {
         () => this.schedule(0),
       ),
       useAnnotateNames.subscribe(() => this.schedule(0)),
+      useAnnotateColors.subscribe(() => this.schedule(0)),
     ];
     if (this.live) {
       this.off.push(
         useVcs.subscribe((s, p) => {
-          if (s.branch?.headCommit !== p.branch?.headCommit) this.schedule(100);
+          if (s.branch?.headCommit !== p.branch?.headCommit) {
+            this.schedule(100);
+            void this.loadCurrentRevision();
+          }
         }),
       );
     }
+    void this.loadCurrentRevision();
   }
 
   update(u: ViewUpdate) {
@@ -460,8 +613,20 @@ class BlameRefresher implements PluginValue {
     this.view.dispatch({ effects: setBlame.of(lines) });
   }
 
+  /** Loaded after the gutter paints: `git log -1 -- <path>` can take a while in a long history. */
+  private async loadCurrentRevision() {
+    const generation = ++this.currentGeneration;
+    const { path, revision } = this.source;
+    // An unset branch would walk every branch, not just HEAD.
+    const query = { branch: revision ?? "HEAD", path, author: null, text: null, skip: 0, limit: 1 };
+    const [last] = (await call(commands.vcsLog(repoOf(path), query)).catch(() => null)) ?? [];
+    if (generation !== this.currentGeneration || !annotationsShown(this.view)) return;
+    this.view.dispatch({ effects: setCurrentRevision.of(last?.id ?? null) });
+  }
+
   destroy() {
     ++this.generation;
+    ++this.currentGeneration;
     clearTimeout(this.timer);
     for (const off of this.off) off();
   }
@@ -511,6 +676,12 @@ const blameTheme = EditorView.baseTheme({
     padding: "0 var(--space-2) 0 var(--space-1)",
     color: "var(--fg-secondary)",
     whiteSpace: "nowrap",
+  },
+  // IDEA's Annotations › Last commit colour: bold, brighter than the other annotations. Outranks the
+  // fork's coloured-row text colour; hover (below) still wins.
+  ".cm-vcs-blame .cm-gutterElement .cm-vcs-blame-line.cm-vcs-blame-current": {
+    color: "var(--git-annotations-last-commit)",
+    fontWeight: "bold",
   },
   ".cm-vcs-blame-line > span": { flex: "none", overflow: "hidden", textOverflow: "ellipsis" },
   ".cm-vcs-blame-date": { width: "min(var(--blame-date-width, 9ch), 14em)" },
@@ -662,14 +833,18 @@ function blameExtension(lines: BlameLine[], source: BlameSource): Extension {
                   ]
                 : []),
               optionsMenu(),
-              {
-                label: "Colors",
-                submenu: COLOR_MODES.map(({ mode, label }) => ({
-                  label,
-                  checked: workflowSettings().vcs.git.annotateColors === mode,
-                  run: () => void setColorMode(mode).catch(() => undefined),
-                })),
-              },
+              ...(forkAnnotateColors.upstream
+                ? []
+                : [
+                    {
+                      label: "Colors",
+                      submenu: COLOR_MODES.map(({ mode, label }) => ({
+                        label,
+                        checked: workflowSettings().vcs.git.annotateColors === mode,
+                        run: () => void setColorMode(mode).catch(() => undefined),
+                      })),
+                    },
+                  ]),
             ]);
             return true;
           },
