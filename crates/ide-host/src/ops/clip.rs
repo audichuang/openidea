@@ -1413,9 +1413,14 @@ pub async fn clip_paste_apply(host: &Host, window: &str, apply: ClipPasteApply) 
     let (result, written) = blocking(move || paste_apply_with_paths(apply)).await?;
     // The user confirmed the overwrite: open editors in every project and window show the restored
     // content, not their unsaved buffer (a stale one could save over it). Projects that do not have
-    // a path open skip it.
+    // a path open skip it. Text is written as UTF-8: a file kept in an encoding that misreads it
+    // is kept as UTF-8 from now on, or it would open garbled again.
     for open in host.projects() {
-        open.documents.reload_from_disk(&written);
+        for path in open.documents.reload_from_disk(&written) {
+            if let Err(e) = crate::ops::doc::remember_encoding(&open, &path, "utf-8") {
+                tracing::warn!("the encoding of {} was not kept: {e}", path.display());
+            }
+        }
     }
     project.sink.emit(ide_core::IdeEvent::VcsChanged { root: project.root.clone().into() });
     Ok(result)
