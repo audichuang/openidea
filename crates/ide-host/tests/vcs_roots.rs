@@ -556,3 +556,54 @@ async fn add_to_ignore_accepts_the_repositories_of_attached_projects() {
     assert!(!sibling_root.join(".gitignore").exists());
     host.close_project("main");
 }
+
+/// A repository excluded through Directory Mappings is left alone by the index sync of
+/// IDE renames (issue #393); a repository the project keeps still follows them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn file_moves_leave_the_index_of_an_excluded_repository_alone() {
+    use ide_core::WorkspaceEdit;
+    use ide_host::ops::refactor;
+    use ide_workspace::FileMove;
+    let temp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(temp.path()).unwrap();
+    let project_root = base.join("project");
+    let (kept, excluded) = (project_root.join("kept"), project_root.join("excluded"));
+    for root in [&kept, &excluded] {
+        std::fs::create_dir_all(root).unwrap();
+        git(root, &["init", "-b", "main"]);
+        std::fs::write(root.join("a.txt"), "a\n").unwrap();
+        git(root, &["add", "a.txt"]);
+    }
+    let host = Host::new(common::host_config(&base));
+    host.trust.decide(&project_root, true, false).unwrap();
+    let project = host.open_project("main", &project_root).unwrap();
+    for _ in 0..500 {
+        if project.repos().all().len() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(project.repos().all().len(), 2);
+    project
+        .settings
+        .set(ide_workspace::settings::SettingsScope::Project, "vcs.mappings.excluded", serde_json::json!(["excluded"]))
+        .unwrap();
+    project.refresh_repositories();
+    assert_eq!(project.repos().roots(), vec![kept.clone()]);
+
+    let index = || std::fs::read(excluded.join(".git/index")).unwrap();
+    let before = index();
+    let mv = |root: &Path| vec![FileMove { from: root.join("a.txt").into(), to: root.join("b.txt").into() }];
+    let id = refactor::refactor_move_files(&host, "main", mv(&excluded), WorkspaceEdit::default(), "Rename".into())
+        .await
+        .unwrap();
+    assert!(excluded.join("b.txt").exists());
+    assert_eq!(index(), before, "the excluded repository's index changed");
+    assert_eq!(git(&excluded, &["ls-files"]), "a.txt");
+    refactor::refactor_undo_file_move(&host, "main", id).await.unwrap();
+    assert_eq!(index(), before);
+
+    refactor::refactor_move_files(&host, "main", mv(&kept), WorkspaceEdit::default(), "Rename".into()).await.unwrap();
+    assert_eq!(git(&kept, &["ls-files"]), "b.txt");
+    host.close_project("main");
+}
