@@ -3,9 +3,10 @@
 use crate::Host;
 use ide_command::command;
 
-use ide_core::{FileEdit, IdeResult, RequestId, WorkspaceEdit};
+use ide_core::{CancellationToken, FileEdit, IdeResult, LanguageId, RequestId, WorkspaceEdit};
 use ide_language::Syntax;
 use ide_lsp::types::FileRenameEdits;
+use ide_syntax::{Snapshot, StructureService};
 use ide_workspace::file_moves::moved_path;
 use ide_workspace::roots::{ProjectRoots, RootKind};
 use ide_workspace::{FileMove, UndoOutcome};
@@ -38,6 +39,11 @@ pub async fn refactor_file_move_edits(
             let python = python_import_edits(&project, &syntax, &moves, &|| token.is_cancelled());
             result.edit.files.extend(python.files);
         }
+        for m in &moves {
+            if let Some(edit) = java_type_rename_edit(&project, &syntax, m, &result.edit, &token) {
+                result.edit.files.push(edit);
+            }
+        }
         project.documents.prepare_workspace_edit(&mut result.edit)?;
         Ok(result)
     })
@@ -46,6 +52,60 @@ pub async fn refactor_file_move_edits(
 
 fn is_python(path: &Path) -> bool {
     path.extension().is_some_and(|e| e == "py" || e == "pyi")
+}
+
+/// jdtls renames the type of a renamed `Foo.java` only for files it knows (inside a source folder);
+/// for any other file the top-level `Foo` and its uses in that file follow the new name here,
+/// so file and public class still agree. Skipped when a server already edited the file.
+fn java_type_rename_edit(
+    project: &crate::project::Project,
+    syntax: &Syntax,
+    m: &FileMove,
+    server: &WorkspaceEdit,
+    cancel: &CancellationToken,
+) -> Option<FileEdit> {
+    let java = |p: &Path| p.extension().is_some_and(|e| e == "java");
+    if !java(&m.from) || !java(&m.to) || !m.from.is_file() {
+        return None;
+    }
+    let old = m.from.file_stem()?.to_str()?;
+    let new = m.to.file_stem()?.to_str()?;
+    let same = |p: &Path| p == &*m.from || std::fs::canonicalize(p).ok() == std::fs::canonicalize(&*m.from).ok();
+    if old == new
+        || server
+            .files
+            .iter()
+            .any(|f| matches!(f, FileEdit::Edit { path, edits, .. } if !edits.is_empty() && same(path)))
+    {
+        return None;
+    }
+    let text = project.text_of(&m.from).ok()?;
+    let edits = java_type_renames(syntax, &project.structure, &text, old, new, cancel);
+    (!edits.is_empty()).then(|| FileEdit::Edit { path: m.from.clone(), edits, version: None })
+}
+
+/// Renames of `old` to `new` in a Java file declaring the top-level type `old`: every unqualified
+/// identifier spelled `old` (declaration, constructors, `new Old()`).
+fn java_type_renames(
+    syntax: &Syntax,
+    structure: &StructureService,
+    text: &str,
+    old: &str,
+    new: &str,
+    cancel: &CancellationToken,
+) -> Vec<ide_core::TextEdit> {
+    let valid = new.chars().next().is_some_and(|c| c == '_' || c == '$' || c.is_alphabetic())
+        && new.chars().all(|c| c == '_' || c == '$' || c.is_alphanumeric());
+    let java = LanguageId::new("java");
+    if !valid || !syntax.outline(&java, text).iter().any(|i| i.name == old && i.kind.is_type_like()) {
+        return Vec::new();
+    }
+    let Ok(found) = structure.identifiers_named(&Snapshot::text(&java, text), old, cancel) else { return Vec::new() };
+    found
+        .into_iter()
+        .filter(|o| !o.qualified)
+        .map(|o| ide_core::TextEdit { range: o.range, new_text: new.to_owned() })
+        .collect()
 }
 
 /// The dotted name of a Python module file or package folder, from its project's Python roots
@@ -217,6 +277,30 @@ ide_command::domain!(
 mod tests {
     use super::*;
     use ide_workspace::roots::SourceFolder;
+
+    #[test]
+    fn java_top_level_type_follows_the_file_name() {
+        use ide_language::SyntaxCache;
+        use std::sync::Arc;
+        let syntax = Syntax::new();
+        let structure = StructureService::new(Arc::new(SyntaxCache::new(Arc::new(Syntax::new()))));
+        let src = "package p;\n\npublic class Standalone {\n    static Standalone it = new Standalone();\n    Standalone() {}\n    void f(Other o) { o.Standalone = 1; }\n    // Standalone\n}\n";
+        let renames = |text: &str, old: &str, new: &str| {
+            let edits = java_type_renames(&syntax, &structure, text, old, new, &CancellationToken::new());
+            let mut doc = ide_text::Document::new(text);
+            doc.apply_edits(&edits).unwrap();
+            (edits.len(), doc.text())
+        };
+        let (n, out) = renames(src, "Standalone", "Renamed");
+        assert_eq!(n, 4, "{out}");
+        assert!(out.contains("public class Renamed {"), "{out}");
+        assert!(out.contains("static Renamed it = new Renamed();"), "{out}");
+        assert!(out.contains("    Renamed() {}"), "{out}");
+        assert!(out.contains("o.Standalone = 1;") && out.contains("// Standalone"), "{out}");
+        assert_eq!(renames(src, "Standalone", "Not-Valid").0, 0);
+        assert_eq!(renames(src, "Missing", "Renamed").0, 0);
+        assert_eq!(renames("class Outer { class Standalone {} }", "Standalone", "Renamed").0, 0);
+    }
 
     #[test]
     fn python_module_names_follow_the_roots() {
