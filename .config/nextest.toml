@@ -8,6 +8,8 @@
 # mise JDK on PATH, and ide-jvm-attach's connect_before_gives_up_on_a_full_backlog
 # hits the host's open-file limit (`Too many open files`); both fail on upstream's
 # v0.1.47 tag there too (#330).
+# java_analyzer_gets_the_project_jdk_and_maven_local_repository finds the java pin in
+# the host's global mise config (fails on upstream's v0.1.54 tag there too, #534).
 # CI uses the default profile and runs everything.
 [profile.ubuntu-remote]
 default-filter = """
@@ -18,6 +20,7 @@ not (
   | (package(ide-sdk) & test(=tests::maven_runner_jre_overrides_the_project_jdk))
   | (package(ide-sdk) & test(=tests::tool_installs_resolve_project_relative_sdks_and_leave_path_fallback_unconfigured))
   | (package(ide-sdk) & test(=tests::jar_application_runs_on_the_project_jdk_unless_a_jre_is_chosen))
+  | (package(ide-sdk) & test(=tests::java_analyzer_gets_the_project_jdk_and_maven_local_repository))
   | (package(ide-jvm-attach) & test(=socket::tests::connect_before_gives_up_on_a_full_backlog))
 )
 """
