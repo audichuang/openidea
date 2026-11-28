@@ -31,6 +31,8 @@ pub struct GraphWorkingState {
     pub unstaged: u32,
     pub untracked: u32,
     pub conflicted: u32,
+    /// Distinct paths, untracked ones included: a file with both staged and unstaged changes counts once.
+    pub files: u32,
 }
 
 /// Ahead and behind commit counts of a head revision relative to a base revision.
@@ -149,7 +151,13 @@ impl Repo {
 
     pub fn graph_working_state(&self) -> IdeResult<GraphWorkingState> {
         let _scope = self.fork_scope();
-        let out = run(self.root(), &["status", "--porcelain=v1", "-z", "--untracked-files=all"], None)?;
+        // No index lock, as in upstream's status reads: a stat refresh write-back is a foreign
+        // index change to the watcher, which would refresh again (#410).
+        let out = run(
+            self.root(),
+            &["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+            None,
+        )?;
         Ok(parse_porcelain(&out.stdout_str()))
     }
 
@@ -295,6 +303,8 @@ fn parse_left_right_count(text: &str) -> IdeResult<GraphRevCounts> {
 
 fn parse_porcelain(text: &str) -> GraphWorkingState {
     let mut s = GraphWorkingState::default();
+    // `git rm --cached` lists one path twice (`D ` and `??`).
+    let mut paths = std::collections::HashSet::new();
     let mut entries = text.split(NUL);
     while let Some(entry) = entries.next() {
         let bytes = entry.as_bytes();
@@ -302,9 +312,12 @@ fn parse_porcelain(text: &str) -> GraphWorkingState {
             continue;
         }
         let (x, y) = (bytes[0], bytes[1]);
-        // A rename or copy carries its source path as the next entry.
-        if x == b'R' || x == b'C' {
+        // A rename or copy, staged or in the worktree, carries its source path as the next entry.
+        if matches!(x, b'R' | b'C') || matches!(y, b'R' | b'C') {
             entries.next();
+        }
+        if (x, y) != (b'!', b'!') && paths.insert(&entry[3..]) {
+            s.files += 1;
         }
         match (x, y) {
             (b'?', b'?') => s.untracked += 1,
@@ -382,7 +395,28 @@ mod tests {
     #[test]
     fn porcelain_counts_each_side() {
         let text = "M  a\0 M b\0MM c\0?? d\0UU e\0R  new\0old\0";
-        assert_eq!(parse_porcelain(text), GraphWorkingState { staged: 3, unstaged: 2, untracked: 1, conflicted: 1 });
+        assert_eq!(
+            parse_porcelain(text),
+            GraphWorkingState { staged: 3, unstaged: 2, untracked: 1, conflicted: 1, files: 6 }
+        );
+    }
+
+    #[test]
+    fn porcelain_skips_the_source_of_a_worktree_rename() {
+        // `mv old new; git add -N new`: the rename flag is in the worktree column.
+        assert_eq!(
+            parse_porcelain(" R new\0old\0"),
+            GraphWorkingState { staged: 0, unstaged: 1, untracked: 0, conflicted: 0, files: 1 }
+        );
+    }
+
+    #[test]
+    fn porcelain_counts_a_path_listed_twice_once() {
+        // `git rm --cached keep`: deleted from the index and untracked in the worktree.
+        assert_eq!(
+            parse_porcelain("D  keep\0?? keep\0"),
+            GraphWorkingState { staged: 1, unstaged: 0, untracked: 1, conflicted: 0, files: 1 }
+        );
     }
 
     #[test]

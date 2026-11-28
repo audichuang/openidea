@@ -8524,6 +8524,8 @@ export type GraphWorkingState = {
 	unstaged: number,
 	untracked: number,
 	conflicted: number,
+	/**  Distinct paths, untracked ones included: a file with both staged and unstaged changes counts once. */
+	files: number,
 };
 
 export type GtkFilter = {
