@@ -428,7 +428,7 @@ impl ClientHandler {
 impl Handler for ClientHandler {
     fn on_notification(&self, method: &str, params: Value) {
         match method {
-            "event" => match serde_json::from_value::<EventMessage>(with_doc_version(params)) {
+            "event" => match serde_json::from_value::<EventMessage>(with_old_server_defaults(params)) {
                 Ok(m) => {
                     let trusted = self
                         .connection
@@ -1467,15 +1467,22 @@ async fn invoke_reply(peer: &Peer, call: Invoke, entries_timeout: std::time::Dur
     }
 }
 
-/// A server from before `DocDirty.version` (still protocol 2, reached through the offline fallback)
-/// sends none, and the event would be dropped. Its dirty flag still arrives, at version 0; its clean
-/// flag stays dropped, as a clean at 0 would never match and would keep the save reply from clearing it.
-fn with_doc_version(mut params: Value) -> Value {
-    if let Some(event) = params.get_mut("event").and_then(Value::as_object_mut)
-        && event.get("type").and_then(Value::as_str) == Some("docDirty")
-        && event.get("dirty").and_then(Value::as_bool) == Some(true)
-    {
-        event.entry("version").or_insert(Value::from(0));
+/// A server from before v0.1.50 (still protocol 2, reached through the offline fallback) sends
+/// `DocDirty` without `version` and `WorkspaceEditApplied` without `moves`, and the event would be
+/// dropped. Its dirty flag still arrives, at version 0; its clean flag stays dropped, as a clean at 0
+/// would never match and would keep the save reply from clearing it. Its workspace edits arrive
+/// without moves: it never sent them.
+fn with_old_server_defaults(mut params: Value) -> Value {
+    if let Some(event) = params.get_mut("event").and_then(Value::as_object_mut) {
+        match event.get("type").and_then(Value::as_str) {
+            Some("docDirty") if event.get("dirty").and_then(Value::as_bool) == Some(true) => {
+                event.entry("version").or_insert(Value::from(0));
+            }
+            Some("workspaceEditApplied") => {
+                event.entry("moves").or_insert(Value::Array(Vec::new()));
+            }
+            _ => {}
+        }
     }
     params
 }
@@ -1497,10 +1504,21 @@ mod tests {
     #[test]
     fn a_dirty_flag_from_a_server_without_versions_still_arrives() {
         let params = serde_json::json!({"window": null, "event": {"type": "docDirty", "doc": 7, "dirty": true}});
-        let m: EventMessage = serde_json::from_value(with_doc_version(params)).unwrap();
+        let m: EventMessage = serde_json::from_value(with_old_server_defaults(params)).unwrap();
         assert!(matches!(m.event, ide_core::IdeEvent::DocDirty { dirty: true, version: 0, .. }), "{:?}", m.event);
         let clean = serde_json::json!({"window": null, "event": {"type": "docDirty", "doc": 7, "dirty": false}});
-        assert!(serde_json::from_value::<EventMessage>(with_doc_version(clean)).is_err());
+        assert!(serde_json::from_value::<EventMessage>(with_old_server_defaults(clean)).is_err());
+    }
+
+    #[test]
+    fn a_workspace_edit_from_a_server_without_moves_still_arrives() {
+        let params = serde_json::json!({"window": null, "event": {"type": "workspaceEditApplied", "id": 3, "paths": ["/p/a.rs"], "byAgent": false}});
+        let m: EventMessage = serde_json::from_value(with_old_server_defaults(params)).unwrap();
+        assert!(
+            matches!(&m.event, ide_core::IdeEvent::WorkspaceEditApplied { id: 3, moves, by_agent: false, .. } if moves.is_empty()),
+            "{:?}",
+            m.event
+        );
     }
 
     #[test]
