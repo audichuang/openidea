@@ -1,18 +1,18 @@
 ---
 name: fork-verify
-description: Entry point for proving any OpenIDEA change in the running app in this fork (macOS); start here instead of the upstream `verify` skill, which it loads as its base. Tauri MCP (`mcp__tauri__*`) drives and asserts everything inside the webview; real OS input that synthetic events cannot reach (⌘V and other native-menu shortcuts, real clicks, hover, drags, native menus and dialogs) goes through osascript and cliclick against the same `pnpm dev:app` process, with screencapture for pixels and AppKit chrome (project window tabs, fullscreen). lcu is not needed for the dev build. Lists Tauri MCP pitfalls on this app and the fork feature map (`features/`: Annotate, window tabs, incoming check, clipboard paste, themes, Git Graph, Git performance on a large repo, all-in-one diff scrolling).
+description: Proves any OpenIDEA change in the running app in this fork (macOS); use it wherever a skill or tool says `verify` or `/verify`. Tauri MCP (`mcp__tauri__*`) drives and asserts everything inside the webview; real OS input that synthetic events cannot reach (⌘V and other native-menu shortcuts, real clicks, hover, drags, native menus and dialogs) goes through osascript and cliclick against the same `pnpm dev:app` process, with screencapture for pixels and AppKit chrome (project window tabs, fullscreen). lcu is not needed for the dev build. Lists Tauri MCP pitfalls on this app and the fork feature map (`features/`: Annotate, window tabs, incoming check, clipboard paste, themes, Git Graph, Git performance on a large repo, all-in-one diff scrolling).
 ---
 
 # Verify OpenIDEA in the real app (fork, macOS)
 
-Upstream's `verify` skill (`.agents/skills/verify`) is the base: launch and session reuse, `mcp__tauri__*` basics, CodeMirror/xterm input quirks, `fixtures/`, evidence naming. Read it first. Where the two differ, this skill wins (launch with `pnpm dev:app`, scratch paths, targeting, evidence, cleanup; a Settings window is `settings-<parent label>`, e.g. `settings-project-2`). It adds when synthetic Tauri MCP input is not enough and how to send real OS input instead, what broke on this app, and the fork's feature map (`features/`).
+Covers launching and driving the dev app through Tauri MCP, when synthetic Tauri MCP input is not enough and how to send real OS input instead, what broke on this app, and the fork's feature map (`features/`). A Settings window is `settings-<parent label>`, e.g. `settings-project-2`.
 
 ## Verify a change, in order
 
 1. **Pick a path for every case before launching.** List what the change touches and look each item up in the split table below. Webview-only cases use Tauri MCP; anything that starts in AppKit (native-menu shortcuts, native menus, real mouse, window chrome) uses real OS input. A case with no path is unverified, not passed. A change to a shared component (its CSS, or a component several views embed) is one case per host: list the hosts with `rg` and open each, hosts whose height is not fixed (dialogs) included. A diff layout fix measured only in the Git Graph PR view collapsed the diff dialog to 0 px (2026-11-12).
 2. **Launch and connect** (Launch, Doctor): `pnpm dev:app` with `~/.cargo/bin` on `PATH`, wait for `pnpm dev:status`, then `driver_session start` on the reported port. Take window labels from `pnpm dev:status`, not `manage_window list`, and pass `appIdentifier` and `windowId` on every call. Reuse a running app only if it was built after your last Rust change.
 3. **Set up through Tauri MCP.** The app reopens the last projects on launch; open your own fixture with the `openProjectInWindow` recipe, trust it, and note any setting you change so you can restore it.
-4. **Act like a user.** For AppKit cases, `manage_window focus` the window, then send osascript or cliclick to this worktree's pid. Clipboard cases start with a fresh `pbcopy` sentinel from outside the app.
+4. **Act like a user.** Before the first real OS input or new window, check for another worktree's dev app (Launch). For AppKit cases, `manage_window focus` the window, then send osascript or cliclick to this worktree's pid. Clipboard cases start with a fresh `pbcopy` sentinel from outside the app.
 5. **Assert on the result, not the action.** "Pressed key" or "Clicked" from a Tauri MCP tool proves nothing: read the document text, DOM or files through Tauri MCP. For system-level results (permission bubbles, dialogs, AppKit chrome) take `screencapture -x` and look at it.
 6. **Record and clean up** (Evidence, Cleanup).
 
@@ -23,7 +23,7 @@ Before reporting PASS, check:
 - A `screencapture` was checked for a WebKit permission bubble or an unexpected dialog; Tauri MCP screenshots never show them.
 - The running binary was built after the last Rust change.
 - Light and dark themes were covered for anything colored.
-- Settings are restored, the app you started is stopped, build output is handled per Cleanup step 4. Dialogs from other apps were left for the user.
+- Settings are restored, the app you started is stopped, build output is handled per Cleanup. Dialogs from other apps were left for the user.
 
 The pitfalls behind these rules are listed in "Tauri MCP on this app"; read them before the first call.
 
@@ -115,7 +115,10 @@ Pitfalls found on 2026-11-04:
 - **`bridge-js.mjs` returns `null` for a script whose promise runs past ~5 s.** Start the work without awaiting it, keep the result on `window`, and read it in a second call.
 - **In a diff, ⌘↓ (`diff.jumpToSource` in the IntelliJ keymap) and a double-click open the file in an editor tab**, which ends the diff test. Scroll with Page Down (`key code 121`), or set `scrollTop` for a layout-only check. A wheel `CGEvent` posted from a swift script was not delivered on 2026-11-04 (no Accessibility permission) but reached the page in every counted burst of the all-in-one diff measurements (`features/combined-diff-scroll.md`); check delivery per run as `fast.py`'s `wheel_delta_sum` does. Page Down and `scrollTop` skip the side-by-side diff's wheel handlers (`diffScroll.ts`), so a wheel bug such as one pane stopping short of a long deletion passes them: dispatch `new WheelEvent("wheel", { deltaY, bubbles: true, cancelable: true })` on each pane's `.cm-scroller` and on `.cm-diffDivider`, then read both panes' `scrollTop`. Those events run only the app's handlers (the pane does not scroll natively), so report a real mouse wheel as unverified.
 - Synthetic clicks have `event.detail === 0`; CodeMirror treats them as line-select clicks. Set the caret through `document.querySelector('.cm-content').cmTile.view`.
-- `strategy=text` can hit a hidden node; prefer the snapshot `ref`. For coordinates use the scale `webview_screenshot` prints, not upstream's fixed ×0.9.
+- `strategy=text` can hit a hidden node; prefer the snapshot `ref`. For coordinates use the scale `webview_screenshot` prints, not a fixed ratio.
+- The MCP server is shared between sessions: never `driver_session stop` without an `appIdentifier`.
+- CSS-module edits often trigger a full page reload in dev: dialogs close, Run sessions and terminal scrollback reset, and each reload spawns a fresh shell. Re-open what you were testing.
+- xterm ignores MCP `type` like CodeMirror: focus it, then `document.execCommand('insertText', false, text)`. For Enter, dispatch a `keydown` (`key: 'Enter', keyCode: 13`) on `.xterm-helper-textarea`.
 - After the app restarts, a session that answers "Already connected" can still fail every call with `window.__MCP__.resolveAll is not a function`: `driver_session stop appIdentifier=<port>`, then `start` again.
 - Background windows throttle timers: `manage_window action=focus` before timing-sensitive steps (debounced LSP/VCS refreshes, `setTimeout` in scripts). Unfocused visible windows screenshot fine; focus if a capture is black.
 
@@ -133,21 +136,22 @@ Prefer the user's real path for the behavior under test (click the menu item, no
 
 ## Launch
 
-From the repo (or worktree) root. `S` is this worktree's scratch directory, so parallel worktrees never share a log, fixture or evidence:
+From the repo (or worktree) root. `S` is this worktree's scratch directory for logs and throwaway fixtures, so parallel worktrees never share them:
 
 ```bash
 S=/tmp/oi-verify/$(basename "$(git rev-parse --show-toplevel)"); mkdir -p "$S"
 PATH="$HOME/.cargo/bin:$PATH" CARGO_PROFILE_DEV_DEBUG=0 pnpm dev:app > "$S/dev.log" 2>&1   # run_in_background
 ```
 
-Shell state does not carry over between Bash calls: start every call that uses `$S` (fixture scripts in `features/` included) with the same `S=…` line, and `mkdir -p "$S/evidence/<task>"` before the first `screencapture`.
+Shell state does not carry over between Bash calls: start every call that uses `$S` (fixture scripts in `features/` included) with the same `S=…` line. Copy a `fixtures/` project (go-app, rust-app, ts-app, kotlin-gradle, polyglot) into `$S` before editing it; never commit the `.openidea/` state it creates.
 
 - The agent shell lacks `~/.cargo/bin`; without it the build dies at `cargo metadata`.
 - First build takes ~5–10 min. Wait in the background with `until pnpm -s dev:status >/dev/null 2>&1 || grep -q "^error" "$S/dev.log"; do sleep 5; done` (the log's `Running` line carries color codes, so a plain grep for it can miss).
 - Per-worktree identity `ai.l0ng.openidea.dev.w<hash>` with its own data dir `~/Library/Application Support/<identifier>/`; the installed OpenIDEA and its settings are untouched.
 - Vite hot-reloads frontend edits. Rust edits rebuild and restart the app, closing the windows you set up.
 - The Mac mini is short on disk: build locally only to touch the UI; Rust tests/clippy go through `rust-remote`.
-- One real-input session per Mac: before launching, `pgrep -fl target/debug/openidea` for another worktree's dev app driven by someone else, and before each osascript/cliclick check that the frontmost window belongs to your pid. Two agents clicking at once sent clicks into each other's windows (2026-11-09).
+- One real-input session per Mac: before launching, and again before real OS input (osascript/cliclick) or opening new windows, run `pgrep -fl "target/debug/openidea"` and read the listed paths (an agent whose prompt quotes the string matches too). Another worktree's dev app may be running real-input tests or a perf A/B, and focus stealing breaks both: wait for it to exit. Before each osascript/cliclick also check that the frontmost window belongs to your pid. Two agents clicking at once sent clicks into each other's windows (2026-11-09).
+- If the `pnpm dev:app` process exits while the app window stays open, Vite is gone and any webview reload shows an empty `#root`: stop that app and launch again.
 - The window shows "OpenIDEA 无法启动 / Could not load startup script" while Vite answers `504 Outdated Optimize Dep`: stop this worktree's app, `rm -rf node_modules/.vite`, launch again.
 - `commands.appRestart()` (the updater's restart) ends the whole `pnpm dev:app` session and does not relaunch it. To test reopening, quit from the app menu (confirm Exit), then run `pnpm dev:app` again.
 
@@ -158,7 +162,7 @@ Shell state does not carry over between Bash calls: start every call that uses `
 ## Native AppKit
 
 - Window frames: `osascript -e 'tell application "System Events" to tell (first process whose unix id is <pid>) to get {position, size} of windows'`. Fullscreen should equal the screen (minus the notch safe area on notched displays).
-- Pixels: `screencapture -x "$S/evidence/<task>/after-1.png"`. Drags: `cliclick dd:x,y dm:x,y du:x,y` in screen points.
+- Pixels: `screencapture -x <evidence dir>/after-1.png`. Drags: `cliclick dd:x,y dm:x,y du:x,y` in screen points.
 - Run against the `pnpm dev:app` process itself. A plain `cargo build` binary lacks `devUrl` (blank window), and copying the binary into a `.app` needs `codesign --force --sign -` (else POSIX 162) plus your own Vite; past wrappers cost more time than they saved.
 - AppKit view trees: lldb attach hangs (Developer mode off). Temporarily `eprintln!` `_subtreeDescription` behind an env var; remove before committing.
 - Private-API behavior (`_setTabBarAccessoryViewController:` in `macos.rs`, the wrapped `window:willUseFullScreenPresentationOptions:` in `titlebar.rs`) can only be judged live: AppKit re-applies state on its run loop. Recheck after a resize, a tab switch, entering and leaving fullscreen.
@@ -176,7 +180,7 @@ Measure in the dev app, with the window frontmost (background windows throttle `
 
 ## Evidence
 
-Put proof in `$S/evidence/<task>/` (cleanup never deletes it), named as upstream says (`before.png`, `after.png`, `after-N.png`). The baseline for `before.png` is `fork/develop` or the change stashed, not fork `main` (the last release):
+Put proof (anything a PR or a later session reads; it must survive reboots) in the main checkout's `.agent-work/<topic>/evidence/` (add `.agent-work/` to `.git/info/exclude` if missing; the main checkout is `$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")`), not under `/tmp`. Name it `before.png`, `after.png`, `after-N.png` for multi-step flows, same state and window size; report absolute paths for the PR's **How it was verified**, and never commit screenshots to the branch. The baseline for `before.png` is `fork/develop` or the change stashed, not fork `main` (the last release):
 
 - Before/after screenshots plus the numbers that matter (computed colors, frames, text) as `.json`/`.txt`. Save a Tauri MCP screenshot with `filePath` when it must outlive the session.
 - Cover every entry the feature map lists for the feature, and light and dark themes for anything colored.
@@ -187,10 +191,12 @@ Put proof in `$S/evidence/<task>/` (cleanup never deletes it), named as upstream
 
 1. Restore settings you changed through the same bindings call.
 2. Stop the `pnpm dev:app` you started (its background task or pid; never `pkill openidea`, the installed app has the same name).
-3. `rm -rf "$S"/repo* "$S"/tabs`; keep `$S/evidence`.
-4. Free this worktree's build output. If `PATH="$HOME/.cargo/bin:$PATH" cargo -V` mentions `huacnlee` (the Mac mini), only `rm -rf ./target` if you need the space: that cargo keeps the real build output for every worktree of the repo under `~/.cargo/targets/` and trims it itself, and its `cargo clean` deletes that shared directory without a lock, breaking builds running in other worktrees. With a stock cargo, `cargo clean` in `src-tauri` (`target/` grows past 6 GB).
+3. `rm -rf "$S"/repo* "$S"/tabs` (throwaway fixtures).
+4. Build output (`./target`, cargo caches): follow the machine rules.
 5. When the worktree goes away, also delete its dev data dir `~/Library/Application Support/<identifier>/` (the identifier `pnpm dev:status` reports): they pile up one per worktree (44 on this Mac on 2026-11-12, up to 644 MB).
 
 ## Feature map
 
 `features/README.md` indexes the fork's user-facing features and how to prove each. Update an entry when a run teaches you something new.
+
+Upstream flows worth a smoke pass after a broad change: ⌘⇧O Goto File · ⌘⇧F Find in Files (preview scroll + highlight) · ⌘⇧A Find Action · editor edit/undo/autosave · Terminal (Unicode, venv) · Commit view at the default narrow width · Problems · Run → Stop · Project view New / Delete (nested `a/b.txt` names) · ⌘, Settings search (+ Keymap filter) · Git Log on a repo without commits.
