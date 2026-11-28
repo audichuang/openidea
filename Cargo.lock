@@ -4548,7 +4548,6 @@ dependencies = [
 name = "ide-http"
 version = "0.1.55"
 dependencies = [
- "http",
  "hyper-util",
  "ide-core",
  "ide-vfs",

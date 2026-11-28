@@ -21,7 +21,6 @@ rustls-platform-verifier.workspace = true
 uuid.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
-http = "1"
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFArray", "CFDictionary", "CFError", "CFNumber", "CFString", "CFURL"] }
 objc2-cf-network = { version = "0.3", default-features = false, features = ["std", "CFProxySupport"] }
 
