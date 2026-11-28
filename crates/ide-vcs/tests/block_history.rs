@@ -358,6 +358,52 @@ fn spots_are_checked() {
 }
 
 #[test]
+fn summary_head_block_uses_the_editors_line_endings() {
+    // The editor text is LF-normalised (`SelectionHistory.tsx` compares `head`
+    // against `blockOf(editorText, lines)` to decide whether to show Local Changes),
+    // so a clean file must give HEAD's block equal to the editor's regardless of EOL.
+    let cancel = CancellationToken::new();
+    for content in ["one\r", "one\n", "one\r\n"] {
+        let fx = Fixture::new();
+        fx.write("a.txt", content);
+        fx.commit("Add a");
+        let s = fx
+            .repo()
+            .block_history_summary(&fx.path("a.txt"), Some("one\n"), (0, 0), encoding_rs::UTF_8, &cancel)
+            .unwrap();
+        assert_eq!(s.anchor.as_ref().map(|a| a.lines), Some((0, 0)), "{content:?}");
+        assert_eq!(s.head.as_deref(), Some("one\n"), "{content:?}");
+        assert_eq!(s.diffs[0].after, "one\n", "{content:?}");
+    }
+
+    for content in ["one\ntwo\r", "one\r\ntwo\r"] {
+        let fx = Fixture::new();
+        fx.write("a.txt", content);
+        fx.commit("Add a");
+        let repo = fx.repo();
+        for (lines, expected) in [((0, 1), "one\ntwo\n"), ((1, 1), "two\n")] {
+            let s = repo
+                .block_history_summary(&fx.path("a.txt"), Some("one\ntwo\n"), lines, encoding_rs::UTF_8, &cancel)
+                .unwrap();
+            assert_eq!(s.anchor.as_ref().map(|a| a.lines), Some(lines), "{content:?} {lines:?}");
+            assert_eq!(s.head.as_deref(), Some(expected), "{content:?} {lines:?}");
+            assert_eq!(s.diffs[0].after, expected, "{content:?} {lines:?}");
+        }
+    }
+
+    // Multiple lone-CR lines: `head` slices normalised lines just like `line_hunks`.
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\rtwo\r");
+    fx.commit("Add a");
+    let s = fx
+        .repo()
+        .block_history_summary(&fx.path("a.txt"), Some("one\ntwo\n"), (0, 0), encoding_rs::UTF_8, &cancel)
+        .unwrap();
+    assert_eq!(s.anchor.as_ref().map(|a| a.lines), Some((0, 0)));
+    assert_eq!(s.head.as_deref(), Some("one\n"));
+}
+
+#[test]
 fn maps_an_edited_selection_to_head_lines() {
     let fx = renamed_history();
     let repo = fx.repo();
