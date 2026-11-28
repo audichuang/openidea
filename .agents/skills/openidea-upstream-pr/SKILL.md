@@ -32,6 +32,12 @@ Reproduce on current `origin/main` first. If it doesn't reproduce, stop and reco
 - Conventional title (`fix(scope): …`, `perf(scope): …`). Write "What and why" in 2–4 plain sentences: the user-visible problem and its root cause.
 - Fix only the bug. If the fix changes a wider rule than the bug needs, narrow it: the wider rule is a product call for an upstream issue. #6028's first version treated any nested build file as a separate module, so `web/blog` in a Django app with a `package.json` would have lost Python Package.
 - One problem per PR. Search open PRs and recent merges for duplicates first (#5417 was closed as a duplicate of #5415).
+- Match what already exists: every follow-up commit the maintainer pushed onto our branches fixed a place where we approximated existing code.
+  - A check that must agree with another place calls that place's helper (#6595 used `useVcs().root`; the receiver uses `projectFolder`, so workspace projects still failed).
+  - A fix on one path mirrors every state update of its sibling path (#5991 missed the watcher path's `clean_text` reset).
+  - A new menu entry goes where IntelliJ's action group puts it: quote the group from JetBrains/intellij-community `*Actions.xml` (#6596: `ChangesViewPopupMenu` puts New Changelist… with CreatePatch / Shelve, not next to Move).
+  - Async loads keep the file's generation guard (#5336). Path logic is checked against single-folder, workspace, nested-module, remote and repo-above-project shapes.
+  - Workers list each new piece and the sibling it matches; the reviewer's brief (`.agent-work/upstream-prs/review-brief.md`) checks this first. Replaying #6595 and #6596 with it caught both, 6596 only once quoting IntelliJ's group was required.
 - A red→green regression test. Before/after screenshots for visible UI, and a recording for multi-step flows.
 - Follow the UI rules in `AGENTS.md`: tokens, no hex, and every new string in `en.json` and `zh.json`.
 - Rebase onto the latest `origin/main` before opening; once the PR is open, merge `origin/main` instead (the maintainer may have pushed onto the branch) and re-run the checks before every push. Run the frontend checks locally. Run the Rust checks through `rust-remote`, as the machine rules require.
@@ -62,7 +68,7 @@ gh pr create -R l0ng-ai/openidea --base main --head audichuang:up/<name> --title
 
 ## Parallel workers
 
-The user's pace since 2026-11-27: two PRs in flight at a time, and when both are sent, triage and start the next two without being asked. An `up/*` worktree is cut from `origin/main`, so it has neither this skill nor the fork's `AGENTS.md`: give each worker absolute paths into the main checkout, starting from the shared brief `.agent-work/upstream-prs/common-brief.md` (machine rules, no push or GitHub actions, repro on `main` first, report files in `.agent-work/upstream-prs/<name>/`). Workers never launch the app; the main line runs the one in-app check per PR, reviews, pushes and opens it.
+The user's pace since 2026-11-27: two PRs in flight at a time, and when both are sent, triage and start the next two without being asked. An `up/*` worktree is cut from `origin/main`, so it has neither this skill nor the fork's `AGENTS.md`: give each worker absolute paths into the main checkout, starting from the shared brief `.agent-work/upstream-prs/common-brief.md` (machine rules, no push or GitHub actions, repro on `main` first, report files in `.agent-work/upstream-prs/<name>/`). Workers never launch the app; the main line runs the one in-app check per PR, reviews, pushes and opens it. Brief each independent reviewer with `.agent-work/upstream-prs/review-brief.md` and the PR's facts only (worktree, commit, issue, body path), never your own hypotheses or a list of things to check: on #6595 and #6596 the reviewer stayed inside the framing it was handed and missed what the maintainer then fixed.
 
 ## After a merge
 
