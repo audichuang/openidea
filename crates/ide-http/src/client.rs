@@ -7,10 +7,14 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// `builder` routed as `proxy` says: direct, the environment's proxy (reqwest's
-/// default), or the manual proxy except for the "No proxy for" hosts.
+/// `builder` routed as `proxy` says: direct, the system's proxy (reqwest's
+/// default, plus the macOS PAC script when configured and no `*_PROXY` env var
+/// is set), or the manual proxy except for the "No proxy for" hosts.
 pub fn with_proxy(builder: reqwest::ClientBuilder, proxy: &ProxySettings) -> reqwest::ClientBuilder {
     match proxy.mode {
+        #[cfg(target_os = "macos")]
+        ProxyMode::Auto => crate::pac::with_system_pac(builder),
+        #[cfg(not(target_os = "macos"))]
         ProxyMode::Auto => builder,
         ProxyMode::None => builder.no_proxy(),
         ProxyMode::Manual => {
@@ -42,9 +46,7 @@ pub fn tls_config() -> IdeResult<rustls::ClientConfig> {
         .map(|builder| builder.with_no_client_auth())
 }
 
-/// A client with an explicit redirect policy, for callers enforcing network grants.
-pub fn build_with_redirect(proxy: &ProxySettings, redirect: reqwest::redirect::Policy) -> IdeResult<reqwest::Client> {
-    let fail = |e: String| IdeError::internal(format!("HTTP client: {e}"));
+fn base_builder(redirect: reqwest::redirect::Policy) -> IdeResult<reqwest::ClientBuilder> {
     let tls = tls_config()?;
     // `localhost` is tried on IPv4 first: local servers (Ollama, dev servers)
     // usually listen there, and on Windows a refused `::1` costs ~2 s before
@@ -53,13 +55,26 @@ pub fn build_with_redirect(proxy: &ProxySettings, redirect: reqwest::redirect::P
         std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0)),
         std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 0)),
     ];
-    let builder = reqwest::Client::builder()
+    Ok(reqwest::Client::builder()
         .tls_backend_preconfigured(tls)
         .redirect(redirect)
         .resolve_to_addrs("localhost", &loopback)
         .connect_timeout(Duration::from_secs(30))
-        .user_agent(concat!("OpenIDEA-HttpClient/", env!("CARGO_PKG_VERSION")));
-    with_proxy(builder, proxy).build().map_err(|e| fail(e.to_string()))
+        .user_agent(concat!("OpenIDEA-HttpClient/", env!("CARGO_PKG_VERSION"))))
+}
+
+/// A client with an explicit redirect policy, for callers enforcing network grants.
+pub fn build_with_redirect(proxy: &ProxySettings, redirect: reqwest::redirect::Policy) -> IdeResult<reqwest::Client> {
+    let fail = |e: String| IdeError::internal(format!("HTTP client: {e}"));
+    with_proxy(base_builder(redirect)?, proxy).build().map_err(|e| fail(e.to_string()))
+}
+
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) fn build_with_builder(
+    f: impl FnOnce(reqwest::ClientBuilder) -> reqwest::ClientBuilder,
+) -> IdeResult<reqwest::Client> {
+    let fail = |e: String| IdeError::internal(format!("HTTP client: {e}"));
+    f(base_builder(reqwest::redirect::Policy::default())?).build().map_err(|e| fail(e.to_string()))
 }
 
 /// A client built for these proxy settings and, in Auto mode, this system proxy.
@@ -83,10 +98,11 @@ pub fn shared_without_redirects() -> IdeResult<reqwest::Client> {
     cached_client(&CLIENT, |proxy| build_with_redirect(proxy, reqwest::redirect::Policy::none()), system_proxy)
 }
 
-/// The system proxy (the environment's, then macOS / Windows settings) as reqwest reads
-/// it when a client is built, re-read at most every few seconds. A client in Auto mode
-/// keeps the proxy it was built with, so a proxy app that switches the system proxy on
-/// after launch would otherwise leave downloads going direct until a restart.
+/// The system proxy (the environment's, then macOS / Windows settings, including
+/// any active macOS PAC configuration) as reqwest reads it when a client is built,
+/// re-read at most every few seconds. A client in Auto mode keeps the proxy it
+/// was built with, so a proxy app or PAC change after launch would otherwise
+/// leave downloads on the old route until a restart.
 fn system_proxy() -> String {
     static LAST: Mutex<Option<(Instant, String)>> = Mutex::new(None);
     let mut last = LAST.lock();
@@ -96,7 +112,14 @@ fn system_proxy() -> String {
         return seen.clone();
     }
     // Credentials are left out of the matcher's `Debug`.
-    let seen = format!("{:?}", hyper_util::client::proxy::matcher::Matcher::from_system());
+    let base = format!("{:?}", hyper_util::client::proxy::matcher::Matcher::from_system());
+    #[cfg(target_os = "macos")]
+    let seen = match crate::pac::system_pac_fingerprint() {
+        Some(pac) => format!("{base}\n{pac}"),
+        None => base,
+    };
+    #[cfg(not(target_os = "macos"))]
+    let seen = base;
     *last = Some((Instant::now(), seen.clone()));
     seen
 }
@@ -199,6 +222,17 @@ mod tests {
         get();
         get();
         assert_eq!(BUILDS.load(std::sync::atomic::Ordering::SeqCst), 2);
+        // A PAC URL is added, changed, and later removed.
+        *SYSTEM.lock() = "Matcher {}\npac:0000000000000001".into();
+        get();
+        get();
+        assert_eq!(BUILDS.load(std::sync::atomic::Ordering::SeqCst), 3);
+        *SYSTEM.lock() = "Matcher {}\npac:0000000000000002".into();
+        get();
+        assert_eq!(BUILDS.load(std::sync::atomic::Ordering::SeqCst), 4);
+        *SYSTEM.lock() = "Matcher {}".into();
+        get();
+        assert_eq!(BUILDS.load(std::sync::atomic::Ordering::SeqCst), 5);
     }
     use ide_core::proxy_settings::ProxyKind;
     use std::io::{BufRead, BufReader, Write};

@@ -10,6 +10,8 @@ pub mod curl;
 pub mod env;
 pub mod exec;
 pub mod history;
+#[cfg(target_os = "macos")]
+mod pac;
 pub mod parse;
 
 pub use env::Environments;
