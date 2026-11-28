@@ -1416,7 +1416,7 @@ pub async fn clip_paste_apply(host: &Host, window: &str, apply: ClipPasteApply) 
     // a path open skip it. Text is written as UTF-8: a file kept in an encoding that misreads it
     // is kept as UTF-8 from now on, or it would open garbled again.
     for open in host.projects() {
-        for path in open.documents.reload_from_disk(&written) {
+        for path in open.documents.reload_overwritten(&written) {
             if let Err(e) = crate::ops::doc::remember_encoding(&open, &path, "utf-8") {
                 tracing::warn!("the encoding of {} was not kept: {e}", path.display());
             }
