@@ -314,6 +314,12 @@ Only OpenIDEA implements commits mode (`// snip-sync commits v1`). The marker st
 - Known, not handled: with `core.autocrlf=true` in the destination repository, git's own line-ending conversion
   can rewrite a committed non-text file that has no NUL (e.g. Big5 with CRLF); the working-tree file is correct.
   This is git's documented behaviour for that setting and applies to text files too.
+- Known, not handled (#192): a `headerFormat` without a fixed prefix (`$FILE_PATH`, `/$FILE_PATH`, `//$FILE_PATH`)
+  makes content lines that look like a header parse as new files, because escaping them would still look like a
+  header; the four implementations share this ("degenerate headerFormat"), so only a four-repo format change fixes it.
+- Known, not handled (#197): leading blank lines of a text file are dropped on paste; the shared contract trims a
+  body's leading and trailing blank lines (`fixtures/clipboard-contract.json`, "leading blank lines are trimmed from
+  a body too").
 
 ## Required test cases
 
@@ -454,7 +460,7 @@ Each review or test round folds its findings back into this spec.
   whole paste with `IpcError: Not a directory (os error 20)` (text payloads abort the same way on develop,
   pre-existing; for non-text entries it is new, since an older reader skips the placeholder); case 27. (3) Leading
   blank or whitespace-only lines of a text file are dropped on paste under the built-in header and kept under
-  ` $FILE_PATH` (pre-existing, identical on develop; same class as the final-newline item); open for the user.
+  ` $FILE_PATH` (pre-existing, identical on develop; same class as the final-newline item); now under Known (#197).
 - Deep testers, round 4 (three testers, D1–D18): D1–D10 pass for all three. Open: (1) spec hole — under a custom
   `headerFormat` that matches the placeholder line (e.g. `// $FILE_PATH`), a real placeholder (header escape) and a
   placeholder-shaped text line (placeholder escape) both carry one `//clipcode-esc: ` prefix, so the reader
