@@ -190,7 +190,7 @@ export function BranchesPanel() {
     }));
     return grouped
       ? buildRepositoryBranchTree(list, favoritesOf)
-      : buildMergedBranchTree(list, favorites, currentRepository);
+      : buildMergedBranchTree(list, favoritesOf, currentRepository);
   }, [
     repositories,
     availableRepositories,
@@ -254,8 +254,15 @@ export function BranchesPanel() {
   );
   const targets = useMemo(
     (): BranchTarget[] =>
-      refs.filter((r) => selected.has(r.key)).map(({ ref, branch, repo }) => ({ ref, branch, repo, listed })),
-    [refs, selected, listed],
+      refs
+        .filter((r) => selected.has(r.key))
+        .map(({ ref, branch, repo }) => ({
+          ref,
+          branch,
+          repo,
+          listed: listed ?? (repo ? { repo, branches: allBranches[repo] ?? [] } : undefined),
+        })),
+    [refs, selected, listed, allBranches],
   );
   useEffect(() => {
     if (!active) return;
@@ -263,8 +270,11 @@ export function BranchesPanel() {
     return () => useBranchesPane.setState({ selected: [] });
   }, [targets, active]);
   const target = targets[0] ?? undefined;
+  // A merged row has one target per repository: its star is theirs together.
+  const favoriteTargets = useMemo(() => targets.filter((t) => t.ref === target?.ref), [targets, target]);
   const favorite =
-    !!target?.branch && isFavoriteBranch(target.branch, target.repo ? favoritesOf(target.repo) : favorites);
+    !!target?.branch &&
+    favoriteTargets.every((t) => isFavoriteBranch(target.branch!, t.repo ? favoritesOf(t.repo) : favorites));
   const onKeyDownCapture = (e: KeyboardEvent<HTMLDivElement>) => {
     if ((e.key !== "c" && e.key !== "C") || !hasPrimaryModifier(e) || e.altKey || e.shiftKey) return;
     // The branch search keeps the browser's own copy.
@@ -317,7 +327,7 @@ export function BranchesPanel() {
               title={favorite ? "Remove from Favorites" : "Add to Favorites"}
               size="small"
               action="vcs.log.branches.toggleFavorite"
-              actionArg={target}
+              actionArg={favoriteTargets}
               pressed={favorite}
               disabled={!target?.branch}
             />
@@ -446,6 +456,7 @@ export function BranchesPanel() {
                   picked,
                   undefined,
                   checkedOutInWorktree,
+                  (root) => allBranches[root],
                 ),
               );
               return;

@@ -526,8 +526,8 @@ describe("Git Log branches pane with several repositories", () => {
     fireEvent.mouseDown(await screen.findByText("dev"));
     await waitFor(() =>
       expect(useBranchesPane.getState().selected).toEqual([
-        { ref: "dev", repo: "/p/a", branch: aBranches[1] },
-        { ref: "dev", repo: "/p/b", branch: bBranches[1] },
+        { ref: "dev", repo: "/p/a", branch: aBranches[1], listed: { repo: "/p/a", branches: aBranches } },
+        { ref: "dev", repo: "/p/b", branch: bBranches[1], listed: { repo: "/p/b", branches: bBranches } },
       ]),
     );
   });

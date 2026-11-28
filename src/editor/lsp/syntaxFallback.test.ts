@@ -1032,6 +1032,42 @@ describe("rename wiring", () => {
     expect(executeAction).toHaveBeenCalledWith("project.rename", "/p/src/Foo.java");
   });
 
+  it.each([
+    ["renames the file", "/p/docs/Foo.java", true],
+    ["keeps Nothing to rename for another element", "/p/docs/Other.java", false],
+  ])("after an empty edit for the top-level type, %s", async (_, path, renamesFile) => {
+    executeAction.mockClear();
+    cmd.lspPrepareRename.mockReturnValueOnce(ok(r(0, 13, 16)));
+    cmd.lspRename.mockReturnValueOnce(ok({ edit: { files: [] }, incomplete: null }));
+    if (renamesFile) {
+      cmd.syntaxNodeAt.mockReturnValueOnce(topLevelName(13, 3));
+      executeAction.mockResolvedValueOnce(true);
+    }
+    const view = editor("public class Foo {}", "java", 14, path);
+    view.dispatch({ effects: StateEffect.appendConfig.of(inplaceRenameExtension()) });
+    await startRename(view);
+    await startRename(view);
+    const popup = useLspPopup.getState().popup;
+    if (popup?.kind !== "symbolRename") throw new Error("no rename dialog");
+    popup.onSubmit("Bar");
+    await vi.waitFor(() => expect(cmd.lspRename).toHaveBeenCalledTimes(1));
+    if (renamesFile) await vi.waitFor(() => expect(executeAction).toHaveBeenCalledWith("project.rename", path));
+    else {
+      await vi.waitFor(() => expect(document.querySelector(".cm-lsp-hint")?.textContent).toBe("Nothing to rename"));
+      expect(executeAction).not.toHaveBeenCalledWith("project.rename", expect.anything());
+    }
+  });
+
+  it("keeps the typo fix's spelling: an empty edit says so instead of opening Rename File", async () => {
+    executeAction.mockClear();
+    cmd.lspPrepareRename.mockReturnValueOnce(ok(r(0, 13, 20)));
+    cmd.lspRename.mockReturnValueOnce(ok({ edit: { files: [] }, incomplete: null }));
+    const view = editor("public class Recieve {}", "java", 14, "/p/docs/Recieve.java");
+    await renameNamePart(view, { from: 13, to: 20 }, "Receive");
+    expect(executeAction).not.toHaveBeenCalledWith("project.rename", expect.anything());
+    expect(document.querySelector(".cm-lsp-hint")?.textContent).toBe("Nothing to rename");
+  });
+
   it("keeps the server's refusal for other elements", async () => {
     executeAction.mockClear();
     cmd.lspPrepareRename.mockReturnValueOnce(refused());

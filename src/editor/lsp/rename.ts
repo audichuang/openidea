@@ -27,7 +27,7 @@ import { executeAction } from "@/platform/actions";
 import { whenAllSynced, whenSynced, type EditorDocContext } from "@/editor/api";
 import { structure, type NodeAt } from "@/editor/structure";
 import { docOf, incompleteNote, isUnavailable, lspRequest, reportLspError } from "./lsp";
-import { offsetToPos, rangeToOffsets } from "./positions";
+import { offsetToPos, posToOffset, rangeToOffsets } from "./positions";
 import { showHint } from "./hint";
 import { openPopup, type PreviewOccurrence } from "./popupStore";
 import { needsPreview, summarizeWorkspaceEdit } from "./workspaceEdit";
@@ -141,7 +141,7 @@ export async function startRename(view: EditorView) {
       title: tx`Rename '${oldName}'`,
       initial,
       themeClasses: view.themeClasses,
-      onSubmit: (newName) => void finishRename(view, doc, pos, oldName, newName),
+      onSubmit: (newName) => void finishRename(view, doc, pos, oldName, newName, true),
     });
   if (from === to) {
     dialog(oldName);
@@ -161,9 +161,13 @@ export async function startRename(view: EditorView) {
   });
 }
 
-/** Opens Rename File for this file when the word at the caret is its top-level type. */
-async function renameFileInstead(view: EditorView, doc: EditorDocContext): Promise<boolean> {
-  const word = view.state.wordAt(view.state.selection.main.head);
+/** Opens Rename File for this file when the word at `head` (the caret) is its top-level type. */
+async function renameFileInstead(
+  view: EditorView,
+  doc: EditorDocContext,
+  head = view.state.selection.main.head,
+): Promise<boolean> {
+  const word = view.state.wordAt(head);
   const name = word ? view.state.sliceDoc(word.from, word.to) : null;
   if (!word || !name || name !== fileStem(doc.path)) return false;
   let at: NodeAt | null = null;
@@ -280,13 +284,21 @@ async function commitInplace(view: EditorView, doc: EditorDocContext, pos: Pos, 
   if (!newName.trim() || newName === oldName) return;
   // The server renames from the original text, which the session just restored.
   await whenSynced(view);
-  await finishRename(view, doc, pos, oldName, newName);
+  await finishRename(view, doc, pos, oldName, newName, true);
 }
 
 /** The rename waiting for the server's edit: a newer one replaces it. */
 let renameRequest: RequestId | null = null;
 
-async function finishRename(view: EditorView, doc: EditorDocContext, pos: Pos, oldName: string, newName: string) {
+/** `renamesFile`: ⇧F6 itself, whose empty edit may rename the file instead; a typo fix keeps its spelling and says so. */
+async function finishRename(
+  view: EditorView,
+  doc: EditorDocContext,
+  pos: Pos,
+  oldName: string,
+  newName: string,
+  renamesFile = false,
+) {
   if (!newName || newName === oldName) return;
   if (renameRequest !== null) void commands.cancelRequest(renameRequest).catch(() => {});
   const request = nextRequestId();
@@ -316,6 +328,8 @@ async function finishRename(view: EditorView, doc: EditorDocContext, pos: Pos, o
         return;
       }
     }
+    // jdtls accepts a top-level type outside a source folder, then edits nothing.
+    if (renamesFile && !note && (await renameFileInstead(view, doc, posToOffset(view.state.doc, pos)))) return;
     if (note) showHint(view, note, { tone: "warning" });
     else showHint(view, "Nothing to rename");
     return;
