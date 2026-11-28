@@ -303,6 +303,12 @@ fn mark_binary(loaded: &mut ide_vfs::LoadedText, path: &Path) -> IdeResult<()> {
     Ok(())
 }
 
+/// fork: whether `bytes` are UTF-8 text that `encoding` decodes to other text.
+fn misreads_utf8(bytes: &[u8], encoding: &str) -> bool {
+    let Some(enc) = encoding_rs::Encoding::for_label(encoding.trim().as_bytes()) else { return false };
+    std::str::from_utf8(bytes).is_ok_and(|text| enc.decode_without_bom_handling(bytes).0 != text)
+}
+
 fn disk_len(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
@@ -948,7 +954,7 @@ impl Documents {
             let version = st.doc.version();
             if reload {
                 // A file that cannot be loaded (now binary) keeps the buffer dirty on its old baseline.
-                match self.reload_locked(doc, st, false) {
+                match self.reload_locked(doc, st, None) {
                     Ok(Reload::Reloaded) => self.set_dirty(doc, st, false),
                     Ok(Reload::Unloadable) => tracing::warn!("reload {}: not a text file now", st.path.display()),
                     Err(e) => tracing::warn!("reload {}: {e}", st.path.display()),
@@ -1572,11 +1578,11 @@ impl Documents {
     }
 
     /// Re-reads the document from disk and replaces its text (minimal diff).
-    /// `keep_codec` re-reads with the document's selected encoding instead of
-    /// re-detecting it.
-    fn reload_locked(&self, id: DocId, st: &mut DocState, keep_codec: bool) -> IdeResult<Reload> {
-        let loaded = if keep_codec {
-            let mut loaded = Self::load_as(&st.path, &st.encoding, st.native_to_ascii)?;
+    /// `codec` re-reads in that encoding (the document's selected one, or the UTF-8
+    /// Paste and Restore wrote) instead of re-detecting it.
+    fn reload_locked(&self, id: DocId, st: &mut DocState, codec: Option<String>) -> IdeResult<Reload> {
+        let loaded = if let Some(codec) = codec {
+            let mut loaded = Self::load_as(&st.path, &codec, st.native_to_ascii)?;
             mark_binary(&mut loaded, &st.path)?;
             loaded
         } else {
@@ -1616,26 +1622,50 @@ impl Documents {
     /// Reloads the open documents among `paths` from disk, discarding unsaved
     /// changes. For files the user explicitly had overwritten (e.g. Paste and
     /// Restore), where the editor must end up showing exactly the disk content.
-    pub fn reload_from_disk(&self, paths: &[PathBuf]) {
+    ///
+    /// fork: Paste and Restore writes text as UTF-8. A file whose encoding (the document's, or the
+    /// one File Encodings keeps for it, open or not) shows those bytes as other text is read as
+    /// UTF-8; those files are returned, for the caller to keep UTF-8 as their encoding.
+    pub fn reload_from_disk(&self, paths: &[PathBuf]) -> Vec<PathBuf> {
+        let defaults = self.file_defaults();
+        let mut utf8 = Vec::new();
         for path in paths {
-            let Some(id) = self.by_path(path) else { continue };
+            let bytes = std::fs::read(path).unwrap_or_default();
+            let configured = defaults.configured_encoding_for(&absolute(path));
+            let kept_misreads = configured.source == EncodingSource::File && misreads_utf8(&bytes, configured.label);
+            let Some(id) = self.by_path(path) else {
+                if kept_misreads {
+                    utf8.push(path.clone());
+                }
+                continue;
+            };
             let result = self.with_doc(id, |st| {
                 if st.uri.is_some() || st.binary || ide_vfs::is_archive_path(&st.path) {
-                    return Ok(());
+                    return Ok(false);
                 }
-                match self.reload_locked(id, st, false)? {
+                // An encoding nobody chose is detected again, which already reads UTF-8.
+                let misreads = kept_misreads || (st.encoding_chosen && misreads_utf8(&bytes, &st.encoding));
+                let codec = misreads.then(|| "utf-8".to_owned());
+                let switched = codec.is_some();
+                match self.reload_locked(id, st, codec)? {
                     Reload::Reloaded => {
                         st.encoding_unsaved = false;
                         self.set_dirty(id, st, false);
+                        Ok(switched)
                     }
-                    Reload::Unloadable => tracing::warn!("reload {}: not a text file now", st.path.display()),
+                    Reload::Unloadable => {
+                        tracing::warn!("reload {}: not a text file now", st.path.display());
+                        Ok(false)
+                    }
                 }
-                Ok(())
             });
-            if let Err(e) = result {
-                tracing::warn!("reload {}: {e}", path.display());
+            match result {
+                Ok(true) => utf8.push(path.clone()),
+                Ok(false) => {}
+                Err(e) => tracing::warn!("reload {}: {e}", path.display()),
             }
         }
+        utf8
     }
 
     /// Re-reads from disk after an external change. Clean documents reload
@@ -1678,7 +1708,7 @@ impl Documents {
                     self.check_disk_conflict(id, st);
                     return Ok(());
                 }
-                self.reload_locked(id, st, force_clean).map(drop)
+                self.reload_locked(id, st, force_clean.then(|| st.encoding.clone())).map(drop)
             });
             if let Err(e) = result {
                 tracing::warn!("reload {}: {e}", path.display());
