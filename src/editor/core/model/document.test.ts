@@ -427,6 +427,25 @@ describe("DocumentManager + slots", () => {
     }
   });
 
+  it("follows an encoding a reload from disk changed", async () => {
+    const { backend, manager } = setup({ "/p/a.txt": "abc" });
+    let handler: Parameters<NonNullable<typeof backend.onEncoding>>[0] = () => {};
+    backend.onEncoding = (h) => {
+      handler = h;
+      return () => {};
+    };
+    manager.stop();
+    manager.start();
+    const model = await manager.acquire("/p/a.txt");
+    try {
+      handler({ doc: model.doc, encoding: "utf-8", hasBom: true });
+      expect(useDocMeta.getState()["/p/a.txt"]).toMatchObject({ encoding: "utf-8", hasBom: true });
+    } finally {
+      manager.releaseProjectDocuments();
+      manager.stop();
+    }
+  });
+
   it("follows the dirty flag of a server that sends no dirty versions, and clears it on save", async () => {
     _resetLanguages();
     const path = "/p/a.txt";

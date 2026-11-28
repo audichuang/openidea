@@ -9189,6 +9189,11 @@ byAgent: boolean } |
 { type: "docLanguage"; doc: DocId; language: LanguageId; 
 /**  See `DocumentInfo::ui_mode`. */
 uiMode: string | null } | 
+/**
+ *  fork: a reload from disk changed an open document's encoding or BOM (a re-detected
+ *  encoding, or the UTF-8 Paste and Restore wrote).
+ */
+{ type: "docEncoding"; doc: DocId; encoding: string; hasBom: boolean } | 
 /**  Full replacement of diagnostics for one file from one producer. */
 { type: "diagnostics"; path: IpcPath; source: string; items: Diagnostic[] } | 
 /**  Progress of a background task; `fraction` is `None` when indeterminate. */

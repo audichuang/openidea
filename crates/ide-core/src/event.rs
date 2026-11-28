@@ -142,6 +142,13 @@ pub enum IdeEvent {
         /// See `DocumentInfo::ui_mode`.
         ui_mode: Option<String>,
     },
+    /// fork: a reload from disk changed an open document's encoding or BOM (a re-detected
+    /// encoding, or the UTF-8 Paste and Restore wrote).
+    DocEncoding {
+        doc: DocId,
+        encoding: String,
+        has_bom: bool,
+    },
     /// Full replacement of diagnostics for one file from one producer.
     Diagnostics {
         path: crate::IpcPath,

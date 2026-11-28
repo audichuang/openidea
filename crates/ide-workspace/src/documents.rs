@@ -1609,6 +1609,7 @@ impl Documents {
             // nothing treats the buffer as matching the disk and autosave writes over it.
             return Ok(Reload::Unloadable);
         }
+        let encoding_changed = st.encoding != loaded.encoding || st.has_bom != loaded.has_bom;
         st.encoding = loaded.encoding;
         st.has_bom = loaded.has_bom;
         st.large = loaded.large;
@@ -1616,6 +1617,9 @@ impl Documents {
         st.doc.set_line_ending(ec_eol.unwrap_or_else(|| LineEnding::detect(&loaded.text)));
         self.replace_locked(id, st, &loaded.text)?;
         st.synced(loaded.mtime_ms, loaded.content_hash);
+        if encoding_changed {
+            self.sink.emit(IdeEvent::DocEncoding { doc: id, encoding: st.encoding.clone(), has_bom: st.has_bom });
+        }
         Ok(Reload::Reloaded)
     }
 

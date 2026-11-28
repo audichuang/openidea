@@ -947,6 +947,9 @@ export class DocumentManager {
       this.backend.onPatched((e) => this.modelsOf(e.doc).forEach((m) => m.sync.remote(e))),
       this.backend.onLanguage?.((e) => this.modelsOf(e.doc).forEach((m) => m.setLanguage(e.language, e.uiMode))) ??
         (() => {}),
+      this.backend.onEncoding?.((e) =>
+        this.modelsOf(e.doc).forEach((m) => m.setMeta({ encoding: e.encoding, hasBom: e.hasBom })),
+      ) ?? (() => {}),
       this.backend.onDirty((e) => this.modelsOf(e.doc).forEach((m) => m.onBackendDirty(e))),
     );
     let prev = useEditorRegistry.getState().contributions;
