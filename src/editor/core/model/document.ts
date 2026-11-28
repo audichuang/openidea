@@ -998,7 +998,9 @@ export class DocumentManager {
               : this.backend.open(path),
           catalog,
         ]);
-        const raced = this.byPath.get(path);
+        // The backend resolves another spelling of an open file's path (a symlink, /tmp →
+        // /private/tmp) to the same document; a second model would take its events.
+        const raced = this.byPath.get(path) ?? this.byId.get(info.id);
         if (raced) {
           void this.backend.close(info.id);
           return raced;

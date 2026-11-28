@@ -239,6 +239,35 @@ describe("attached document views (editable diff side)", () => {
     tab.dispose();
   });
 
+  it("joins the tab's document when the diff names the file by another path (/tmp → /private/tmp)", async () => {
+    const { backend, manager, frame } = setup({ "/p/a.txt": "one\n" });
+    // The real backend resolves the canonical path to the already open document.
+    const open = backend.open.bind(backend);
+    backend.open = (path) => open(path === "/private/p/a.txt" ? "/p/a.txt" : path);
+    const model = await manager.acquire("/p/a.txt");
+    const tab = new EditorSlot(model, "t1", host);
+    const att = await attachDocument(manager, "/private/p/a.txt");
+    const view = new EditorView({ doc: att.text(), extensions: [att.extension] });
+    try {
+      // An external change reloads the document: both the tab and the diff follow it.
+      backend.patch(model.doc, [{ from: 0, to: 3, insert: "disk" }]);
+      expect(view.state.doc.toString()).toBe("disk\n");
+      expect(tab.currentState().doc.toString()).toBe("disk\n");
+      // The diff closes; typing in the tab and Save All (⌘S, the tab active) writes the file.
+      view.destroy();
+      att.release();
+      await settle();
+      tab.dispatchLocal({ changes: { from: 0, insert: ">" } });
+      await frame();
+      await manager.saveAll("explicit", manager.get("/p/a.txt"));
+      expect(backend.docs.get(model.doc)?.saved).toBe(">disk\n");
+    } finally {
+      view.destroy();
+      att.release();
+      tab.dispose();
+    }
+  });
+
   it("keeps the document open while attached and makes backend patches undoable without tabs", async () => {
     const { backend, manager } = setup({ "/p/b.txt": "abc" });
     const att = await attachDocument(manager, "/p/b.txt");
