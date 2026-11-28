@@ -616,8 +616,8 @@ export function Tree<T>(props: TreeProps<T>) {
       return true;
     },
     scrollIntoView: (key: string) => {
-      const i = indexOfKey.get(key);
-      if (i !== undefined) virtualizer.scrollToIndex(i, { align: "auto" });
+      const i = keyIndex(key);
+      if (i >= 0) virtualizer.scrollToIndex(i, { align: "auto" });
     },
     clearSelection: () => {
       setAnchor(null);
