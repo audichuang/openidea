@@ -26,7 +26,7 @@ from the nightly host don't judge a fix.
 ## 1. Baseline on the base commit
 
 ```sh
-git switch --detach origin/main     # or the fix branch's merge base
+git switch --detach fork/develop    # or the fix branch's merge base
 pnpm eval --save-baseline           # target/eval/baseline.json, this machine only
 ```
 
@@ -75,8 +75,7 @@ PR per `issue-fix` §6, plus in **How it was verified** the before / after table
 
 - Goldens (`evals/*/golden/`) and budgets (`evals/budgets.json`) are human-owned. Don't edit
   them, and don't run `--update-golden`, to make a scenario pass. When a golden looks wrong
-  (a tool bump, a deliberate behaviour change), stop and say so: a PR that touches them gets
-  `needs-decision`.
+  (a tool bump, a deliberate behaviour change), stop and ask the user before a PR touches them.
 - Don't weaken a scenario's checks or timeouts in `evals/<language>/scenarios.ts` to pass.
   Adding a scenario (for a case the sweep or a user found) is fine; record its golden with
   `--update-golden --only <id>` and ask a person to review the file.

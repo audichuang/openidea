@@ -1,45 +1,12 @@
-# Agent notes (fork)
+# OpenIDEA (personal fork) — agent guide
 
-This is a personal fork. Read `FORK.md` before changing a fork feature or anything ClipCode touches (platform
-scope: macOS, Windows and Linux; a ClipCode format change goes to the user), and before rebasing, merging into
-`develop`, or releasing.
+Rust + Tauri 2 desktop IDE with full-featured, multi-language code intelligence. This is the user's fork
+(`audichuang/openidea`, remote `fork`) of `l0ng-ai/openidea` (remote `origin`). Read `FORK.md` before changing a
+fork feature or anything ClipCode touches (platform scope: macOS, Windows and Linux; a ClipCode format change
+goes to the user), and before rebasing, merging into `develop`, or releasing.
 
-This overrides the upstream guidance below (Issues & PRs, Parallel worktrees) and the `issue-fix` skill:
-
-- Cut work branches from `fork/develop`, not `origin/main`, and not with the `rebase/` or `ci-base/` prefix.
-  After a rebase moved `develop`, update a branch with `git rebase --onto` as `FORK.md` describes.
-- Pass `-R audichuang/openidea` to every `gh issue` and `gh pr` command. Upstream `l0ng-ai/openidea` is read
-  only: `gh issue view <n> -R l0ng-ai/openidea` is fine, opening issues or PRs there is not (except upstream PRs
-  under the `openidea-upstream-pr` skill). In fork issues, PRs and comments, write an upstream issue
-  or PR inside backticks (`` `l0ng-ai/openidea#<n>` ``), and in commit messages without `#` (`upstream PR <n>`):
-  the fork is public, so a linked reference adds a "referenced" line to the upstream page (#484–#487 on the
-  upstream PR they tracked). Never a closing keyword: `Closes #<n>` would close the fork's own #<n>.
-- Open a fork issue for each change (`gh issue create -R audichuang/openidea`), docs, CI and refactors included
-  (unlike `CONTRIBUTING.md`), and link it from the PR with `Closes #<n>`, so every change leaves a trail.
-- PRs go into `develop`. Merge only when the user said to merge that work, after Fork CI is green; otherwise leave
-  the PR open (`FORK.md` Red lines; auto-merge is off).
-- The fork has no `planned` or `needs-decision` labels: ask the user about an unclear product call instead.
-
-Where the machine's own agent rules say where to run Cargo or how to handle its build output, follow them
-instead of any Cargo advice below or in a skill. On the Mac mini, nextest runs as
-`rust-remote nextest run --workspace --profile ubuntu-remote` (`rust-remote` also sends the files its `.gitignore`
-filter skips, such as the plugin wasm; `FORK.md` Merge gate). `cargo fmt --all` rewrites files
-and `rust-remote` brings back only `Cargo.lock` and `--pull` paths, so run it locally (`PATH="$HOME/.cargo/bin:$PATH" cargo fmt --all`); only `fmt --all --check` goes remote.
-macOS-only code (`cfg(target_os = "macos")`) is invisible to a plain remote check. Crates without Objective-C
-build scripts check remotely with `--target aarch64-apple-darwin` (`ide-clip` does); `openidea` does not
-(`objc2-exception-helper` needs Apple's `cc`), so `src-tauri`'s macOS code first compiles in Fork CI's macOS job
-or `pnpm dev:app`. A local `cargo check -p openidea` at every macOS stop of a rebase needs the user's OK.
-
-Prove runtime behaviour with the `fork-verify` skill wherever this file or a skill says `verify` or `/verify`;
-it loads upstream `verify` as its base. A Tauri MCP event is not proof for ⌘V or other native-menu shortcuts,
-native menus, real clicks, hover, drags or AppKit chrome: those need the real OS input fork-verify describes
-(osascript/cliclick on the dev process), which replaces the Computer Use fallback in the GUI-verification rule below.
-
-# OpenIDEA — contributor guide
-
-Rust + Tauri 2 desktop IDE with full-featured, multi-language code intelligence.
-Visual style: dark, low-contrast greys, one cool accent
-(`src/styles/tokens.css` is the source of truth for colours and metrics).
+Visual style: dark, low-contrast greys, one cool accent (`src/styles/tokens.css` is the source of truth for
+colours and metrics).
 
 ## Layout
 
@@ -55,17 +22,10 @@ Visual style: dark, low-contrast greys, one cool accent
   overlays, editor kinds) and cross-feature services (editor, tool windows, notifications).
 - `src/ui/` — design-system primitives. `src/features/<name>/` — one feature each,
   exporting `activate()` registered in `src/features/index.ts`.
-- `languages/<id>.toml` — language definitions (detection, comments, LSP, DAP).
 - `crates/ide-host` — the `openidea-server` binary for remote development and the
   `openidea-plugin` CLI (plugin starter templates live in its `templates.rs`).
-- `wit/` — plugin interface definitions; `plugins/` — sample and bundled plugins.
-  Plugin docs: `plugins/README.md`, `plugins/themes.md`.
-- `java/` — JDT LS extension bundles (`java-usages`, `kotlin-bridge`) and the patched
-  Lombok agent, embedded into the app by `ide-sdk` / `ide-tools`.
-- `e2e/` — Playwright UI tests (`pnpm e2e`). `evals/` — code-intelligence evals (`pnpm eval`).
-  `fixtures/` — sample projects per language for manual and automated testing.
-- `docs/` — the Mintlify documentation site (`docs.json` navigation, `en/` and `zh/` pages);
-  preview with `npx mint dev` in `docs/`.
+- `wit/` — plugin interface definitions; `plugins/` — sample and bundled plugins
+  (`plugins/README.md`, `plugins/themes.md`).
 
 ## Rules
 
@@ -88,102 +48,62 @@ Visual style: dark, low-contrast greys, one cool accent
   `src/platform/locales/text/en.json` and `zh.json` (`textCatalog.test.ts` enforces it).
   Other locales may lack entries; their UI shows the English text until a translator adds it.
 - Keep comments sparse and purposeful; match surrounding style.
-- For GUI verification, prefer Tauri MCP; use Computer Use only when Tauri MCP is
-  unavailable or cannot cover the required checks.
+- Do not use Impeccable or its related skills in this repository, including globally installed copies.
 
-## Issues & PRs
+## Issues, PRs, branches
 
-Follow `CONTRIBUTING.md` and `.github/pull_request_template.md`: one problem per PR
-(`Closes #<n>` when it resolves an issue), reproduce first, keep the diff focused, short plain description, and a
-**How it was verified** section with commands run, results and, when the change alters what users
-see, before/after screenshots (not for UI removed along with a feature, copy-only or non-visual changes).
-Unclear product decisions → `needs-decision` and stop.
+- Cut work branches from `fork/develop` (not `origin/main`), one worktree each:
+  `git worktree add ../openidea-wt/<name> -b <branch> fork/develop`, then `pnpm install` in it. Not the
+  `rebase/` or `ci-base/` prefix. After a rebase moved `develop`, update a branch with `git rebase --onto` as
+  `FORK.md` describes.
+- Pass `-R audichuang/openidea` to every `gh issue` and `gh pr` command. Upstream `l0ng-ai/openidea` is read
+  only: `gh issue view <n> -R l0ng-ai/openidea` is fine, opening issues or PRs there is not (except upstream PRs
+  under the `openidea-upstream-pr` skill). In fork issues, PRs and comments, write an upstream issue
+  or PR inside backticks (`` `l0ng-ai/openidea#<n>` ``), and in commit messages without `#` (`upstream PR <n>`):
+  the fork is public, so a linked reference adds a "referenced" line to the upstream page (#484–#487 on the
+  upstream PR they tracked). Never a closing keyword: `Closes #<n>` would close the fork's own #<n>.
+- Open a fork issue for each change (`gh issue create -R audichuang/openidea`), docs, CI and refactors included,
+  and link it from the PR with `Closes #<n>`, so every change leaves a trail.
+- PRs go into `develop` and follow `.github/pull_request_template.md`: one problem per PR, reproduce first,
+  keep the diff focused, short plain description, and a **How it was verified** section with commands run,
+  results and, when the change alters what users see, before/after screenshots (not for UI removed along
+  with a feature, copy-only or non-visual changes).
+- Merge only when the user said to merge that work, after Fork CI is green; otherwise leave the PR open
+  (`FORK.md` Red lines; auto-merge is off).
+- The fork has no `planned` or `needs-decision` labels: ask the user about an unclear product call instead.
 
-## Skills
+## Checks
 
-Do not use Impeccable or its related skills in this repository, including globally installed copies.
+Run what Fork CI runs for the parts you touched before opening a PR:
 
-Shared agent skills live in `.agents/skills/` (`.claude/skills/` links to them):
-`verify` drives the running app through Tauri MCP and captures screenshot evidence;
-`issue-fix` takes an issue from reproduction to one PR;
-`eval` takes a failing code-intelligence eval to a fix with before / after numbers.
+- Frontend: `pnpm typecheck`, `pnpm lint`, `pnpm format:check`, `pnpm knip`, `pnpm test`, `pnpm build`,
+  and `pnpm e2e` for UI flows. Run a subset with `pnpm vitest run <path>`: `pnpm test -- <path>` ignores the
+  filter and runs the whole suite (several minutes).
+- Rust: where the machine's own agent rules say where to run Cargo or how to handle its build output, follow
+  them instead of any Cargo advice in a skill. On the Mac mini: `rust-remote fmt --all --check`,
+  `rust-remote clippy --workspace --all-targets -- -D warnings`, and
+  `rust-remote nextest run --workspace --profile ubuntu-remote` (`FORK.md` Merge gate). `cargo fmt --all`
+  rewrites files and `rust-remote` brings back only `Cargo.lock` and `--pull` paths, so run it locally
+  (`PATH="$HOME/.cargo/bin:$PATH" cargo fmt --all`). Run clippy once before committing, not while iterating.
+- After changing IPC types, regenerate and commit `src/bindings.ts`; CI fails if it differs.
+- macOS-only code (`cfg(target_os = "macos")`) is invisible to a plain remote check. Crates without Objective-C
+  build scripts check remotely with `--target aarch64-apple-darwin` (`ide-clip` does); `openidea` does not
+  (`objc2-exception-helper` needs Apple's `cc`), so `src-tauri`'s macOS code first compiles in Fork CI's macOS
+  job or `pnpm dev:app`. A local `cargo check -p openidea` at every macOS stop of a rebase needs the user's OK.
+- Node: 22.x, at least 22.22.2.
 
-## Commands
+## Running and verifying the app
 
-- Optional: `mise install` provisions the contributor toolchain; `mise tasks` lists the task aliases.
-  See [Development setup](docs/en/contribute/setup.mdx). The direct commands below still work without mise.
-- `pnpm tauri dev` — run the app with worktree isolation. Use Node 22.22.2 or later on the 22.x line.
-  `pnpm dev:app` also enables the global Tauri API. `pnpm dev:status` reports
-  this worktree's running MCP bridges and actual ports.
-- `pnpm build` — typecheck + bundle frontend.
-- `pnpm dogfood:local [--build-only]` (or `mise run dogfood:local`) — build and locally install the grey-icon dogfood desktop app sharing release settings and data.
-- `pnpm dogfood:remote <remote_name> [--restart | --no-restart] [--clean]` (or `mise run dogfood:remote <remote_name>`) — sync backend sources to a host from **Tools › SSH Configurations**, build `openidea-server`, and stage it for Remote Development.
-- `pnpm dogfood:all <remote_name> [--restart | --no-restart]` (or `mise run dogfood:all <remote_name>`) — run `dogfood:local` and `dogfood:remote <remote_name>` in parallel.
-- `cargo nextest run --workspace` (or `cargo test`), `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all`.
-- `cargo test -p ide-host --test language_smoke -- --ignored --exact <language>` — code intelligence
-  on `fixtures/` with that language's real server installed (CI: `Language smoke`, pinned versions).
-- `pnpm smoke smoke/run.test.ts -t <language>` — run and test that language's fixture through the
-  run store and a real `openidea-server` (build it first: `cargo build -p ide-host --bin openidea-server`).
-- `pnpm smoke smoke/debug.test.ts -t <language>` — debug that fixture's entry point the same way, with
-  the debugger the IDE installs (on macOS, CodeLLDB and Delve may need Developer Mode:
-  `sudo DevToolsSecurity -enable`).
-- `pnpm test`, `pnpm e2e`, `pnpm lint`, `pnpm format:check`, `pnpm knip`, `pnpm typecheck`,
-  `pnpm gen:bindings`.
-- `pnpm perf` (UI interaction latency / frames / leaks), `pnpm perf:rust` (criterion
-  benches vs budgets). Budgets: `perf/budgets.json`.
-- `pnpm eval [--only <id>] [--runs n] [--save-baseline]` — Java code intelligence (navigation,
-  usages, gutter markers) in the production workbench against a release `openidea-server` and
-  jdtls: time to feedback / first result / complete, results vs `evals/<language>/golden/`.
-  Report: `target/eval/report.json`. Goldens and `evals/budgets.json` are changed by people only.
-  Tool versions: `.github/tool-versions.env` (shared with Language smoke).
-- `pnpm release:prepare <version>` — the release commit's changes: app version everywhere,
-  `Cargo.lock`, and the plugin API snapshot when `wit/` moved to a new version.
-
-## Before opening a PR
-
-Run what CI runs for the parts you touched:
-
-- Rust: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
-  `cargo nextest run --workspace`. After changing IPC types, run `pnpm gen:bindings` and
-  commit `src/bindings.ts`; CI fails if it differs.
-- Frontend: `pnpm typecheck`, `pnpm lint`, `pnpm format:check`, `pnpm knip`, `pnpm test`,
-  `pnpm build`, and `pnpm e2e` for UI flows.
-- UI or runtime behaviour: verify in the running app (`.agents/skills/verify`).
-
-## Pitfalls
-
-- Run a subset of frontend tests with `pnpm vitest run <path>`. `pnpm test -- <path>` ignores
-  the filter and runs the whole suite, which takes several minutes.
-- Don't run clippy while iterating: `pnpm tauri dev` compiles anyway. Run
-  `cargo fmt --all` + `cargo clippy -p <crate> --all-targets -- -D warnings` once, right
-  before committing. A cold build cache can take around 5 minutes. Run long checks one at
-  a time, not chained in one shell call that may hit the 10-minute tool timeout.
-- `pnpm tauri dev` does a full debug build. Clippy only checks the code, so a passing clippy
-  doesn't make the first launch fast.
-
-## Parallel worktrees
-
-Several worktrees can be developed and run side by side.
-
-- Create one per task: `git worktree add ../<name> -b <branch> origin/main`, then
-  `pnpm install` in it.
-- Launch with `pnpm tauri dev` / `pnpm dev:app`, not the raw `pnpm exec tauri dev` CLI. The
-  wrapper starts Vite on a worktree-derived port (advancing if occupied), passes its actual
-  URL to Tauri, and reports an existing launcher instead of starting another for the same
-  worktree. HMR uses the Vite port.
-- Debug app identity, data, settings, logs and single-instance scope follow the canonical
-  worktree path captured at build time, independent of launch cwd. Launching the same debug
-  binary again focuses its existing instance and forwards its path argument. Different
-  worktrees and the installed release can coexist. `--release` uses normal release identity
-  and bypasses the development wrapper.
-- MCP bridge ports are dynamic (9223–9322). Use `pnpm dev:status`, connect to the reported
-  port, verify identifier/cwd, and pass `appIdentifier: <port>` explicitly. Do not assume the
-  default MCP session belongs to this worktree.
-- Keep each worktree's Cargo output directory separate; do not point `CARGO_TARGET_DIR` or
-  `target` symlinks at a shared directory.
-- Each worktree's first build is cold (several minutes) and `cargo build` output takes
-  around 9 GB; tests, clippy and incremental builds add more. Avoid running several heavy builds on one machine at the same time.
-- Stop only processes started for the current worktree/session. Never use broad
-  process-name kills such as `pkill openidea`.
-- When done: stop that worktree's app and dev session, delete its build output, then
-  `git worktree remove ../<name>`.
+- Launch with `pnpm tauri dev` / `pnpm dev:app` (the latter also enables the global Tauri API), not the raw
+  `pnpm exec tauri dev` CLI. The wrapper gives each worktree its own Vite port, app identity, data, settings,
+  logs and single-instance scope, so worktrees and the installed release coexist; it reports an existing
+  launcher instead of starting a second one for the same worktree.
+- MCP bridge ports are dynamic (9223–9322). Use `pnpm dev:status`, connect to the reported port, verify
+  identifier/cwd, and pass `appIdentifier: <port>` explicitly. Do not assume the default MCP session belongs
+  to this worktree.
+- Prove UI or runtime behaviour with the `fork-verify` skill, also wherever a skill or tool says `verify` or
+  `/verify`. A Tauri MCP event is not proof for ⌘V or other native-menu shortcuts, native menus, real clicks,
+  hover, drags or AppKit chrome: those need the real OS input fork-verify describes (osascript/cliclick on the
+  dev process).
+- Stop only processes started for the current worktree/session. Never use broad process-name kills such as
+  `pkill openidea`. When a worktree is done, stop its app and clean up per the machine rules (`wt-done`).
