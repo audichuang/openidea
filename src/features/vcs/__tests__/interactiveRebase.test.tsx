@@ -6,6 +6,8 @@ const mocks = vi.hoisted(() => ({
   virtualizerKeys: [] as Array<(index: number) => unknown>,
   history: [] as Commit[],
   operations: [] as Array<{ repo: string | null; op: GitOperation }>,
+  updateRefs: false,
+  gitTodoRebases: 0,
 }));
 
 vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
@@ -36,6 +38,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       vcsLog: () => ok(mocks.history),
       // Upstream's rewrite checks (v0.1.51) look for protected remote branches first.
       vcsBranches: () => ok([]),
+      vcsConfigGetBool: (_repo: string | null, key: string) => ok(key === "rebase.updateRefs" && mocks.updateRefs),
       vcsBranchInfo: () =>
         ok({
           head: "feature",
@@ -49,6 +52,17 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
         mocks.operations.push({ repo, op });
         return ok(null);
       },
+    },
+  };
+});
+
+vi.mock("../rebaseEditor", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../rebaseEditor")>();
+  return {
+    ...real,
+    runRebaseWithEditor: () => {
+      mocks.gitTodoRebases++;
+      return Promise.resolve();
     },
   };
 });
@@ -142,6 +156,8 @@ beforeEach(() => {
   mocks.history = [];
   mocks.operations = [];
   mocks.virtualizerKeys = [];
+  mocks.updateRefs = false;
+  mocks.gitTodoRebases = 0;
   useVcs.setState({
     root: "/p",
     roots: ["/p"],
@@ -381,6 +397,21 @@ describe("InteractiveRebaseDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("list", { name: "Commits to rebase" })).toBeNull();
     expect(mocks.operations).toEqual([]);
+  });
+
+  it("hands an amend! commit or rebase.updateRefs to Git's own todo instead of the plain-todo dialog (#495)", async () => {
+    render(<VcsDialogHost />);
+    const amend = makeHistory(3);
+    amend.commits[2]!.summary = `amend! ${amend.commits[0]!.summary}`;
+    mocks.history = amend.history;
+    await act(() => interactivelyRebaseFrom(amend.commits[0]!));
+    expect(mocks.gitTodoRebases).toBe(1);
+
+    mocks.updateRefs = true;
+    mocks.history = makeHistory(3).history;
+    await act(() => interactivelyRebaseFrom(mocks.history.at(-1)!));
+    expect(mocks.gitTodoRebases).toBe(2);
+    expect(screen.queryByRole("list", { name: "Commits to rebase" })).toBeNull();
   });
 
   it("keeps a focused row control mounted across scroll so Enter does not submit the rebase", async () => {

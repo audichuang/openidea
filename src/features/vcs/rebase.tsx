@@ -500,7 +500,13 @@ export async function rebaseAfterFixup(target: Commit) {
 export async function interactivelyRebaseFrom(target: Commit) {
   const range = await rangeFrom(target, "rebase");
   if (!range) return;
-  if (!upstreamRebaseDialog()) {
+  // Fork (#495): the fork dialog sends Git a plain todo, so `amend!` commits and `rebase.updateRefs`
+  // fall through to upstream's Git-owned todo below (which also reports a failed config read).
+  if (
+    !upstreamRebaseDialog() &&
+    !range.commits.some((commit) => commit.summary.startsWith("amend! ")) &&
+    !(await call(commands.vcsConfigGetBool(range.repo, "rebase.updateRefs")).catch(() => true))
+  ) {
     openDialog((close) => (
       <ForkInteractiveRebaseDialog
         range={range}
